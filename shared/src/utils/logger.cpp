@@ -9,7 +9,13 @@ void Logger::log(LogLevel level, const std::string& message) {
     // Get current time
     time_t now = time(nullptr);
     char timeStr[26];
+    
+    // Use cross-platform time formatting
+#ifdef _WIN32
+    ctime_s(timeStr, sizeof(timeStr), &now);
+#else
     ctime_r(&now, timeStr);
+#endif
     timeStr[24] = '\0'; // Remove newline
     
     std::string levelStr;
