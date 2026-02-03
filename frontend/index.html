@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web2D Social Game</title>
+    <link rel="stylesheet" href="src/styles.css">
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="game-canvas"></canvas>
+        <div id="ui-overlay">
+            <div id="score-display">Score: <span id="score">0</span></div>
+            <div id="chat-box">
+                <div id="messages"></div>
+                <input type="text" id="chat-input" placeholder="Type a message...">
+            </div>
+        </div>
+    </div>
+    
+    <!-- SimpleGame Engine -->
+    <script src="https://cdn.jsdelivr.net/gh/clansdown/SimpleGame@main/simplegame.js"></script>
+    
+    <!-- Game Scripts -->
+    <script src="src/api-client.js"></script>
+    <script src="src/game.js"></script>
+    <script src="src/main.js"></script>
+</body>
+</html>
