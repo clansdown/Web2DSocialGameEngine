@@ -41,13 +41,19 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Poll for new messages
+    let lastMessageId = 0;
+    
     async function pollMessages() {
         try {
             const result = await apiClient.getMessages();
             if (result.status === 'ok' && result.messages) {
                 result.messages.forEach(msg => {
-                    if (msg.sender && msg.text) {
-                        addChatMessage(msg.sender, msg.text);
+                    // Only add new messages
+                    if (msg.id && msg.id > lastMessageId) {
+                        if (msg.sender && msg.text) {
+                            addChatMessage(msg.sender, msg.text);
+                        }
+                        lastMessageId = msg.id;
                     }
                 });
             }

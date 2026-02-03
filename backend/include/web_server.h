@@ -39,6 +39,7 @@ private:
     int port_;
     int server_socket_;
     bool running_;
+    std::map<std::string, RequestHandler> handlers_;
     
     void handleClient(int client_socket);
     HttpRequest parseRequest(const std::string& raw_request);

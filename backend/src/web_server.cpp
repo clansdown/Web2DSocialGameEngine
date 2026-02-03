@@ -18,7 +18,7 @@ WebServer::~WebServer() {
 }
 
 void WebServer::registerHandler(const std::string& path, RequestHandler handler) {
-    // This is a simplified implementation - in production, use a proper routing library
+    handlers_[path] = handler;
 }
 
 void WebServer::start() {
@@ -83,10 +83,18 @@ void WebServer::handleClient(int client_socket) {
     if (bytes_read > 0) {
         HttpRequest request = parseRequest(std::string(buffer, bytes_read));
         
-        // Simple routing - in production use a proper router
+        // Route to appropriate handler
         HttpResponse response;
-        response.status_code = 200;
-        response.body = R"({"status":"ok","message":"Web2D Game Server"})";
+        auto handler_it = handlers_.find(request.path);
+        
+        if (handler_it != handlers_.end()) {
+            // Call registered handler
+            response = handler_it->second(request);
+        } else {
+            // Default response for unknown paths
+            response.status_code = 200;
+            response.body = R"({"status":"ok","message":"Web2D Game Server"})";
+        }
         
         std::string response_str = buildResponse(response);
         write(client_socket, response_str.c_str(), response_str.length());
