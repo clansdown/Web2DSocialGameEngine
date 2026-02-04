@@ -39,3 +39,6 @@
 
 # debug information files
 *.dwo
+
+# Checkout of the SimpleGame engine
+/SimpleGame/
