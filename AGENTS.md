@@ -1,0 +1,147 @@
+# AGENTS.md
+
+## Server
+
+The server is a C++23 application built with CMake that:
+- Uses uWebSockets for HTTP endpoint handling
+- Uses nlohmann/json for JSON request/response parsing
+- Uses sqlite_modern_cpp for SQLite database operations
+- Listens on port 2290 for incoming requests (HTTP only)
+- Designed to be deployed behind nginx or other HTTPS reverse proxies
+
+### Dependencies
+- **uWebSockets**: High-performance async web server framework
+- **nlohmann/json**: Modern JSON library for C++
+- **sqlite_modern_cpp**: Header-only SQLite C++ wrapper
+- **SQLite3**: Embedded database (system library)
+
+### Database Architecture
+
+The server uses **two independent SQLite databases** for maximum concurrency:
+
+1. **game.db** - Game state and persistent data
+   - `users`: User accounts and authentication
+   - `players`: Player characters and stats
+   - `fiefdoms`: Player territories and holdings
+   - Future game tables as needed
+
+2. **messages.db** - Player messaging system
+   - `player_messages`: Direct messages between players
+   - `message_queues`: Unread message counters per player
+   - Future messaging tables as needed
+
+**Design Notes:**
+- No joins across databases - they are completely independent
+- Concurrent writes possible to both databases simultaneously
+- Separate file handles allow true parallel access
+- Database files created automatically in working directory
+
+### game.db Schema
+
+```sql
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE players (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    level INTEGER DEFAULT 1,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
+CREATE TABLE fiefdoms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    x INTEGER NOT NULL,
+    y INTEGER NOT NULL,
+    FOREIGN KEY(owner_id) REFERENCES players(id)
+);
+```
+
+### messages.db Schema
+
+```sql
+CREATE TABLE player_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_player_id INTEGER NOT NULL,
+    to_player_id INTEGER NOT NULL,
+    message TEXT NOT NULL,
+    timestamp INTEGER NOT NULL,
+    read INTEGER DEFAULT 0
+);
+
+CREATE TABLE message_queues (
+    player_id INTEGER PRIMARY KEY NOT NULL,
+    unread_count INTEGER DEFAULT 0
+);
+```
+
+### API Endpoints
+
+All endpoints accept POST requests with JSON bodies and respond with:
+- Success: `{ "status": "ok", "data": {...} }`
+- Error: `{ "error": "error_message_string" }`
+
+**IMPORTANT:** Each API endpoint has corresponding documentation in `api/` directory:
+- See `api/login.md` for `/api/login` documentation
+- See `api/getPlayer.md` for `/api/getPlayer` documentation
+- See `api/Build.md` for `/api/Build` documentation
+- See `api/getWorld.md` for `/api/getWorld` documentation
+- See `api/getFiefdom.md` for `/api/getFiefdom` documentation
+- See `api/sally.md` for `/api/sally` documentation
+- See `api/campaign.md` for `/api/campaign` documentation
+- See `api/hunt.md` for `/api/hunt` documentation
+
+#### Endpoint Overview
+
+- **/api/login**: Authenticate user and return player data
+- **/api/getPlayer**: Retrieve player information
+- **/api/Build**: Building construction/management (STUB - TODO: implement)
+- **/api/getWorld**: Get world state (STUB - TODO: implement)
+- **/api/getFiefdom**: Get fiefdom information (STUB - TODO: implement)
+- **/api/sally**: Sally forth/battle actions (STUB - TODO: implement)
+- **/api/campaign**: Campaign management (STUB - TODO: implement)
+- **/api/hunt**: Hunting activities (STUB - TODO: implement)
+
+### Building
+
+```bash
+cd server
+mkdir -p build && cd build
+cmake ..
+make
+./server
+```
+
+### Docker
+
+```bash
+cd server
+docker build -t ravenest-server .
+docker run -p 2290:2290 ravenest-server
+```
+
+### Deployment Notes
+
+1. **HTTP Only**: The server listens on HTTP (port 2290). TLS/HTTPS is handled by a reverse proxy (nginx, etc.)
+2. **Databases**: `game.db` and `messages.db` are created in the working directory on first run
+3. **Concurrent Access**: Two independent database connections allow simultaneous read/write operations
+4. **Error Handling**: All errors return JSON with format `{ "error": "description" }`
+5. **API Documentation**: Every endpoint has a corresponding `.md` file in `api/` directory with detailed request/response examples
+
+## Client
+
+TODO: Client side implementation details to be added
+
+## API Documentation Files
+
+Detailed API documentation is provided in the `api/` directory:
+- Each API endpoint has its own corresponding `.md` file
+- Complete request/response examples included
+- Error codes and edge cases documented separately
