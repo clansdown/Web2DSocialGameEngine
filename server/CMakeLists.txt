@@ -20,7 +20,7 @@ FetchContent_Declare(uWebSockets
 FetchContent_MakeAvailable(uWebSockets)
 
 FetchContent_Declare(sqlite_modern_cpp
-    GIT_REPOSITORY https://github.com/SRombauts/sqlite_modern_cpp.git
+    GIT_REPOSITORY https://github.com/SqliteModernCpp/sqlite_modern_cpp.git
     GIT_TAG master
 )
 FetchContent_MakeAvailable(sqlite_modern_cpp)

@@ -15,6 +15,23 @@ The server is a C++23 application built with CMake that:
 - **sqlite_modern_cpp**: Header-only SQLite C++ wrapper
 - **SQLite3**: Embedded database (system library)
 
+### Documentation References
+
+- **uWebSockets**: https://unetworking.github.io/uWebSockets.js/generated/index.html
+- **nlohmann/json**: https://github.com/nlohmann/json
+- **sqlite_modern_cpp**: https://github.com/SqliteModernCpp/sqlite_modern_cpp
+
+### Table Documentation
+
+The `server/tables/` directory contains detailed schema documentation for each SQL table:
+- `server/tables/users.md` - users table
+- `server/tables/players.md` - players table
+- `server/tables/fiefdoms.md` - fiefdoms table
+- `server/tables/player_messages.md` - player_messages table
+- `server/tables/message_queues.md` - message_queues table
+
+Each `.md` file documents the table's purpose, full schema, field descriptions, indexes, relationships, and usage notes. See `server/tables/README.md` for guidance on documenting new tables.
+
 ### Database Architecture
 
 The server uses **two independent SQLite databases** for maximum concurrency:
