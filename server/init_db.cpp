@@ -17,12 +17,12 @@ namespace {
         db << sql;
     }
 
-    void ensureGameDBIndexes(sqlite::database& db) {
+    void ensureGameDBIndexes_private(sqlite::database& db) {
         ensureIndex(db, "idx_characters_user_id", "characters", "user_id");
         ensureIndex(db, "idx_fiefdoms_owner", "fiefdoms", "owner_id");
     }
 
-    void ensureMessagesDBIndexes(sqlite::database& db) {
+    void ensureMessagesDBIndexes_private(sqlite::database& db) {
         ensureIndex(db, "idx_messages_to_character", "player_messages", "to_character_id");
         ensureIndex(db, "idx_messages_from_character", "player_messages", "from_character_id");
         ensureIndex(db, "idx_messages_timestamp", "player_messages", "timestamp");
@@ -76,12 +76,20 @@ namespace {
 
 void initializeGameDB(sqlite::database& db) {
     createGameDBTables(db);
-    ensureGameDBIndexes(db);
+    ensureGameDBIndexes_private(db);
 }
 
 void initializeMessagesDB(sqlite::database& db) {
     createMessagesDBTables(db);
-    ensureMessagesDBIndexes(db);
+    ensureMessagesDBIndexes_private(db);
+}
+
+void ensureGameDBIndexes(sqlite::database& db) {
+    ensureGameDBIndexes_private(db);
+}
+
+void ensureMessagesDBIndexes(sqlite::database& db) {
+    ensureMessagesDBIndexes_private(db);
 }
 
 void initializeAllDatabases(sqlite::database& game_db, sqlite::database& messages_db) {

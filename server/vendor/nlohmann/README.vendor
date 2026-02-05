@@ -1,0 +1,32 @@
+# Vendored nlohmann/json Library
+
+This is a vendored copy of the nlohmann/json C++ library for JSON handling.
+
+- **Source**: https://github.com/nlohmann/json
+- **Version**: 3.12.0 (from single_include)
+- **License**: MIT License (see LICENSE.MIT)
+
+## Directory Structure
+
+```
+vendor/nlohmann/
+├── nlohmann/
+│   ├── json.hpp
+│   └── json_fwd.hpp
+├── LICENSE.MIT
+└── README.vendor
+```
+
+## Why Vendored
+
+The library is included directly in the source tree to:
+- Eliminate build-time network dependencies
+- Ensure deterministic builds
+- Allow offline compilation
+
+## Updating
+
+To update to a newer version:
+1. Download from https://github.com/nlohmann/json/releases
+2. Replace json.hpp and json_fwd.hpp in vendor/nlohmann/nlohmann/
+3. Update the version note above

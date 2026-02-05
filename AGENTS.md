@@ -160,6 +160,23 @@ All endpoints accept POST requests with JSON bodies and respond with:
 
 ### Building
 
+#### Quick Compile Check
+
+Use `compile_server.sh` to compile the server without running it:
+
+```bash
+./compile_server.sh          # Compile with normal output
+./compile_server.sh -q       # Compile silently (quiet mode)
+./compile_server.sh -v       # Compile with verbose output
+./compile_server.sh --help   # Show all options
+```
+
+Exit codes:
+- `0`: Compilation successful
+- `1`: Build failure
+
+#### Manual Build
+
 ```bash
 cd server
 mkdir -p build && cd build

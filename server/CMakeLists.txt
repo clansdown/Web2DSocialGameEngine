@@ -9,12 +9,6 @@ find_package(OpenSSL REQUIRED)
 
 include(FetchContent)
 
-FetchContent_Declare(json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG develop
-)
-FetchContent_MakeAvailable(json)
-
 FetchContent_Declare(sqlite_modern_cpp
     GIT_REPOSITORY https://github.com/SqliteModernCpp/sqlite_modern_cpp.git
     GIT_TAG master
@@ -39,11 +33,11 @@ add_executable(server main.cpp SafeNameGenerator.cpp init_db.cpp)
 
 target_include_directories(server PRIVATE
     "${sqlite_modern_cpp_SOURCE_DIR}/hdr"
+    "${CMAKE_CURRENT_SOURCE_DIR}/vendor/nlohmann"
     "${UWS_INCLUDE_DIR}"
     "${UWS_DEPS_DIR}/uSockets/src"
 )
 target_link_libraries(server PRIVATE
-    nlohmann_json::nlohmann_json
     sqlite3
     OpenSSL::SSL
     OpenSSL::Crypto
