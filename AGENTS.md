@@ -51,7 +51,7 @@ The server is a C++23 application built with CMake that:
 
 The `server/tables/` directory contains detailed schema documentation for each SQL table:
 - `server/tables/users.md` - users table
-- `server/tables/players.md` - players table
+- `server/tables/characters.md` - characters table (renamed from players)
 - `server/tables/fiefdoms.md` - fiefdoms table
 - `server/tables/player_messages.md` - player_messages table
 - `server/tables/message_queues.md` - message_queues table
@@ -64,13 +64,13 @@ The server uses **two independent SQLite databases** for maximum concurrency:
 
 1. **game.db** - Game state and persistent data
    - `users`: User accounts and authentication
-   - `players`: Player characters and stats
-   - `fiefdoms`: Player territories and holdings
+   - `characters`: Character entities with display names and levels
+   - `fiefdoms`: Character territories and holdings
    - Future game tables as needed
 
-2. **messages.db** - Player messaging system
-   - `player_messages`: Direct messages between players
-   - `message_queues`: Unread message counters per player
+2. **messages.db** - Character messaging system
+   - `player_messages`: Direct messages between characters
+   - `message_queues`: Unread message counters per character
    - Future messaging tables as needed
 
 **Design Notes:**
@@ -86,13 +86,15 @@ CREATE TABLE users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    adult INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE players (
+CREATE TABLE characters (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    safe_display_name TEXT NOT NULL,
     level INTEGER DEFAULT 1,
     FOREIGN KEY(user_id) REFERENCES users(id)
 );
@@ -103,7 +105,7 @@ CREATE TABLE fiefdoms (
     name TEXT NOT NULL,
     x INTEGER NOT NULL,
     y INTEGER NOT NULL,
-    FOREIGN KEY(owner_id) REFERENCES players(id)
+    FOREIGN KEY(owner_id) REFERENCES characters(id)
 );
 ```
 
@@ -112,15 +114,15 @@ CREATE TABLE fiefdoms (
 ```sql
 CREATE TABLE player_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    from_player_id INTEGER NOT NULL,
-    to_player_id INTEGER NOT NULL,
+    from_character_id INTEGER NOT NULL,
+    to_character_id INTEGER NOT NULL,
     message TEXT NOT NULL,
     timestamp INTEGER NOT NULL,
     read INTEGER DEFAULT 0
 );
 
 CREATE TABLE message_queues (
-    player_id INTEGER PRIMARY KEY NOT NULL,
+    character_id INTEGER PRIMARY KEY NOT NULL,
     unread_count INTEGER DEFAULT 0
 );
 ```
@@ -133,18 +135,22 @@ All endpoints accept POST requests with JSON bodies and respond with:
 
 **IMPORTANT:** Each API endpoint has corresponding documentation in `api/` directory:
 - See `api/login.md` for `/api/login` documentation
-- See `api/getPlayer.md` for `/api/getPlayer` documentation
+- See `api/getCharacter.md` for `/api/getCharacter` documentation
 - See `api/Build.md` for `/api/Build` documentation
 - See `api/getWorld.md` for `/api/getWorld` documentation
 - See `api/getFiefdom.md` for `/api/getFiefdom` documentation
 - See `api/sally.md` for `/api/sally` documentation
 - See `api/campaign.md` for `/api/campaign` documentation
 - See `api/hunt.md` for `/api/hunt` documentation
+- See `api/updateUserProfile.md` for `/api/updateUserProfile` documentation
+- See `api/updateCharacterProfile.md` for `/api/updateCharacterProfile` documentation
 
 #### Endpoint Overview
 
-- **/api/login**: Authenticate user and return player data
-- **/api/getPlayer**: Retrieve player information
+- **/api/login**: Authenticate user and return all characters
+- **/api/getCharacter**: Retrieve character information
+- **/api/updateUserProfile**: Update user account settings (adult flag)
+- **/api/updateCharacterProfile**: Update character profile (display names)
 - **/api/Build**: Building construction/management (STUB - TODO: implement)
 - **/api/getWorld**: Get world state (STUB - TODO: implement)
 - **/api/getFiefdom**: Get fiefdom information (STUB - TODO: implement)

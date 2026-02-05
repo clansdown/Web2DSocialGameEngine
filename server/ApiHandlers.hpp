@@ -36,14 +36,14 @@ using ApiHandler = std::function<ApiResponse(
 )>;
 
 ApiResponse handleLogin(const nlohmann::json& body,
-                       const std::optional<std::string>& username,
-                       const ClientInfo& client,
-                       const std::optional<std::string>& new_token);
+                        const std::optional<std::string>& username,
+                        const ClientInfo& client,
+                        const std::optional<std::string>& new_token);
 
-ApiResponse handleGetPlayer(const nlohmann::json& body,
-                            const std::optional<std::string>& username,
-                            const ClientInfo& client,
-                            const std::optional<std::string>& new_token);
+ApiResponse handleGetCharacter(const nlohmann::json& body,
+                                const std::optional<std::string>& username,
+                                const ClientInfo& client,
+                                const std::optional<std::string>& new_token);
 
 ApiResponse handleBuild(const nlohmann::json& body,
                         const std::optional<std::string>& username,
@@ -56,9 +56,9 @@ ApiResponse handleGetWorld(const nlohmann::json& body,
                            const std::optional<std::string>& new_token);
 
 ApiResponse handleGetFiefdom(const nlohmann::json& body,
-                            const std::optional<std::string>& username,
-                            const ClientInfo& client,
-                            const std::optional<std::string>& new_token);
+                             const std::optional<std::string>& username,
+                             const ClientInfo& client,
+                             const std::optional<std::string>& new_token);
 
 ApiResponse handleSally(const nlohmann::json& body,
                         const std::optional<std::string>& username,
@@ -80,22 +80,28 @@ ApiResponse handleCreateAccount(const nlohmann::json& body,
                                 const ClientInfo& client,
                                 const std::optional<std::string>& new_token);
 
-ApiResponse handleUpdateProfile(const nlohmann::json& body,
-                                const std::optional<std::string>& username,
-                                const ClientInfo& client,
-                                const std::optional<std::string>& new_token);
+ApiResponse handleUpdateUserProfile(const nlohmann::json& body,
+                                    const std::optional<std::string>& username,
+                                    const ClientInfo& client,
+                                    const std::optional<std::string>& new_token);
+
+ApiResponse handleUpdateCharacterProfile(const nlohmann::json& body,
+                                          const std::optional<std::string>& username,
+                                          const ClientInfo& client,
+                                          const std::optional<std::string>& new_token);
 
 inline std::unordered_map<std::string, ApiHandler>& getEndpointHandlers() {
     static std::unordered_map<std::string, ApiHandler> handlers = {
-        {"login",       handleLogin},
-        {"getPlayer",   handleGetPlayer},
-        {"Build",       handleBuild},
-        {"getWorld",    handleGetWorld},
-        {"getFiefdom",  handleGetFiefdom},
-        {"sally",       handleSally},
-        {"campaign",    handleCampaign},
-        {"hunt",        handleHunt},
-        {"updateProfile", handleUpdateProfile}
+        {"login",                  handleLogin},
+        {"getCharacter",           handleGetCharacter},
+        {"Build",                  handleBuild},
+        {"getWorld",               handleGetWorld},
+        {"getFiefdom",             handleGetFiefdom},
+        {"sally",                  handleSally},
+        {"campaign",               handleCampaign},
+        {"hunt",                   handleHunt},
+        {"updateUserProfile",      handleUpdateUserProfile},
+        {"updateCharacterProfile", handleUpdateCharacterProfile}
     };
     return handlers;
 }

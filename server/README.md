@@ -160,13 +160,28 @@ All responses descend from base structure:
 
 ### createAccount
 - **Auth**: Not required
-- **Behavior**: Creates user + default player, returns token
-- **Response**: `{ "id": ..., "username": ..., "player_id": ..., "token": "..." }`
+- **Behavior**: Creates user + default character, returns user_id, characters array, and token
+- **Response**: `{ "user_id": ..., "username": ..., "characters": [...], "token": "..." }`
 
 ### login
 - **Auth**: Required (password OR token)
-- **Behavior**: Returns player data
-- **Response**: `{ "id": ..., "name": ..., "level": ..., username, token }`
+- **Behavior**: Returns user account info and all characters
+- **Response**: `{ "user_id": ..., "username": ..., "adult": ..., "characters": [...], token }`
+
+### getCharacter
+- **Auth**: Required (password OR token)
+- **Behavior**: Returns character data by character_id
+- **Response**: `{ "id": ..., "display_name": ..., "safe_display_name": ..., "level": ... }`
+
+### updateUserProfile
+- **Auth**: Required (password OR token)
+- **Behavior**: Update user account settings (adult flag)
+- **Response**: `{ "adult": ..., "token": "..." }`
+
+### updateCharacterProfile
+- **Auth**: Required (password OR token)
+- **Behavior**: Update character display names (requires character_id, checks adult flag)
+- **Response**: `{ "id": ..., "display_name": ..., "safe_display_name": ..., "level": ..., "token": "..." }`
 
 ### getPlayer, Build, getWorld, getFiefdom, sally, campaign, hunt
 - **Auth**: Required (password OR token)
@@ -178,27 +193,65 @@ All responses descend from base structure:
 Two independent SQLite databases for maximum concurrency:
 
 ### game.db
-- `users`: User accounts (id, username, password_hash, created_at)
-- `players`: Player characters (id, user_id, name, level)
-- `fiefdoms`: Player territories (id, owner_id, name, x, y)
+- `users`: User accounts (id, username, password_hash, created_at, adult)
+- `characters`: Character entities (id, user_id, display_name, safe_display_name, level)
+- `fiefdoms`: Character territories (id, owner_id, name, x, y)
 
 ### messages.db
-- `player_messages`: Direct messages (id, from_player_id, to_player_id, message, timestamp, read)
-- `message_queues`: Unread counters (player_id, unread_count)
+- `player_messages`: Direct messages (id, from_character_id, to_character_id, message, timestamp, read)
+- `message_queues`: Unread counters (character_id, unread_count)
 
 **Design:**
 - No joins across databases
 - Concurrent writes to both simultaneously
 - Separate file handles for true parallel access
 
-## Building
+### game.db Schema
 
-```bash
-cd server
-mkdir -p build && cd build
-cmake ..
-make
-./server
+```sql
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    adult INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE characters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    display_name TEXT NOT NULL,
+    safe_display_name TEXT NOT NULL,
+    level INTEGER DEFAULT 1,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
+CREATE TABLE fiefdoms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    x INTEGER NOT NULL,
+    y INTEGER NOT NULL,
+    FOREIGN KEY(owner_id) REFERENCES characters(id)
+);
+```
+
+### messages.db Schema
+
+```sql
+CREATE TABLE player_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_character_id INTEGER NOT NULL,
+    to_character_id INTEGER NOT NULL,
+    message TEXT NOT NULL,
+    timestamp INTEGER NOT NULL,
+    read INTEGER DEFAULT 0
+);
+
+CREATE TABLE message_queues (
+    character_id INTEGER PRIMARY KEY NOT NULL,
+    unread_count INTEGER DEFAULT 0
+);
 ```
 
 ## Deployment

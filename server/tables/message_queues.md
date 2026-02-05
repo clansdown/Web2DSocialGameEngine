@@ -1,12 +1,12 @@
 # message_queues Table
 
-Tracks unread message counts per player.
+Tracks unread message counts per character.
 
 ## Schema
 
 ```sql
 CREATE TABLE message_queues (
-    player_id INTEGER PRIMARY KEY NOT NULL,
+    character_id INTEGER PRIMARY KEY NOT NULL,
     unread_count INTEGER DEFAULT 0
 );
 ```
@@ -15,16 +15,16 @@ CREATE TABLE message_queues (
 
 | Field | Type | Constraints | Purpose |
 |-------|------|-------------|---------|
-| player_id | INTEGER | PRIMARY KEY NOT NULL | Player identifier |
+| character_id | INTEGER | PRIMARY KEY NOT NULL | Character identifier |
 | unread_count | INTEGER | DEFAULT 0 | Number of unread messages |
 
 ## Indexes
 
-- Primary key on `player_id`
+- Primary key on `character_id`
 
 ## Relationships
 
-- Links to `players` table via `player_id`
+- Links to `characters` table via `character_id`
 
 ## Notes
 

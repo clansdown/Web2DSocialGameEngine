@@ -1,6 +1,6 @@
 # fiefdoms Table
 
-Stores player territory holdings and their locations.
+Stores character territory holdings and their locations.
 
 ## Schema
 
@@ -11,7 +11,7 @@ CREATE TABLE fiefdoms (
     name TEXT NOT NULL,
     x INTEGER NOT NULL,
     y INTEGER NOT NULL,
-    FOREIGN KEY(owner_id) REFERENCES players(id)
+    FOREIGN KEY(owner_id) REFERENCES characters(id)
 );
 ```
 
@@ -20,18 +20,18 @@ CREATE TABLE fiefdoms (
 | Field | Type | Constraints | Purpose |
 |-------|------|-------------|---------|
 | id | INTEGER | PRIMARY KEY AUTOINCREMENT | Unique fiefdom identifier |
-| owner_id | INTEGER | NOT NULL FK | Owning player (players.id) |
+| owner_id | INTEGER | NOT NULL FK | Owning character (characters.id) |
 | name | TEXT | NOT NULL | Fiefdom name |
 | x | INTEGER | NOT NULL | X coordinate in world |
 | y | INTEGER | NOT NULL | Y coordinate in world |
 
 ## Indexes
 
-- Index on `owner_id` for player fiefdom lookups
+- Index on `owner_id` for character fiefdom lookups
 
 ## Relationships
 
-- Many-to-one with `players` via `owner_id` foreign key
+- Many-to-one with `characters` via `owner_id` foreign key
 
 ## Notes
 

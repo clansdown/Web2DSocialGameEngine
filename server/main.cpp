@@ -157,27 +157,33 @@ ApiResponse handleLogin(const json& body,
 
     auto& db = Database::getInstance().gameDB();
 
-    int player_id = 0;
-    std::string name;
-    int level = 1;
-
-    db << "SELECT id, name, level FROM players WHERE name = ?;"
+    int user_id = 0;
+    bool adult = false;
+    db << "SELECT id, adult FROM users WHERE username = ?;"
        << *username
-       >> [&](int id, std::string n, int l) {
-            player_id = id;
-            name = n;
-            level = l;
-        };
+       >> [&](int id, bool a) { user_id = id; adult = a; };
 
-    if (player_id == 0) {
-        response.error = "Player not found";
+    if (user_id == 0) {
+        response.error = "User not found";
         return response;
     }
 
-    response.data["id"] = player_id;
-    response.data["name"] = name;
-    response.data["level"] = level;
+    std::vector<json> characters_list;
+    db << "SELECT id, display_name, safe_display_name, level FROM characters WHERE user_id = ?;"
+       << user_id
+       >> [&](int id, std::string display_name, std::string safe_display_name, int level) {
+            json character;
+            character["id"] = id;
+            character["display_name"] = display_name;
+            character["safe_display_name"] = safe_display_name;
+            character["level"] = level;
+            characters_list.push_back(character);
+        };
+
+    response.data["user_id"] = user_id;
     response.data["username"] = *username;
+    response.data["adult"] = adult;
+    response.data["characters"] = characters_list;
 
     if (new_token) {
         response.data["token"] = *new_token;
@@ -186,33 +192,36 @@ ApiResponse handleLogin(const json& body,
     return response;
 }
 
-ApiResponse handleGetPlayer(const json& body,
-                            const std::optional<std::string>& username,
-                            const ClientInfo& client,
-                            const std::optional<std::string>& new_token)
+ApiResponse handleGetCharacter(const json& body,
+                               const std::optional<std::string>& username,
+                               const ClientInfo& client,
+                               const std::optional<std::string>& new_token)
 {
     ApiResponse response;
 
-    int player_id = body.value("player_id", 0);
-    if (player_id == 0) {
-        response.error = "player_id required";
+    int character_id = body.value("character_id", 0);
+    if (character_id == 0) {
+        response.error = "character_id required";
         return response;
     }
 
     auto& db = Database::getInstance().gameDB();
 
-    std::string name;
+    std::string display_name;
+    std::string safe_display_name;
     int level;
 
-    db << "SELECT name, level FROM players WHERE id = ?;"
-       << player_id
-       >> [&](std::string n, int l) {
-            name = n;
+    db << "SELECT display_name, safe_display_name, level FROM characters WHERE id = ?;"
+       << character_id
+       >> [&](std::string dn, std::string sdn, int l) {
+            display_name = dn;
+            safe_display_name = sdn;
             level = l;
         };
 
-    response.data["id"] = player_id;
-    response.data["name"] = name;
+    response.data["id"] = character_id;
+    response.data["display_name"] = display_name;
+    response.data["safe_display_name"] = safe_display_name;
     response.data["level"] = level;
 
     if (new_token) {
@@ -301,9 +310,9 @@ ApiResponse handleHunt(const json& body,
 }
 
 ApiResponse handleCreateAccount(const json& body,
-                                const std::optional<std::string>& username,
-                                const ClientInfo& client,
-                                const std::optional<std::string>& new_token)
+                               const std::optional<std::string>& username,
+                               const ClientInfo& client,
+                               const std::optional<std::string>& new_token)
 {
     ApiResponse response;
 
@@ -349,7 +358,8 @@ ApiResponse handleCreateAccount(const json& body,
         return response;
     }
 
-    std::string safeDisplayName = *safeDisplayNameOpt;
+    std::string safe_display_name = *safeDisplayNameOpt;
+    std::string display_name = adult ? displayName : safe_display_name;
 
     std::string password_hash;
     try {
@@ -360,37 +370,41 @@ ApiResponse handleCreateAccount(const json& body,
     }
 
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    db << "INSERT INTO users (username, password_hash, created_at, adult, displayName, safeDisplayName) "
-       << "VALUES (?, ?, ?, ?, ?, ?);"
-       << new_username << password_hash << now << (adult ? 1 : 0)
-       << (adult ? displayName : "") << safeDisplayName;
+    db << "INSERT INTO users (username, password_hash, created_at, adult) "
+          "VALUES (?, ?, ?, ?);"
+       << new_username << password_hash << now << (adult ? 1 : 0);
 
     int user_id = db.last_insert_rowid();
 
-    db << "INSERT INTO players (user_id, name, level) VALUES (?, ?, 1);"
-       << user_id << new_username;
+    db << "INSERT INTO characters (user_id, display_name, safe_display_name, level) "
+          "VALUES (?, ?, ?, 1);"
+       << user_id << display_name << safe_display_name;
 
-    int player_id = db.last_insert_rowid();
+    int character_id = db.last_insert_rowid();
 
     std::string ip = std::string(client.real_ip);
     std::string token = AuthManager::getInstance().authenticateWithPassword(
         new_username, password, ip);
 
-    response.data["id"] = user_id;
+    json character;
+    character["id"] = character_id;
+    character["display_name"] = display_name;
+    character["safe_display_name"] = safe_display_name;
+    character["level"] = 1;
+
+    response.data["user_id"] = user_id;
     response.data["username"] = new_username;
-    response.data["player_id"] = player_id;
     response.data["adult"] = adult;
-    response.data["displayName"] = adult ? displayName : "";
-    response.data["safeDisplayName"] = safeDisplayName;
+    response.data["characters"] = std::vector<json>{character};
     response.data["token"] = token;
 
     return response;
 }
 
-ApiResponse handleUpdateProfile(const json& body,
-                                const std::optional<std::string>& username,
-                                const ClientInfo& client,
-                                const std::optional<std::string>& new_token)
+ApiResponse handleUpdateUserProfile(const json& body,
+                                    const std::optional<std::string>& username,
+                                    const ClientInfo& client,
+                                    const std::optional<std::string>& new_token)
 {
     ApiResponse response;
 
@@ -399,16 +413,12 @@ ApiResponse handleUpdateProfile(const json& body,
         return response;
     }
 
-    bool adult = body.value("adult", false);
-    std::string displayName = body.value("displayName", "");
-    std::string word1 = body.value("word1", "");
-    std::string word2 = body.value("word2", "");
-
-    if (!adult && !displayName.empty()) {
-        response.error = "displayName can only be set if adult is true";
+    if (!body.contains("adult")) {
+        response.error = "adult field required";
         return response;
     }
 
+    bool adult = body["adult"];
     auto& db = Database::getInstance().gameDB();
 
     int user_id = 0;
@@ -421,8 +431,59 @@ ApiResponse handleUpdateProfile(const json& body,
         return response;
     }
 
+    db << "UPDATE users SET adult = ? WHERE id = ?;"
+       << (adult ? 1 : 0) << user_id;
+
+    response.data["adult"] = adult;
+
+    if (new_token) {
+        response.data["token"] = *new_token;
+    }
+
+    return response;
+}
+
+ApiResponse handleUpdateCharacterProfile(const json& body,
+                                        const std::optional<std::string>& username,
+                                        const ClientInfo& client,
+                                        const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+
+    int character_id = body.value("character_id", 0);
+    if (character_id == 0) {
+        response.error = "character_id required";
+        return response;
+    }
+
+    std::string display_name = body.value("display_name", "");
+    std::string safe_display_name = body.value("safe_display_name", "");
+    std::string word1 = body.value("word1", "");
+    std::string word2 = body.value("word2", "");
+
     bool regenerateSafeName = !word1.empty() && !word2.empty();
-    std::string safeDisplayName;
+
+    auto& db = Database::getInstance().gameDB();
+
+    int character_user_id = 0;
+    db << "SELECT user_id FROM characters WHERE id = ?;"
+       << character_id
+       >> [&](int uid) { character_user_id = uid; };
+
+    if (character_user_id == 0) {
+        response.error = "character not found";
+        return response;
+    }
+
+    bool adult = false;
+    db << "SELECT adult FROM users WHERE id = ?;"
+       << character_user_id
+       >> [&](bool a) { adult = a; };
+
+    if (!display_name.empty() && !adult) {
+        response.error = "display_name can only be set if account is adult";
+        return response;
+    }
 
     if (regenerateSafeName) {
         std::optional<std::string> safeNameOpt = SafeNameGenerator::getInstance().generateSafeDisplayName(
@@ -432,30 +493,31 @@ ApiResponse handleUpdateProfile(const json& body,
             response.error = "Invalid word1 or word2 - words must exist in safe word lists";
             return response;
         }
-        safeDisplayName = *safeNameOpt;
+        safe_display_name = *safeNameOpt;
 
-        db << "UPDATE users SET safeDisplayName = ? WHERE id = ?;"
-           << safeDisplayName << user_id;
+        db << "UPDATE characters SET safe_display_name = ? WHERE id = ?;"
+           << safe_display_name << character_id;
     }
 
-    if (body.contains("adult")) {
-        if (!adult) {
-            db << "UPDATE users SET adult = 0, displayName = '' WHERE id = ?;"
-               << user_id;
-        } else {
-            db << "UPDATE users SET adult = 1, displayName = ? WHERE id = ?;"
-               << displayName << user_id;
-        }
-    } else if (body.contains("displayName")) {
-        db << "UPDATE users SET displayName = ? WHERE id = ?;"
-           << displayName << user_id;
+    if (!display_name.empty()) {
+        db << "UPDATE characters SET display_name = ? WHERE id = ?;"
+           << display_name << character_id;
     }
 
-    response.data["adult"] = adult;
-    response.data["displayName"] = adult ? displayName : "";
-    if (regenerateSafeName) {
-        response.data["safeDisplayName"] = safeDisplayName;
-    }
+    std::string current_display_name, current_safe_display_name;
+    int level;
+    db << "SELECT display_name, safe_display_name, level FROM characters WHERE id = ?;"
+       << character_id
+       >> [&](std::string dn, std::string sdn, int l) {
+            current_display_name = dn;
+            current_safe_display_name = sdn;
+            level = l;
+        };
+
+    response.data["id"] = character_id;
+    response.data["display_name"] = current_display_name;
+    response.data["safe_display_name"] = current_safe_display_name;
+    response.data["level"] = level;
 
     if (new_token) {
         response.data["token"] = *new_token;
@@ -597,9 +659,9 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    check_test_limits(uWS::App());
-
     uWS::App app;
+
+    check_test_limits(app);
 
     if (!quiet) {
         app.get("/*", [&quiet](auto *res, auto *req) {
