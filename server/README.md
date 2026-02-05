@@ -241,7 +241,38 @@ CREATE TABLE fiefdoms (
     name TEXT NOT NULL,
     x INTEGER NOT NULL,
     y INTEGER NOT NULL,
+    peasants INTEGER NOT NULL DEFAULT 0,
+    gold INTEGER NOT NULL DEFAULT 0,
+    grain INTEGER NOT NULL DEFAULT 0,
+    wood INTEGER NOT NULL DEFAULT 0,
+    steel INTEGER NOT NULL DEFAULT 0,
+    bronze INTEGER NOT NULL DEFAULT 0,
+    stone INTEGER NOT NULL DEFAULT 0,
+    leather INTEGER NOT NULL DEFAULT 0,
+    mana INTEGER NOT NULL DEFAULT 0,
+    wall_count INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY(owner_id) REFERENCES characters(id)
+);
+
+CREATE TABLE fiefdom_buildings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fiefdom_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id)
+);
+
+CREATE TABLE officials (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fiefdom_id INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    portrait_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    level INTEGER NOT NULL DEFAULT 1,
+    intelligence INTEGER NOT NULL,
+    charisma INTEGER NOT NULL,
+    wisdom INTEGER NOT NULL,
+    diligence INTEGER NOT NULL,
+    FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id)
 );
 ```
 

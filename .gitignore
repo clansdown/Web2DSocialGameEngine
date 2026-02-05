@@ -57,3 +57,5 @@
 
 # Agent test database directory
 .agent_test_db/
+# Local generation statistics
+.commit/

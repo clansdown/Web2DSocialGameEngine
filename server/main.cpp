@@ -15,6 +15,7 @@
 #include "PasswordHash.hpp"
 #include "SafeNameGenerator.hpp"
 #include "init_db.hpp"
+#include "FiefdomFetcher.hpp"
 
 using json = nlohmann::json;
 
@@ -259,15 +260,31 @@ ApiResponse handleGetWorld(const json& body,
 }
 
 ApiResponse handleGetFiefdom(const json& body,
-                            const std::optional<std::string>& username,
-                            const ClientInfo& client,
-                            const std::optional<std::string>& new_token)
+                             const std::optional<std::string>& username,
+                             const ClientInfo& client,
+                             const std::optional<std::string>& new_token)
 {
     ApiResponse response;
-    response.data["message"] = "getFiefdom endpoint received";
+
+    int fiefdom_id = body.value("fiefdom_id", 0);
+    if (fiefdom_id == 0) {
+        response.error = "fiefdom_id required";
+        return response;
+    }
+
+    auto fiefdom_opt = FiefdomFetcher::fetchFiefdomById(fiefdom_id);
+    if (!fiefdom_opt.has_value()) {
+        response.error = "fiefdom not found";
+        return response;
+    }
+
+    FiefdomData& fiefdom = fiefdom_opt.value();
+    response.data = fiefdom.toJson();
+
     if (new_token) {
         response.data["token"] = *new_token;
     }
+
     return response;
 }
 
