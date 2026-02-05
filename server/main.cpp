@@ -1,6 +1,11 @@
 #include <iostream>
 #include <optional>
 #include <chrono>
+#include <chrono>
+#include <thread>
+#include <atomic>
+#include <cstdlib>
+#include <cstring>
 #include <nlohmann/json.hpp>
 #include <uWebSockets/App.h>
 #include "Database.hpp"
@@ -11,6 +16,45 @@
 #include "SafeNameGenerator.hpp"
 
 using json = nlohmann::json;
+
+std::atomic<int> g_request_count(0);
+std::atomic<bool> g_test_complete(false);
+int g_test_num_requests = 0;
+int g_test_timeout_seconds = 0;
+bool g_verbose = false;
+std::string g_db_dir = ".";
+
+void check_test_limits(uWS::App& app) {
+    if (g_test_num_requests > 0 || g_test_timeout_seconds > 0) {
+        std::thread([&app]() {
+            std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+
+            while (!g_test_complete.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+                if (g_test_num_requests > 0 && g_request_count.load() >= g_test_num_requests) {
+                    g_test_complete.store(true);
+                    std::cout << "Test complete: " << g_request_count.load() << " requests processed" << std::endl;
+                    std::quick_exit(0);
+                }
+
+                if (g_test_timeout_seconds > 0) {
+                    auto elapsed = std::chrono::steady_clock::now() - start;
+                    auto seconds = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+                    if (seconds >= g_test_timeout_seconds) {
+                        g_test_complete.store(true);
+                        std::cout << "Test complete: timeout reached after " << seconds << " seconds, " << g_request_count.load() << " requests" << std::endl;
+                        std::quick_exit(0);
+                    }
+                }
+            }
+        }).detach();
+    }
+}
+
+void increment_request_count() {
+    g_request_count++;
+}
 
 void sendJsonResponse(auto* res, const ApiResponse& response) {
     res->end(response.toJson().dump());
@@ -467,6 +511,8 @@ void handleApiRequest(auto* res, auto* req) {
                 sendJsonResponse(res, error_response);
             }
 
+            increment_request_count();
+
         } catch (const json::exception& e) {
             ApiResponse error_response;
             error_response.error = std::string("Invalid JSON: ") + e.what();
@@ -479,27 +525,103 @@ void handleApiRequest(auto* res, auto* req) {
     });
 }
 
-int main() {
-    const int port = 2290;
+void print_usage(const char* program_name) {
+    std::cout << "Usage: " << program_name << " [OPTIONS]" << std::endl;
+    std::cout << std::endl;
+    std::cout << "Options:" << std::endl;
+    std::cout << "  --db-dir PATH              Database directory (default: current)" << std::endl;
+    std::cout << "  --port PORT                Port to bind (default: 2290)" << std::endl;
+    std::cout << "  --test-num-requests N      Exit after N requests (agent test mode)" << std::endl;
+    std::cout << "  --test-timeout-seconds M    Exit after M seconds (agent test mode)" << std::endl;
+    std::cout << "  --verbose                  Enable verbose logging" << std::endl;
+    std::cout << "  --quiet                    Minimal logging" << std::endl;
+    std::cout << "  -h, --help                 Show this help message" << std::endl;
+}
+
+int main(int argc, char* argv[]) {
+    int port = 2290;
+    bool verbose = false;
+    bool quiet = false;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            print_usage(argv[0]);
+            return 0;
+        } else if (strcmp(argv[i], "--db-dir") == 0) {
+            if (i + 1 < argc) {
+                g_db_dir = argv[++i];
+            }
+        } else if (strcmp(argv[i], "--port") == 0) {
+            if (i + 1 < argc) {
+                port = std::atoi(argv[++i]);
+            }
+        } else if (strcmp(argv[i], "--test-num-requests") == 0) {
+            if (i + 1 < argc) {
+                g_test_num_requests = std::atoi(argv[++i]);
+            }
+        } else if (strcmp(argv[i], "--test-timeout-seconds") == 0) {
+            if (i + 1 < argc) {
+                g_test_timeout_seconds = std::atoi(argv[++i]);
+            }
+        } else if (strcmp(argv[i], "--verbose") == 0) {
+            verbose = true;
+        } else if (strcmp(argv[i], "--quiet") == 0) {
+            quiet = true;
+        }
+    }
+
+    if (!quiet) {
+        std::cout << "Ravenest Server initializing..." << std::endl;
+        std::cout << "Database directory: " << g_db_dir << std::endl;
+        std::cout << "Port: " << port << std::endl;
+        if (g_test_num_requests > 0 || g_test_timeout_seconds > 0) {
+            std::cout << "Test mode: enabled" << std::endl;
+        }
+    }
 
     if (!SafeNameGenerator::getInstance().initialize("config/safe_words_1.txt", "config/safe_words_2.txt")) {
         std::cerr << "Warning: Failed to load safe word lists" << std::endl;
     }
 
-    uWS::App().get("/*", [](auto *res, auto *req) {
-        res->end("Ravenest Build and Battle Server v1.0");
-    })
-    .post("/api/*", [](auto *res, auto *req) {
+    std::string game_db_path = g_db_dir + "/game.db";
+    std::string messages_db_path = g_db_dir + "/messages.db";
+
+    if (!quiet) {
+        std::cout << "Opening databases..." << std::endl;
+    }
+
+    try {
+        Database::getInstance().init(game_db_path, messages_db_path);
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to initialize databases: " << e.what() << std::endl;
+        return 1;
+    }
+
+    check_test_limits(uWS::App());
+
+    uWS::App app;
+
+    if (!quiet) {
+        app.get("/*", [&quiet](auto *res, auto *req) {
+            res->end("Ravenest Build and Battle Server v1.0");
+        });
+    }
+
+    app.post("/api/*", [](auto *res, auto *req) {
         handleApiRequest(res, req);
-    })
-    .listen(port, [port](auto *listenSocket) {
+    });
+
+    app.listen(port, [port, quiet](auto *listenSocket) {
         if (listenSocket) {
-            std::cout << "Ravenest Server listening on port " << port << std::endl;
+            if (!quiet) {
+                std::cout << "Ravenest Server listening on port " << port << std::endl;
+            }
         } else {
             std::cerr << "Failed to bind to port " << port << std::endl;
         }
-    })
-    .run();
+    });
+
+    app.run();
 
     return 0;
 }

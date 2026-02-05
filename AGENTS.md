@@ -170,6 +170,45 @@ docker build -t ravenest-server .
 docker run -p 2290:2290 ravenest-server
 ```
 
+### Testing the Server
+
+When testing or verifying the server, use the `agent_test_server.sh` script for automated testing:
+
+```bash
+./agent_test_server.sh -N 100        # Process 100 requests then exit
+./agent_test_server.sh -M 30         # Run for 30 seconds then exit
+./agent_test_server.sh -N 50 -M 60   # Exit on whichever limit reached first
+```
+
+**Script Options:**
+- `-N N`: Exit after N requests (required or use -M)
+- `-M M`: Exit after M seconds (required or use -N)
+- `-p PORT`: Port to bind (default: 3290)
+- `-l FILE`: Write logs to file
+- `-q`: Quiet mode (minimal output)
+- `-v`: Verbose mode
+- `--keep-db`: Keep `.agent_test_db/` directory after exit (default: cleanup)
+
+**Exit Codes:**
+- `0`: Success (limit reached and server exited cleanly)
+- `1`: Build failure
+- `2`: Server startup failed
+
+**Behavior:**
+- Uses `.agent_test_db/` directory for databases (automatically wiped and recreated)
+- Runs on port 3290 by default
+- Exits immediately when request or time limit is reached
+- Cuts off in-flight requests on timeout
+- Cleans up test databases automatically (use `--keep-db` to preserve)
+
+**Usage Examples:**
+- Test specific number of requests: `./agent_test_server.sh -N 50`
+- Run for fixed duration: `./agent_test_server.sh -M 60`
+- Combined limits: `./agent_test_server.sh -N 100 -M 120`
+- With logging: `./agent_test_server.sh -N 25 -l test.log`
+- Verbose debugging: `./agent_test_server.sh -N 10 -v`
+- Keep databases for inspection: `./agent_test_server.sh -N 5 --keep-db`
+
 ### Deployment Notes
 
 1. **HTTP Only**: The server listens on HTTP (port 2290). TLS/HTTPS is handled by a reverse proxy (nginx, etc.)

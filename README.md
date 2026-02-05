@@ -11,6 +11,65 @@ git clone https://github.com/clansdown/SimpleGame.git SimpleGame
 
 The SimpleGame repository is required for this project to function correctly.
 
+## Configuration Files & Docker Deployment
+
+### Required Configuration Files
+
+Create the following files in the root directory (these files are in `.gitignore`):
+
+#### `.game_name`
+Your game name used for Docker image naming.
+```
+Ravenest
+```
+
+#### `.docker_repo`
+Your Docker registry repository URL for pushing images.
+```
+ghcr.io/yourusername/ravenest-server
+```
+Alternative formats:
+- GitHub Container Registry: `ghcr.io/username/repo-name`
+- Docker Hub: `registry.hub.docker.com/username/repo-name`
+- Private registry: `registry.local:5000/repo-name`
+
+#### `.docker_creds`
+Docker registry credentials in format `username:token`.
+```
+myuser:ghp_xxxxxxxxxxxxxxxx
+```
+
+For registries:
+- **GitHub Container Registry**: Create a PAT with `write:packages` permission
+- **Docker Hub**: Create an Access Token (NOT your Docker Hub password)
+
+### Docker Registry Setup
+
+#### GitHub Container Registry
+```bash
+# Create PAT at: https://github.com/settings/tokens
+# Required scope: write:packages
+# Format: yourusername:ghp_token_here
+```
+
+#### Docker Hub
+```bash
+# Create Access Token at: https://hub.docker.com/settings/security
+# Format: yourusername:your_access_token_here
+```
+
+#### Tagging Best Practices
+
+- **Semantic versioning**: `v1.0.0`, `v1.0.1`, `v2.0.0`
+- **Branch-based**: `dev`, `staging`, `main`
+- **Date-based**: `2025-02-04`, `2025-02-04T19-09-14`
+
+Example usage:
+```bash
+./build_release.sh v1.0.0      # Pushes to myregistry/ravenest-server:v1.0.0
+./build_release.sh              # Pushes to myregistry/ravenest-server:20250204T190914
+```
+
 ## Nginx Configuration
 
 The uWebSockets server listens on HTTP only (port 2290). HTTPS termination should be handled by a reverse proxy such as nginx, with certificates managed by certbot (Let's Encrypt).
@@ -78,5 +137,72 @@ The following headers are forwarded to the uWebSockets server for client identif
 | X-Request-ID | Unique request identifier for logging/debugging |
 
 The uWebSockets server can access these headers via the HttpRequest object in endpoint handlers.
+
+## Build Scripts
+
+### Local Build (No Docker Push)
+
+```bash
+./build_server.sh
+```
+Builds server binary and Docker image locally. Saves Docker tar to `server/bin/ravenest-server.tar`. No network or authentication required.
+
+### Build and Push Release
+
+```bash
+./build_release.sh v1.0.0       # Custom tag
+./build_release.sh              # Timestamp tag
+```
+Builds server, creates Docker image, tags with version, and pushes to registry using `.docker_repo` and `.docker_creds`.
+
+## Local Testing
+
+### Interactive Testing (Human)
+
+Use `local_test_server.sh` for development and manual testing:
+
+```bash
+./local_test_server.sh                # Start on default port 2290
+./local_test_server.sh -p 8080       # Use custom port
+./local_test_server.sh -d            # Debug mode with request logs
+```
+
+The server runs in the background with status info shown. Uses databases in current directory (`game.db`, `messages.db`) - these are permanent and never cleaned up. Kill it with:
+```bash
+kill $(cat .local_test_server.pid)
+```
+
+### Automated Testing (Agent)
+
+Use `agent_test_server.sh` for CI/CD and automated agent testing:
+
+```bash
+./agent_test_server.sh -N 100        # Process 100 requests then exit
+./agent_test_server.sh -M 30         # Run for 30 seconds then exit
+./agent_test_server.sh -N 10 -M 60   # Exit on first limit reached
+./agent_test_server.sh -N 5 -l log.txt --keep-db
+```
+
+**Agent Test Options:**
+| Option | Description |
+|--------|-------------|
+| `-N N` | Exit after N requests (must be >= 1) |
+| `-M M` | Exit after M seconds (must be >= 1) |
+| `-p PORT` | Bind to port 3290 (default) or custom |
+| `-l FILE` | Write logs to file |
+| `-q` | Quiet mode |
+| `-v` | Verbose mode |
+| `--keep-db` | Keep `.agent_test_db/` directory after exit |
+
+**Exit Codes:**
+- `0` - Success
+- `1` - Build failure
+- `2` - Server startup failed
+
+**Behavior:**
+- Uses `.agent_test_db/` directory for databases (wiped and recreated each run)
+- Runs on port 3290 (or custom with `-p`)
+- Exits immediately when limit reached (cuts off in-flight requests)
+- Displays summary: total requests, time elapsed
 
 Copyright Christopher T. Lansdown, 2026 

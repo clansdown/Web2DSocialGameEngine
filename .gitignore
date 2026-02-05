@@ -42,6 +42,18 @@
 
 /server/config/*
 /server/build/
+/server/bin/
 
 # Checkout of the SimpleGame engine
 /SimpleGame/
+
+# Game configuration files (create these for your game)
+/.game_name
+/.docker_repo
+/.docker_creds
+
+# Local test server PID file
+.local_test_server.pid
+
+# Agent test database directory
+.agent_test_db/
