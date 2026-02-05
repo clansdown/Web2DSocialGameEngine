@@ -58,12 +58,15 @@ Unified /api/* handler (single handler for all endpoints)
 ```
 server/
 ├── main.cpp              # Entry point, unified handler, all endpoint implementations
+├── init_db.cpp            # Database initialization (tables + indexes)
+├── init_db.hpp            # Database initialization declarations
 ├── CMakeLists.txt        # Build configuration (FetchContent for deps)
-├── Database.hpp          # Database singleton & schema initialization
+├── Database.hpp          # Database singleton & connection management
 ├── ApiResponse.hpp       # Response structure with auth flags
 ├── AuthManager.hpp       # Token cache and SHA256 generation
 ├── ApiHandlers.hpp       # Handler types, ClientInfo, endpoint map
-└── PasswordHash.hpp      # glibc crypt() yescrypt hashing
+├── PasswordHash.hpp      # glibc crypt() yescrypt hashing
+└── SafeNameGenerator.*   # Safe display name generation
 ```
 
 ## Authentication System
@@ -206,6 +209,12 @@ Two independent SQLite databases for maximum concurrency:
 - Concurrent writes to both simultaneously
 - Separate file handles for true parallel access
 
+**Initialization:**
+- Schema creation and index management handled by `init_db.cpp`
+- `initializeGameDB()` creates tables + indexes for game.db
+- `initializeMessagesDB()` creates tables + indexes for messages.db
+- `initializeAllDatabases()` calls both for complete initialization
+
 ### game.db Schema
 
 ```sql
@@ -260,6 +269,41 @@ CREATE TABLE message_queues (
 - **HTTPS**: Handled by reverse proxy (nginx)
 - **Databases**: Created in working directory on first run
 - **Nginx config**: See project root README.md
+
+### Command Line Options
+
+| Option | Description |
+|--------|-------------|
+| `--db-dir PATH` | Database directory (default: current directory) |
+| `--port PORT` | Port to bind (default: 2290) |
+| `--init-db` | Initialize all database tables and indexes, then exit |
+| `--create-tables` | Create all database tables, then exit |
+| `--ensure-indexes` | Ensure all indexes exist, then exit |
+| `--test-num-requests N` | Exit after N requests (agent test mode) |
+| `--test-timeout-seconds M` | Exit after M seconds (agent test mode) |
+| `--verbose` | Enable verbose logging |
+| `--quiet` | Minimal logging |
+| `-h, --help` | Show help message |
+
+### Database Initialization
+
+The server uses `init_db.cpp` to manage database schema creation and index management. Three command-line modes are available:
+
+```bash
+# Initial database setup (creates tables and indexes)
+./server --init-db --db-dir /var/lib/ravenest
+
+# Create tables only (for new databases)
+./server --create-tables --db-dir /var/lib/ravenest
+
+# Ensure indexes exist (use after backup/restore)
+./server --ensure-indexes --db-dir /var/lib/ravenest
+
+# Normal server startup (auto-initializes)
+./server --port 2290 --db-dir /var/lib/ravenest
+```
+
+For normal server operation, `initializeAllDatabases()` is called automatically on startup to create tables and ensure indexes.
 
 ## Future Enhancements
 

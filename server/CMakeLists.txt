@@ -35,7 +35,7 @@ foreach(header IN LISTS UWS_HEADERS)
     execute_process(COMMAND ln -sf "${UWS_DEPS_DIR}/src/${header_name}" "${UWS_INCLUDE_DIR}/${header_name}" OUTPUT_QUIET ERROR_QUIET)
 endforeach()
 
-add_executable(server main.cpp SafeNameGenerator.cpp)
+add_executable(server main.cpp SafeNameGenerator.cpp init_db.cpp)
 
 target_include_directories(server PRIVATE
     "${sqlite_modern_cpp_SOURCE_DIR}/hdr"

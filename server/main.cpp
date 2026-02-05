@@ -14,6 +14,7 @@
 #include "ApiHandlers.hpp"
 #include "PasswordHash.hpp"
 #include "SafeNameGenerator.hpp"
+#include "init_db.hpp"
 
 using json = nlohmann::json;
 
@@ -593,6 +594,9 @@ void print_usage(const char* program_name) {
     std::cout << "Options:" << std::endl;
     std::cout << "  --db-dir PATH              Database directory (default: current)" << std::endl;
     std::cout << "  --port PORT                Port to bind (default: 2290)" << std::endl;
+    std::cout << "  --init-db                  Initialize all database tables and indexes, then exit" << std::endl;
+    std::cout << "  --create-tables            Create all database tables, then exit" << std::endl;
+    std::cout << "  --ensure-indexes           Ensure all indexes exist, then exit" << std::endl;
     std::cout << "  --test-num-requests N      Exit after N requests (agent test mode)" << std::endl;
     std::cout << "  --test-timeout-seconds M    Exit after M seconds (agent test mode)" << std::endl;
     std::cout << "  --verbose                  Enable verbose logging" << std::endl;
@@ -604,6 +608,9 @@ int main(int argc, char* argv[]) {
     int port = 2290;
     bool verbose = false;
     bool quiet = false;
+    bool init_db_mode = false;
+    bool create_tables_mode = false;
+    bool ensure_indexes_mode = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -617,6 +624,12 @@ int main(int argc, char* argv[]) {
             if (i + 1 < argc) {
                 port = std::atoi(argv[++i]);
             }
+        } else if (strcmp(argv[i], "--init-db") == 0) {
+            init_db_mode = true;
+        } else if (strcmp(argv[i], "--create-tables") == 0) {
+            create_tables_mode = true;
+        } else if (strcmp(argv[i], "--ensure-indexes") == 0) {
+            ensure_indexes_mode = true;
         } else if (strcmp(argv[i], "--test-num-requests") == 0) {
             if (i + 1 < argc) {
                 g_test_num_requests = std::atoi(argv[++i]);
@@ -656,6 +669,65 @@ int main(int argc, char* argv[]) {
         Database::getInstance().init(game_db_path, messages_db_path);
     } catch (const std::exception& e) {
         std::cerr << "Failed to initialize databases: " << e.what() << std::endl;
+        return 1;
+    }
+
+    if (init_db_mode || create_tables_mode || ensure_indexes_mode) {
+        auto& game_db = Database::getInstance().gameDB();
+        auto& messages_db = Database::getInstance().messagesDB();
+
+        if (init_db_mode) {
+            if (!quiet) {
+                std::cout << "Initializing all database tables and indexes..." << std::endl;
+            }
+            try {
+                initializeAllDatabases(game_db, messages_db);
+                if (!quiet) {
+                    std::cout << "Database initialization complete." << std::endl;
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Database initialization failed: " << e.what() << std::endl;
+                return 1;
+            }
+        } else if (create_tables_mode) {
+            if (!quiet) {
+                std::cout << "Creating all database tables..." << std::endl;
+            }
+            try {
+                initializeGameDB(game_db);
+                initializeMessagesDB(messages_db);
+                if (!quiet) {
+                    std::cout << "Tables created." << std::endl;
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Table creation failed: " << e.what() << std::endl;
+                return 1;
+            }
+        } else if (ensure_indexes_mode) {
+            if (!quiet) {
+                std::cout << "Ensuring all indexes exist..." << std::endl;
+            }
+            try {
+                ensureGameDBIndexes(game_db);
+                ensureMessagesDBIndexes(messages_db);
+                if (!quiet) {
+                    std::cout << "Indexes ensured." << std::endl;
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Index creation failed: " << e.what() << std::endl;
+                return 1;
+            }
+        }
+        return 0;
+    }
+
+    if (!quiet) {
+        std::cout << "Initializing database schemas..." << std::endl;
+    }
+    try {
+        initializeAllDatabases(Database::getInstance().gameDB(), Database::getInstance().messagesDB());
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to initialize database schemas: " << e.what() << std::endl;
         return 1;
     }
 
