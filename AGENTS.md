@@ -1,5 +1,31 @@
 # AGENTS.md
 
+## Documentation Policy
+
+When working on this project:
+
+1. **Consult component-specific README files first**:
+   - See `server/README.md` for server architecture, auth system, and design decisions
+   - Component READMEs are the primary source of architectural context
+
+2. **API documentation required for all endpoints**:
+   - Every new API endpoint MUST have a corresponding `.md` file in `api/`
+   - Document request format, response format, and error cases
+   - See existing `api/*.md` files for format reference
+
+3. **Update documentation when making changes**:
+   - Endpoint changes → update both endpoint file AND server README
+   - Authentication changes → update server README auth section
+   - Schema changes → update `server/tables/*.md` files
+   - New dependencies → update CMakeLists.txt AND dependencies list
+
+4. **Document your decisions**:
+   - Explain WHY choices were made (not just WHAT)
+   - Include tradeoff considerations for future reference
+   - Mark unimplemented features with "TODO: ..." placeholder
+
+This maintains living documentation that grows with the codebase.
+
 ## Server
 
 The server is a C++23 application built with CMake that:

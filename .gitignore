@@ -40,5 +40,8 @@
 # debug information files
 *.dwo
 
+/server/config/*
+/server/build/
+
 # Checkout of the SimpleGame engine
 /SimpleGame/

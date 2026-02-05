@@ -27,11 +27,14 @@ private:
     
     void initializeSchemas() {
         game_db << "CREATE TABLE IF NOT EXISTS users ("
-                   "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                   "username TEXT UNIQUE NOT NULL,"
-                   "password_hash TEXT NOT NULL,"
-                   "created_at INTEGER NOT NULL"
-                   ");";
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    "username TEXT UNIQUE NOT NULL,"
+                    "password_hash TEXT NOT NULL,"
+                    "created_at INTEGER NOT NULL,"
+                    "adult INTEGER NOT NULL DEFAULT 0,"
+                    "displayName TEXT,"
+                    "safeDisplayName TEXT NOT NULL"
+                    ");";
         
         game_db << "CREATE TABLE IF NOT EXISTS players ("
                    "id INTEGER PRIMARY KEY AUTOINCREMENT,"
