@@ -164,6 +164,8 @@ class ConfigValidator:
     def __init__(self) -> None:
         self.damage_types: list[str] = []
         self.issues: list[LinterIssue] = []
+        self.validated_files: list[Path] = []
+        self.all_files_present: bool = True
 
     def _add_issue(
         self,
@@ -824,19 +826,28 @@ class ConfigValidator:
         """Validate all config files in the given directory."""
         errors: list[LinterIssue] = []
         warnings: list[LinterIssue] = []
+        self.validated_files = []
 
         damage_types_file: Path = config_dir / "damage_types.json"
         player_combatants_file: Path = config_dir / "player_combatants.json"
         enemy_combatants_file: Path = config_dir / "enemy_combatants.json"
         buildings_file: Path = config_dir / "fiefdom_building_types.json"
 
-        for file in [damage_types_file, player_combatants_file, enemy_combatants_file, buildings_file]:
+        files_to_validate: list[tuple[Path, str, bool]] = [
+            (damage_types_file, "damage_types.json", True),
+            (player_combatants_file, "player_combatants.json", False),
+            (enemy_combatants_file, "enemy_combatants.json", False),
+            (buildings_file, "fiefdom_building_types.json", False),
+        ]
+
+        for file, name, is_player in files_to_validate:
             if not file.exists():
                 self._add_issue(
                     file, 1, None,
                     f"Config file not found",
                     Severity.ERROR
                 )
+                self.all_files_present = False
                 continue
 
             try:
@@ -853,6 +864,8 @@ class ConfigValidator:
                 self.validate_combatants(file, content, is_player=False)
             elif file == buildings_file:
                 self.validate_buildings(file, content)
+
+            self.validated_files.append(file)
 
         for issue in self.issues:
             if issue.severity == Severity.ERROR:
@@ -876,6 +889,7 @@ Examples:
   ./tools/check_configs.py              # Show errors and warnings
   ./tools/check_configs.py --no-warnings  # Show errors only
   ./tools/check_configs.py -h           # Show this help
+  ./tools/check_configs.py --verbose    # Show validated files on success
 
 Exit codes:
   0: All configs valid (no errors)
@@ -887,6 +901,11 @@ Exit codes:
         "--no-warnings", "-w",
         action="store_true",
         help="Suppress warnings, only show errors"
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Show list of validated files on success"
     )
     parser.add_argument(
         "--config-dir", "-c",
@@ -929,10 +948,24 @@ def main() -> Literal[0, 1]:
     error_count: int = len(errors)
     warning_count: int = len(warnings) if not args.no_warnings else 0
 
-    if error_count > 0 or warning_count > 0:
+    if error_count > 0:
+        print(f"Summary: {error_count} error(s), {warning_count} warning(s)", file=sys.stderr)
+        return 1
+
+    if warning_count > 0:
         print(f"Summary: {error_count} error(s), {warning_count} warning(s)", file=sys.stderr)
 
-    return 1 if errors else 0
+    if not validator.all_files_present:
+        print(f"Summary: {error_count} error(s), {warning_count} warning(s)", file=sys.stderr)
+        return 1
+
+    print("All configs present and valid ✓")
+
+    if args.verbose:
+        for file in validator.validated_files:
+            print(f"  - {file.name}")
+
+    return 0
 
 
 if __name__ == "__main__":
