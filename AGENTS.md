@@ -250,3 +250,56 @@ Detailed API documentation is provided in the `api/` directory:
 - Each API endpoint has its own corresponding `.md` file
 - Complete request/response examples included
 - Error codes and edge cases documented separately
+
+## Config Linting
+
+### `tools/check_configs.py`
+
+Validates all JSON configuration files against their schema rules. Written in Python 3.13 with full static type annotations.
+
+**Usage:**
+```bash
+./tools/check_configs.py              # Show errors and warnings
+./tools/check_configs.py --no-warnings  # Show errors only
+./tools/check_configs.py -h           # Show help
+```
+
+**Options:**
+- `--no-warnings, -w`: Suppress warnings, only show errors
+- `--config-dir, -c`: Directory containing config files (default: `server/config`)
+
+**Exit Codes:**
+- `0`: All configs valid (no errors found)
+- `1`: Errors found (warnings return 0)
+
+**What It Validates:**
+- JSON syntax with helpful line numbers
+- Required fields for each config type
+- Field type validation (integers for levels, numbers for costs, etc.)
+- Value range validation (max_level >= 1, positive speeds, etc.)
+- Cross-reference validation (damage types must be defined in damage_types.json)
+- Naming convention suggestions (lowercase snake_case IDs)
+- Duplicate ID detection
+- Missing required damage types (melee, ranged, magical)
+
+**Config Files Validated:**
+- `server/config/damage_types.json` - Damage type definitions
+- `server/config/player_combatants.json` - Player unit definitions
+- `server/config/enemy_combatants.json` - Enemy unit definitions
+- `server/config/fiefdom_building_types.json` - Building type definitions
+
+## Config File Changes Rule
+
+**When any JSON config file is modified:**
+
+1. Run `./tools/check_configs.py` to verify validity before committing
+2. If errors exist, fix them before proceeding
+3. Update the corresponding documentation in `server/docs/`:
+   - `fiefdom_building_types.json` → `server/docs/fiefdom_building_types.md`
+   - `damage_types.json` or combatant files → `server/docs/combat_system.md`
+4. Update AGENTS.md if the change affects config structure or validation rules
+
+This ensures:
+- Config files remain syntactically valid
+- Documentation stays synchronized with actual config structure
+- The linter accurately reflects validation requirements
