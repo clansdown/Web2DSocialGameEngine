@@ -47,11 +47,6 @@ interface FiefdomBuildingType {
 
     // --- Construction ---
     construction_times: number[];       // Seconds per level (index = level)
-    construction_images: string[];      // Filenames for construction animation
-
-    // --- Visual Assets (client-side) ---
-    idle_images: string[];             // Filenames for idle animation loop
-    harvest_images?: string[];          // Filenames for harvest animation
 }
 ```
 
@@ -90,14 +85,6 @@ Cost arrays specify the resource cost per building level. Index corresponds to l
 | Field | Type | Description |
 |-------|------|-------------|
 | `construction_times` | number[] | Seconds required for construction at each level |
-| `construction_images` | string[] | Filenames for construction animation frames |
-
-### Visual Asset Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `idle_images` | string[] | Filenames for idle animation loop (client renders) |
-| `harvest_images` | string[] | Filenames for harvest animation (optional, client renders) |
 
 ## Extrapolation Rules
 
@@ -161,9 +148,33 @@ If a field is not specified, the following defaults apply:
 | Field | Default |
 |-------|---------|
 | `can_build_outside_wall` | `false` |
-| `harvest_images` | `[]` (empty array) |
 | Any `ResourceProduction` field | All four properties default to `0` |
 | Any `*_cost` array | `[]` (empty array, free) |
+
+## Image Auto-Detection
+
+Building images are auto-detected from directory structure:
+
+```
+server/images/buildings/{building_id}/
+    construction/1.png, 2.png, ...  # required (non-empty)
+    idle/1.png, 2.png, ...           # required (non-empty)
+    harvest/1.png, 2.png, ...        # optional (non-empty)
+```
+
+- **construction/**: Required - shows building under construction animation
+- **idle/**: Required - shows building in idle state
+- **harvest/**: Optional - shows production/harvest animation (some buildings may not need this)
+
+**Filename Convention:**
+- Files are named with numeric prefixes: `1.png`, `2.png`, `3.png`, etc.
+- Server walks this directory at startup to auto-detect available images
+- No image filenames need to be specified in config files
+
+**Linter Validation:**
+The `check_configs.py` tool validates the images directory:
+- **Errors:** Empty required directories
+- **Warnings:** Missing directories, empty optional directories, orphaned files
 
 ## JSON Config Structure
 
@@ -183,14 +194,7 @@ If a field is not specified, the following defaults apply:
             },
             "wood_cost": [5, 6, 7, 8, 9],
             "stone_cost": [10, 12, 14, 16, 18],
-            "construction_times": [10, 15, 20, 25, 30],
-            "construction_images": [
-                "farm_construct_1.png",
-                "farm_construct_2.png",
-                "farm_construct_3.png"
-            ],
-            "idle_images": ["farm_idle.png"],
-            "harvest_images": ["farm_harvest.png"]
+            "construction_times": [10, 15, 20, 25, 30]
         }
     }
 ]
@@ -255,9 +259,11 @@ Level 1+ represents active, producing buildings.
 ## Client-Side Notes
 
 The following fields are used by the client for visual rendering:
-- `construction_images`
-- `idle_images`
-- `harvest_images`
 - `width` and `height` (for grid placement)
 
-The server does not process animations but passes these fields to clients for rendering.
+Images are auto-detected from `server/images/buildings/{building_id}/` directory structure:
+- `construction/` for construction animation
+- `idle/` for idle animation
+- `harvest/` for production animation (optional)
+
+The server walks the images directory at startup - no image paths in config.

@@ -287,6 +287,12 @@ Validates all JSON configuration files against their schema rules. Written in Py
 - `server/config/player_combatants.json` - Player unit definitions
 - `server/config/enemy_combatants.json` - Enemy unit definitions
 - `server/config/fiefdom_building_types.json` - Building type definitions
+- `server/config/heroes.json` - Hero definitions with equipment, skills, and status effects
+
+**Image Directory Validation:**
+- `server/images/` - Game images (auto-detected from directory structure)
+- Linter validates: required directories exist and are non-empty, file naming convention
+- See README.md "Images" section for directory structure specification
 
 ## Config File Changes Rule
 
@@ -297,9 +303,15 @@ Validates all JSON configuration files against their schema rules. Written in Py
 3. Update the corresponding documentation in `server/docs/`:
    - `fiefdom_building_types.json` → `server/docs/fiefdom_building_types.md`
    - `damage_types.json` or combatant files → `server/docs/combat_system.md`
+   - `heroes.json` → `server/docs/heroes.md`
 4. Update AGENTS.md if the change affects config structure or validation rules
+5. **Image directory updates required:** If adding new combatants, buildings, or heroes:
+   - Create required image subdirectories: `images/{type}/{id}/{subtype}/`
+   - Add at least one image file (1.png, etc.) to each required subdirectory
+   - Linter will warn if required directories are missing or empty
 
 This ensures:
 - Config files remain syntactically valid
 - Documentation stays synchronized with actual config structure
 - The linter accurately reflects validation requirements
+- Images directory matches config changes

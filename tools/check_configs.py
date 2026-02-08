@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import dataclass
 from enum import Enum
@@ -134,11 +135,47 @@ class BuildingTypedDict(TypedDict, total=False):
     mana_cost: list[float]
 
 
+# Type definitions for hero configs
+class HeroEquipmentTypedDict(TypedDict, total=False):
+    """Equipment slots configuration."""
+    slots: list[int]
+    max: int
+
+
+class HeroSkillTypedDict(TypedDict, total=False):
+    """Hero skill definition."""
+    name: str
+    damage: list[int]
+    damage_max: int
+    defense: list[int]
+    defense_max: int
+    healing: list[int]
+    healing_max: int
+
+
+class HeroStatusEffectTypedDict(TypedDict, total=False):
+    """Hero status effect definition."""
+    name: str
+    type: str
+    effect: list[int]
+    max: int
+
+
+class HeroTypedDict(TypedDict, total=False):
+    """Hero definition."""
+    name: str
+    max_level: int
+    equipment: dict[str, HeroEquipmentTypedDict]
+    skills: dict[str, HeroSkillTypedDict]
+    status_effects: dict[str, HeroStatusEffectTypedDict]
+
+
 # Type aliases for parsed JSON data structures
 DamageTypesJson: TypeAlias = list[str]
 CombatantsJson: TypeAlias = dict[str, dict[str, Any]]
 BuildingsJson: TypeAlias = list[dict[str, Any]]
-JsonDataType: TypeAlias = DamageTypesJson | CombatantsJson | BuildingsJson | None
+HeroesJson: TypeAlias = dict[str, dict[str, Any]]
+JsonDataType: TypeAlias = DamageTypesJson | CombatantsJson | BuildingsJson | HeroesJson | None
 
 
 # Valid field sets - use Final for constants
@@ -156,6 +193,9 @@ VALID_BUILDING_COST_FIELDS: Final[set[str]] = {
     "gold_cost", "grain_cost", "wood_cost", "steel_cost", "bronze_cost",
     "stone_cost", "leather_cost", "mana_cost"
 }
+VALID_STATUS_EFFECT_TYPES: Final[set[str]] = {"stun", "mute", "confuse"}
+VALID_HERO_SKILL_FIELDS: Final[set[str]] = {"damage", "defense", "healing"}
+VALID_HERO_SKILL_MAX_FIELDS: Final[set[str]] = {"damage_max", "defense_max", "healing_max"}
 
 
 class ConfigValidator:
@@ -166,6 +206,11 @@ class ConfigValidator:
         self.issues: list[LinterIssue] = []
         self.validated_files: list[Path] = []
         self.all_files_present: bool = True
+        # Track IDs for image validation
+        self.validated_combatant_ids: set[str] = set()
+        self.validated_building_ids: set[str] = set()
+        self.validated_hero_ids: set[str] = set()
+        self.hero_skills: dict[str, set[str]] = {}  # hero_id -> skill_ids
 
     def _add_issue(
         self,
@@ -527,6 +572,9 @@ class ConfigValidator:
             if not self._validate_combatant(file, content, combatant_id, combatant_data):
                 valid = False
 
+        # Track IDs for image validation
+        self.validated_combatant_ids.update(seen_ids)
+
         return valid
 
     def _building_id_is_valid(self, building_id: str, line: int, file: Path) -> bool:
@@ -700,7 +748,7 @@ class ConfigValidator:
         data: dict[str, Any]
     ) -> None:
         """Validate a single building definition."""
-        required_fields: list[str] = ["width", "height", "max_level", "construction_times", "construction_images", "idle_images"]
+        required_fields: list[str] = ["width", "height", "max_level", "construction_times"]
 
         for field in required_fields:
             if field not in data:
@@ -754,10 +802,6 @@ class ConfigValidator:
         self._validate_number_array(file, content, building_id, data, "stone_cost")
         self._validate_number_array(file, content, building_id, data, "leather_cost")
         self._validate_number_array(file, content, building_id, data, "mana_cost")
-
-        self._validate_image_array(file, content, building_id, data, "construction_images", required=True)
-        self._validate_image_array(file, content, building_id, data, "idle_images", required=True)
-        self._validate_image_array(file, content, building_id, data, "harvest_images", required=False)
 
         for resource in VALID_BUILDING_PRODUCTION_FIELDS:
             self._validate_resource_production(file, content, building_id, data, resource)
@@ -816,7 +860,647 @@ class ConfigValidator:
 
                 self._validate_building(file, content, building_id, building_data)
 
+        # Track IDs for image validation
+        self.validated_building_ids.update(seen_ids)
+
         return valid
+
+    def _hero_id_is_valid(self, hero_id: str, line: int, file: Path) -> bool:
+        """Check if hero ID follows naming conventions."""
+        if not hero_id:
+            self._add_issue(file, line, None, "Empty hero ID", Severity.ERROR)
+            return False
+
+        if not hero_id.replace("_", "").replace("-", "").isalnum():
+            self._add_issue(
+                file, line, None,
+                f"Hero ID '{hero_id}' contains invalid characters",
+                Severity.ERROR
+            )
+            return False
+
+        if not hero_id[0].isalpha():
+            self._add_issue(
+                file, line, None,
+                f"Hero ID '{hero_id}' should start with a letter",
+                Severity.WARN
+            )
+
+        if not hero_id.islower():
+            self._add_issue(
+                file, line, None,
+                f"Hero ID '{hero_id}' should be lowercase",
+                Severity.WARN
+            )
+
+        return True
+
+    def _validate_equipment_slots(
+        self,
+        file: Path,
+        content: str,
+        hero_id: str,
+        equipment_type: str,
+        data: dict[str, Any]
+    ) -> bool:
+        """Validate an equipment slots configuration."""
+        valid: bool = True
+
+        if "slots" not in data:
+            self._add_issue(
+                file, 1, None,
+                f"Hero '{hero_id}'.equipment.{equipment_type} is missing required field 'slots'",
+                Severity.ERROR
+            )
+            valid = False
+        else:
+            slots: Any = data["slots"]
+            line: int = content[:].count('\n') + 1
+
+            if not isinstance(slots, list):
+                self._add_issue(
+                    file, line, None,
+                    f"Hero '{hero_id}'.equipment.{equipment_type}.slots must be an array",
+                    Severity.ERROR
+                )
+                valid = False
+            else:
+                for i, slot_val in enumerate(slots):
+                    if not isinstance(slot_val, int):
+                        self._add_issue(
+                            file, line, None,
+                            f"Hero '{hero_id}'.equipment.{equipment_type}.slots[{i}] must be an integer",
+                            Severity.ERROR
+                        )
+                        valid = False
+
+        if "max" not in data:
+            self._add_issue(
+                file, 1, None,
+                f"Hero '{hero_id}'.equipment.{equipment_type} is missing required field 'max'",
+                Severity.ERROR
+            )
+            valid = False
+        else:
+            max_val: Any = data["max"]
+            if not isinstance(max_val, int):
+                self._add_issue(
+                    file, 1, None,
+                    f"Hero '{hero_id}'.equipment.{equipment_type}.max must be an integer",
+                    Severity.ERROR
+                )
+                valid = False
+            elif max_val < 0:
+                self._add_issue(
+                    file, 1, None,
+                    f"Hero '{hero_id}'.equipment.{equipment_type}.max must be >= 0, got {max_val}",
+                    Severity.ERROR
+                )
+                valid = False
+
+        return valid
+
+    def _validate_skill_stats(
+        self,
+        file: Path,
+        content: str,
+        hero_id: str,
+        skill_id: str,
+        stat_name: str,
+        data: dict[str, Any]
+    ) -> bool:
+        """Validate a skill stat array (damage, defense, healing)."""
+        if stat_name not in data:
+            return True
+
+        array: Any = data[stat_name]
+        line: int = content[:].count('\n') + 1
+        valid: bool = True
+
+        if not isinstance(array, list):
+            self._add_issue(
+                file, line, None,
+                f"Hero '{hero_id}'.skills.{skill_id}.{stat_name} must be an array",
+                Severity.ERROR
+            )
+            return False
+
+        for i, val in enumerate(array):
+            if not isinstance(val, int):
+                self._add_issue(
+                    file, line, None,
+                    f"Hero '{hero_id}'.skills.{skill_id}.{stat_name}[{i}] must be an integer",
+                    Severity.ERROR
+                )
+                valid = False
+
+        return valid
+
+    def _validate_skill_max(
+        self,
+        file: Path,
+        content: str,
+        hero_id: str,
+        skill_id: str,
+        stat_name: str,
+        data: dict[str, Any]
+    ) -> None:
+        """Validate a skill max field (damage_max, defense_max, healing_max)."""
+        max_field: str = f"{stat_name}_max"
+        if max_field not in data:
+            self._add_issue(
+                file, 1, None,
+                f"Hero '{hero_id}'.skills.{skill_id} with '{stat_name}' is missing required field '{max_field}'",
+                Severity.ERROR
+            )
+            return
+
+        max_val: Any = data[max_field]
+        if not isinstance(max_val, int):
+            self._add_issue(
+                file, 1, None,
+                f"Hero '{hero_id}'.skills.{skill_id}.{max_field} must be an integer",
+                Severity.ERROR
+            )
+        elif max_val < 0:
+            self._add_issue(
+                file, 1, None,
+                f"Hero '{hero_id}'.skills.{skill_id}.{max_field} must be >= 0, got {max_val}",
+                Severity.ERROR
+            )
+
+    def _validate_skill(
+        self,
+        file: Path,
+        content: str,
+        hero_id: str,
+        skill_id: str,
+        data: dict[str, Any]
+    ) -> bool:
+        """Validate a single skill definition."""
+        valid: bool = True
+
+        if "name" not in data:
+            self._add_issue(
+                file, 1, None,
+                f"Hero '{hero_id}'.skills.{skill_id} is missing required field 'name'",
+                Severity.ERROR
+            )
+            valid = False
+        else:
+            name: Any = data["name"]
+            if not isinstance(name, str) or not name:
+                self._add_issue(
+                    file, 1, None,
+                    f"Hero '{hero_id}'.skills.{skill_id}.name must be a non-empty string",
+                    Severity.ERROR
+                )
+                valid = False
+
+        for stat in VALID_HERO_SKILL_FIELDS:
+            if not self._validate_skill_stats(file, content, hero_id, skill_id, stat, data):
+                valid = False
+
+        for stat in VALID_HERO_SKILL_FIELDS:
+            if stat in data:
+                self._validate_skill_max(file, content, hero_id, skill_id, stat, data)
+
+        return valid
+
+    def _validate_status_effect(
+        self,
+        file: Path,
+        content: str,
+        hero_id: str,
+        effect_id: str,
+        data: dict[str, Any]
+    ) -> bool:
+        """Validate a single status effect definition."""
+        valid: bool = True
+
+        if "name" not in data:
+            self._add_issue(
+                file, 1, None,
+                f"Hero '{hero_id}'.status_effects.{effect_id} is missing required field 'name'",
+                Severity.ERROR
+            )
+            valid = False
+        else:
+            name: Any = data["name"]
+            if not isinstance(name, str) or not name:
+                self._add_issue(
+                    file, 1, None,
+                    f"Hero '{hero_id}'.status_effects.{effect_id}.name must be a non-empty string",
+                    Severity.ERROR
+                )
+                valid = False
+
+        if "type" not in data:
+            self._add_issue(
+                file, 1, None,
+                f"Hero '{hero_id}'.status_effects.{effect_id} is missing required field 'type'",
+                Severity.ERROR
+            )
+            valid = False
+        else:
+            effect_type: Any = data["type"]
+            if not isinstance(effect_type, str):
+                self._add_issue(
+                    file, 1, None,
+                    f"Hero '{hero_id}'.status_effects.{effect_id}.type must be a string",
+                    Severity.ERROR
+                )
+                valid = False
+            elif effect_type not in VALID_STATUS_EFFECT_TYPES:
+                self._add_issue(
+                    file, 1, None,
+                    f"Hero '{hero_id}'.status_effects.{effect_id}.type must be one of {sorted(VALID_STATUS_EFFECT_TYPES)}, got '{effect_type}'",
+                    Severity.ERROR
+                )
+                valid = False
+
+        if "effect" not in data:
+            self._add_issue(
+                file, 1, None,
+                f"Hero '{hero_id}'.status_effects.{effect_id} is missing required field 'effect'",
+                Severity.ERROR
+            )
+            valid = False
+        else:
+            effect_array: Any = data["effect"]
+            line: int = content[:].count('\n') + 1
+
+            if not isinstance(effect_array, list):
+                self._add_issue(
+                    file, line, None,
+                    f"Hero '{hero_id}'.status_effects.{effect_id}.effect must be an array",
+                    Severity.ERROR
+                )
+                valid = False
+            else:
+                for i, val in enumerate(effect_array):
+                    if not isinstance(val, int):
+                        self._add_issue(
+                            file, line, None,
+                            f"Hero '{hero_id}'.status_effects.{effect_id}.effect[{i}] must be an integer",
+                            Severity.ERROR
+                        )
+                        valid = False
+
+        if "max" not in data:
+            self._add_issue(
+                file, 1, None,
+                f"Hero '{hero_id}'.status_effects.{effect_id} is missing required field 'max'",
+                Severity.ERROR
+            )
+            valid = False
+        else:
+            max_val: Any = data["max"]
+            if not isinstance(max_val, int):
+                self._add_issue(
+                    file, 1, None,
+                    f"Hero '{hero_id}'.status_effects.{effect_id}.max must be an integer",
+                    Severity.ERROR
+                )
+                valid = False
+            elif max_val < 0:
+                self._add_issue(
+                    file, 1, None,
+                    f"Hero '{hero_id}'.status_effects.{effect_id}.max must be >= 0, got {max_val}",
+                    Severity.ERROR
+                )
+                valid = False
+
+        return valid
+
+    def _validate_hero(
+        self,
+        file: Path,
+        content: str,
+        hero_id: str,
+        data: dict[str, Any]
+    ) -> bool:
+        """Validate a single hero definition."""
+        valid: bool = True
+
+        if "name" not in data:
+            self._add_issue(
+                file, 1, None,
+                f"Hero '{hero_id}' is missing required field 'name'",
+                Severity.ERROR
+            )
+            valid = False
+        else:
+            name: Any = data["name"]
+            if not isinstance(name, str) or not name:
+                self._add_issue(
+                    file, 1, None,
+                    f"Hero '{hero_id}'.name must be a non-empty string",
+                    Severity.ERROR
+                )
+                valid = False
+
+        if "max_level" not in data:
+            self._add_issue(
+                file, 1, None,
+                f"Hero '{hero_id}' is missing required field 'max_level'",
+                Severity.ERROR
+            )
+            valid = False
+        else:
+            max_level: Any = data["max_level"]
+            if not isinstance(max_level, int):
+                self._add_issue(
+                    file, 1, None,
+                    f"Hero '{hero_id}'.max_level must be an integer, got {type(max_level).__name__}",
+                    Severity.ERROR
+                )
+                valid = False
+            elif max_level < 1:
+                self._add_issue(
+                    file, 1, None,
+                    f"Hero '{hero_id}'.max_level must be >= 1, got {max_level}",
+                    Severity.ERROR
+                )
+                valid = False
+
+        if "equipment" in data:
+            equipment: Any = data["equipment"]
+            if not isinstance(equipment, dict):
+                self._add_issue(
+                    file, 1, None,
+                    f"Hero '{hero_id}'.equipment must be an object",
+                    Severity.ERROR
+                )
+            else:
+                for equip_type, equip_data in equipment.items():
+                    if isinstance(equip_data, dict):
+                        if not self._validate_equipment_slots(file, content, hero_id, equip_type, equip_data):
+                            valid = False
+
+        if "skills" in data:
+            skills: Any = data["skills"]
+            if not isinstance(skills, dict):
+                self._add_issue(
+                    file, 1, None,
+                    f"Hero '{hero_id}'.skills must be an object",
+                    Severity.ERROR
+                )
+            else:
+                for skill_id, skill_data in skills.items():
+                    if isinstance(skill_data, dict):
+                        if not self._validate_skill(file, content, hero_id, skill_id, skill_data):
+                            valid = False
+
+        if "status_effects" in data:
+            effects: Any = data["status_effects"]
+            if not isinstance(effects, dict):
+                self._add_issue(
+                    file, 1, None,
+                    f"Hero '{hero_id}'.status_effects must be an object",
+                    Severity.ERROR
+                )
+            else:
+                for effect_id, effect_data in effects.items():
+                    if isinstance(effect_data, dict):
+                        if not self._validate_status_effect(file, content, hero_id, effect_id, effect_data):
+                            valid = False
+
+        return valid
+
+    def validate_heroes(self, file: Path, content: str) -> bool:
+        """Validate heroes.json."""
+        data: JsonDataType = self._validate_json(content, file)
+        if data is None:
+            return False
+
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with hero definitions", Severity.ERROR)
+            return False
+
+        if not data:
+            self._add_issue(file, 1, None, "Empty heroes file", Severity.WARN)
+
+        valid: bool = True
+        seen_ids: set[str] = set()
+
+        for hero_id, hero_data in data.items():
+            line: int = content[:].count('\n') + 1
+
+            if hero_id in seen_ids:
+                self._add_issue(
+                    file, line, None,
+                    f"Duplicate hero ID: '{hero_id}'",
+                    Severity.ERROR
+                )
+                valid = False
+                continue
+
+            seen_ids.add(hero_id)
+            self._hero_id_is_valid(hero_id, line, file)
+
+            if not isinstance(hero_data, dict):
+                self._add_issue(
+                    file, line, None,
+                    f"Hero '{hero_id}' must be an object",
+                    Severity.ERROR
+                )
+                valid = False
+                continue
+
+            # Track skills for this hero
+            if "skills" in hero_data and isinstance(hero_data["skills"], dict):
+                skill_ids: set[str] = set(hero_data["skills"].keys())
+                self.hero_skills[hero_id] = skill_ids
+
+            if not self._validate_hero(file, content, hero_id, hero_data):
+                valid = False
+
+        # Track IDs for image validation
+        self.validated_hero_ids.update(seen_ids)
+
+        return valid
+
+    def _validate_image_file_numbering(self, dir_path: Path) -> list[str]:
+        """Validate that files in directory follow numeric naming convention."""
+        valid_extensions = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
+        invalid_files: list[str] = []
+
+        if not dir_path.exists():
+            return invalid_files
+
+        for file_path in dir_path.iterdir():
+            if file_path.is_file():
+                ext = file_path.suffix.lower()
+                name = file_path.stem
+                if ext not in valid_extensions:
+                    invalid_files.append(f"{file_path.name} (invalid extension)")
+                elif not name.isdigit():
+                    invalid_files.append(f"{file_path.name} (non-numeric name)")
+                elif int(name) < 1:
+                    invalid_files.append(f"{file_path.name} (must be >= 1)")
+
+        return invalid_files
+
+    def _get_expected_image_dirs(self) -> tuple[set[tuple], set[tuple]]:
+        """Return sets of (type, id, subtype) tuples for expected and optional directories."""
+        required: set[tuple] = set()
+        optional: set[tuple] = set()
+
+        # Combatants: idle, attack, defend, die (all required)
+        for combatant_id in self.validated_combatant_ids:
+            required.add(("combatants", combatant_id, "idle"))
+            required.add(("combatants", combatant_id, "attack"))
+            required.add(("combatants", combatant_id, "defend"))
+            required.add(("combatants", combatant_id, "die"))
+
+        # Buildings: construction, idle (required), harvest (optional)
+        for building_id in self.validated_building_ids:
+            required.add(("buildings", building_id, "construction"))
+            required.add(("buildings", building_id, "idle"))
+            optional.add(("buildings", building_id, "harvest"))
+
+        # Heroes: idle, attack (required)
+        for hero_id in self.validated_hero_ids:
+            required.add(("heroes", hero_id, "idle"))
+            required.add(("heroes", hero_id, "attack"))
+
+        # Hero skills: each skill needs its own directory for icons
+        for hero_id, skill_ids in self.hero_skills.items():
+            for skill_id in skill_ids:
+                required.add(("heroes", hero_id, skill_id))
+
+        return required, optional
+
+    def validate_images_directory(self, images_dir: Path) -> None:
+        """Validate the images directory structure against config files."""
+        if not images_dir.exists():
+            return
+
+        # Build sets of expected directories
+        expected_required, expected_optional = self._get_expected_image_dirs()
+        expected_all = expected_required | expected_optional
+
+        # Walk images directory and build set of found directories
+        found_dirs: set[tuple] = set()
+
+        for root, dirs, files in os.walk(images_dir):
+            root_path = Path(root)
+            relative_parts = root_path.relative_to(images_dir).parts
+
+            if len(relative_parts) >= 3:
+                img_type = relative_parts[0]
+                item_id = relative_parts[1]
+                subtype = relative_parts[2]
+                found_dirs.add((img_type, item_id, subtype))
+            elif len(relative_parts) == 2:
+                img_type = relative_parts[0]
+                item_id = relative_parts[1]
+                self._add_issue(
+                    images_dir, 1, None,
+                    f"Orphaned images directory: {root_path.relative_to(images_dir)}/",
+                    Severity.WARN
+                )
+
+        # Check for missing required directories
+        for dir_tuple in expected_required:
+            if dir_tuple not in found_dirs:
+                type_name, item_id, subtype = dir_tuple
+                self._add_issue(
+                    images_dir, 1, None,
+                    f"Missing required images directory: images/{type_name}/{item_id}/{subtype}/",
+                    Severity.WARN
+                )
+
+        # Check for orphaned directories
+        for dir_tuple in found_dirs:
+            if dir_tuple not in expected_all:
+                type_name, item_id, subtype = dir_tuple
+                self._add_issue(
+                    images_dir, 1, None,
+                    f"Orphaned images directory: images/{type_name}/{item_id}/{subtype}/ (no matching config)",
+                    Severity.WARN
+                )
+
+        # Validate each found directory
+        for dir_tuple in found_dirs:
+            type_name, item_id, subtype = dir_tuple
+            dir_path = images_dir / type_name / item_id / subtype
+
+            if not dir_path.exists():
+                continue
+
+            # Check if directory is empty
+            has_files = any(f.is_file() for f in dir_path.iterdir())
+
+            if not has_files:
+                if dir_tuple in expected_required:
+                    self._add_issue(
+                        dir_path, 1, None,
+                        f"Empty required directory: images/{type_name}/{item_id}/{subtype}/",
+                        Severity.ERROR
+                    )
+                elif dir_tuple in expected_optional:
+                    self._add_issue(
+                        dir_path, 1, None,
+                        f"Empty optional directory: images/{type_name}/{item_id}/{subtype}/",
+                        Severity.WARN
+                    )
+                else:
+                    self._add_issue(
+                        dir_path, 1, None,
+                        f"Empty orphaned directory: images/{type_name}/{item_id}/{subtype}/",
+                        Severity.WARN
+                    )
+            else:
+                # Validate file naming
+                invalid_files = self._validate_image_file_numbering(dir_path)
+                for invalid_file in invalid_files:
+                    self._add_issue(
+                        dir_path, 1, None,
+                        f"Invalid filename in images/{type_name}/{item_id}/{subtype}/: {invalid_file}",
+                        Severity.WARN
+                    )
+
+        # Check for activate/ subdirectories (optional for skills)
+        for hero_id, skill_ids in self.hero_skills.items():
+            for skill_id in skill_ids:
+                activate_path = images_dir / "heroes" / hero_id / skill_id / "activate"
+                if activate_path.exists():
+                    has_files = any(f.is_file() for f in activate_path.iterdir())
+                    if not has_files:
+                        self._add_issue(
+                            activate_path, 1, None,
+                            f"Empty optional activate/ directory: images/heroes/{hero_id}/{skill_id}/activate/",
+                            Severity.WARN
+                        )
+
+        # Check for orphaned files at directory level
+        for type_name in ["combatants", "buildings", "heroes"]:
+            type_dir = images_dir / type_name
+            if type_dir.exists():
+                for item_dir in type_dir.iterdir():
+                    if item_dir.is_dir():
+                        item_id = item_dir.name
+                        # Check if this item has a valid config
+                        if type_name == "combatants" and item_id not in self.validated_combatant_ids:
+                            self._add_issue(
+                                item_dir, 1, None,
+                                f"Orphaned images directory: images/{type_name}/{item_id}/",
+                                Severity.WARN
+                            )
+                        elif type_name == "buildings" and item_id not in self.validated_building_ids:
+                            self._add_issue(
+                                item_dir, 1, None,
+                                f"Orphaned images directory: images/{type_name}/{item_id}/",
+                                Severity.WARN
+                            )
+                        elif type_name == "heroes" and item_id not in self.validated_hero_ids:
+                            self._add_issue(
+                                item_dir, 1, None,
+                                f"Orphaned images directory: images/{type_name}/{item_id}/",
+                                Severity.WARN
+                            )
 
     def validate_all(
         self,
@@ -832,12 +1516,14 @@ class ConfigValidator:
         player_combatants_file: Path = config_dir / "player_combatants.json"
         enemy_combatants_file: Path = config_dir / "enemy_combatants.json"
         buildings_file: Path = config_dir / "fiefdom_building_types.json"
+        heroes_file: Path = config_dir / "heroes.json"
 
         files_to_validate: list[tuple[Path, str, bool]] = [
             (damage_types_file, "damage_types.json", True),
             (player_combatants_file, "player_combatants.json", False),
             (enemy_combatants_file, "enemy_combatants.json", False),
             (buildings_file, "fiefdom_building_types.json", False),
+            (heroes_file, "heroes.json", False),
         ]
 
         for file, name, is_player in files_to_validate:
@@ -864,14 +1550,27 @@ class ConfigValidator:
                 self.validate_combatants(file, content, is_player=False)
             elif file == buildings_file:
                 self.validate_buildings(file, content)
+            elif file == heroes_file:
+                self.validate_heroes(file, content)
 
             self.validated_files.append(file)
 
+        # Separate errors and warnings before image validation
         for issue in self.issues:
             if issue.severity == Severity.ERROR:
                 errors.append(issue)
             else:
                 warnings.append(issue)
+
+        # Only validate images if configs have no errors
+        if not errors:
+            images_dir = config_dir.parent / "images"
+            if images_dir.exists():
+                self.validate_images_directory(images_dir)
+
+        # Re-sort issues after image validation
+        errors = [issue for issue in self.issues if issue.severity == Severity.ERROR]
+        warnings = [issue for issue in self.issues if issue.severity == Severity.WARN]
 
         if not show_warnings:
             warnings = []

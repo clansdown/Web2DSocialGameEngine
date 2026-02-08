@@ -205,4 +205,61 @@ Use `agent_test_server.sh` for CI/CD and automated agent testing:
 - Exits immediately when limit reached (cuts off in-flight requests)
 - Displays summary: total requests, time elapsed
 
+## Images
+
+Game images are stored in `server/images/` and are not committed to version control (see `.gitignore`).
+
+### Directory Structure
+
+```
+server/images/
+    combatants/
+        {combatant_id}/
+            idle/1.png, 2.png, ...
+            attack/1.png, 2.png, ...
+            defend/1.png, 2.png, ...
+            die/1.png, 2.png, ...
+    buildings/
+        {building_id}/
+            construction/1.png, 2.png, ...
+            idle/1.png, 2.png, ...
+            harvest/1.png, 2.png, ...        # optional
+    heroes/
+        {hero_id}/
+            idle/1.png, 2.png, ...
+            attack/1.png, 2.png, ...
+            {skill_id}/1.png, 2.png, ...      # icon frames
+                activate/1.png, 2.png, ...    # optional animation
+```
+
+**Directory Pattern:** `images/[type]/[id]/[subtype]/[number].[extension]`
+
+- **Types:** `combatants`, `buildings`, `heroes`
+- **IDs:** Match config file IDs
+- **Subtypes:**
+  - `combatants`: idle, attack, defend, die (all required)
+  - `buildings`: construction, idle (required), harvest (optional)
+  - `heroes`: idle, attack (required), `{skill_id}/` (per skill, required icon frames)
+  - `{skill_id}/activate/` (optional animation subdirectory)
+- **Files:** Numeric filenames (1, 2, 3...) with extensions: `.png`, `.jpg`, `.jpeg`, `.gif`, `.svg`, `.webp`
+
+### Server Auto-Detection
+
+Server walks `server/images/` at startup to detect available images. No filenames specified in config files.
+
+### Linter Validation
+
+`check_configs.py` validates images directory after successful config parsing:
+
+- **Errors:** Empty required directories
+- **Warnings:** Empty optional directories, orphaned files/dirs, missing required directories
+- `--no-warnings` suppresses warnings
+- Skips validation if `server/images/` doesn't exist
+
+Run validation:
+```bash
+./tools/check_configs.py              # Show errors and warnings
+./tools/check_configs.py --no-warnings  # Errors only
+```
+
 Copyright Christopher T. Lansdown, 2026 

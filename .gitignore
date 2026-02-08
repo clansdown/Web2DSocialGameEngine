@@ -1,3 +1,5 @@
+/tmp/
+
 # Prerequisites
 *.d
 
@@ -43,6 +45,7 @@
 /server/config/*
 /server/build/
 /server/bin/
+/server/images/
 
 # Checkout of the SimpleGame engine
 /SimpleGame/

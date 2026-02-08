@@ -270,31 +270,33 @@ for (const auto& type : registry.getDamageTypes()) {
 }
 ```
 
-## Image Directory Structure
+## Image Auto-Detection
 
-Combatant images use a directory structure based on combatant ID:
+Combatant images are auto-detected from directory structure:
 
 ```
-assets/combatants/{combatant_id}/
-    idle/
-        frame_1.png
-        frame_2.png
-        ...
-    attack/
-        frame_1.png
-        frame_2.png
-        ...
-    defend/
-        frame_1.png
-        frame_2.png
-        ...
-    die/
-        frame_1.png
-        frame_2.png
-        ...
+server/images/combatants/{combatant_id}/
+    idle/1.png, 2.png, ...           # required (non-empty)
+    attack/1.png, 2.png, ...        # required (non-empty)
+    defend/1.png, 2.png, ...         # required (non-empty)
+    die/1.png, 2.png, ...             # required (non-empty)
 ```
 
-The base directory name `{combatant_id}` corresponds to the combatant ID in the JSON config files.
+- **idle/**: Required - shows combatant in idle/standing state
+- **attack/**: Required - shows attack animations
+- **defend/**: Required - shows defense/block animations
+- **die/**: Required - shows death/dying animations
+
+**Filename Convention:**
+- Files are named with numeric prefixes: `1.png`, `2.png`, `3.png`, etc.
+- Extensions: `.png`, `.jpg`, `.jpeg`, `.gif`, `.svg`, `.webp`
+- Server walks this directory at startup to auto-detect available images
+- No image filenames need to be specified in config files
+
+**Linter Validation:**
+The `check_configs.py` tool validates the images directory:
+- **Errors:** Empty required directories
+- **Warnings:** Missing directories, empty optional directories, orphaned files
 
 ## Default Values
 
