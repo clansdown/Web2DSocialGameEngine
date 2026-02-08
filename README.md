@@ -230,17 +230,21 @@ server/images/
             attack/1.png, 2.png, ...
             {skill_id}/1.png, 2.png, ...      # icon frames
                 activate/1.png, 2.png, ...    # optional animation
+    portraits/
+        {portrait_id}/
+            1.png, 2.png, ...                 # required
 ```
 
 **Directory Pattern:** `images/[type]/[id]/[subtype]/[number].[extension]`
 
-- **Types:** `combatants`, `buildings`, `heroes`
-- **IDs:** Match config file IDs
+- **Types:** `combatants`, `buildings`, `heroes`, `portraits`
+- **IDs:** Match config file IDs (portraits use integer IDs)
 - **Subtypes:**
   - `combatants`: idle, attack, defend, die (all required)
   - `buildings`: construction, idle (required), harvest (optional)
   - `heroes`: idle, attack (required), `{skill_id}/` (per skill, required icon frames)
   - `{skill_id}/activate/` (optional animation subdirectory)
+  - `portraits`: no subtype, files directly under `{portrait_id}/` (required, non-empty)
 - **Files:** Numeric filenames (1, 2, 3...) with extensions: `.png`, `.jpg`, `.jpeg`, `.gif`, `.svg`, `.webp`
 
 ### Server Auto-Detection

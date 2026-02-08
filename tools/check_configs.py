@@ -170,12 +170,36 @@ class HeroTypedDict(TypedDict, total=False):
     status_effects: dict[str, HeroStatusEffectTypedDict]
 
 
+# Type definitions for fiefdom officials
+class OfficialStatsTypedDict(TypedDict, total=False):
+    """Stats object for an official."""
+    intelligence: list[int]
+    intelligence_max: int
+    charisma: list[int]
+    charisma_max: int
+    wisdom: list[int]
+    wisdom_max: int
+    diligence: list[int]
+    diligence_max: int
+
+
+class FiefdomOfficialTypedDict(TypedDict, total=False):
+    """Fiefdom official template definition."""
+    name: str
+    max_level: int
+    roles: list[str]
+    stats: OfficialStatsTypedDict
+    portrait_id: int
+    description: str
+
+
 # Type aliases for parsed JSON data structures
 DamageTypesJson: TypeAlias = list[str]
 CombatantsJson: TypeAlias = dict[str, dict[str, Any]]
 BuildingsJson: TypeAlias = list[dict[str, Any]]
 HeroesJson: TypeAlias = dict[str, dict[str, Any]]
-JsonDataType: TypeAlias = DamageTypesJson | CombatantsJson | BuildingsJson | HeroesJson | None
+FiefdomOfficialsJson: TypeAlias = dict[str, dict[str, Any]]
+JsonDataType: TypeAlias = DamageTypesJson | CombatantsJson | BuildingsJson | HeroesJson | FiefdomOfficialsJson | None
 
 
 # Valid field sets - use Final for constants
@@ -196,6 +220,15 @@ VALID_BUILDING_COST_FIELDS: Final[set[str]] = {
 VALID_STATUS_EFFECT_TYPES: Final[set[str]] = {"stun", "mute", "confuse"}
 VALID_HERO_SKILL_FIELDS: Final[set[str]] = {"damage", "defense", "healing"}
 VALID_HERO_SKILL_MAX_FIELDS: Final[set[str]] = {"damage_max", "defense_max", "healing_max"}
+VALID_OFFICIAL_ROLES: Final[set[str]] = {
+    "bailiff", "wizard", "architect", "steward", "reeve", "beadle", "constable", "forester"
+}
+VALID_OFFICIAL_STAT_FIELDS: Final[set[str]] = {
+    "intelligence", "charisma", "wisdom", "diligence"
+}
+VALID_OFFICIAL_STAT_MAX_FIELDS: Final[set[str]] = {
+    "intelligence_max", "charisma_max", "wisdom_max", "diligence_max"
+}
 
 
 class ConfigValidator:
@@ -211,6 +244,8 @@ class ConfigValidator:
         self.validated_building_ids: set[str] = set()
         self.validated_hero_ids: set[str] = set()
         self.hero_skills: dict[str, set[str]] = {}  # hero_id -> skill_ids
+        self.validated_portrait_ids: set[int] = set()  # portrait_id -> image directory
+        self.validated_official_ids: set[str] = set()
 
     def _add_issue(
         self,
@@ -1321,6 +1356,304 @@ class ConfigValidator:
 
         return valid
 
+    def _official_id_is_valid(self, official_id: str, line: int, file: Path) -> bool:
+        """Check if official ID follows naming conventions."""
+        if not official_id:
+            self._add_issue(file, line, None, "Empty official ID", Severity.ERROR)
+            return False
+
+        if not official_id.replace("_", "").replace("-", "").isalnum():
+            self._add_issue(
+                file, line, None,
+                f"Official ID '{official_id}' contains invalid characters",
+                Severity.ERROR
+            )
+            return False
+
+        if not official_id[0].isalpha():
+            self._add_issue(
+                file, line, None,
+                f"Official ID '{official_id}' should start with a letter",
+                Severity.WARN
+            )
+
+        if not official_id.islower():
+            self._add_issue(
+                file, line, None,
+                f"Official ID '{official_id}' should be lowercase",
+                Severity.WARN
+            )
+
+        return True
+
+    def _validate_stat_array(
+        self,
+        file: Path,
+        content: str,
+        official_id: str,
+        stats_obj: dict[str, Any],
+        stat_name: str
+    ) -> bool:
+        """Validate a stat array field."""
+        if stat_name not in stats_obj:
+            return True
+
+        array: Any = stats_obj[stat_name]
+        line: int = content[:].count('\n') + 1
+        valid: bool = True
+
+        if not isinstance(array, list):
+            self._add_issue(
+                file, line, None,
+                f"Official '{official_id}'.stats.{stat_name} must be an array",
+                Severity.ERROR
+            )
+            return False
+
+        for i, val in enumerate(array):
+            if not isinstance(val, int):
+                self._add_issue(
+                    file, line, None,
+                    f"Official '{official_id}'.stats.{stat_name}[{i}] must be an integer",
+                    Severity.ERROR
+                )
+                valid = False
+            elif val < 0 or val > 255:
+                self._add_issue(
+                    file, line, None,
+                    f"Official '{official_id}'.stats.{stat_name}[{i}] must be 0-255, got {val}",
+                    Severity.ERROR
+                )
+                valid = False
+
+        return valid
+
+    def _validate_stat_max(
+        self,
+        file: Path,
+        content: str,
+        official_id: str,
+        stats_obj: dict[str, Any],
+        stat_name: str
+    ) -> None:
+        """Validate a stat max field."""
+        max_field: str = f"{stat_name}_max"
+        if max_field not in stats_obj:
+            self._add_issue(
+                file, 1, None,
+                f"Official '{official_id}' with '{stat_name}' is missing required field 'stats.{max_field}'",
+                Severity.ERROR
+            )
+            return
+
+        max_val: Any = stats_obj[max_field]
+        if not isinstance(max_val, int):
+            self._add_issue(
+                file, 1, None,
+                f"Official '{official_id}'.stats.{max_field} must be an integer",
+                Severity.ERROR
+            )
+        elif max_val < 0:
+            self._add_issue(
+                file, 1, None,
+                f"Official '{official_id}'.stats.{max_field} must be >= 0, got {max_val}",
+                Severity.ERROR
+            )
+
+    def _validate_official(
+        self,
+        file: Path,
+        content: str,
+        official_id: str,
+        data: dict[str, Any]
+    ) -> bool:
+        """Validate a single official definition."""
+        valid: bool = True
+
+        if "name" not in data:
+            self._add_issue(
+                file, 1, None,
+                f"Official '{official_id}' is missing required field 'name'",
+                Severity.ERROR
+            )
+            valid = False
+        else:
+            name: Any = data["name"]
+            if not isinstance(name, str) or not name:
+                self._add_issue(
+                    file, 1, None,
+                    f"Official '{official_id}'.name must be a non-empty string",
+                    Severity.ERROR
+                )
+                valid = False
+
+        if "max_level" not in data:
+            self._add_issue(
+                file, 1, None,
+                f"Official '{official_id}' is missing required field 'max_level'",
+                Severity.ERROR
+            )
+            valid = False
+        else:
+            max_level: Any = data["max_level"]
+            if not isinstance(max_level, int):
+                self._add_issue(
+                    file, 1, None,
+                    f"Official '{official_id}'.max_level must be an integer, got {type(max_level).__name__}",
+                    Severity.ERROR
+                )
+                valid = False
+            elif max_level < 1:
+                self._add_issue(
+                    file, 1, None,
+                    f"Official '{official_id}'.max_level must be >= 1, got {max_level}",
+                    Severity.ERROR
+                )
+                valid = False
+
+        if "roles" not in data:
+            self._add_issue(
+                file, 1, None,
+                f"Official '{official_id}' is missing required field 'roles'",
+                Severity.ERROR
+            )
+            valid = False
+        else:
+            roles: Any = data["roles"]
+            if not isinstance(roles, list):
+                self._add_issue(
+                    file, 1, None,
+                    f"Official '{official_id}'.roles must be an array",
+                    Severity.ERROR
+                )
+                valid = False
+            elif len(roles) == 0:
+                self._add_issue(
+                    file, 1, None,
+                    f"Official '{official_id}'.roles must have at least one role",
+                    Severity.ERROR
+                )
+                valid = False
+            else:
+                for i, role in enumerate(roles):
+                    if not isinstance(role, str):
+                        self._add_issue(
+                            file, 1, None,
+                            f"Official '{official_id}'.roles[{i}] must be a string",
+                            Severity.ERROR
+                        )
+                        valid = False
+                    elif role not in VALID_OFFICIAL_ROLES:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Official '{official_id}'.roles[{i}] must be one of {sorted(VALID_OFFICIAL_ROLES)}, got '{role}'",
+                            Severity.ERROR
+                        )
+                        valid = False
+
+        if "stats" not in data:
+            self._add_issue(
+                file, 1, None,
+                f"Official '{official_id}' is missing required field 'stats'",
+                Severity.ERROR
+            )
+            valid = False
+        else:
+            stats: Any = data["stats"]
+            if not isinstance(stats, dict):
+                self._add_issue(
+                    file, 1, None,
+                    f"Official '{official_id}'.stats must be an object",
+                    Severity.ERROR
+                )
+                valid = False
+            else:
+                # Validate each stat array
+                for stat in VALID_OFFICIAL_STAT_FIELDS:
+                    if not self._validate_stat_array(file, content, official_id, stats, stat):
+                        valid = False
+
+                # Validate each stat max
+                for stat in VALID_OFFICIAL_STAT_FIELDS:
+                    if stat in stats:
+                        self._validate_stat_max(file, content, official_id, stats, stat)
+
+        if "portrait_id" not in data:
+            self._add_issue(
+                file, 1, None,
+                f"Official '{official_id}' is missing required field 'portrait_id'",
+                Severity.ERROR
+            )
+            valid = False
+        else:
+            portrait_id: Any = data["portrait_id"]
+            if not isinstance(portrait_id, int):
+                self._add_issue(
+                    file, 1, None,
+                    f"Official '{official_id}'.portrait_id must be an integer",
+                    Severity.ERROR
+                )
+                valid = False
+            elif portrait_id < 1:
+                self._add_issue(
+                    file, 1, None,
+                    f"Official '{official_id}'.portrait_id must be >= 1, got {portrait_id}",
+                    Severity.ERROR
+                )
+                valid = False
+            else:
+                self.validated_portrait_ids.add(portrait_id)
+
+        return valid
+
+    def validate_fiefdom_officials(self, file: Path, content: str) -> bool:
+        """Validate fiefdom_officials.json."""
+        data: JsonDataType = self._validate_json(content, file)
+        if data is None:
+            return False
+
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with official definitions", Severity.ERROR)
+            return False
+
+        if not data:
+            self._add_issue(file, 1, None, "Empty fiefdom officials file", Severity.WARN)
+
+        valid: bool = True
+        seen_ids: set[str] = set()
+
+        for official_id, official_data in data.items():
+            line: int = content[:].count('\n') + 1
+
+            if official_id in seen_ids:
+                self._add_issue(
+                    file, line, None,
+                    f"Duplicate official ID: '{official_id}'",
+                    Severity.ERROR
+                )
+                valid = False
+                continue
+
+            seen_ids.add(official_id)
+            self._official_id_is_valid(official_id, line, file)
+
+            if not isinstance(official_data, dict):
+                self._add_issue(
+                    file, line, None,
+                    f"Official '{official_id}' must be an object",
+                    Severity.ERROR
+                )
+                valid = False
+                continue
+
+            if not self._validate_official(file, content, official_id, official_data):
+                valid = False
+
+        # Track IDs for validation
+        self.validated_official_ids.update(seen_ids)
+
+        return valid
+
     def _validate_image_file_numbering(self, dir_path: Path) -> list[str]:
         """Validate that files in directory follow numeric naming convention."""
         valid_extensions = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
@@ -1369,6 +1702,10 @@ class ConfigValidator:
         for hero_id, skill_ids in self.hero_skills.items():
             for skill_id in skill_ids:
                 required.add(("heroes", hero_id, skill_id))
+
+        # Portraits: required directories (portrait_id used as ID, no subtype)
+        for portrait_id in self.validated_portrait_ids:
+            required.add(("portraits", str(portrait_id), ""))
 
         return required, optional
 
@@ -1517,6 +1854,7 @@ class ConfigValidator:
         enemy_combatants_file: Path = config_dir / "enemy_combatants.json"
         buildings_file: Path = config_dir / "fiefdom_building_types.json"
         heroes_file: Path = config_dir / "heroes.json"
+        officials_file: Path = config_dir / "fiefdom_officials.json"
 
         files_to_validate: list[tuple[Path, str, bool]] = [
             (damage_types_file, "damage_types.json", True),
@@ -1524,6 +1862,7 @@ class ConfigValidator:
             (enemy_combatants_file, "enemy_combatants.json", False),
             (buildings_file, "fiefdom_building_types.json", False),
             (heroes_file, "heroes.json", False),
+            (officials_file, "fiefdom_officials.json", False),
         ]
 
         for file, name, is_player in files_to_validate:
@@ -1552,6 +1891,8 @@ class ConfigValidator:
                 self.validate_buildings(file, content)
             elif file == heroes_file:
                 self.validate_heroes(file, content)
+            elif file == officials_file:
+                self.validate_fiefdom_officials(file, content)
 
             self.validated_files.append(file)
 

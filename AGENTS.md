@@ -288,6 +288,7 @@ Validates all JSON configuration files against their schema rules. Written in Py
 - `server/config/enemy_combatants.json` - Enemy unit definitions
 - `server/config/fiefdom_building_types.json` - Building type definitions
 - `server/config/heroes.json` - Hero definitions with equipment, skills, and status effects
+- `server/config/fiefdom_officials.json` - Fiefdom official templates with stats and roles
 
 **Image Directory Validation:**
 - `server/images/` - Game images (auto-detected from directory structure)
@@ -304,9 +305,13 @@ Validates all JSON configuration files against their schema rules. Written in Py
    - `fiefdom_building_types.json` → `server/docs/fiefdom_building_types.md`
    - `damage_types.json` or combatant files → `server/docs/combat_system.md`
    - `heroes.json` → `server/docs/heroes.md`
+   - `fiefdom_officials.json` → `server/docs/fiefdom_officials.md`
 4. Update AGENTS.md if the change affects config structure or validation rules
-5. **Image directory updates required:** If adding new combatants, buildings, or heroes:
-   - Create required image subdirectories: `images/{type}/{id}/{subtype}/`
+5. **Image directory updates required:** If adding new combatants, buildings, heroes, or officials:
+   - Combatants: Create `images/combatants/{id}/idle/`, `attack/`, `defend/`, `die/` subdirectories
+   - Buildings: Create `images/buildings/{id}/construction/`, `idle/` subdirectories
+   - Heroes: Create `images/heroes/{id}/idle/`, `attack/` subdirectories and `skills/{skill_id}/` for icons
+   - Officials: Create `images/portraits/{portrait_id}/` directories with portrait images
    - Add at least one image file (1.png, etc.) to each required subdirectory
    - Linter will warn if required directories are missing or empty
 
