@@ -528,7 +528,54 @@ class ConfigValidator:
                             )
                             valid = False
 
+        self._validate_visual_description(file, combatant_id, data, "Combatant")
+
         return valid
+
+    def _validate_visual_description(
+        self,
+        file: Path,
+        entity_id: str,
+        data: dict[str, Any],
+        entity_type: str
+    ) -> None:
+        """Validate optional visual_description field for combatants, buildings, and heroes."""
+        if "visual_description" in data:
+            desc: Any = data["visual_description"]
+            if not isinstance(desc, str):
+                self._add_issue(
+                    file, 1, None,
+                    f"{entity_type} '{entity_id}'.visual_description must be a string",
+                    Severity.WARN
+                )
+            elif len(desc) > 500:
+                self._add_issue(
+                    file, 1, None,
+                    f"{entity_type} '{entity_id}'.visual_description too long (max 4096 chars, got {len(desc)})",
+                    Severity.WARN
+                )
+
+    def _validate_portrait_description(
+        self,
+        file: Path,
+        official_id: str,
+        data: dict[str, Any]
+    ) -> None:
+        """Validate optional portrait_description field for officials."""
+        if "portrait_description" in data:
+            desc: Any = data["portrait_description"]
+            if not isinstance(desc, str):
+                self._add_issue(
+                    file, 1, None,
+                    f"Official '{official_id}'.portrait_description must be a string",
+                    Severity.WARN
+                )
+            elif len(desc) > 500:
+                self._add_issue(
+                    file, 1, None,
+                    f"Official '{official_id}'.portrait_description too long (max 4096 chars, got {len(desc)})",
+                    Severity.WARN
+                )
 
     def _combatant_id_is_valid(self, combatant_id: str, line: int, file: Path) -> bool:
         """Check if combatant ID follows naming conventions."""
@@ -840,6 +887,8 @@ class ConfigValidator:
 
         for resource in VALID_BUILDING_PRODUCTION_FIELDS:
             self._validate_resource_production(file, content, building_id, data, resource)
+
+        self._validate_visual_description(file, building_id, data, "Building")
 
     def validate_buildings(self, file: Path, content: str) -> bool:
         """Validate fiefdom_building_types.json."""
@@ -1301,6 +1350,8 @@ class ConfigValidator:
                         if not self._validate_status_effect(file, content, hero_id, effect_id, effect_data):
                             valid = False
 
+        self._validate_visual_description(file, hero_id, data, "Hero")
+
         return valid
 
     def validate_heroes(self, file: Path, content: str) -> bool:
@@ -1603,6 +1654,8 @@ class ConfigValidator:
                 valid = False
             else:
                 self.validated_portrait_ids.add(portrait_id)
+
+        self._validate_portrait_description(file, official_id, data)
 
         return valid
 
