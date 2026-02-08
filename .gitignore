@@ -62,3 +62,6 @@
 .agent_test_db/
 # Local generation statistics
 .commit/
+
+# Python files
+__pycache__/
