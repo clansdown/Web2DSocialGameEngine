@@ -90,10 +90,15 @@ ApiResponse handleUpdateCharacterProfile(const nlohmann::json& body,
                                           const ClientInfo& client,
                                           const std::optional<std::string>& new_token);
 
+ApiResponse handleGetGameInfo(const nlohmann::json& body,
+                               const std::optional<std::string>& username,
+                               const ClientInfo& client,
+                               const std::optional<std::string>& new_token);
+
 inline std::unordered_map<std::string, ApiHandler>& getEndpointHandlers() {
     static std::unordered_map<std::string, ApiHandler> handlers = {
         {"login",                  handleLogin},
-        {"getCharacter",           handleGetCharacter},
+        {"getCharacter",          handleGetCharacter},
         {"Build",                  handleBuild},
         {"getWorld",               handleGetWorld},
         {"getFiefdom",             handleGetFiefdom},
@@ -101,7 +106,8 @@ inline std::unordered_map<std::string, ApiHandler>& getEndpointHandlers() {
         {"campaign",               handleCampaign},
         {"hunt",                   handleHunt},
         {"updateUserProfile",      handleUpdateUserProfile},
-        {"updateCharacterProfile", handleUpdateCharacterProfile}
+        {"updateCharacterProfile", handleUpdateCharacterProfile},
+        {"getGameInfo",            handleGetGameInfo}
     };
     return handlers;
 }

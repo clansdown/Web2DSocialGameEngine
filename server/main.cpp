@@ -16,6 +16,7 @@
 #include "SafeNameGenerator.hpp"
 #include "init_db.hpp"
 #include "FiefdomFetcher.hpp"
+#include "GameConfigCache.hpp"
 
 using json = nlohmann::json;
 
@@ -544,6 +545,28 @@ ApiResponse handleUpdateCharacterProfile(const json& body,
     return response;
 }
 
+ApiResponse handleGetGameInfo(const json& body,
+                              const std::optional<std::string>& username,
+                              const ClientInfo& client,
+                              const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+
+    auto& cache = GameConfigCache::getInstance();
+    if (!cache.isLoaded()) {
+        response.error = "Game configuration not loaded";
+        return response;
+    }
+
+    response.data = cache.getAllConfigs();
+
+    if (new_token) {
+        response.data["token"] = *new_token;
+    }
+
+    return response;
+}
+
 void handleApiRequest(auto* res, auto* req) {
     std::string buffer;
     res->onData([res, req, buffer = std::move(buffer)](std::string_view data, bool isLast) mutable {
@@ -577,6 +600,12 @@ void handleApiRequest(auto* res, auto* req) {
 
             if (endpoint == "createAccount") {
                 ApiResponse response = handleCreateAccount(body, auth_result.username, client, auth_result.new_token);
+                sendJsonResponse(res, response);
+                return;
+            }
+
+            if (endpoint == "getGameInfo") {
+                ApiResponse response = handleGetGameInfo(body, auth_result.username, client, auth_result.new_token);
                 sendJsonResponse(res, response);
                 return;
             }
@@ -673,6 +702,10 @@ int main(int argc, char* argv[]) {
 
     if (!SafeNameGenerator::getInstance().initialize("config/safe_words_1.txt", "config/safe_words_2.txt")) {
         std::cerr << "Warning: Failed to load safe word lists" << std::endl;
+    }
+
+    if (!GameConfigCache::getInstance().initialize("config")) {
+        std::cerr << "Warning: Failed to load game configuration files" << std::endl;
     }
 
     std::string game_db_path = g_db_dir + "/game.db";
