@@ -22,6 +22,8 @@ namespace {
         ensureIndex(db, "idx_fiefdoms_owner", "fiefdoms", "owner_id");
         ensureIndex(db, "idx_fiefdom_buildings_fiefdom", "fiefdom_buildings", "fiefdom_id");
         ensureIndex(db, "idx_officials_fiefdom", "officials", "fiefdom_id");
+        ensureIndex(db, "idx_fiefdom_heroes_fiefdom", "fiefdom_heroes", "fiefdom_id");
+        ensureIndex(db, "idx_stationed_combatants_fiefdom", "stationed_combatants", "fiefdom_id");
     }
 
     void ensureMessagesDBIndexes_private(sqlite::database& db) {
@@ -64,6 +66,7 @@ namespace {
             "leather INTEGER NOT NULL DEFAULT 0,"
             "mana INTEGER NOT NULL DEFAULT 0,"
             "wall_count INTEGER NOT NULL DEFAULT 0,"
+            "morale REAL NOT NULL DEFAULT 0,"
             "FOREIGN KEY(owner_id) REFERENCES characters(id)"
         );
 
@@ -71,6 +74,10 @@ namespace {
             "id INTEGER PRIMARY KEY AUTOINCREMENT,"
             "fiefdom_id INTEGER NOT NULL,"
             "name TEXT NOT NULL,"
+            "level INTEGER NOT NULL DEFAULT 0,"
+            "construction_start_ts INTEGER NOT NULL DEFAULT 0,"
+            "action_start_ts INTEGER NOT NULL DEFAULT 0,"
+            "action_tag TEXT NOT NULL DEFAULT '',"
             "FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id)"
         );
 
@@ -78,6 +85,7 @@ namespace {
             "id INTEGER PRIMARY KEY AUTOINCREMENT,"
             "fiefdom_id INTEGER NOT NULL,"
             "role TEXT NOT NULL,"
+            "template_id TEXT NOT NULL,"
             "portrait_id INTEGER NOT NULL,"
             "name TEXT NOT NULL,"
             "level INTEGER NOT NULL DEFAULT 1,"
@@ -85,6 +93,22 @@ namespace {
             "charisma INTEGER NOT NULL,"
             "wisdom INTEGER NOT NULL,"
             "diligence INTEGER NOT NULL,"
+            "FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id)"
+        );
+
+        createTable(db, "fiefdom_heroes",
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "fiefdom_id INTEGER NOT NULL,"
+            "hero_config_id TEXT NOT NULL,"
+            "level INTEGER NOT NULL DEFAULT 1,"
+            "FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id)"
+        );
+
+        createTable(db, "stationed_combatants",
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "fiefdom_id INTEGER NOT NULL,"
+            "combatant_config_id TEXT NOT NULL,"
+            "level INTEGER NOT NULL DEFAULT 1,"
             "FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id)"
         );
     }

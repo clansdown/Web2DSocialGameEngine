@@ -587,6 +587,14 @@ void handleApiRequest(auto* res, auto* req) {
                 auth_object = body["auth"];
             }
 
+            // Handle public endpoint before authentication check
+            if (endpoint == "createAccount") {
+                ApiResponse response = handleCreateAccount(body, std::nullopt, client, std::nullopt);
+                sendJsonResponse(res, response);
+                return;
+            }
+
+            // Authenticate other endpoints
             AuthResult auth_result = handleAuth(endpoint, auth_object, ip_address);
 
             if (!auth_result.isOk()) {
@@ -598,12 +606,7 @@ void handleApiRequest(auto* res, auto* req) {
                 return;
             }
 
-            if (endpoint == "createAccount") {
-                ApiResponse response = handleCreateAccount(body, auth_result.username, client, auth_result.new_token);
-                sendJsonResponse(res, response);
-                return;
-            }
-
+            // Authenticated endpoints
             if (endpoint == "getGameInfo") {
                 ApiResponse response = handleGetGameInfo(body, auth_result.username, client, auth_result.new_token);
                 sendJsonResponse(res, response);

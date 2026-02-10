@@ -21,6 +21,7 @@ CREATE TABLE fiefdoms (
     leather INTEGER NOT NULL DEFAULT 0,
     mana INTEGER NOT NULL DEFAULT 0,
     wall_count INTEGER NOT NULL DEFAULT 0,
+    morale REAL NOT NULL DEFAULT 0,
     FOREIGN KEY(owner_id) REFERENCES characters(id)
 );
 ```
@@ -44,6 +45,7 @@ CREATE TABLE fiefdoms (
 | leather | INTEGER | NOT NULL DEFAULT 0 | Crafting material |
 | mana | INTEGER | NOT NULL DEFAULT 0 | Magical resource |
 | wall_count | INTEGER | NOT NULL DEFAULT 0 | Defensive wall layers |
+| morale | REAL | NOT NULL DEFAULT 0 | Fiefdom morale score | Range: -1000 (disastrous) to 1000 (inspired). Default 0 (neutral). Affects bonuses for production, building speed, combat, etc. |
 
 ## Indexes
 
@@ -76,6 +78,7 @@ CREATE TABLE fiefdoms (
 | leather | 0 - millions | Equipment and armor |
 | mana | 0 - millions | Magic research |
 | wall_count | 0 - 100 | Defensive strength |
+| morale | -1000 to 1000 | Fiefdom morale rating |
 
 ## Usage Examples
 
@@ -84,12 +87,12 @@ Fetching complete fiefdom data:
 ```cpp
 FiefdomData fiefdom;
 db << R"(
-    SELECT owner_id, name, x, y, peasants, gold, grain, wood, steel, bronze, stone, leather, mana, wall_count
+    SELECT owner_id, name, x, y, peasants, gold, grain, wood, steel, bronze, stone, leather, mana, wall_count, morale
     FROM fiefdoms WHERE id = ?;
 )" << fiefdom_id
 >> [&](int owner_id, std::string name, int x, int y,
        int peasants, int gold, int grain, int wood, int steel,
-       int bronze, int stone, int leather, int mana, int wall_count) {
+       int bronze, int stone, int leather, int mana, int wall_count, double morale) {
     fiefdom.id = fiefdom_id;
     fiefdom.owner_id = owner_id;
     fiefdom.name = name;
@@ -105,5 +108,6 @@ db << R"(
     fiefdom.leather = leather;
     fiefdom.mana = mana;
     fiefdom.wall_count = wall_count;
+    fiefdom.morale = morale;
 };
 ```

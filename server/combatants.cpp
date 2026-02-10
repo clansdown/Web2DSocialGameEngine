@@ -37,7 +37,13 @@ bool CombatantRegistry::loadPlayerCombatants(const std::string& config_path) {
             c.id = id;
             c.name = combatant_json["name"].get<std::string>();
             c.max_level = combatant_json["max_level"].get<int>();
-            
+
+            if (combatant_json.contains("morale_boost")) {
+                for (auto& boost : combatant_json["morale_boost"]) {
+                    c.morale_boost.push_back(boost.get<double>());
+                }
+            }
+
             if (combatant_json.contains("damage")) {
                 for (auto& damage_obj : combatant_json["damage"]) {
                     DamageStats ds;
@@ -47,7 +53,7 @@ bool CombatantRegistry::loadPlayerCombatants(const std::string& config_path) {
                     c.damage.push_back(ds);
                 }
             }
-            
+
             if (combatant_json.contains("defense")) {
                 for (auto& def_obj : combatant_json["defense"]) {
                     if (def_obj.is_null()) {
@@ -61,13 +67,13 @@ bool CombatantRegistry::loadPlayerCombatants(const std::string& config_path) {
                     }
                 }
             }
-            
+
             if (combatant_json.contains("movement_speed")) {
                 for (auto& speed : combatant_json["movement_speed"]) {
                     c.movement_speed.push_back(speed.get<double>());
                 }
             }
-            
+
             if (combatant_json.contains("costs")) {
                 for (auto& cost_obj : combatant_json["costs"]) {
                     CostStats cs;
@@ -81,7 +87,7 @@ bool CombatantRegistry::loadPlayerCombatants(const std::string& config_path) {
                     c.costs.push_back(cs);
                 }
             }
-            
+
             player_combatants_[id] = std::move(c);
         }
         
@@ -107,7 +113,13 @@ bool CombatantRegistry::loadEnemyCombatants(const std::string& config_path) {
             c.id = id;
             c.name = combatant_json["name"].get<std::string>();
             c.max_level = combatant_json["max_level"].get<int>();
-            
+
+            if (combatant_json.contains("morale_boost")) {
+                for (auto& boost : combatant_json["morale_boost"]) {
+                    c.morale_boost.push_back(boost.get<double>());
+                }
+            }
+
             if (combatant_json.contains("damage")) {
                 for (auto& damage_obj : combatant_json["damage"]) {
                     DamageStats ds;
@@ -117,7 +129,7 @@ bool CombatantRegistry::loadEnemyCombatants(const std::string& config_path) {
                     c.damage.push_back(ds);
                 }
             }
-            
+
             if (combatant_json.contains("defense")) {
                 for (auto& def_obj : combatant_json["defense"]) {
                     if (def_obj.is_null()) {
@@ -131,13 +143,13 @@ bool CombatantRegistry::loadEnemyCombatants(const std::string& config_path) {
                     }
                 }
             }
-            
+
             if (combatant_json.contains("movement_speed")) {
                 for (auto& speed : combatant_json["movement_speed"]) {
                     c.movement_speed.push_back(speed.get<double>());
                 }
             }
-            
+
             if (combatant_json.contains("costs")) {
                 for (auto& cost_obj : combatant_json["costs"]) {
                     CostStats cs;
@@ -151,7 +163,7 @@ bool CombatantRegistry::loadEnemyCombatants(const std::string& config_path) {
                     c.costs.push_back(cs);
                 }
             }
-            
+
             enemy_combatants_[id] = std::move(c);
         }
         

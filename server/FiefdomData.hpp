@@ -68,6 +68,7 @@ inline std::optional<OfficialRole> roleFromString(const std::string& role_str) {
 struct OfficialData {
     int id;
     fiefdom::OfficialRole role;
+    std::string template_id;
     int portrait_id;
     std::string name;
     int level;
@@ -80,6 +81,7 @@ struct OfficialData {
         nlohmann::json json;
         json["id"] = id;
         json["role"] = fiefdom::officialRoleToString(role);
+        json["template_id"] = template_id;
         json["portrait_id"] = portrait_id;
         json["name"] = name;
         json["level"] = level;
@@ -94,11 +96,47 @@ struct OfficialData {
 struct BuildingData {
     int id;
     std::string name;
+    int level = 0;
+    int64_t construction_start_ts = 0;
+    int64_t action_start_ts = 0;
+    std::string action_tag;
 
     inline nlohmann::json toJson() const {
         nlohmann::json json;
         json["id"] = id;
         json["name"] = name;
+        json["level"] = level;
+        json["construction_start_ts"] = construction_start_ts;
+        json["action_start_ts"] = action_start_ts;
+        json["action_tag"] = action_tag;
+        return json;
+    }
+};
+
+struct FiefdomHero {
+    int id;
+    std::string hero_config_id;
+    int level;
+
+    inline nlohmann::json toJson() const {
+        nlohmann::json json;
+        json["id"] = id;
+        json["hero_config_id"] = hero_config_id;
+        json["level"] = level;
+        return json;
+    }
+};
+
+struct StationedCombatant {
+    int id;
+    std::string combatant_config_id;
+    int level;
+
+    inline nlohmann::json toJson() const {
+        nlohmann::json json;
+        json["id"] = id;
+        json["combatant_config_id"] = combatant_config_id;
+        json["level"] = level;
         return json;
     }
 };
@@ -119,8 +157,11 @@ struct FiefdomData {
     int leather;
     int mana;
     int wall_count;
+    double morale = 0.0;
     std::vector<BuildingData> buildings;
     std::vector<OfficialData> officials;
+    std::vector<FiefdomHero> heroes;
+    std::vector<StationedCombatant> stationed_combatants;
 
     inline nlohmann::json toJson() const {
         nlohmann::json json;
@@ -139,19 +180,32 @@ struct FiefdomData {
         json["leather"] = leather;
         json["mana"] = mana;
         json["wall_count"] = wall_count;
-        
+        json["morale"] = morale;
+
         nlohmann::json buildings_arr = nlohmann::json::array();
         for (const auto& b : buildings) {
             buildings_arr.push_back(b.toJson());
         }
         json["buildings"] = buildings_arr;
-        
+
         nlohmann::json officials_arr = nlohmann::json::array();
         for (const auto& o : officials) {
             officials_arr.push_back(o.toJson());
         }
         json["officials"] = officials_arr;
-        
+
+        nlohmann::json heroes_arr = nlohmann::json::array();
+        for (const auto& h : heroes) {
+            heroes_arr.push_back(h.toJson());
+        }
+        json["heroes"] = heroes_arr;
+
+        nlohmann::json combatants_arr = nlohmann::json::array();
+        for (const auto& c : stationed_combatants) {
+            combatants_arr.push_back(c.toJson());
+        }
+        json["stationed_combatants"] = combatants_arr;
+
         return json;
     }
 };

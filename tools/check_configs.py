@@ -528,6 +528,32 @@ class ConfigValidator:
                             )
                             valid = False
 
+        if "morale_boost" in data:
+            boost_array: Any = data["morale_boost"]
+            if not isinstance(boost_array, list):
+                self._add_issue(
+                    file, 1, None,
+                    f"Combatant '{combatant_id}'.morale_boost must be an array",
+                    Severity.ERROR
+                )
+                valid = False
+            else:
+                for i, boost_val in enumerate(boost_array):
+                    if not isinstance(boost_val, (int, float)):
+                        self._add_issue(
+                            file, 1, None,
+                            f"Combatant '{combatant_id}'.morale_boost[{i}] must be a number, got {type(boost_val).__name__}",
+                            Severity.ERROR
+                        )
+                        valid = False
+                    elif boost_val < 0:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Combatant '{combatant_id}'.morale_boost[{i}] must be >= 0, got {boost_val}",
+                            Severity.ERROR
+                        )
+                        valid = False
+
         self._validate_visual_description(file, combatant_id, data, "Combatant")
 
         return valid
@@ -889,6 +915,36 @@ class ConfigValidator:
             self._validate_resource_production(file, content, building_id, data, resource)
 
         self._validate_visual_description(file, building_id, data, "Building")
+
+        if "morale_boost" in data:
+            boost: Any = data["morale_boost"]
+            if not isinstance(boost, (int, float)):
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.morale_boost must be a number, got {type(boost).__name__}",
+                    Severity.ERROR
+                )
+            elif boost < 0:
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.morale_boost must be >= 0, got {boost}",
+                    Severity.ERROR
+                )
+
+        if "morale_effect_mode" in data:
+            mode: Any = data["morale_effect_mode"]
+            if not isinstance(mode, str):
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.morale_effect_mode must be a string",
+                    Severity.ERROR
+                )
+            elif mode not in {"add", "max", "multiply"}:
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.morale_effect_mode must be 'add', 'max', or 'multiply', got '{mode}'",
+                    Severity.ERROR
+                )
 
     def validate_buildings(self, file: Path, content: str) -> bool:
         """Validate fiefdom_building_types.json."""
@@ -1352,6 +1408,32 @@ class ConfigValidator:
 
         self._validate_visual_description(file, hero_id, data, "Hero")
 
+        if "morale_boost" in data:
+            boost_array: Any = data["morale_boost"]
+            if not isinstance(boost_array, list):
+                self._add_issue(
+                    file, 1, None,
+                    f"Hero '{hero_id}'.morale_boost must be an array",
+                    Severity.ERROR
+                )
+                valid = False
+            else:
+                for i, boost_val in enumerate(boost_array):
+                    if not isinstance(boost_val, (int, float)):
+                        self._add_issue(
+                            file, 1, None,
+                            f"Hero '{hero_id}'.morale_boost[{i}] must be a number, got {type(boost_val).__name__}",
+                            Severity.ERROR
+                        )
+                        valid = False
+                    elif boost_val < 0:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Hero '{hero_id}'.morale_boost[{i}] must be >= 0, got {boost_val}",
+                            Severity.ERROR
+                        )
+                        valid = False
+
         return valid
 
     def validate_heroes(self, file: Path, content: str) -> bool:
@@ -1657,6 +1739,32 @@ class ConfigValidator:
 
         self._validate_portrait_description(file, official_id, data)
 
+        if "morale_boost" in data:
+            boost_array: Any = data["morale_boost"]
+            if not isinstance(boost_array, list):
+                self._add_issue(
+                    file, 1, None,
+                    f"Official '{official_id}'.morale_boost must be an array",
+                    Severity.ERROR
+                )
+                valid = False
+            else:
+                for i, boost_val in enumerate(boost_array):
+                    if not isinstance(boost_val, (int, float)):
+                        self._add_issue(
+                            file, 1, None,
+                            f"Official '{official_id}'.morale_boost[{i}] must be a number, got {type(boost_val).__name__}",
+                            Severity.ERROR
+                        )
+                        valid = False
+                    elif boost_val < 0:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Official '{official_id}'.morale_boost[{i}] must be >= 0, got {boost_val}",
+                            Severity.ERROR
+                        )
+                        valid = False
+
         return valid
 
     def validate_fiefdom_officials(self, file: Path, content: str) -> bool:
@@ -1704,6 +1812,70 @@ class ConfigValidator:
 
         # Track IDs for validation
         self.validated_official_ids.update(seen_ids)
+
+        return valid
+
+    def validate_wall_config(self, file: Path, content: str) -> bool:
+        """Validate wall_config.json."""
+        data: JsonDataType = self._validate_json(content, file)
+        if data is None:
+            return False
+
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object for wall configuration", Severity.ERROR)
+            return False
+
+        valid: bool = True
+
+        if "min_distance" in data:
+            min_dist: Any = data["min_distance"]
+            if not isinstance(min_dist, (int, float)):
+                self._add_issue(file, 1, None, "min_distance must be a number", Severity.ERROR)
+                valid = False
+            elif min_dist < 0:
+                self._add_issue(file, 1, None, "min_distance must be >= 0", Severity.ERROR)
+                valid = False
+
+        if "max_distance" in data:
+            max_dist: Any = data["max_distance"]
+            if not isinstance(max_dist, (int, float)):
+                self._add_issue(file, 1, None, "max_distance must be a number", Severity.ERROR)
+                valid = False
+            elif max_dist < 0:
+                self._add_issue(file, 1, None, "max_distance must be >= 0", Severity.ERROR)
+                valid = False
+
+        if "max_wall_count" in data:
+            max_count: Any = data["max_wall_count"]
+            if not isinstance(max_count, int):
+                self._add_issue(file, 1, None, "max_wall_count must be an integer", Severity.ERROR)
+                valid = False
+            elif max_count < 0:
+                self._add_issue(file, 1, None, "max_wall_count must be >= 0", Severity.ERROR)
+                valid = False
+
+        if "min_distance" in data and "max_distance" in data:
+            min_dist = data["min_distance"]
+            max_dist = data["max_distance"]
+            if isinstance(min_dist, (int, float)) and isinstance(max_dist, (int, float)):
+                if min_dist >= max_dist:
+                    self._add_issue(file, 1, None, "min_distance must be less than max_distance", Severity.ERROR)
+                    valid = False
+
+        if "morale_boost" in data:
+            boost: Any = data["morale_boost"]
+            if not isinstance(boost, (int, float)):
+                self._add_issue(file, 1, None, "morale_boost must be a number", Severity.ERROR)
+                valid = False
+
+        if "morale_effect_mode" in data:
+            mode: Any = data["morale_effect_mode"]
+            if not isinstance(mode, str):
+                self._add_issue(file, 1, None, "morale_effect_mode must be a string", Severity.ERROR)
+                valid = False
+            elif mode not in {"add", "max", "multiply"}:
+                self._add_issue(file, 1, None, "morale_effect_mode must be 'add', 'max', or 'multiply'", Severity.ERROR)
+                valid = False
 
         return valid
 
@@ -1908,6 +2080,7 @@ class ConfigValidator:
         buildings_file: Path = config_dir / "fiefdom_building_types.json"
         heroes_file: Path = config_dir / "heroes.json"
         officials_file: Path = config_dir / "fiefdom_officials.json"
+        wall_config_file: Path = config_dir / "wall_config.json"
 
         files_to_validate: list[tuple[Path, str, bool]] = [
             (damage_types_file, "damage_types.json", True),
@@ -1948,6 +2121,14 @@ class ConfigValidator:
                 self.validate_fiefdom_officials(file, content)
 
             self.validated_files.append(file)
+
+        # Validate wall_config.json
+        if wall_config_file.exists():
+            try:
+                wall_content: str = wall_config_file.read_text(encoding="utf-8")
+                self.validate_wall_config(wall_config_file, wall_content)
+            except Exception as e:
+                self._add_issue(wall_config_file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
 
         # Separate errors and warnings before image validation
         for issue in self.issues:

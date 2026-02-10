@@ -48,7 +48,8 @@ struct Hero {
     std::string id;
     std::string name;
     int max_level = 1;
-    
+
+    std::vector<double> morale_boost;  // Optional: morale boost per level
     std::unordered_map<std::string, EquipmentSlots> equipment;
     std::unordered_map<std::string, HeroSkill> skills;
     std::unordered_map<std::string, HeroStatusEffect> status_effects;

@@ -21,6 +21,8 @@ struct OfficialTemplate {
     int max_level = 1;
     std::vector<std::string> eligibleRoles;
 
+    std::vector<double> morale_boost;  // Optional: morale boost per level
+
     StatArray intelligence;
     StatArray charisma;
     StatArray wisdom;

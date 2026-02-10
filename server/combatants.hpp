@@ -33,7 +33,8 @@ struct Combatant {
     std::string id;
     std::string name;
     int max_level = 1;
-    
+
+    std::vector<double> morale_boost;  // Optional: morale boost per level
     std::vector<DamageStats> damage;
     std::vector<std::optional<DefenseStats>> defense;
     std::vector<double> movement_speed;

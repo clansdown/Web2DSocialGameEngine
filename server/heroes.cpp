@@ -86,7 +86,13 @@ bool HeroRegistry::loadHeroes(const std::string& config_path) {
             hero.id = heroId;
             hero.name = heroJson["name"].get<std::string>();
             hero.max_level = heroJson["max_level"].get<int>();
-            
+
+            if (heroJson.contains("morale_boost")) {
+                for (auto& boost : heroJson["morale_boost"]) {
+                    hero.morale_boost.push_back(boost.get<double>());
+                }
+            }
+
             if (heroJson.contains("equipment")) {
                 for (auto& [equipType, equipJson] : heroJson["equipment"].items()) {
                     EquipmentSlots equip;

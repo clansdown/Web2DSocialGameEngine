@@ -114,6 +114,12 @@ bool OfficialRegistry::loadOfficials(const std::string& config_path) {
                 }
             }
 
+            if (officialJson.contains("morale_boost")) {
+                for (auto& boost : officialJson["morale_boost"]) {
+                    official.morale_boost.push_back(boost.get<double>());
+                }
+            }
+
             if (officialJson.contains("stats")) {
                 const auto& statsJson = officialJson["stats"];
                 official.intelligence = parseStatArray(statsJson, "intelligence");
