@@ -7,7 +7,13 @@
 
 namespace FiefdomFetcher {
 
-std::optional<FiefdomData> fetchFiefdomById(int fiefdom_id);
+std::optional<FiefdomData> fetchFiefdomById(
+    int fiefdom_id,
+    bool include_buildings = false,
+    bool include_officials = false,
+    bool include_heroes = false,
+    bool include_combatants = false
+);
 
 std::vector<FiefdomData> fetchFiefdomsByOwnerId(int owner_id);
 

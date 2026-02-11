@@ -6,7 +6,13 @@
 
 namespace FiefdomFetcher {
 
-std::optional<FiefdomData> fetchFiefdomById(int fiefdom_id) {
+std::optional<FiefdomData> fetchFiefdomById(
+    int fiefdom_id,
+    bool include_buildings,
+    bool include_officials,
+    bool include_heroes,
+    bool include_combatants
+) {
     auto& db = Database::getInstance().gameDB();
     
     FiefdomData fiefdom;
@@ -42,10 +48,21 @@ std::optional<FiefdomData> fetchFiefdomById(int fiefdom_id) {
         return std::nullopt;
     }
 
-    fiefdom.buildings = fetchFiefdomBuildings(fiefdom_id);
-    fiefdom.officials = fetchFiefdomOfficials(fiefdom_id);
-    fiefdom.heroes = fetchFiefdomHeroes(fiefdom_id);
-    fiefdom.stationed_combatants = fetchStationedCombatants(fiefdom_id);
+    if (include_buildings) {
+        fiefdom.buildings = fetchFiefdomBuildings(fiefdom_id);
+    }
+    
+    if (include_officials) {
+        fiefdom.officials = fetchFiefdomOfficials(fiefdom_id);
+    }
+    
+    if (include_heroes) {
+        fiefdom.heroes = fetchFiefdomHeroes(fiefdom_id);
+    }
+    
+    if (include_combatants) {
+        fiefdom.stationed_combatants = fetchStationedCombatants(fiefdom_id);
+    }
 
     return fiefdom;
 }

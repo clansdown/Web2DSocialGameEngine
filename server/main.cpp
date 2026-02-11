@@ -273,7 +273,18 @@ ApiResponse handleGetFiefdom(const json& body,
         return response;
     }
 
-    auto fiefdom_opt = FiefdomFetcher::fetchFiefdomById(fiefdom_id);
+    bool include_buildings = body.value("include_buildings", false);
+    bool include_officials = body.value("include_officials", false);
+    bool include_heroes = body.value("include_heroes", false);
+    bool include_combatants = body.value("include_combatants", false);
+
+    auto fiefdom_opt = FiefdomFetcher::fetchFiefdomById(
+        fiefdom_id,
+        include_buildings,
+        include_officials,
+        include_heroes,
+        include_combatants
+    );
     if (!fiefdom_opt.has_value()) {
         response.error = "fiefdom not found";
         return response;

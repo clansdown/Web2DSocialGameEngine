@@ -44,6 +44,7 @@ interface FiefdomBuildingType {
 
     // --- Optional Structural Fields ---
     can_build_outside_wall?: boolean;  // Defaults to false
+    display_name?: string;              // User-facing name (e.g., "Manor House")
 
     // --- Construction ---
     construction_times: number[];       // Seconds per level (index = level)
@@ -79,6 +80,7 @@ Cost arrays specify the resource cost per building level. Index corresponds to l
 | `height` | number | required | Building height in tiles |
 | `max_level` | number | required | Maximum level this building can attain |
 | `can_build_outside_wall` | boolean | false | Whether this building can be placed outside fiefdom walls |
+| `display_name` | string | inferred from ID | User-facing display name (e.g., "Manor House") |
 
 ### Construction Fields
 
@@ -242,6 +244,7 @@ Current building types:
 |----|------|------|-----------|------|--------------------|
 | `farm` | Farm | 2x2 | 5 | No | grain |
 | `barracks` | Barracks | 3x3 | 10 | Yes | peasants |
+| `home_base` | Manor House | 3x3 | 32 | No | none (required prerequisite) |
 | `mine` | Mine | 2x2 | 7 | No | stone, steel |
 | `sawmill` | Sawmill | 3x2 | 5 | No | wood |
 | `house` | House | 4x4 | 3 | Yes | all resources (small) |

@@ -112,6 +112,7 @@ class BuildingTypedDict(TypedDict, total=False):
     height: int
     max_level: int
     can_build_outside_wall: bool
+    display_name: str
     construction_times: list[float]
     construction_images: list[str]
     idle_images: list[str]
@@ -898,6 +899,14 @@ class ConfigValidator:
                 self._add_issue(
                     file, 1, None,
                     f"Building '{building_id}'.can_build_outside_wall must be a boolean",
+                    Severity.ERROR
+                )
+
+        if "display_name" in data:
+            if not isinstance(data["display_name"], str) or not data["display_name"]:
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.display_name must be a non-empty string",
                     Severity.ERROR
                 )
 

@@ -67,7 +67,34 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
         result.error_message = "Unknown building type: " + building_type;
         return result;
     }
-    
+
+    auto config_opt = Validation::getBuildingConfig(building_type);
+    if (!config_opt) {
+        result.status = ActionStatus::FAIL;
+        result.error_code = "invalid_config";
+        result.error_message = "Building configuration not found";
+        return result;
+    }
+
+    auto config = *config_opt;
+    std::string display_name = config.value("display_name", building_type);
+
+    if (building_type == "home_base") {
+        if (Validation::hasCompletedHomeBase(fiefdom_id)) {
+            result.status = ActionStatus::FAIL;
+            result.error_code = "home_base_exists";
+            result.error_message = "A " + display_name + " (home_base) already exists";
+            return result;
+        }
+    } else {
+        if (!Validation::hasCompletedHomeBase(fiefdom_id)) {
+            result.status = ActionStatus::FAIL;
+            result.error_code = "home_base_required";
+            result.error_message = "You must build a " + display_name + " (home_base) before other buildings";
+            return result;
+        }
+    }
+
     if (payload.contains("x") && payload.contains("y")) {
         int x = payload["x"];
         int y = payload["y"];
@@ -78,15 +105,7 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
             return result;
         }
     }
-    
-    auto config_opt = Validation::getBuildingConfig(building_type);
-    if (!config_opt) {
-        result.status = ActionStatus::FAIL;
-        result.error_code = "invalid_config";
-        result.error_message = "Building configuration not found";
-        return result;
-    }
-    
+
     result.status = ActionStatus::OK;
     result.error_message = "OK";
     return result;
@@ -405,6 +424,15 @@ std::optional<json> getBuildingConfig(const std::string& building_type) {
 
 bool canBuildBuildingHere(const std::string& building_type, int fiefdom_id, int x, int y) {
     return true;
+}
+
+bool hasCompletedHomeBase(int fiefdom_id) {
+    auto& db = Database::getInstance().gameDB();
+    int count = 0;
+    db << "SELECT COUNT(*) FROM fiefdom_buildings WHERE fiefdom_id = ? AND name = 'home_base' AND level > 0;"
+       << fiefdom_id
+       >> [&](int c) { count = c; };
+    return count > 0;
 }
 
 int64_t getCurrentTimestamp() {
