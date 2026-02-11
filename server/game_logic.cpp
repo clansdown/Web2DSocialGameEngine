@@ -146,8 +146,9 @@ TimeUpdateResult updateStateSince(Timestamp last_update_time, const std::string&
                };
         }
         
-        for (auto& fiefdom : fiefdoms) {
+            for (auto& fiefdom : fiefdoms) {
             fiefdom.buildings = FiefdomFetcher::fetchFiefdomBuildings(fiefdom.id);
+            fiefdom.walls = FiefdomFetcher::fetchFiefdomWalls(fiefdom.id);
             fiefdom.officials = FiefdomFetcher::fetchFiefdomOfficials(fiefdom.id);
             fiefdom.heroes = FiefdomFetcher::fetchFiefdomHeroes(fiefdom.id);
             fiefdom.stationed_combatants = FiefdomFetcher::fetchStationedCombatants(fiefdom.id);
@@ -186,6 +187,47 @@ TimeUpdateResult updateStateSince(Timestamp last_update_time, const std::string&
                                     building.level = new_level;
                                     building.construction_start_ts = 0;
                                     result.completed_trainings.push_back({building.name, new_level});
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (auto& wall : fiefdom.walls) {
+                if (wall.construction_start_ts > 0) {
+                    auto config_opt = Validation::getWallConfigByGeneration(wall.generation);
+                    if (config_opt) {
+                        auto config = *config_opt;
+                        int construction_seconds = 0;
+
+                        if (config.contains("construction_times") && config["construction_times"].is_array()) {
+                            auto times = config["construction_times"];
+                            int level = wall.level;
+                            int max_index = static_cast<int>(times.size()) - 1;
+
+                            if (level <= max_index) {
+                                construction_seconds = times[level].get<int>();
+                            } else if (max_index >= 1) {
+                                int last = times[max_index].get<int>();
+                                int prev = times[max_index - 1].get<int>();
+                                int slope = last - prev;
+                                construction_seconds = last + slope * (level - max_index);
+                            } else if (times.size() > 0) {
+                                construction_seconds = times[0].get<int>();
+                            }
+                        }
+
+                        if (construction_seconds > 0) {
+                            int64_t elapsed_seconds = result.new_timestamp - wall.construction_start_ts;
+                            if (elapsed_seconds >= construction_seconds) {
+                                int new_level = wall.level + 1;
+                                int new_hp = Validation::getWallHP(wall.generation, new_level);
+                                if (FiefdomFetcher::updateWallLevel(wall.id, new_level, new_hp, result.new_timestamp)) {
+                                    wall.level = new_level;
+                                    wall.hp = new_hp;
+                                    wall.construction_start_ts = 0;
+                                    result.completed_trainings.push_back({"wall_gen_" + std::to_string(wall.generation), new_level});
                                 }
                             }
                         }

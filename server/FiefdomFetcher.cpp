@@ -236,6 +236,83 @@ bool updateBuildingConstructionStart(int building_id, int64_t construction_start
     }
 }
 
+std::vector<WallData> fetchFiefdomWalls(int fiefdom_id) {
+    auto& db = Database::getInstance().gameDB();
+
+    std::vector<WallData> walls;
+
+    db << "SELECT id, generation, level, hp, construction_start_ts, last_updated FROM fiefdom_walls WHERE fiefdom_id = ?;"
+       << fiefdom_id
+       >> [&](int id, int generation, int level, int hp, int64_t construction_start_ts, int64_t last_updated) {
+           WallData wall;
+           wall.id = id;
+           wall.fiefdom_id = fiefdom_id;
+           wall.generation = generation;
+           wall.level = level;
+           wall.hp = hp;
+           wall.construction_start_ts = construction_start_ts;
+           wall.last_updated = last_updated;
+           walls.push_back(wall);
+       };
+
+    return walls;
+}
+
+bool createWall(int fiefdom_id, int generation, int level, int hp, int64_t construction_start_ts) {
+    auto& db = Database::getInstance().gameDB();
+
+    try {
+        db << R"(
+            INSERT INTO fiefdom_walls (fiefdom_id, generation, level, hp, construction_start_ts, last_updated)
+            VALUES (?, ?, ?, ?, ?, ?);
+        )" << fiefdom_id << generation << level << hp << construction_start_ts << construction_start_ts;
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to create wall: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool updateWallLevel(int wall_id, int new_level, int new_hp, int64_t timestamp) {
+    auto& db = Database::getInstance().gameDB();
+
+    try {
+        db << R"(
+            UPDATE fiefdom_walls
+            SET level = ?, hp = ?, construction_start_ts = ?, last_updated = ?
+            WHERE id = ?;
+        )" << new_level << new_hp << 0 << timestamp << wall_id;
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to update wall level: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool updateWallHP(int wall_id, int new_hp) {
+    auto& db = Database::getInstance().gameDB();
+
+    try {
+        db << "UPDATE fiefdom_walls SET hp = ? WHERE id = ?;" << new_hp << wall_id;
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to update wall HP: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool deleteWall(int wall_id) {
+    auto& db = Database::getInstance().gameDB();
+
+    try {
+        db << "DELETE FROM fiefdom_walls WHERE id = ?;" << wall_id;
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to delete wall: " << e.what() << std::endl;
+        return false;
+    }
+}
+
 bool createOfficial(int fiefdom_id, fiefdom::OfficialRole role, const std::string& template_id,
                     int portrait_id, const std::string& name, int level,
                     uint8_t intelligence, uint8_t charisma, uint8_t wisdom, uint8_t diligence) {

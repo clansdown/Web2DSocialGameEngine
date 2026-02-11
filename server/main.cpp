@@ -17,6 +17,9 @@
 #include "init_db.hpp"
 #include "FiefdomFetcher.hpp"
 #include "GameConfigCache.hpp"
+#include "ActionHandler.hpp"
+#include "ActionHandlers.hpp"
+#include "GridCollision.hpp"
 
 using json = nlohmann::json;
 
@@ -235,15 +238,50 @@ ApiResponse handleGetCharacter(const json& body,
 }
 
 ApiResponse handleBuild(const json& body,
-                        const std::optional<std::string>& username,
-                        const ClientInfo& client,
-                        const std::optional<std::string>& new_token)
+                         const std::optional<std::string>& username,
+                         const ClientInfo& client,
+                         const std::optional<std::string>& new_token)
 {
     ApiResponse response;
-    response.data["message"] = "Build endpoint received";
+
+    std::string action = body.value("action", "create");
+
+    ActionContext ctx;
+    ctx.request_id = std::string(client.request_id);
+    ctx.ip_address = std::string(client.real_ip);
+
+    int character_id = body.value("character_id", 0);
+    int fiefdom_id = body.value("fiefdom_id", 0);
+
+    ctx.requesting_character_id = character_id;
+    ctx.requesting_fiefdom_id = fiefdom_id;
+
+    ActionResult result;
+
+    if (action == "create") {
+        BuildActionHandler handler;
+        result = handler.validateAndExecute(body, ctx);
+    } else if (action == "demolish") {
+        DemolishActionHandler handler;
+        result = handler.validateAndExecute(body, ctx);
+    } else if (action == "move") {
+        MoveBuildingActionHandler handler;
+        result = handler.validateAndExecute(body, ctx);
+    } else {
+        response.error = "Invalid action: must be 'create', 'demolish', or 'move'";
+        return response;
+    }
+
+    if (result.status == ActionStatus::OK) {
+        response.data = result.result;
+    } else {
+        response.error = result.error_message + " (" + result.error_code + ")";
+    }
+
     if (new_token) {
         response.data["token"] = *new_token;
     }
+
     return response;
 }
 

@@ -37,12 +37,19 @@ struct BuildingDimensions {
     bool valid = false;
 };
 
+struct WallDimensions {
+    int width = 0;
+    int length = 0;
+    int thickness = 0;
+};
+
 PlacementCheck checkPlacement(
     int fiefdom_id,
     const std::string& building_type,
     int x,
     int y,
-    bool check_home_base_position = true
+    bool check_home_base_position = true,
+    int exclude_building_id = 0
 );
 
 BuildingDimensions getBuildingDimensions(const std::string& building_type);
@@ -59,6 +66,14 @@ PlacementCheck checkPlacementWithExisting(
 );
 
 int getMaxBuildingSize();
+
+WallDimensions getWallDimensions(int generation);
+
+std::optional<nlohmann::json> getWallConfigByGeneration(int generation);
+
+bool overlapsWalls(int fiefdom_id, int generation, int x, int y, int building_width, int building_height);
+
+std::vector<nlohmann::json> getOverlappingBuildings(int fiefdom_id, int generation, int x, int y, int building_width, int building_height);
 
 } // namespace GridCollision
 } // namespace GameLogic

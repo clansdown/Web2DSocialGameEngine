@@ -39,6 +39,13 @@ public:
     std::string getDescription() const override { return "Research technology"; }
 };
 
+class UpgradeActionHandler : public ActionHandler {
+public:
+    ActionResult validate(const nlohmann::json& payload, const ActionContext& ctx) override;
+    ActionResult execute(const nlohmann::json& payload, const ActionContext& ctx) override;
+    std::string getDescription() const override { return "Upgrade buildings and walls"; }
+};
+
 void registerAllActionHandlers(ActionRegistry& registry);
 
 } // namespace GameLogic

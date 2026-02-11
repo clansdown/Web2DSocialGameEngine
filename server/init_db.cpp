@@ -25,6 +25,8 @@ namespace {
         ensureIndex(db, "idx_officials_fiefdom", "officials", "fiefdom_id");
         ensureIndex(db, "idx_fiefdom_heroes_fiefdom", "fiefdom_heroes", "fiefdom_id");
         ensureIndex(db, "idx_stationed_combatants_fiefdom", "stationed_combatants", "fiefdom_id");
+        ensureIndex(db, "idx_fiefdom_walls_fiefdom", "fiefdom_walls", "fiefdom_id");
+        ensureIndex(db, "idx_fiefdom_walls_fiefdom_gen", "fiefdom_walls", "fiefdom_id, generation");
     }
 
     void ensureMessagesDBIndexes_private(sqlite::database& db) {
@@ -115,6 +117,18 @@ namespace {
             "combatant_config_id TEXT NOT NULL,"
             "level INTEGER NOT NULL DEFAULT 1,"
             "FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id)"
+        );
+
+        createTable(db, "fiefdom_walls",
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "fiefdom_id INTEGER NOT NULL,"
+            "generation INTEGER NOT NULL,"
+            "level INTEGER NOT NULL DEFAULT 1,"
+            "hp INTEGER NOT NULL DEFAULT 0,"
+            "construction_start_ts INTEGER NOT NULL DEFAULT 0,"
+            "last_updated INTEGER NOT NULL DEFAULT 0,"
+            "FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id),"
+            "UNIQUE(fiefdom_id, generation)"
         );
     }
 

@@ -39,7 +39,21 @@ namespace Validation {
     int64_t getCurrentTimestamp();
     std::optional<nlohmann::json> getWallConfig();
     bool validWallPlacement(int fiefdom_id, const nlohmann::json& payload);
-    
+    nlohmann::json calculateCumulativeCost(const std::string& building_type, int current_level);
+    bool userOwnsBuilding(int building_id, const ActionContext& ctx);
+    ActionResult refundResources(int fiefdom_id, const nlohmann::json& amounts, ActionResult& result);
+    bool deleteBuilding(int building_id);
+    bool updateBuildingPosition(int building_id, int x, int y);
+    std::optional<nlohmann::json> getWallConfig();
+    std::optional<nlohmann::json> getWallConfigByGeneration(int generation);
+    bool wallGenerationExists(int fiefdom_id, int generation);
+    bool hasWallGeneration(int fiefdom_id, int generation);
+    bool canAffordWall(int fiefdom_id, int generation, int level);
+    int getWallHP(int generation, int level);
+    double getWallMoraleBoost(int generation, int level);
+    nlohmann::json calculateWallUpgradeCost(int generation, int current_level);
+    nlohmann::json getDemolishRefund(int building_id);
+
     class TransactionGuard {
     public:
         TransactionGuard(sqlite::database& db);

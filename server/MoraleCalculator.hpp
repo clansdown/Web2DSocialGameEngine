@@ -21,9 +21,12 @@ double calculateBuildingMorale(
     const nlohmann::json& building_config
 );
 
+double calculateWallMorale(const std::vector<WallData>& walls);
+
 double calculateFiefdomMorale(
     int fiefdom_id,
     const std::vector<BuildingData>& buildings,
+    const std::vector<WallData>& walls,
     const std::vector<OfficialData>& officials,
     const std::vector<FiefdomHero>& heroes,
     const std::vector<StationedCombatant>& combatants

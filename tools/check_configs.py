@@ -1836,55 +1836,59 @@ class ConfigValidator:
 
         valid: bool = True
 
-        if "min_distance" in data:
-            min_dist: Any = data["min_distance"]
-            if not isinstance(min_dist, (int, float)):
-                self._add_issue(file, 1, None, "min_distance must be a number", Severity.ERROR)
+        if "walls" not in data:
+            self._add_issue(file, 1, None, "Missing 'walls' key", Severity.ERROR)
+            return False
+
+        walls = data["walls"]
+        if not isinstance(walls, dict):
+            self._add_issue(file, 1, None, "'walls' must be an object", Severity.ERROR)
+            return False
+
+        for gen_key, wall_data in walls.items():
+            try:
+                generation = int(gen_key)
+            except ValueError:
+                self._add_issue(file, 1, None, f"Invalid generation key: {gen_key}", Severity.ERROR)
                 valid = False
-            elif min_dist < 0:
-                self._add_issue(file, 1, None, "min_distance must be >= 0", Severity.ERROR)
+                continue
+
+            if generation < 1:
+                self._add_issue(file, 1, None, f"Generation must be >= 1, got {generation}", Severity.ERROR)
                 valid = False
 
-        if "max_distance" in data:
-            max_dist: Any = data["max_distance"]
-            if not isinstance(max_dist, (int, float)):
-                self._add_issue(file, 1, None, "max_distance must be a number", Severity.ERROR)
+            if not isinstance(wall_data, dict):
+                self._add_issue(file, 1, None, f"Wall {gen_key}: must be an object", Severity.ERROR)
                 valid = False
-            elif max_dist < 0:
-                self._add_issue(file, 1, None, "max_distance must be >= 0", Severity.ERROR)
-                valid = False
+                continue
 
-        if "max_wall_count" in data:
-            max_count: Any = data["max_wall_count"]
-            if not isinstance(max_count, int):
-                self._add_issue(file, 1, None, "max_wall_count must be an integer", Severity.ERROR)
-                valid = False
-            elif max_count < 0:
-                self._add_issue(file, 1, None, "max_wall_count must be >= 0", Severity.ERROR)
-                valid = False
-
-        if "min_distance" in data and "max_distance" in data:
-            min_dist = data["min_distance"]
-            max_dist = data["max_distance"]
-            if isinstance(min_dist, (int, float)) and isinstance(max_dist, (int, float)):
-                if min_dist >= max_dist:
-                    self._add_issue(file, 1, None, "min_distance must be less than max_distance", Severity.ERROR)
+            for field in ["width", "length", "thickness"]:
+                if field not in wall_data:
+                    self._add_issue(file, 1, None, f"Wall {gen_key}: Missing '{field}'", Severity.ERROR)
                     valid = False
+                else:
+                    val = wall_data[field]
+                    if not isinstance(val, int):
+                        self._add_issue(file, 1, None, f"Wall {gen_key}: {field} must be integer", Severity.ERROR)
+                        valid = False
+                    elif val % 2 != 0:
+                        self._add_issue(file, 1, None, f"Wall {gen_key}: {field} must be divisible by 2", Severity.ERROR)
+                        valid = False
+                    elif val <= 0:
+                        self._add_issue(file, 1, None, f"Wall {gen_key}: {field} must be positive", Severity.ERROR)
+                        valid = False
 
-        if "morale_boost" in data:
-            boost: Any = data["morale_boost"]
-            if not isinstance(boost, (int, float)):
-                self._add_issue(file, 1, None, "morale_boost must be a number", Severity.ERROR)
-                valid = False
-
-        if "morale_effect_mode" in data:
-            mode: Any = data["morale_effect_mode"]
-            if not isinstance(mode, str):
-                self._add_issue(file, 1, None, "morale_effect_mode must be a string", Severity.ERROR)
-                valid = False
-            elif mode not in {"add", "max", "multiply"}:
-                self._add_issue(file, 1, None, "morale_effect_mode must be 'add', 'max', or 'multiply'", Severity.ERROR)
-                valid = False
+            for field in ["gold_cost", "stone_cost", "hp", "morale_boost", "construction_times"]:
+                if field in wall_data:
+                    arr = wall_data[field]
+                    if not isinstance(arr, list):
+                        self._add_issue(file, 1, None, f"Wall {gen_key}: {field} must be an array", Severity.ERROR)
+                        valid = False
+                    else:
+                        for i, val in enumerate(arr):
+                            if not isinstance(val, (int, float)):
+                                self._add_issue(file, 1, None, f"Wall {gen_key}: {field}[{i}] must be a number", Severity.ERROR)
+                                valid = False
 
         return valid
 

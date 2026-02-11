@@ -119,6 +119,28 @@ struct BuildingData {
     }
 };
 
+struct WallData {
+    int id;
+    int fiefdom_id;
+    int generation;
+    int level;
+    int hp;
+    int64_t construction_start_ts = 0;
+    int64_t last_updated = 0;
+
+    inline nlohmann::json toJson() const {
+        nlohmann::json json;
+        json["id"] = id;
+        json["fiefdom_id"] = fiefdom_id;
+        json["generation"] = generation;
+        json["level"] = level;
+        json["hp"] = hp;
+        json["construction_start_ts"] = construction_start_ts;
+        json["last_updated"] = last_updated;
+        return json;
+    }
+};
+
 struct FiefdomHero {
     int id;
     std::string hero_config_id;
@@ -165,6 +187,7 @@ struct FiefdomData {
     int wall_count;
     double morale = 0.0;
     std::vector<BuildingData> buildings;
+    std::vector<WallData> walls;
     std::vector<OfficialData> officials;
     std::vector<FiefdomHero> heroes;
     std::vector<StationedCombatant> stationed_combatants;

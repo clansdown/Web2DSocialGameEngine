@@ -19,6 +19,8 @@ std::vector<FiefdomData> fetchFiefdomsByOwnerId(int owner_id);
 
 std::vector<BuildingData> fetchFiefdomBuildings(int fiefdom_id);
 
+std::vector<WallData> fetchFiefdomWalls(int fiefdom_id);
+
 std::vector<OfficialData> fetchFiefdomOfficials(int fiefdom_id);
 
 std::optional<OfficialData> fetchOfficialById(int official_id);
@@ -30,6 +32,14 @@ bool createBuilding(int fiefdom_id, const std::string& name, int level,
 bool updateBuildingLevel(int building_id, int new_level, int64_t timestamp);
 
 bool updateBuildingConstructionStart(int building_id, int64_t construction_start_ts, int64_t timestamp);
+
+bool createWall(int fiefdom_id, int generation, int level, int hp, int64_t construction_start_ts);
+
+bool updateWallLevel(int wall_id, int new_level, int new_hp, int64_t timestamp);
+
+bool updateWallHP(int wall_id, int new_hp);
+
+bool deleteWall(int wall_id);
 
 bool createOfficial(int fiefdom_id, fiefdom::OfficialRole role, const std::string& template_id,
                     int portrait_id, const std::string& name, int level,

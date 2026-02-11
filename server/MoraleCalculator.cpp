@@ -49,9 +49,41 @@ double calculateBuildingMorale(
     }
 }
 
+double calculateWallMorale(const std::vector<WallData>& walls) {
+    double total_wall_morale = 0.0;
+
+    for (const auto& wall : walls) {
+        if (wall.level <= 0) continue;
+
+        auto& cache = GameConfigCache::getInstance();
+        auto config = cache.getAllConfigs();
+
+        if (config.contains("wall_config") && config["wall_config"].is_object()) {
+            auto wall_config = config["wall_config"];
+            if (wall_config.contains("walls") && wall_config["walls"].is_object()) {
+                auto walls_obj = wall_config["walls"];
+                std::string gen_key = std::to_string(wall.generation);
+                if (walls_obj.contains(gen_key)) {
+                    auto gen_config = walls_obj[gen_key];
+                    if (gen_config.contains("morale_boost") && gen_config["morale_boost"].is_array()) {
+                        auto morale_array = gen_config["morale_boost"];
+                        int idx = std::min(wall.level - 1, static_cast<int>(morale_array.size()) - 1);
+                        if (idx >= 0) {
+                            total_wall_morale += morale_array[idx].get<double>();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return total_wall_morale;
+}
+
 double calculateFiefdomMorale(
     int fiefdom_id,
     const std::vector<BuildingData>& buildings,
+    const std::vector<WallData>& walls,
     const std::vector<OfficialData>& officials,
     const std::vector<FiefdomHero>& heroes,
     const std::vector<StationedCombatant>& combatants
@@ -79,6 +111,8 @@ double calculateFiefdomMorale(
             }
         }
     }
+
+    total_morale += calculateWallMorale(walls);
 
     for (const auto& official : officials) {
         auto official_opt = official_registry.getOfficial(official.template_id);
