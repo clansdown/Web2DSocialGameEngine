@@ -21,6 +21,7 @@ namespace {
         ensureIndex(db, "idx_characters_user_id", "characters", "user_id");
         ensureIndex(db, "idx_fiefdoms_owner", "fiefdoms", "owner_id");
         ensureIndex(db, "idx_fiefdom_buildings_fiefdom", "fiefdom_buildings", "fiefdom_id");
+        ensureIndex(db, "idx_fiefdom_buildings_fiefdom_xy", "fiefdom_buildings", "fiefdom_id, x, y");
         ensureIndex(db, "idx_officials_fiefdom", "officials", "fiefdom_id");
         ensureIndex(db, "idx_fiefdom_heroes_fiefdom", "fiefdom_heroes", "fiefdom_id");
         ensureIndex(db, "idx_stationed_combatants_fiefdom", "stationed_combatants", "fiefdom_id");
@@ -67,6 +68,7 @@ namespace {
             "mana INTEGER NOT NULL DEFAULT 0,"
             "wall_count INTEGER NOT NULL DEFAULT 0,"
             "morale REAL NOT NULL DEFAULT 0,"
+            "last_update_time INTEGER NOT NULL DEFAULT 0,"
             "FOREIGN KEY(owner_id) REFERENCES characters(id)"
         );
 
@@ -75,7 +77,10 @@ namespace {
             "fiefdom_id INTEGER NOT NULL,"
             "name TEXT NOT NULL,"
             "level INTEGER NOT NULL DEFAULT 0,"
+            "x INTEGER NOT NULL DEFAULT 0,"
+            "y INTEGER NOT NULL DEFAULT 0,"
             "construction_start_ts INTEGER NOT NULL DEFAULT 0,"
+            "last_updated INTEGER NOT NULL DEFAULT 0,"
             "action_start_ts INTEGER NOT NULL DEFAULT 0,"
             "action_tag TEXT NOT NULL DEFAULT '',"
             "FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id)"

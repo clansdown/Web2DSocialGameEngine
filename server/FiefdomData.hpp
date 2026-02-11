@@ -97,7 +97,10 @@ struct BuildingData {
     int id;
     std::string name;
     int level = 0;
+    int x = 0;
+    int y = 0;
     int64_t construction_start_ts = 0;
+    int64_t last_updated = 0;
     int64_t action_start_ts = 0;
     std::string action_tag;
 
@@ -106,7 +109,10 @@ struct BuildingData {
         json["id"] = id;
         json["name"] = name;
         json["level"] = level;
+        json["x"] = x;
+        json["y"] = y;
         json["construction_start_ts"] = construction_start_ts;
+        json["last_updated"] = last_updated;
         json["action_start_ts"] = action_start_ts;
         json["action_tag"] = action_tag;
         return json;

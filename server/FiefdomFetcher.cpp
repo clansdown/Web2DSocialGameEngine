@@ -87,23 +87,26 @@ std::vector<FiefdomData> fetchFiefdomsByOwnerId(int owner_id) {
 
 std::vector<BuildingData> fetchFiefdomBuildings(int fiefdom_id) {
     auto& db = Database::getInstance().gameDB();
-    
+
     std::vector<BuildingData> buildings;
-    
-    db << "SELECT id, name, level, construction_start_ts, action_start_ts, action_tag FROM fiefdom_buildings WHERE fiefdom_id = ?;"
+
+    db << "SELECT id, name, level, x, y, construction_start_ts, last_updated, action_start_ts, action_tag FROM fiefdom_buildings WHERE fiefdom_id = ?;"
        << fiefdom_id
-       >> [&](int id, std::string name, int level, int64_t construction_start_ts,
-              int64_t action_start_ts, std::string action_tag) {
+       >> [&](int id, std::string name, int level, int x, int y, int64_t construction_start_ts,
+              int64_t last_updated, int64_t action_start_ts, std::string action_tag) {
            BuildingData building;
            building.id = id;
            building.name = name;
            building.level = level;
+           building.x = x;
+           building.y = y;
            building.construction_start_ts = construction_start_ts;
+           building.last_updated = last_updated;
            building.action_start_ts = action_start_ts;
            building.action_tag = action_tag;
            buildings.push_back(building);
        };
-    
+
     return buildings;
 }
 
@@ -184,17 +187,51 @@ std::optional<OfficialData> fetchOfficialById(int official_id) {
 
 bool createBuilding(int fiefdom_id, const std::string& name, int level,
                     int64_t construction_start_ts, int64_t action_start_ts,
-                    const std::string& action_tag) {
+                    const std::string& action_tag, int x, int y) {
     auto& db = Database::getInstance().gameDB();
-    
+
     try {
         db << R"(
-            INSERT INTO fiefdom_buildings (fiefdom_id, name, level, construction_start_ts, action_start_ts, action_tag)
-            VALUES (?, ?, ?, ?, ?, ?);
-        )" << fiefdom_id << name << level << construction_start_ts << action_start_ts << action_tag;
+            INSERT INTO fiefdom_buildings
+            (fiefdom_id, name, level, x, y, construction_start_ts, last_updated, action_start_ts, action_tag)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+        )" << fiefdom_id << name << level << x << y << construction_start_ts
+           << construction_start_ts << action_start_ts << action_tag;
         return true;
     } catch (const std::exception& e) {
         std::cerr << "Failed to create building: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool updateBuildingLevel(int building_id, int new_level, int64_t timestamp) {
+    auto& db = Database::getInstance().gameDB();
+
+    try {
+        db << R"(
+            UPDATE fiefdom_buildings
+            SET level = ?, construction_start_ts = ?, last_updated = ?
+            WHERE id = ?;
+        )" << new_level << 0 << timestamp << building_id;
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to update building level: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool updateBuildingConstructionStart(int building_id, int64_t construction_start_ts, int64_t timestamp) {
+    auto& db = Database::getInstance().gameDB();
+
+    try {
+        db << R"(
+            UPDATE fiefdom_buildings
+            SET construction_start_ts = ?, last_updated = ?
+            WHERE id = ?;
+        )" << construction_start_ts << timestamp << building_id;
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to update building construction: " << e.what() << std::endl;
         return false;
     }
 }

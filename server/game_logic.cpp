@@ -2,6 +2,7 @@
 #include "GameConfigCache.hpp"
 #include "MoraleCalculator.hpp"
 #include "FiefdomFetcher.hpp"
+#include "ActionHandler.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -150,16 +151,55 @@ TimeUpdateResult updateStateSince(Timestamp last_update_time, const std::string&
             fiefdom.officials = FiefdomFetcher::fetchFiefdomOfficials(fiefdom.id);
             fiefdom.heroes = FiefdomFetcher::fetchFiefdomHeroes(fiefdom.id);
             fiefdom.stationed_combatants = FiefdomFetcher::fetchStationedCombatants(fiefdom.id);
-            
+
             double time_factor = result.time_hours_elapsed;
-            
+
+            for (auto& building : fiefdom.buildings) {
+                if (building.construction_start_ts > 0) {
+                    auto config_opt = Validation::getBuildingConfig(building.name);
+                    if (config_opt) {
+                        auto config = *config_opt;
+                        int construction_seconds = 0;
+
+                        if (config.contains("construction_times") && config["construction_times"].is_array()) {
+                            auto times = config["construction_times"];
+                            int level = building.level;
+                            int max_index = static_cast<int>(times.size()) - 1;
+
+                            if (level <= max_index) {
+                                construction_seconds = times[level].get<int>();
+                            } else if (max_index >= 1) {
+                                int last = times[max_index].get<int>();
+                                int prev = times[max_index - 1].get<int>();
+                                int slope = last - prev;
+                                construction_seconds = last + slope * (level - max_index);
+                            } else if (times.size() > 0) {
+                                construction_seconds = times[0].get<int>();
+                            }
+                        }
+
+                        if (construction_seconds > 0) {
+                            int64_t elapsed_seconds = result.new_timestamp - building.construction_start_ts;
+                            if (elapsed_seconds >= construction_seconds) {
+                                int new_level = building.level + 1;
+                                if (FiefdomFetcher::updateBuildingLevel(building.id, new_level, result.new_timestamp)) {
+                                    building.level = new_level;
+                                    building.construction_start_ts = 0;
+                                    result.completed_trainings.push_back({building.name, new_level});
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             for (const auto& building : fiefdom.buildings) {
                 if (building.level <= 0) continue;
-                
+
                 for (const auto& type_obj : building_types) {
                     if (!type_obj.contains(building.name)) continue;
                     auto type_config = type_obj[building.name];
-                    
+
                     for (const auto& resource : {"peasants", "gold", "grain", "wood", "steel", "bronze", "stone", "leather", "mana"}) {
                         if (type_config.contains(resource)) {
                             auto production = type_config[resource];
@@ -167,10 +207,10 @@ TimeUpdateResult updateStateSince(Timestamp last_update_time, const std::string&
                             double amount_multiplier = production.value("amount_multiplier", 1.0);
                             double periodicity = production["periodicity"].get<double>();
                             double periodicity_multiplier = production.value("periodicity_multiplier", 1.0);
-                            
+
                             double cycles = time_factor / periodicity;
                             int full_cycles = static_cast<int>(cycles);
-                            
+
                             if (full_cycles > 0) {
                                 double total_amount;
                                 if (amount_multiplier == 1.0) {
@@ -178,7 +218,7 @@ TimeUpdateResult updateStateSince(Timestamp last_update_time, const std::string&
                                 } else {
                                     total_amount = amount * (std::pow(amount_multiplier, full_cycles) - 1.0) / (amount_multiplier - 1.0);
                                 }
-                                
+
                                 double old_value;
                                 if (resource == "peasants") old_value = fiefdom.peasants;
                                 else if (resource == "gold") old_value = fiefdom.gold;
@@ -190,12 +230,12 @@ TimeUpdateResult updateStateSince(Timestamp last_update_time, const std::string&
                                 else if (resource == "leather") old_value = fiefdom.leather;
                                 else if (resource == "mana") old_value = fiefdom.mana;
                                 else old_value = 0.0;
-                                
+
                                 double new_value = old_value + total_amount;
-                                
+
                                 db << "UPDATE fiefdoms SET " + resource + " = ? WHERE id = ?;"
                                    << new_value << fiefdom.id;
-                                
+
                                 ProductionUpdate pu;
                                 pu.resource_type = resource;
                                 pu.amount_produced = total_amount;
@@ -208,7 +248,7 @@ TimeUpdateResult updateStateSince(Timestamp last_update_time, const std::string&
                     }
                 }
             }
-            
+
             db << "UPDATE fiefdoms SET last_update_time = ? WHERE id = ?;"
                << result.new_timestamp << fiefdom.id;
             

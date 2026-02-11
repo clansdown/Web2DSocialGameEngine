@@ -25,7 +25,11 @@ std::optional<OfficialData> fetchOfficialById(int official_id);
 
 bool createBuilding(int fiefdom_id, const std::string& name, int level,
                     int64_t construction_start_ts, int64_t action_start_ts,
-                    const std::string& action_tag);
+                    const std::string& action_tag, int x, int y);
+
+bool updateBuildingLevel(int building_id, int new_level, int64_t timestamp);
+
+bool updateBuildingConstructionStart(int building_id, int64_t construction_start_ts, int64_t timestamp);
 
 bool createOfficial(int fiefdom_id, fiefdom::OfficialRole role, const std::string& template_id,
                     int portrait_id, const std::string& name, int level,

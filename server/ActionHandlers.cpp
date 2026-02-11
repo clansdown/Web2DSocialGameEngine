@@ -2,6 +2,7 @@
 #include "FiefdomFetcher.hpp"
 #include "Database.hpp"
 #include "GameConfigCache.hpp"
+#include "GridCollision.hpp"
 #include <optional>
 
 namespace GameLogic {
@@ -95,15 +96,21 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
         }
     }
 
-    if (payload.contains("x") && payload.contains("y")) {
-        int x = payload["x"];
-        int y = payload["y"];
-        if (!Validation::canBuildBuildingHere(building_type, fiefdom_id, x, y)) {
-            result.status = ActionStatus::FAIL;
-            result.error_code = "invalid_location";
-            result.error_message = "Cannot build at specified location";
-            return result;
-        }
+    if (!payload.contains("x") || !payload.contains("y")) {
+        result.status = ActionStatus::FAIL;
+        result.error_code = "coordinates_required";
+        result.error_message = "x and y coordinates are required for building placement";
+        return result;
+    }
+
+    int x = payload["x"];
+    int y = payload["y"];
+
+    if (!Validation::canBuildBuildingHere(building_type, fiefdom_id, x, y)) {
+        result.status = ActionStatus::FAIL;
+        result.error_code = "invalid_location";
+        result.error_message = "Cannot build at specified location";
+        return result;
     }
 
     result.status = ActionStatus::OK;
@@ -145,16 +152,18 @@ ActionResult BuildActionHandler::execute(const json& payload, const ActionContex
         if (deduct_result.status != ActionStatus::OK) {
             return deduct_result;
         }
-        
-        if (!FiefdomFetcher::createBuilding(fiefdom_id, building_type, 0, now, 0, "")) {
+
+        if (!FiefdomFetcher::createBuilding(fiefdom_id, building_type, 0, now, 0, "", x, y)) {
             result.status = ActionStatus::FAIL;
             result.error_code = "database_error";
             result.error_message = "Failed to create building";
             return result;
         }
-        
+
         result.result["building_type"] = building_type;
         result.result["fiefdom_id"] = fiefdom_id;
+        result.result["x"] = x;
+        result.result["y"] = y;
         result.result["construction_start_ts"] = now;
         result.result["level"] = 0;
         
@@ -423,7 +432,9 @@ std::optional<json> getBuildingConfig(const std::string& building_type) {
 }
 
 bool canBuildBuildingHere(const std::string& building_type, int fiefdom_id, int x, int y) {
-    return true;
+    bool isHomeBase = (building_type == "home_base");
+    auto result = GridCollision::checkPlacement(fiefdom_id, building_type, x, y, isHomeBase);
+    return result.valid;
 }
 
 bool hasCompletedHomeBase(int fiefdom_id) {
