@@ -48,7 +48,7 @@
 /server/images/
 
 # Checkout of the SimpleGame engine
-/SimpleGame/
+/client/SimpleGame/
 
 # Game configuration files (create these for your game)
 /.game_name
