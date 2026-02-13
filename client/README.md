@@ -1,47 +1,176 @@
-# Svelte + TS + Vite
+# Ravenest Client
 
-This template should help get you started developing with Svelte and TypeScript in Vite.
+The game client built with Vite + Svelte 5 + TypeScript.
 
-## Recommended IDE Setup
+## Overview
 
-[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode).
+This is the browser-based game client that:
+- Uses Vite for development and production builds
+- Serves as the UI layer for the Ravenest game engine
+- Integrates Bootstrap 5.3.8 for UI components with dark mode support
+- Uses OPFS (Origin Private File System) for local storage
 
-## Need an official Svelte framework?
+## Project Structure
 
-Check out [SvelteKit](https://github.com/sveltejs/kit#readme), which is also powered by Vite. Deploy anywhere with its serverless-first approach and adapt to various platforms, with out of the box support for TypeScript, SCSS, and Less, and easily-added support for mdsvex, GraphQL, PostCSS, Tailwind CSS, and more.
-
-## Technical considerations
-
-**Why use this over SvelteKit?**
-
-- It brings its own routing solution which might not be preferable for some users.
-- It is first and foremost a framework that just happens to use Vite under the hood, not a Vite app.
-
-This template contains as little as possible to get started with Vite + TypeScript + Svelte, while taking into account the developer experience with regards to HMR and intellisense. It demonstrates capabilities on par with the other `create-vite` templates and is a good starting point for beginners dipping their toes into a Vite + Svelte project.
-
-Should you later need the extended capabilities and extensibility provided by SvelteKit, the template has been structured similarly to SvelteKit so that it is easy to migrate.
-
-**Why `global.d.ts` instead of `compilerOptions.types` inside `jsconfig.json` or `tsconfig.json`?**
-
-Setting `compilerOptions.types` shuts out all other types not explicitly listed in the configuration. Using triple-slash references keeps the default TypeScript setting of accepting type information from the entire workspace, while also adding `svelte` and `vite/client` type information.
-
-**Why include `.vscode/extensions.json`?**
-
-Other templates indirectly recommend extensions via the README, but this file allows VS Code to prompt the user to install the recommended extension upon opening the project.
-
-**Why enable `allowJs` in the TS template?**
-
-While `allowJs: false` would indeed prevent the use of `.js` files in the project, it does not prevent the use of JavaScript syntax in `.svelte` files. In addition, it would force `checkJs: false`, bringing the worst of both worlds: not being able to guarantee the entire codebase is TypeScript, and also having worse typechecking for the existing JavaScript. In addition, there are valid use cases in which a mixed codebase may be relevant.
-
-**Why is HMR not preserving my local component state?**
-
-HMR state preservation comes with a number of gotchas! It has been disabled by default in both `svelte-hmr` and `@sveltejs/vite-plugin-svelte` due to its often surprising behavior. You can read the details [here](https://github.com/rixo/svelte-hmr#svelte-hmr).
-
-If you have state that's important to retain within a component, consider creating an external store which would not be replaced by HMR.
-
-```ts
-// store.ts
-// An extremely simple external store
-import { writable } from 'svelte/store'
-export default writable(0)
 ```
+client/
+├── SimpleGame/ui/src/lib/     # Game engine library (imported via file: protocol)
+├── src/
+│   ├── App.svelte            # Main Svelte component
+│   ├── main.ts               # Application entry point
+│   └── lib/
+│       └── storage.ts        # OPFS storage utilities
+├── index.html                # Bootstrap 5.3.8 CDN (dark mode enabled)
+├── package.json              # References simplegame via "file:./SimpleGame/ui"
+└── vite.config.ts            # Vite configuration
+```
+
+## Getting Started
+
+### Development
+
+```bash
+npm run dev    # Start dev server at http://localhost:5173
+npm run build  # Production build to dist/
+npm run preview  # Preview production build
+```
+
+### Type Checking
+
+```bash
+npm run check   # Run svelte-check and TypeScript compiler
+```
+
+## Storage (OPFS)
+
+The client uses the Origin Private File System for persistent local storage. All storage functions are in `src/lib/storage.ts`.
+
+### Basic File Operations
+
+```typescript
+import * as storage from './lib/storage';
+
+// Write file
+await storage.writeFile('data/sample.txt', 'Hello, world!');
+
+// Read file
+const content = await storage.readFile('data/sample.txt');  // string | null
+
+// Delete file
+await storage.deleteFile('data/sample.txt');
+
+// List directory contents
+const files = await storage.listDirectory('');  // string[]
+```
+
+### Directory Operations
+
+```typescript
+// Ensure directory exists (creates parents recursively)
+const dirHandle = await storage.ensureDirectory('data/subdir/nested');
+
+// Delete directory and all contents
+await storage.deleteDirectory('data');
+```
+
+### Config Storage (Key-Value)
+
+Config values are stored as JSON files in `config/CONFIG_KEY.json`:
+
+```typescript
+// Set config value (generic type)
+interface UserSettings {
+    theme: 'light' | 'dark';
+    soundEnabled: boolean;
+    volume: number;
+}
+
+await storage.setConfig('userSettings', {
+    theme: 'dark',
+    soundEnabled: true,
+    volume: 75
+});
+
+// Get config value with optional default (generic type)
+// Returns the config value if exists and valid, otherwise returns defaultValue or null
+const settings = await storage.getConfig<UserSettings>('userSettings', {
+    theme: 'light',
+    soundEnabled: false,
+    volume: 50
+});  
+// Result: { theme: 'dark', soundEnabled: true, volume: 75 } if valid
+//         { theme: 'light', soundEnabled: false, volume: 50 } if missing/invalid
+
+// Type-safe helpers for primitive types
+const volume = await storage.getConfigNumber('volume', 75);      // number
+const username = await storage.getConfigString('username', '');  // string
+const enabled = await storage.getConfigBoolean('enabled', false); // boolean
+
+// Delete config
+await storage.deleteConfig('userSettings');
+
+// List all config keys
+const keys = await storage.listConfigs();  // string[]
+
+// Clear all configs
+await storage.clearConfigs();
+```
+
+**Error Handling:**
+- File not found: returns `null` (or default value if provided to `getConfig`)
+- Invalid JSON: returns `null` (or default value if provided to `getConfig`)
+- Type-safe helpers validate runtime types and return default on mismatch
+
+### OPFS Notes
+
+- OPFS is browser-origin-private: data persists per site
+- Not user-visible like the regular file system
+- Storage quota varies by browser (typically 5-10% of free disk space)
+- Data is cleared when user clears site data
+- All paths use POSIX-style forward slashes (`/`)
+
+## Game Engine Integration
+
+The SimpleGame engine is imported as a local dependency:
+
+```typescript
+import { simplegame, GameObject, gameClasses } from 'simplegame';
+```
+
+Engine files are in `SimpleGame/ui/src/lib/` and are hot-reloaded automatically when modified.
+
+### Available Engine Modules
+
+From `SimpleGame/ui/src/lib/`:
+- `simplegame.ts` - Main game loop and state management
+- `gameclasses.ts` - GameObject, Player, Enemy, Projectile, Item classes
+- `collision.ts` - Collision detection system
+- `layout.ts` - Layout and positioning utilities
+- `button.ts` - Button component
+- `audio.ts` - Audio handling
+- `util.ts` - Utility functions (Position2D, box2, matrix2 types)
+
+## UI Framework
+
+Bootstrap 5.3.8 is loaded via CDN with dark mode enabled:
+
+```html
+<html lang="en" data-bs-theme="dark">
+```
+
+Bootstrap is bundled in `index.html` with:
+- CSS: `https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css`
+- JS: `https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js`
+
+## IDE Setup
+
+**Recommended:** VS Code + Svelte extension
+
+TypeScript configuration uses strict mode with Svelte 5 support. See `tsconfig.json` and `tsconfig.app.json` for full configuration.
+
+## Build Output
+
+Production builds output to `dist/` with:
+- Minified and bundled JavaScript
+- Optimized assets
+- Source maps for debugging

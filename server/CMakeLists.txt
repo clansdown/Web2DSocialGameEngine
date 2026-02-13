@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(OpenSSL REQUIRED)
+find_package(CURL REQUIRED)
 
 include(FetchContent)
 
@@ -29,7 +30,7 @@ foreach(header IN LISTS UWS_HEADERS)
     execute_process(COMMAND ln -sf "${UWS_DEPS_DIR}/src/${header_name}" "${UWS_INCLUDE_DIR}/${header_name}" OUTPUT_QUIET ERROR_QUIET)
 endforeach()
 
-add_executable(server main.cpp SafeNameGenerator.cpp init_db.cpp FiefdomFetcher.cpp combatants.cpp heroes.cpp fiefdom_officials.cpp GameConfigCache.cpp MoraleCalculator.cpp ActionHandlers.cpp game_logic.cpp)
+add_executable(server main.cpp SafeNameGenerator.cpp init_db.cpp FiefdomFetcher.cpp combatants.cpp heroes.cpp fiefdom_officials.cpp GameConfigCache.cpp MoraleCalculator.cpp ActionHandlers.cpp game_logic.cpp DigitalCredentialsVerifier.cpp)
 
 target_include_directories(server PRIVATE
     "${sqlite_modern_cpp_SOURCE_DIR}/hdr"
@@ -44,4 +45,5 @@ target_link_libraries(server PRIVATE
     "${UWS_DEPS_DIR}/uSockets/uSockets.a"
     z
     crypt
+    CURL::libcurl
 )

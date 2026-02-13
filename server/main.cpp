@@ -20,6 +20,7 @@
 #include "ActionHandler.hpp"
 #include "ActionHandlers.hpp"
 #include "GridCollision.hpp"
+#include "DigitalCredentialsVerifier.hpp"
 
 using json = nlohmann::json;
 
@@ -386,7 +387,7 @@ ApiResponse handleCreateAccount(const json& body,
 
     std::string new_username = body.value("username", "");
     std::string password = body.value("password", "");
-    bool adult = body.value("adult", false);
+    bool adult_request = body.value("adult", false);
     std::string word1 = body.value("word1", "");
     std::string word2 = body.value("word2", "");
     std::string displayName = body.value("displayName", "");
@@ -401,7 +402,19 @@ ApiResponse handleCreateAccount(const json& body,
         return response;
     }
 
-    if (!adult && !displayName.empty()) {
+    bool has_digital_credential = body.contains("digitalCredential");
+
+    if (adult_request && !has_digital_credential) {
+        response.error = "digital_cred_required";
+        return response;
+    }
+
+    if (!adult_request && has_digital_credential) {
+        response.error = "digital_cred_not_allowed";
+        return response;
+    }
+
+    if (!adult_request && !displayName.empty()) {
         response.error = "displayName can only be set if adult is true";
         return response;
     }
@@ -427,7 +440,28 @@ ApiResponse handleCreateAccount(const json& body,
     }
 
     std::string safe_display_name = *safeDisplayNameOpt;
-    std::string display_name = adult ? displayName : safe_display_name;
+
+    bool adult = false;
+    std::string display_name = safe_display_name;
+
+    if (adult_request && has_digital_credential) {
+        auto digitalCredential = body["digitalCredential"];
+        std::string protocol = digitalCredential.value("protocol", "");
+        auto credential_data = digitalCredential.value("data", json{});
+
+        auto verifier_result = DigitalCredentialsVerifier::getInstance().verifyDigitalCredential(
+            protocol, credential_data);
+
+        if (!verifier_result.success) {
+            adult = false;
+        } else {
+            adult = verifier_result.is_adult;
+        }
+
+        if (adult && !displayName.empty()) {
+            display_name = displayName;
+        }
+    }
 
     std::string password_hash;
     try {

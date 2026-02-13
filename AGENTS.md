@@ -240,9 +240,102 @@ When testing or verifying the server, use the `agent_test_server.sh` script for 
 4. **Error Handling**: All errors return JSON with format `{ "error": "description" }`
 5. **API Documentation**: Every endpoint has a corresponding `.md` file in `api/` directory with detailed request/response examples
 
+### Coding Standards
+
+**Naming Conventions:**
+- Use snake_case for ALL names (variables, functions, classes, types)
+- Examples:
+  - `function_name()` not `functionName()`
+  - `class_name` not `ClassName`
+  - `struct_name` not `StructName`
+  - `const session_token = ...` not `sessionToken`
+
+**Code Organization:**
+- Put logically separate chunks of code into their own functions
+  - Unless this would require an absurd number of arguments
+- Put closely related functions that are not closely related to other functions into their own files
+- Use extremely descriptive variable and function names
+- Do not use short names unless they are sufficiently descriptive
+  - Exception: iteration variables like `i`, `j`, `k` are acceptable
+
+**Memory Management:**
+- Use RAII (Resource Acquisition Is Initialization) wherever possible
+- Create RAII wrappers for memory management of code that doesn't natively support RAII
+- Follow C++ standard best practices for resource management
+
+**Rationale:** These standards ensure:
+- Consistent, readable code across codebase
+- Automatic resource cleanup via RAII prevents leaks
+- Logical code organization improves maintainability
+- Descriptive names serve as inline documentation
+
 ## Client
 
-TODO: Client side implementation details to be added
+The client is a Vite + Svelte 5 + TypeScript application that provides the game UI.
+
+**Documentation:** See `client/README.md` for complete information about:
+- Project structure and development workflow
+- Game engine integration (simplegame)
+- OPFS storage (Origin Private File System)
+- Bootstrap 5.3.8 integration with dark mode
+- Available storage functions and config storage API
+
+### Coding Standards
+
+**Naming Conventions:**
+- Use snake_case for ALL names (variables, functions, classes, types, interfaces)
+- Examples:
+  - `function_name()` not `functionName()`
+  - `user_store` not `userStore`
+  - `interface auth_response` not `AuthResponse`
+  - `type api_options` not `ApiOptions`
+  - `const session_token = ...` not `sessionToken`
+
+**Styling - Bootstrap First:**
+- All UI styling MUST use Bootstrap 5.3.8 classes (loaded via CDN in `index.html`)
+- Custom CSS is ONLY permitted for styling that Bootstrap does not provide
+- Bootstrap is required for all common UI patterns it supports:
+  - Forms, inputs, buttons
+  - Cards, alerts, modals
+  - Grid, layout, spacing
+  - Navigation, dropdowns
+  - Loading spinners, badges
+- Use Bootstrap's dark mode via `data-bs-theme="dark"` on `<html>` tag
+- Reference: https://getbootstrap.com/docs/5.3/
+
+**TypeScript - Strict Typing:**
+- Everything must have explicit types - no implicit or inferred types except in trivial cases
+- All function parameters must have type annotations
+- All function return values must have type annotations
+- All variables must have type annotations when the type is not immediately obvious
+- Use `interface` or `type` for complex data structures
+- Use generic types where appropriate (`<T>`, `<K, V>`, etc.)
+
+**The `any` Type:**
+- `any` may ONLY be used when absolutely necessary
+- When `any` is used, it MUST be documented with a comment explaining:
+  - WHY it's necessary (what prevents using a proper type)
+  - WHAT the expected structure is
+  - WHY alternatives were not sufficient
+- Example of properly documented `any`:
+  ```typescript
+  // any: Required because this config is loaded dynamically from server
+  // Structure matches ApiResponse<T> but T is unknown at compile time
+  const response: ApiResponse<any> = await fetchData();
+  ```
+
+**Code Organization:**
+- Use extremely descriptive variable and function names
+- Do not use short names unless they are sufficiently descriptive
+  - Exception: iteration variables like `i`, `j`, `k` are acceptable
+
+**Rationale:** These standards ensure:
+- Consistent, readable code across codebase
+- Type safety catches bugs at compile time
+- Explicit types serve as documentation
+- Limited `any` usage prevents type safety erosion
+
+When working on the client, always consult `client/README.md` first for architectural context and usage patterns.
 
 ## API Documentation Files
 
