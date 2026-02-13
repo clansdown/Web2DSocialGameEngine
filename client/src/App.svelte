@@ -10,6 +10,17 @@
   let needsAuth = $state(false);
   let initialized = $state(false);
 
+  /**
+   * Attempts to automatically log in using stored credentials.
+   * Checks OPFS for saved username/password, authenticates with server,
+   * and restores user session state if credentials are valid.
+   * Shows auth screen if no stored credentials or login fails.
+   * 
+   * @param none - Uses stored credentials from OPFS
+   * @returns Promise<void> - Updates auth stores on success
+   * 
+   * Usage: Called from onMount when app initializes
+   */
   async function attemptAutoLogin() {
     const storedCreds = await auth.loadStoredCredentials();
     if (storedCreds) {
@@ -44,6 +55,16 @@
     needsAuth = true;
   }
 
+  /**
+   * Handles re-authentication when session is lost or expired.
+   * Attempts to refresh token using in-memory credentials.
+   * Shows auth screen if no credentials available or refresh fails.
+   * 
+   * @param none - Uses in-memory credentials from auth module
+   * @returns Promise<boolean> - true if re-auth successful, false otherwise
+   * 
+   * Usage: Called by $effect when session is lost
+   */
   async function handleNeedsAuth() {
     const creds = auth.getInMemoryCredentials();
     if (creds) {

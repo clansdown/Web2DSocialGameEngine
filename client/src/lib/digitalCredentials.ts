@@ -29,10 +29,28 @@ function generateNonce(): string {
   return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
+/**
+ * Checks if the browser supports the Digital Credentials API.
+ * The API is available in some Chromium-based browsers.
+ * 
+ * @param none
+ * @returns Promise<boolean> - true if DigitalCredential is defined
+ * 
+ * Usage: Called before attempting age verification
+ */
 export function checkDigitalCredentialsSupport(): Promise<boolean> {
   return Promise.resolve(typeof DigitalCredential !== 'undefined');
 }
 
+/**
+ * Gets list of digital credential protocols supported by the browser.
+ * Queries browser for supported protocols using DigitalCredential API.
+ * 
+ * @param none
+ * @returns string[] - Array of supported protocol names
+ * 
+ * Usage: Called to determine which protocol to use for verification
+ */
 export function getUserSupportedProtocols(): string[] {
   if (typeof DigitalCredential === 'undefined') {
     return [];
@@ -49,6 +67,15 @@ export function getUserSupportedProtocols(): string[] {
   );
 }
 
+/**
+ * Generates verifier metadata for age verification request.
+ * Creates a query asking for proof that holder is 18 or older.
+ * 
+ * @param sessionId - Unique identifier for this verification session
+ * @returns VerifierMetadata - Metadata for credential request
+ * 
+ * Usage: Called before requesting age verification from user
+ */
 export function getVerifierMetadata(sessionId: string): VerifierMetadata {
   return {
     response_type: 'vp_token',
@@ -74,6 +101,16 @@ export function getVerifierMetadata(sessionId: string): VerifierMetadata {
   };
 }
 
+/**
+ * Requests age verification from the user using Digital Credentials API.
+   * Prompts user to present a credential proving they are 18+.
+ * Returns null if API unavailable, cancelled, or fails.
+ * 
+ * @param sessionId - Optional session identifier (defaults to 'create-account')
+ * @returns Promise<DigitalCredentialResponse | null> - Credential response or null
+ * 
+ * Usage: Called when user checks adult flag on account creation
+ */
 export async function requestAgeVerification(
   sessionId?: string
 ): Promise<DigitalCredentialResponse | null> {
@@ -118,6 +155,15 @@ export async function requestAgeVerification(
   }
 }
 
+/**
+ * Type guard to check if an object matches DigitalCredentialResponse structure.
+ * Validates that object has required protocol and data fields.
+ * 
+ * @param obj - Object to check
+ * @returns boolean - true if object is a valid DigitalCredentialResponse
+ * 
+ * Usage: Used to validate credential responses from API
+ */
 export function isDigitalCredential(obj: unknown): obj is DigitalCredentialResponse {
   if (typeof obj !== 'object' || obj === null) {
     return false;

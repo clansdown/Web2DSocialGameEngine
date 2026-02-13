@@ -19,6 +19,16 @@
 
   let canvasContext: CanvasRenderingContext2D | null = $state(null);
 
+  /**
+   * Updates canvas element dimensions based on gameWidth and gameHeight props.
+   * Gets 2D rendering context and binds it to the context prop for parent access.
+   * Called on mount and whenever dimensions change via $effect.
+   * 
+   * @param none - Uses canvas, gameWidth, gameHeight, and context props
+   * @returns void
+   * 
+   * Usage: Called automatically on mount and dimension changes
+   */
   function updateCanvasDimensions(): void {
     if (canvas) {
       canvas.width = gameWidth;

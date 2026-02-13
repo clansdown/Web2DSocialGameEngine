@@ -345,11 +345,41 @@ The client is a Vite + Svelte 5 + TypeScript application that provides the game 
 - Do not use short names unless they are sufficiently descriptive
   - Exception: iteration variables like `i`, `j`, `k` are acceptable
 
+**Code Documentation:**
+- All TypeScript functions MUST have JSDoc-style comments explaining:
+  - What the function does (1-2 sentences)
+  - All parameters with their types and purpose
+  - Return value type and description
+  - Usage notes or important behavior details
+- All Svelte component functions MUST have comments explaining:
+  - What the function does
+  - Parameters and their purpose
+  - Side effects or state changes
+- Comments should be detailed enough that another developer can use the function without reading its implementation
+- Example comment format:
+  ```typescript
+  /**
+   * Attempts to automatically log in using stored credentials.
+   * Checks OPFS for saved username/password, authenticates with server,
+   * and restores user session state if credentials are valid.
+   * Shows auth screen if no stored credentials or login fails.
+   * 
+   * @param none - Uses stored credentials from OPFS
+   * @returns Promise<void> - Updates auth stores on success
+   * 
+   * Usage: Called from onMount when app initializes
+   */
+  async function attemptAutoLogin() {
+    // ...
+  }
+  ```
+
 **Rationale:** These standards ensure:
 - Consistent, readable code across codebase
 - Type safety catches bugs at compile time
 - Explicit types serve as documentation
 - Limited `any` usage prevents type safety erosion
+- Code is self-documenting and maintainable
 
 When working on the client, always consult `client/README.md` first for architectural context and usage patterns.
 

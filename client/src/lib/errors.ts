@@ -95,6 +95,15 @@ export function getActiveErrors(): Array<AppError> {
   return get(errors).filter(e => !e.auto_dismissed);
 }
 
+/**
+ * Extracts technical details from an error for logging.
+ * Handles Error objects, strings, and arbitrary objects.
+ * 
+ * @param error - Any error object or value
+ * @returns string - Technical details as string
+ * 
+ * Usage: Internal helper for handleError function
+ */
 function extractTechnicalDetails(error: unknown): string {
   if (error instanceof Error) {
     return `${error.message}\n${error.stack || ''}`;
@@ -112,6 +121,16 @@ function extractTechnicalDetails(error: unknown): string {
   return String(error);
 }
 
+/**
+ * Categorizes an error based on its content.
+ * Analyzes error message and technical details to determine category.
+ * 
+ * @param error - Original error object
+ * @param technical_details - Extracted technical details string
+ * @returns ErrorCategory - Determined error category
+ * 
+ * Usage: Internal helper for handleError function
+ */
 function categorizeError(error: unknown, technical_details: string): ErrorCategory {
   const combined = technical_details.toLowerCase();
   
@@ -131,6 +150,15 @@ function categorizeError(error: unknown, technical_details: string): ErrorCatego
   return 'unknown';
 }
 
+/**
+ * Gets the default auto-dismiss timeout in milliseconds for a severity level.
+ * Different severities have different display durations.
+ * 
+ * @param severity - Error severity level
+ * @returns number - Timeout in milliseconds
+ * 
+ * Usage: Internal helper for handleError function
+ */
 function getDefaultAutoDismissForSeverity(severity: ErrorSeverity): number {
   switch (severity) {
     case 'error': return 5000;

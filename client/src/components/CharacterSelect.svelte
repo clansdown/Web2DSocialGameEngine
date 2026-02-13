@@ -3,11 +3,30 @@
   import * as auth from '../lib/auth';
   import type { Character } from '../lib/api';
 
+  /**
+   * Selects a character as the active character for the session.
+   * Updates currentCharacter store and persists selection to OPFS.
+   * 
+   * @param character - Character object to select
+   * @returns Promise<void>
+   * 
+   * Usage: Attached to character card onclick/keydown events
+   */
   async function selectCharacter(character: Character) {
     currentCharacter.set(character);
     await auth.saveCurrentCharacterId(character.id);
   }
 
+  /**
+   * Logs out the current user by clearing all session data.
+   * Clears session token, in-memory credentials, and stored credentials.
+   * Resets all auth stores to initial state.
+   * 
+   * @param none
+   * @returns Promise<void>
+   * 
+   * Usage: Attached to Logout button onclick
+   */
   async function handleLogout() {
     await auth.logout();
     user.set(null);

@@ -24,6 +24,15 @@
   let ageVerificationPending = $state(false);
   let ageVerified = $state(false);
 
+  /**
+   * Updates the safe display name preview when word selections change.
+   * Currently a placeholder for future preview functionality.
+   * 
+   * @param none - Uses word1 and word2 state values
+   * @returns void
+   * 
+   * Usage: Called when word1 or word2 selection changes
+   */
   function updateSafeDisplayPreview(): void {
     if (word1 && word2) {
     }
@@ -45,18 +54,46 @@
     dcApiSupported = await checkDigitalCredentialsSupport();
   });
 
+  /**
+   * Handles the first word selection change for character name.
+   * Updates word1 state and refreshes the safe display preview.
+   * 
+   * @param event - ChangeEvent from the select element
+   * @returns void
+   * 
+   * Usage: Attached to word1 select onchange event
+   */
   function handleWord1Change(event: Event): void {
     const target = event.target as HTMLSelectElement;
     word1 = target.value;
     updateSafeDisplayPreview();
   }
 
+  /**
+   * Handles the for character name.
+ second word selection change   * Updates word2 state and refreshes the safe display preview.
+   * 
+   * @param event - ChangeEvent from the select element
+   * @returns void
+   * 
+   * Usage: Attached to word2 select onchange event
+   */
   function handleWord2Change(event: Event): void {
     const target = event.target as HTMLSelectElement;
     word2 = target.value;
     updateSafeDisplayPreview();
   }
 
+  /**
+   * Handles the adult flag checkbox change with digital credentials verification.
+   * If checking the box, requests age verification via Digital Credentials API.
+   * If unchecking, simply clears adult and ageVerified flags.
+   * 
+   * @param event - ChangeEvent from the checkbox input
+   * @returns Promise<void>
+   * 
+   * Usage: Attached to adult checkbox onchange event
+   */
   async function handleAdultChange(event: Event): Promise<void> {
     const target = event.target as HTMLInputElement;
     const checked = target.checked;
@@ -106,6 +143,17 @@
     }
   }
 
+  /**
+   * Handles the account creation form submission.
+   * Validates passwords match and meet length requirements.
+   * Calls API to create account and sets up session on success.
+   * Updates auth stores and navigates to character selection.
+   * 
+   * @param none - Uses form state values (username, password, words, etc.)
+   * @returns Promise<void>
+   * 
+   * Usage: Called when form is submitted
+   */
   async function handleSubmit() {
     authLoading.set(true);
 
@@ -162,6 +210,15 @@
     }
   }
 
+  /**
+   * Switches the view back to the login page.
+   * Dispatches switchToLogin event to parent AuthPage component.
+   * 
+   * @param none
+   * @returns void
+   * 
+   * Usage: Attached to "Back to Login" button onclick
+   */
   function handleSwitchToLogin() {
     dispatch('switchToLogin');
   }

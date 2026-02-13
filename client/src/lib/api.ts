@@ -39,6 +39,18 @@ interface RequestOptions {
   password?: string;
 }
 
+/**
+ * Makes a POST request to the API endpoint with optional authentication.
+ * Constructs request body with auth credentials if provided.
+ * Returns parsed JSON response or throws on error.
+ * 
+ * @param endpoint - API endpoint path (e.g., 'login', 'getCharacter')
+ * @param body - Request body object to send as JSON
+ * @param options - Optional authentication options (username/password or token)
+ * @returns Promise<ApiResponse<T>> - Parsed API response
+ * 
+ * Usage: Low-level API function used by all specific request functions
+ */
 export async function apiPost<T = unknown>(
   endpoint: string,
   body: Record<string, unknown>,
@@ -68,6 +80,16 @@ export async function apiPost<T = unknown>(
   return await response.json() as ApiResponse<T>;
 }
 
+/**
+ * Authenticates a user with username and password.
+ * Returns user data, character list, and session token on success.
+ * 
+ * @param username - User's account username
+ * @param password - User's account password
+ * @returns Promise<AuthResponse> - User data, characters, and token
+ * 
+ * Usage: Called from LoginPage when user submits login form
+ */
 export async function loginRequest(
   username: string,
   password: string
@@ -79,6 +101,22 @@ export async function loginRequest(
   return res.data as AuthResponse;
 }
 
+/**
+ * Creates a new user account with character.
+ * Validates credentials, optional adult verification, and character naming words.
+ * Returns user data, character list, and session token on success.
+ * 
+ * @param username - Desired username for the new account
+ * @param password - Password for the new account (min 8 characters)
+ * @param adult - Boolean flag indicating if user verified as 18+
+ * @param word1 - First word for safe character display name
+ * @param word2 - Second word for safe character display name
+ * @param displayName - Optional custom display name (requires adult verification)
+ * @param digitalCredential - Optional digital credential proof for age verification
+ * @returns Promise<AuthResponse> - New user data, character, and token
+ * 
+ * Usage: Called from CreateAccountPage when creating new account
+ */
 export async function createAccountRequest(
   username: string,
   password: string,
@@ -109,6 +147,16 @@ export async function createAccountRequest(
   return res.data as AuthResponse;
 }
 
+/**
+ * Fetches character data from the server by character ID.
+ * Requires authentication via username and session token.
+ * 
+ * @param characterId - Unique identifier of the character to fetch
+ * @param auth - Authentication object with username and token
+ * @returns Promise<Character> - Character data from server
+ * 
+ * Usage: Used when loading character details for game play
+ */
 export async function getCharacterRequest(
   characterId: number,
   auth: { username: string; token: string }
@@ -123,6 +171,16 @@ export async function getCharacterRequest(
   return res.data as Character;
 }
 
+/**
+ * Updates user profile settings on the server.
+ * Currently supports updating the adult verification flag.
+ * 
+ * @param adult - New adult flag value
+ * @param auth - Authentication object with username and token
+ * @returns Promise<ProfileResponse> - Updated profile data and new token
+ * 
+ * Usage: Called when user updates their profile settings
+ */
 export async function updateUserProfileRequest(
   adult: boolean,
   auth: { username: string; token: string }
@@ -137,6 +195,19 @@ export async function updateUserProfileRequest(
   return res.data as ProfileResponse;
 }
 
+/**
+ * Updates character profile including display name and safe name words.
+ * Requires authentication and only works for characters owned by the user.
+ * 
+ * @param characterId - Unique identifier of the character to update
+ * @param displayName - New custom display name (may require adult verification)
+ * @param word1 - New first word for safe display name
+ * @param word2 - New second word for safe display name
+ * @param auth - Authentication object with username and token
+ * @returns Promise<CharacterProfileResponse> - Updated character data and new token
+ * 
+ * Usage: Called when user wants to change character name
+ */
 export async function updateCharacterProfileRequest(
   characterId: number,
   displayName: string,
@@ -157,6 +228,16 @@ export async function updateCharacterProfileRequest(
   return res.data as CharacterProfileResponse;
 }
 
+/**
+ * Refreshes an expired session token using username and password.
+ * Used to restore session without requiring full re-authentication.
+ * 
+ * @param username - User's account username
+ * @param password - User's account password
+ * @returns Promise<{ token: string }> - New session token
+ * 
+ * Usage: Called when session expires and needs refresh
+ */
 export async function refreshToken(
   username: string,
   password: string

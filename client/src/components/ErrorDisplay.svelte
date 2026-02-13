@@ -3,6 +3,15 @@
 
   const activeErrors = $derived(getActiveErrors());
   
+  /**
+   * Maps error severity levels to Bootstrap alert CSS classes.
+   * Converts internal severity to appropriate alert styling.
+   * 
+   * @param severity - ErrorSeverity level (error, warning, info, success)
+   * @returns string - Bootstrap alert class name
+   * 
+   * Usage: Used in template to determine alert styling
+   */
   function getAlertClass(severity: AppError['severity']): string {
     switch (severity) {
       case 'error': return 'alert-danger';
@@ -13,10 +22,26 @@
     }
   }
   
+  /**
+   * Dismisses a single error by removing it from the error store.
+   * 
+   * @param errorId - Unique identifier of the error to dismiss
+   * @returns void
+   * 
+   * Usage: Attached to individual error close button
+   */
   function dismiss(errorId: string): void {
     removeError(errorId);
   }
   
+  /**
+   * Dismisses all active errors by clearing the error store.
+   * 
+   * @param none
+   * @returns void
+   * 
+   * Usage: Attached to "Dismiss all" button when multiple errors exist
+   */
   function dismissAll(): void {
     clearAllErrors();
   }

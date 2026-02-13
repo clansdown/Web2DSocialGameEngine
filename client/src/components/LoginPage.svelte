@@ -13,6 +13,17 @@
   let formPassword = $state('');
   let rememberMe = $state(false);
 
+  /**
+   * Handles the login form submission.
+   * Authenticates user with server and stores session credentials.
+   * Optionally saves credentials to OPFS if rememberMe is checked.
+   * Updates all auth stores with user data and characters.
+   * 
+   * @param none - Uses formUsername, formPassword, rememberMe state
+   * @returns Promise<void>
+   * 
+   * Usage: Called when login form is submitted
+   */
   async function handleLogin() {
     authLoading.set(true);
 
