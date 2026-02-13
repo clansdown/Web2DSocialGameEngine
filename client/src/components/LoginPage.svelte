@@ -1,8 +1,9 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import { loginRequest } from '../lib/api';
+  import { handleError } from '../lib/errors';
   import * as auth from '../lib/auth';
-  import { user, characters, currentCharacter, authLoading, authError } from '../lib/stores';
+  import { user, characters, currentCharacter, authLoading } from '../lib/stores';
 
   const dispatch = createEventDispatcher<{
     switchToCreate: void;
@@ -14,7 +15,6 @@
 
   async function handleLogin() {
     authLoading.set(true);
-    authError.set(null);
 
     try {
       const response = await loginRequest(formUsername, formPassword);
@@ -42,8 +42,7 @@
       currentCharacter.set(lastChar || null);
 
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Login failed';
-      authError.set(message);
+      handleError('Login failed', err, { category: 'auth', context: 'handleLogin' });
     } finally {
       authLoading.set(false);
     }
@@ -53,10 +52,6 @@
 <div class="container d-flex justify-content-center align-items-center min-vh-100">
   <div class="card p-4" style="max-width: 400px; width: 100%;">
     <h2 class="mb-4 text-center">Login to Ravenest</h2>
-
-    {#if $authError}
-      <div class="alert alert-danger">{$authError}</div>
-    {/if}
 
     <form onsubmit={(e) => { e.preventDefault(); handleLogin(); }}>
       <div class="mb-3">

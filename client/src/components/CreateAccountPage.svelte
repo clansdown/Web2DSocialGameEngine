@@ -2,9 +2,10 @@
   import { onMount } from 'svelte';
   import { createEventDispatcher } from 'svelte';
   import { createAccountRequest } from '../lib/api';
+  import { handleError } from '../lib/errors';
   import * as auth from '../lib/auth';
   import { checkDigitalCredentialsSupport, requestAgeVerification } from '../lib/digitalCredentials';
-  import { user, characters, currentCharacter, authLoading, authError } from '../lib/stores';
+  import { user, characters, currentCharacter, authLoading } from '../lib/stores';
 
   const dispatch = createEventDispatcher<{
     switchToLogin: void;
@@ -38,7 +39,7 @@
       word2 = safeWords2[0];
     } catch (err) {
       console.error('Failed to load safe words:', err);
-      authError.set('Failed to load safe words data');
+      handleError('Failed to load safe words data', err, { category: 'general', context: 'loadSafeWords' });
     }
 
     dcApiSupported = await checkDigitalCredentialsSupport();
@@ -67,19 +68,26 @@
     }
 
     if (!dcApiSupported) {
-      authError.set('Digital Credentials API not supported in this browser. Adult verification unavailable.');
+      handleError(
+        'Digital Credentials API not supported in this browser. Adult verification unavailable.',
+        new Error('DC API not available'),
+        { category: 'general', context: 'handleAdultChange' }
+      );
       target.checked = false;
       return;
     }
 
     ageVerificationPending = true;
     authLoading.set(true);
-    authError.set(null);
 
     try {
       const credential = await requestAgeVerification('create-account');
       if (!credential) {
-        authError.set('Age verification cancelled or failed. Adult flag will not be set.');
+        handleError(
+          'Age verification cancelled or failed. Adult flag will not be set.',
+          new Error('Verification cancelled'),
+          { category: 'validation', context: 'handleAdultChange' }
+        );
         target.checked = false;
         adult = false;
         ageVerified = false;
@@ -88,7 +96,7 @@
         ageVerified = true;
       }
     } catch (err) {
-      authError.set('Age verification failed. Adult flag will not be set.');
+      handleError('Age verification failed. Adult flag will not be set.', err, { category: 'validation', context: 'handleAdultChange' });
       target.checked = false;
       adult = false;
       ageVerified = false;
@@ -100,22 +108,21 @@
 
   async function handleSubmit() {
     authLoading.set(true);
-    authError.set(null);
 
     if (formPassword !== formConfirmPassword) {
-      authError.set('Passwords do not match');
+      handleError('Passwords do not match', new Error('Password mismatch'), { category: 'validation', context: 'handleSubmit' });
       authLoading.set(false);
       return;
     }
 
     if (formPassword.length < 8) {
-      authError.set('Password must be at least 8 characters');
+      handleError('Password must be at least 8 characters', new Error('Password too short'), { category: 'validation', context: 'handleSubmit' });
       authLoading.set(false);
       return;
     }
 
     if (!word1 || !word2) {
-      authError.set('Please select both words for your character name');
+      handleError('Please select both words for your character name', new Error('Missing words'), { category: 'validation', context: 'handleSubmit' });
       authLoading.set(false);
       return;
     }
@@ -149,8 +156,7 @@
       currentCharacter.set(lastChar || null);
 
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Account creation failed';
-      authError.set(message);
+      handleError('Account creation failed', err, { category: 'auth', context: 'handleSubmit' });
     } finally {
       authLoading.set(false);
     }
@@ -164,10 +170,6 @@
 <div class="container d-flex justify-content-center align-items-center min-vh-100">
   <div class="card p-4" style="max-width: 500px; width: 100%;">
     <h2 class="mb-4 text-center">Create Account</h2>
-
-    {#if $authError}
-      <div class="alert alert-danger">{$authError}</div>
-    {/if}
 
     <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
       <div class="mb-3">

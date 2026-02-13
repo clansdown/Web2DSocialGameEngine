@@ -242,6 +242,14 @@ When testing or verifying the server, use the `agent_test_server.sh` script for 
 
 ### Coding Standards
 
+**Complete, Functional Code:**
+- Code written MUST always be complete and functional
+- Do NOT write stubs, placeholders, or "TODO: implement" code unless the user explicitly requests it
+- When implementing a feature, ensure it works end-to-end
+- If unsure about a design, ask the user rather than writing incomplete code
+- Test your code before committing
+- This ensures the codebase is always in a working state
+
 **Naming Conventions:**
 - Use snake_case for ALL names (variables, functions, classes, types)
 - Examples:
@@ -281,6 +289,14 @@ The client is a Vite + Svelte 5 + TypeScript application that provides the game 
 - Available storage functions and config storage API
 
 ### Coding Standards
+
+**Complete, Functional Code:**
+- Code written MUST always be complete and functional
+- Do NOT write stubs, placeholders, or "TODO: implement" code unless the user explicitly requests it
+- When implementing a feature, ensure it works end-to-end
+- If unsure about a design, ask the user rather than writing incomplete code
+- Test your code before committing
+- This ensures the codebase is always in a working state
 
 **Naming Conventions:**
 - Use snake_case for ALL names (variables, functions, classes, types, interfaces)

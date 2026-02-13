@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import AuthPage from './components/AuthPage.svelte';
   import CharacterSelect from './components/CharacterSelect.svelte';
+  import ErrorDisplay from './components/ErrorDisplay.svelte';
   import * as auth from './lib/auth';
   import { user, characters, currentCharacter, isLoggedIn, authLoading } from './lib/stores';
   import { loginRequest, refreshToken } from './lib/api';
@@ -73,6 +74,8 @@
     initialized = true;
   });
 </script>
+
+<ErrorDisplay />
 
 {#if $authLoading}
   <div class="container d-flex justify-content-center align-items-center min-vh-100">
