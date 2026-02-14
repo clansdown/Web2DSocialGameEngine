@@ -17,6 +17,7 @@
 #include "init_db.hpp"
 #include "FiefdomFetcher.hpp"
 #include "GameConfigCache.hpp"
+#include "images/ImageCache.hpp"
 #include "ActionHandler.hpp"
 #include "ActionHandlers.hpp"
 #include "GridCollision.hpp"
@@ -636,12 +637,78 @@ ApiResponse handleGetGameInfo(const json& body,
     ApiResponse response;
 
     auto& cache = GameConfigCache::getInstance();
+    auto& img_cache = ImageCache::getInstance();
+
     if (!cache.isLoaded()) {
         response.error = "Game configuration not loaded";
         return response;
     }
 
-    response.data = cache.getAllConfigs();
+    if (!img_cache.isLoaded()) {
+        response.error = "Images not loaded";
+        return response;
+    }
+
+    nlohmann::json configs;
+    nlohmann::json images;
+
+    if (body.contains("filters") && body["filters"].is_object()) {
+        const json& filters = body["filters"];
+
+        nlohmann::json filtered_configs = json::object();
+        nlohmann::json filtered_images = json::object();
+
+        if (filters.contains("asset_types") && filters["asset_types"].is_array()) {
+            for (const auto& type : filters["asset_types"]) {
+                std::string asset_type = type.get<std::string>();
+
+                if (asset_type == "damage_types") {
+                    filtered_configs["damage_types"] = cache.getDamageTypes();
+                } else if (asset_type == "fiefdom_building_types") {
+                    filtered_configs["fiefdom_building_types"] = cache.getFiefdomBuildingTypes();
+                } else if (asset_type == "player_combatants") {
+                    filtered_configs["player_combatants"] = cache.getPlayerCombatants();
+                } else if (asset_type == "enemy_combatants") {
+                    filtered_configs["enemy_combatants"] = cache.getEnemyCombatants();
+                } else if (asset_type == "heroes") {
+                    filtered_configs["heroes"] = cache.getHeroes();
+                } else if (asset_type == "fiefdom_officials") {
+                    filtered_configs["fiefdom_officials"] = cache.getFiefdomOfficials();
+                } else if (asset_type == "wall_config") {
+                    filtered_configs["wall_config"] = cache.getWallConfig();
+                } else if (asset_type == "buildings") {
+                    filtered_images["buildings"] = img_cache.getImagesByType("buildings");
+                } else if (asset_type == "combatants") {
+                    filtered_images["combatants"] = img_cache.getImagesByType("combatants");
+                } else if (asset_type == "heroes") {
+                    filtered_images["heroes"] = img_cache.getImagesByType("heroes");
+                } else if (asset_type == "portraits") {
+                    filtered_images["portraits"] = img_cache.getImagesByType("portraits");
+                }
+            }
+        }
+
+        if (filters.contains("asset_ids") && filters["asset_ids"].is_array()) {
+            std::vector<std::string> ids;
+            for (const auto& id : filters["asset_ids"]) {
+                ids.push_back(id.get<std::string>());
+            }
+            filtered_images = img_cache.getImagesByIds(ids);
+        }
+
+        configs = filtered_configs;
+        images = filtered_images;
+
+        if (images.is_null() || images.empty()) {
+            images = json::object();
+        }
+    } else {
+        configs = cache.getAllConfigs();
+        images = img_cache.getImages();
+    }
+
+    response.data["configs"] = configs;
+    response.data["images"] = images;
 
     if (new_token) {
         response.data["token"] = *new_token;
@@ -690,12 +757,6 @@ void handleApiRequest(auto* res, auto* req) {
             }
 
             // Authenticated endpoints
-            if (endpoint == "getGameInfo") {
-                ApiResponse response = handleGetGameInfo(body, auth_result.username, client, auth_result.new_token);
-                sendJsonResponse(res, response);
-                return;
-            }
-
             auto& handlers = getEndpointHandlers();
             if (handlers.count(endpoint)) {
                 ApiResponse response = handlers[endpoint](body, auth_result.username, client, auth_result.new_token);
@@ -792,6 +853,10 @@ int main(int argc, char* argv[]) {
 
     if (!GameConfigCache::getInstance().initialize("config")) {
         std::cerr << "Warning: Failed to load game configuration files" << std::endl;
+    }
+
+    if (!ImageCache::getInstance().initialize("images")) {
+        std::cerr << "Warning: Failed to initialize image cache" << std::endl;
     }
 
     std::string game_db_path = g_db_dir + "/game.db";

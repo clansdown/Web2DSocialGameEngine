@@ -15,6 +15,7 @@ public:
     const nlohmann::json& getEnemyCombatants() const;
     const nlohmann::json& getHeroes() const;
     const nlohmann::json& getFiefdomOfficials() const;
+    const nlohmann::json& getWallConfig() const;
 
     nlohmann::json getAllConfigs() const;
 
@@ -33,5 +34,6 @@ private:
     nlohmann::json enemy_combatants_;
     nlohmann::json heroes_;
     nlohmann::json fiefdom_officials_;
+    nlohmann::json wall_config_;
     bool loaded_ = false;
 };

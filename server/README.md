@@ -66,7 +66,11 @@ server/
 ├── AuthManager.hpp       # Token cache and SHA256 generation
 ├── ApiHandlers.hpp       # Handler types, ClientInfo, endpoint map
 ├── PasswordHash.hpp      # glibc crypt() yescrypt hashing
-└── SafeNameGenerator.*   # Safe display name generation
+├── SafeNameGenerator.*   # Safe display name generation
+├── GameConfigCache.*     # Game configuration JSON caching
+├── images/
+│   ├── ImageCache.hpp    # Image directory scanning and caching
+│   └── ImageCache.cpp    # Image path queries and filtering
 ```
 
 ## Authentication System
@@ -185,6 +189,13 @@ All responses descend from base structure:
 - **Auth**: Required (password OR token)
 - **Behavior**: Update character display names (requires character_id, checks adult flag)
 - **Response**: `{ "id": ..., "display_name": ..., "safe_display_name": ..., "level": ..., "token": "..." }`
+
+### getGameInfo
+- **Auth**: Required (password OR token)
+- **Behavior**: Returns game configuration data and image information for all assets. Supports optional filtering via `filters` parameter.
+- **Response**: `{ "configs": {...}, "images": {...}, "token": "..." }`
+- **Filtering**: Optional `filters` parameter with `asset_types` (config and image types) and/or `asset_ids` (specific asset identifiers)
+- **Note**: Returns both `configs` (JSON config data) and `images` (image paths grouped by asset type and action)
 
 ### getPlayer, Build, getWorld, getFiefdom, sally, campaign, hunt
 - **Auth**: Required (password OR token)
@@ -335,6 +346,28 @@ The server uses `init_db.cpp` to manage database schema creation and index manag
 ```
 
 For normal server operation, `initializeAllDatabases()` is called automatically on startup to create tables and ensure indexes.
+
+### Configuration and Image Loading
+
+On startup, the server loads game configuration and image data:
+
+1. **GameConfigCache**: Loads all JSON config files from `config/` directory:
+   - `damage_types.json` - Damage type definitions
+   - `fiefdom_building_types.json` - Building definitions
+   - `player_combatants.json` - Player unit definitions
+   - `enemy_combatants.json` - Enemy unit definitions
+   - `heroes.json` - Hero character definitions
+   - `fiefdom_officials.json` - Fiefdom official templates
+   - `wall_config.json` - Wall configuration definitions
+
+2. **ImageCache**: Scans the `images/` directory to build an in-memory cache of all available images:
+   - `images/buildings/{building_id}/{action}/{frame}.png`
+   - `images/combatants/{combatant_id}/{action}/{frame}.png`
+   - `images/heroes/{hero_id}/{action}/{frame}.png`
+   - `images/heroes/{hero_id}/skills/{skill_id}/{frame}.png`
+   - `images/portraits/{portrait_id}/{frame}.png`
+
+Both caches are used by the `getGameInfo` endpoint to provide complete game data and image paths to clients.
 
 ## Future Enhancements
 
