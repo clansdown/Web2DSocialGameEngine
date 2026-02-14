@@ -7,44 +7,180 @@ image generation API (Nano Banana / Gemini). Reads configuration files,
 identifies missing assets, and creates placeholder images with chroma
 key transparency for easy replacement.
 
-Usage:
-    python3 tools/generate_placeholder_art.py [extra_instructions]
+================================================================================
+OVERVIEW
+================================================================================
 
-Arguments:
-    extra_instructions    Additional LLM instructions (free text, positional)
+This script generates sprite images for game assets. It follows this workflow:
 
-Options:
-    -h, --help            Show this help message
-    -y, --yes             Auto-confirm generation (skip confirmation prompt)
-    -a, --animations      Generate optional animation frames
-    --model MODEL         OpenRouter model (default: google/gemini-2.5-flash-image)
-    --config-dir DIR      Config directory (default: server/config)
-    --images-dir DIR      Images output directory (default: server/images)
-    --instructions-dir DIR  LLM instructions directory (default: server/config/llm_instructions)
-    --reference-dir DIR   Reference images directory (default: server/config/reference_images)
-    --resolution WxH      Image resolution (default: 512x512)
-    --max-frames NUM      Max animation frames (default: 8)
-    --max-images NUM      Maximum number of images to generate
-    --max-cost NUM        Maximum cost in USD before stopping
-    --dry-run             Validate config and show plan without generating
-    -q, --quiet           Minimal output
-    -v, --verbose         Detailed output
+1. ENVIRONMENT SETUP
+   - Load OpenRouter API key from .openrouter file in repo root
+   - Load LLM instruction files from server/config/llm_instructions/
+   - Parse command-line arguments
+
+2. CONFIG LOADING
+   - Load player_combatants.json (player units: spearman, archer, knight, mage)
+   - Load enemy_combatants.json (enemy units: goblin, orc, dark_mage, etc.)
+   - Load fiefdom_building_types.json (buildings: farm, barracks, mine, etc.)
+   - Load heroes.json (heroes: knight_hero, mage_hero, ranger_hero)
+   - Load fiefdom_officials.json (officials: henry_wise_steward, etc.)
+
+3. ASSET SCANNING
+   - Scan server/images/ directory for existing images
+   - Identify assets that need new images (no existing images)
+   - OR scan for specific assets to regenerate (with --regenerate)
+
+4. FILE CALCULATION
+   - For each asset, determine what images need generation
+   - Default: idle animation only
+   - With --animations: also generate attack, defend, die frames
+   - Calculate total files and estimated cost
+
+5. IMAGE GENERATION
+   - For each file, build prompt from LLM instructions
+   - Call OpenRouter API with prompt
+   - Receive base64-encoded PNG image
+   - Post-process (chroma key transparency)
+   - Save to server/images/{type}/{id}/{action}/{frame}.png
+
+6. SAVE AND REPORT
+   - Save all generated images
+   - Print summary (images generated, total cost, average cost)
+
+================================================================================
+DIRECTORY STRUCTURE
+================================================================================
+
+Expected image directory structure:
+
+    server/images/
+    ├── buildings/{building_id}/
+    │   ├── construction/{frame}.png    (1.png, 2.png, ...)
+    │   ├── idle/{frame}.png
+    │   ├── harvest/{frame}.png         (if --animations)
+    │   └── damaged/{frame}.png
+    │
+    ├── combatants/{combatant_id}/
+    │   ├── idle/{frame}.png
+    │   ├── attack/{frame}.png          (if --animations)
+    │   ├── defend/{frame}.png          (if --animations)
+    │   └── die/{frame}.png             (if --animations)
+    │
+    ├── heroes/{hero_id}/
+    │   ├── idle/{frame}.png
+    │   ├── attack/{frame}.png
+    │   └── skills/{skill_id}/
+    │
+    └── portraits/{portrait_id}/
+        └── {frame}.png                 (official portraits)
 
 Examples:
-    # Basic usage - generate required images only
+    server/images/buildings/farm/idle/1.png
+    server/images/combatants/goblin/idle/1.png
+    server/images/heroes/knight_hero/attack/1.png
+    server/images/portraits/100/1.png
+
+================================================================================
+ASSET TYPES
+================================================================================
+
+The script handles four asset types:
+
+  COMBATANT (type value: "combatants")
+    - Source: player_combatants.json, enemy_combatants.json
+    - Actions: idle, attack, defend, die
+    - Example IDs: spearman, archer, knight, mage, goblin, orc, dark_mage, bandit, troll
+
+  BUILDING (type value: "buildings")
+    - Source: fiefdom_building_types.json
+    - Actions: idle, construction, harvest, damaged
+    - Example IDs: farm, barracks, mine, sawmill, house, home_base
+
+  HERO (type value: "heroes")
+    - Source: heroes.json
+    - Actions: idle, attack, skills/{skill_id}
+    - Example IDs: knight_hero, mage_hero, ranger_hero
+
+  OFFICIAL (type value: "portraits")
+    - Source: fiefdom_officials.json
+    - Actions: (single portrait image)
+    - Example IDs: 100, 101, 102, ... (portrait_id from config)
+
+================================================================================
+REFERENCE IMAGES
+================================================================================
+
+Optional reference images provide style guidance for the AI model. Place in:
+
+    server/config/reference_images/{asset_id}_ref.png
+
+For example:
+    server/config/reference_images/goblin_ref.png
+    server/config/reference_images/farm_ref.png
+
+The script checks for reference images before generation. If missing, it lists
+required files and exits. Reference images help maintain visual consistency
+across all generated assets.
+
+================================================================================
+COST ESTIMATION
+================================================================================
+
+The script queries OpenRouter's API to get current model pricing, then
+estimates total cost before generation:
+
+    Estimated cost = (input_cost + output_cost) per 1M tokens * number of images
+
+With --max-cost, generation stops automatically when the limit is reached.
+Use --dry-run to see estimated costs without generating.
+
+================================================================================
+REGENERATE FEATURE
+================================================================================
+
+Use --regenerate to force regeneration of existing assets:
+
+    # Regenerate specific asset by ID
+    python3 tools/generate_placeholder_art.py --regenerate farm
+
+    # Regenerate all assets of a type
+    python3 tools/generate_placeholder_art.py --regenerate buildings
+    python3 tools/generate_placeholder_art.py --regenerate combatants
+    python3 tools/generate_placeholder_art.py --regenerate heroes
+    python3 tools/generate_placeholder_art.py --regenerate officials
+
+    # List all available assets
+    python3 tools/generate_placeholder_art.py --list-assets
+
+Backup Behavior:
+    - By default, existing images are backed up to /tmp/ravenest_asset_backups/
+    - Backup format: {asset_type}_{asset_id}_{timestamp}/
+    - Use --no-backup to delete without backup (data loss risk)
+
+================================================================================
+USAGE EXAMPLES
+================================================================================
+
+    # Generate missing images only (default behavior)
     python3 tools/generate_placeholder_art.py
 
-    # Generate with animations
+    # Generate with animation frames
     python3 tools/generate_placeholder_art.py --animations
 
-    # Cost-limited generation
+    # Limit total cost to $0.50
     python3 tools/generate_placeholder_art.py --max-cost 0.50
 
-    # With custom instructions
-    python3 tools/generate_placeholder_art.py "Make goblins more menacing"
-
-    # Preview what will be generated
+    # Preview what would be generated
     python3 tools/generate_placeholder_art.py --dry-run
+
+    # Regenerate specific asset (with backup)
+    python3 tools/generate_placeholder_art.py --regenerate farm
+
+    # Regenerate without backup (faster)
+    python3 tools/generate_placeholder_art.py --regenerate farm --no-backup
+
+    # List all available assets for --regenerate
+    python3 tools/generate_placeholder_art.py --list-assets
 """
 
 from __future__ import annotations
@@ -53,7 +189,9 @@ import argparse
 import base64
 import io
 import json
+import shutil
 import sys
+import uuid
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -213,6 +351,29 @@ def parse_arguments() -> tuple[argparse.Namespace, list[str]]:
         "-v", "--verbose",
         action="store_true",
         help="Detailed output"
+    )
+    
+    parser.add_argument(
+        "--regenerate",
+        type=str,
+        default=None,
+        help=(
+            "Regenerate images for a specific asset. Accepts either an asset type "
+            "(buildings, combatants, heroes, officials) or an asset ID "
+            "(e.g., farm, spearman, knight_hero). Forces overwrite of existing images."
+        )
+    )
+    
+    parser.add_argument(
+        "--list-assets",
+        action="store_true",
+        help="List all possible asset types and IDs that can be used with --regenerate"
+    )
+    
+    parser.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Skip backup and delete existing images directly when using --regenerate (use with caution)"
     )
     
     args: argparse.Namespace = parser.parse_args()
@@ -484,6 +645,306 @@ def check_reference_images(
             print(f"  - server/config/reference_images/{img}")
         print("\nRun this tool again after creating reference images.")
         sys.exit(0)
+
+
+def list_all_assets(config_dir: Path) -> None:
+    """List all regeneratable asset types and specific asset IDs.
+    
+    Args:
+        config_dir: Directory containing JSON config files
+    """
+    print("\n" + "=" * 60)
+    print("AVAILABLE ASSETS FOR --regenerate")
+    print("=" * 60 + "\n")
+
+    # Asset types
+    print("=== Asset Types ===")
+    print("  buildings")
+    print("  combatants")
+    print("  heroes")
+    print("  officials")
+    print()
+
+    # Load all configs and collect IDs
+    assets_by_type: dict[str, list[str]] = {
+        "buildings": [],
+        "combatants": [],
+        "heroes": [],
+        "portraits": []
+    }
+
+    # Load buildings
+    buildings_file: Path = config_dir / "fiefdom_building_types.json"
+    if buildings_file.exists():
+        with open(buildings_file, encoding="utf-8") as f:
+            buildings_data: list[dict] = json.load(f)
+        for building_entry in buildings_data:
+            for building_id in building_entry.keys():
+                assets_by_type["buildings"].append(building_id)
+
+    # Load player combatants
+    player_combatants_file: Path = config_dir / "player_combatants.json"
+    if player_combatants_file.exists():
+        with open(player_combatants_file, encoding="utf-8") as f:
+            player_data: dict[str, dict] = json.load(f)
+        for combatant_id in player_data.keys():
+            assets_by_type["combatants"].append(combatant_id)
+
+    # Load enemy combatants
+    enemy_combatants_file: Path = config_dir / "enemy_combatants.json"
+    if enemy_combatants_file.exists():
+        with open(enemy_combatants_file, encoding="utf-8") as f:
+            enemy_data: dict[str, dict] = json.load(f)
+        for combatant_id in enemy_data.keys():
+            assets_by_type["combatants"].append(combatant_id)
+
+    # Load heroes
+    heroes_file: Path = config_dir / "heroes.json"
+    if heroes_file.exists():
+        with open(heroes_file, encoding="utf-8") as f:
+            heroes_data: dict[str, dict] = json.load(f)
+        for hero_id in heroes_data.keys():
+            assets_by_type["heroes"].append(hero_id)
+
+    # Load officials (portrait IDs)
+    officials_file: Path = config_dir / "fiefdom_officials.json"
+    if officials_file.exists():
+        with open(officials_file, encoding="utf-8") as f:
+            officials_data: dict[str, dict] = json.load(f)
+        for official_data in officials_data.values():
+            portrait_id: int = official_data.get("portrait_id", 0)
+            assets_by_type["portraits"].append(str(portrait_id))
+
+    # Print by type
+    print("=== Asset IDs by Type ===")
+
+    print("  buildings:  ", end="")
+    print(", ".join(sorted(assets_by_type["buildings"])) if assets_by_type["buildings"] else "(none)")
+
+    print("  combatants: ", end="")
+    print(", ".join(sorted(assets_by_type["combatants"])) if assets_by_type["combatants"] else "(none)")
+
+    print("  heroes:     ", end="")
+    print(", ".join(sorted(assets_by_type["heroes"])) if assets_by_type["heroes"] else "(none)")
+
+    print("  officials:  ", end="")
+    print(", ".join(sorted(assets_by_type["portraits"])) if assets_by_type["portraits"] else "(none)")
+
+    print("\n" + "=" * 60)
+    print("USAGE EXAMPLES")
+    print("=" * 60)
+    print()
+    print("  # Regenerate specific asset by ID:")
+    print("  python3 tools/generate_placeholder_art.py --regenerate farm")
+    print()
+    print("  # Regenerate all assets of a type:")
+    print("  python3 tools/generate_placeholder_art.py --regenerate buildings")
+    print()
+    print("  # Regenerate without backup (faster, no recovery):")
+    print("  python3 tools/generate_placeholder_art.py --regenerate farm --no-backup")
+    print()
+
+
+def get_all_assets_for_regenerate(
+    config_dir: Path,
+    filter_value: str
+) -> list[AssetInfo]:
+    """Get all assets matching a filter (type or ID) for regeneration.
+    
+    Args:
+        config_dir: Directory containing JSON config files
+        filter_value: Either an asset type (buildings/combatants/heroes/officials)
+                     or a specific asset ID (e.g., farm, spearman)
+    
+    Returns:
+        list[AssetInfo]: List of assets matching the filter
+    """
+    assets: list[AssetInfo] = []
+    
+    # Determine if filter is an asset type or specific ID
+    filter_lower: str = filter_value.lower()
+    asset_types_lower: dict[str, str] = {
+        "buildings": "buildings",
+        "combatants": "combatants",
+        "heroes": "heroes",
+        "officials": "officials"
+    }
+    
+    is_asset_type: bool = filter_lower in asset_types_lower
+    
+    # Helper to add assets by type
+    def add_assets_by_type(target_type: AssetType, config_file: Path, id_key: str = None) -> None:
+        if not config_file.exists():
+            return
+        with open(config_file, encoding="utf-8") as f:
+            data: dict = json.load(f)
+        for item_id, item_data in data.items():
+            if id_key:
+                actual_id = str(item_data.get(id_key, item_id))
+            else:
+                actual_id = item_id
+            name: str = item_data.get("name", actual_id)
+            visual_desc: str | None = item_data.get("visual_description")
+            portrait_desc: str | None = item_data.get("portrait_description")
+            assets.append(AssetInfo(
+                asset_type=target_type,
+                id=actual_id,
+                name=name,
+                visual_description=visual_desc,
+                portrait_description=portrait_desc
+            ))
+    
+    if is_asset_type:
+        # Filter is an asset type - return all assets of that type
+        if filter_lower == "buildings":
+            add_assets_by_type(AssetType.BUILDING, config_dir / "fiefdom_building_types.json")
+        elif filter_lower == "combatants":
+            add_assets_by_type(AssetType.COMBATANT, config_dir / "player_combatants.json")
+            add_assets_by_type(AssetType.COMBATANT, config_dir / "enemy_combatants.json")
+        elif filter_lower == "heroes":
+            add_assets_by_type(AssetType.HERO, config_dir / "heroes.json")
+        elif filter_lower == "officials":
+            # Officials use portrait_id
+            officials_file: Path = config_dir / "fiefdom_officials.json"
+            if officials_file.exists():
+                with open(officials_file, encoding="utf-8") as f:
+                    officials_data: dict[str, dict] = json.load(f)
+                for official_id, official_data in officials_data.items():
+                    portrait_id: int = official_data.get("portrait_id", 0)
+                    assets.append(AssetInfo(
+                        asset_type=AssetType.OFFICIAL,
+                        id=str(portrait_id),
+                        name=official_data.get("name", official_id),
+                        visual_description=None,
+                        portrait_description=official_data.get("portrait_description")
+                    ))
+    else:
+        # Filter is a specific asset ID - search all configs
+        filter_id: str = filter_value
+        
+        # Check buildings
+        buildings_file: Path = config_dir / "fiefdom_building_types.json"
+        if buildings_file.exists():
+            with open(buildings_file, encoding="utf-8") as f:
+                buildings_data: list[dict] = json.load(f)
+            for building_entry in buildings_data:
+                for building_id, building_data in building_entry.items():
+                    if building_id == filter_id:
+                        assets.append(AssetInfo(
+                            asset_type=AssetType.BUILDING,
+                            id=building_id,
+                            name=building_id,
+                            visual_description=building_data.get("visual_description"),
+                            portrait_description=None
+                        ))
+                        break
+        
+        # Check player combatants
+        player_combatants_file: Path = config_dir / "player_combatants.json"
+        if player_combatants_file.exists() and not assets:
+            with open(player_combatants_file, encoding="utf-8") as f:
+                player_data: dict[str, dict] = json.load(f)
+            for combatant_id, combatant_data in player_data.items():
+                if combatant_id == filter_id:
+                    assets.append(AssetInfo(
+                        asset_type=AssetType.COMBATANT,
+                        id=combatant_id,
+                        name=combatant_data.get("name", combatant_id),
+                        visual_description=combatant_data.get("visual_description"),
+                        portrait_description=None
+                    ))
+                    break
+        
+        # Check enemy combatants
+        enemy_combatants_file: Path = config_dir / "enemy_combatants.json"
+        if enemy_combatants_file.exists() and not assets:
+            with open(enemy_combatants_file, encoding="utf-8") as f:
+                enemy_data: dict[str, dict] = json.load(f)
+            for combatant_id, combatant_data in enemy_data.items():
+                if combatant_id == filter_id:
+                    assets.append(AssetInfo(
+                        asset_type=AssetType.COMBATANT,
+                        id=combatant_id,
+                        name=combatant_data.get("name", combatant_id),
+                        visual_description=combatant_data.get("visual_description"),
+                        portrait_description=None
+                    ))
+                    break
+        
+        # Check heroes
+        heroes_file: Path = config_dir / "heroes.json"
+        if heroes_file.exists() and not assets:
+            with open(heroes_file, encoding="utf-8") as f:
+                heroes_data: dict[str, dict] = json.load(f)
+            for hero_id, hero_data in heroes_data.items():
+                if hero_id == filter_id:
+                    assets.append(AssetInfo(
+                        asset_type=AssetType.HERO,
+                        id=hero_id,
+                        name=hero_data.get("name", hero_id),
+                        visual_description=hero_data.get("visual_description"),
+                        portrait_description=None
+                    ))
+                    break
+        
+        # Check officials (by portrait_id)
+        officials_file: Path = config_dir / "fiefdom_officials.json"
+        if officials_file.exists() and not assets:
+            with open(officials_file, encoding="utf-8") as f:
+                officials_data: dict[str, dict] = json.load(f)
+            for official_id, official_data in officials_data.items():
+                portrait_id: str = str(official_data.get("portrait_id", ""))
+                if portrait_id == filter_id:
+                    assets.append(AssetInfo(
+                        asset_type=AssetType.OFFICIAL,
+                        id=portrait_id,
+                        name=official_data.get("name", official_id),
+                        visual_description=None,
+                        portrait_description=official_data.get("portrait_description")
+                    ))
+                    break
+    
+    return assets
+
+
+def backup_and_delete_asset_images(
+    asset: AssetInfo,
+    images_dir: Path,
+    create_backup: bool = True
+) -> Path | None:
+    """Move existing asset images to /tmp backup location or delete directly.
+    
+    Args:
+        asset: The asset to backup and delete
+        images_dir: Base images directory
+        create_backup: If True, backup to /tmp. If False, delete directly.
+    
+    Returns:
+        Backup directory path if backed up, None if no existing images or --no-backup used
+    """
+    asset_dir: Path = images_dir / asset.asset_type.value / asset.id
+    
+    if not asset_dir.exists():
+        return None
+    
+    if not create_backup:
+        # Direct deletion without backup
+        shutil.rmtree(asset_dir)
+        print(f"Deleted: images/{asset.asset_type.value}/{asset.id}/")
+        return None
+    
+    # Create backup in /tmp
+    backup_root: Path = Path("/tmp") / "ravenest_asset_backups"
+    backup_root.mkdir(exist_ok=True)
+    
+    # Create unique backup directory
+    unique_id: str = uuid.uuid4().hex[:8]
+    backup_dir: Path = backup_root / f"{asset.asset_type.value}_{asset.id}_{unique_id}"
+    
+    shutil.move(str(asset_dir), str(backup_dir))
+    print(f"Backed up to: {backup_dir}")
+    
+    return backup_dir
 
 
 def calculate_files_to_generate(
@@ -844,12 +1305,20 @@ def main() -> None:
     images_dir: Path = args.images_dir
     instructions_dir: Path = args.instructions_dir
     
-    # Load API key
-    try:
-        api_key: str = load_api_key()
-    except FileNotFoundError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+    # Load API key (skip for --list-assets)
+    if not args.list_assets:
+        try:
+            api_key: str = load_api_key()
+        except FileNotFoundError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+    else:
+        api_key: str = ""
+    
+    # Handle --list-assets
+    if args.list_assets:
+        list_all_assets(config_dir)
+        sys.exit(0)
     
     # Parse resolution
     try:
@@ -863,17 +1332,39 @@ def main() -> None:
         print(f"Loading LLM instructions from {instructions_dir}")
     instructions: LLMInstructions = load_llm_instructions(instructions_dir)
     
-    # Identify assets needing images
-    if not args.quiet:
-        print(f"Scanning for missing assets...")
-    assets_needed: list[AssetInfo] = scan_for_missing_assets(config_dir, images_dir)
-    
-    if not assets_needed:
-        print("\nAll images already present. Nothing to generate.")
-        sys.exit(0)
-    
-    if not args.quiet:
-        print(f"Found {len(assets_needed)} assets needing images")
+    # Handle --regenerate mode
+    if args.regenerate:
+        # Get assets to regenerate
+        assets_needed = get_all_assets_for_regenerate(config_dir, args.regenerate)
+        
+        if not assets_needed:
+            print(f"\nNo assets found matching: {args.regenerate}")
+            print("Use --list-assets to see all available assets")
+            sys.exit(1)
+        
+        # Warn about no backup
+        if args.no_backup:
+            print("NOTE: --no-backup enabled - images will be deleted without backup\n")
+        
+        # Backup and delete existing directories
+        for asset in assets_needed:
+            backup_and_delete_asset_images(asset, images_dir, not args.no_backup)
+        
+        if not args.quiet:
+            print(f"\n=== Regenerating: {args.regenerate} ===")
+            print(f"Found {len(assets_needed)} asset(s) to regenerate\n")
+    else:
+        # Original behavior - scan for missing assets
+        if not args.quiet:
+            print(f"Scanning for missing assets...")
+        assets_needed = scan_for_missing_assets(config_dir, images_dir)
+        
+        if not assets_needed:
+            print("\nAll images already present. Nothing to generate.")
+            sys.exit(0)
+        
+        if not args.quiet:
+            print(f"Found {len(assets_needed)} assets needing images")
     
     # Calculate files to generate
     files_to_generate: list[tuple[AssetInfo, str, int | None]] = calculate_files_to_generate(
@@ -914,12 +1405,13 @@ def main() -> None:
             print("\nGeneration cancelled by user.")
             sys.exit(0)
     
-    # Check reference images
-    combatants: list[AssetInfo] = [a for a in assets_needed if a.asset_type == AssetType.COMBATANT]
-    buildings: list[AssetInfo] = [a for a in assets_needed if a.asset_type == AssetType.BUILDING]
-    heroes: list[AssetInfo] = [a for a in assets_needed if a.asset_type == AssetType.HERO]
-    
-    check_reference_images(args.reference_dir, combatants + buildings + heroes, args.quiet)
+    # Check reference images (skip for regenerate mode)
+    if not args.regenerate:
+        combatants: list[AssetInfo] = [a for a in assets_needed if a.asset_type == AssetType.COMBATANT]
+        buildings: list[AssetInfo] = [a for a in assets_needed if a.asset_type == AssetType.BUILDING]
+        heroes: list[AssetInfo] = [a for a in assets_needed if a.asset_type == AssetType.HERO]
+        
+        check_reference_images(args.reference_dir, combatants + buildings + heroes, args.quiet)
     
     # Get model pricing
     input_cost, output_cost = get_model_pricing(api_key)
