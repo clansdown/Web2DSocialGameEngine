@@ -22,6 +22,7 @@
 #include "ActionHandlers.hpp"
 #include "GridCollision.hpp"
 #include "DigitalCredentialsVerifier.hpp"
+#include "game_logic.hpp"
 
 using json = nlohmann::json;
 
@@ -317,6 +318,13 @@ ApiResponse handleGetFiefdom(const json& body,
     bool include_officials = body.value("include_officials", false);
     bool include_heroes = body.value("include_heroes", false);
     bool include_combatants = body.value("include_combatants", false);
+
+    auto& db = Database::getInstance().gameDB();
+    int64_t last_update_time = 0;
+    db << "SELECT last_update_time FROM fiefdoms WHERE id = ?;" << fiefdom_id
+       >> [&](int64_t ts) { last_update_time = ts; };
+
+    GameLogic::updateStateSince(last_update_time, std::to_string(fiefdom_id));
 
     auto fiefdom_opt = FiefdomFetcher::fetchFiefdomById(
         fiefdom_id,

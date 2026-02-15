@@ -224,3 +224,4 @@ Get fiefdom information including resources, buildings, and officials.
 - **Officials**: All 8 official roles with full stat tracking (intelligence, charisma, wisdom, diligence)
 - **Optional includes**: Buildings, officials, heroes, and combatants can be optionally included via request parameters
 - **Performance**: Database queries skipped when optional data is not requested
+- **Production updates**: Automatically applied before returning data. Pending resource production and construction completions are calculated based on `last_update_time` and applied to ensure client receives the latest state. Uses 1-second minimum guard to prevent excessive CPU/disk I/O from rapid requests.

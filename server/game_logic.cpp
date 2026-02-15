@@ -82,7 +82,7 @@ TimeUpdateResult updateStateSince(Timestamp last_update_time, const std::string&
     result.time_hours_elapsed = static_cast<double>(result.new_timestamp - last_update_time) / 3600.0;
     result.fiefdoms_updated = 0;
     
-    if (result.time_hours_elapsed < 0.001) {
+    if (result.time_hours_elapsed < (1.0 / 3600.0)) {
         return result;
     }
     
