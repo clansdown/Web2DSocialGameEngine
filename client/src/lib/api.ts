@@ -253,3 +253,197 @@ export async function refreshToken(
 
   return { token: res.token };
 }
+
+// ── Mini-game API types ──────────────────────────────────────────────
+
+export interface MiniGameProgress {
+  id: number;
+  character_id: number;
+  mini_game: string;
+  level_id: number;
+  completed: boolean;
+  best_score: number;
+  times_played: number;
+  last_played: number;
+}
+
+export interface PlayerGameState {
+  character_id: number;
+  game_phase: 'initial_mission' | 'sandbox';
+  current_mini_game: string | null;
+  current_level_id: number | null;
+  base_unlocked: boolean;
+  entered_at: number;
+  last_updated: number;
+  progress: MiniGameProgress[];
+}
+
+export interface MiniGameLevelConfig {
+  id: number;
+  row: number;
+  col: number;
+  difficulty: number;
+  reward?: Record<string, number>;
+  map?: string;
+  mini_game?: string;
+  level_id?: number;
+  num_waves?: number;
+  lane_count?: number;
+  enemy_types?: string[];
+  [key: string]: unknown;
+}
+
+export interface StartMiniGameResponse {
+  character_id: number;
+  mini_game: string;
+  level_id: number;
+  level_config: MiniGameLevelConfig;
+  [key: string]: unknown;
+}
+
+export interface EndMiniGameResponse {
+  completed: boolean;
+  score: number;
+  new_best_score: number;
+  times_played: number;
+  all_levels_done: boolean;
+  base_unlocked: boolean;
+  game_phase: string;
+  next_level_id: number | null;
+  rewards: Record<string, number>;
+  completion_bonus?: Record<string, number>;
+}
+
+export interface MiniGameConfig {
+  name: string;
+  display_name: string;
+  description: string;
+  grid_size: number;
+  sequential: boolean;
+  levels: MiniGameLevelConfig[];
+  completion_bonus: {
+    base_unlock: boolean;
+    resources: Record<string, number>;
+  };
+  replay_config: {
+    random_generation: boolean;
+    difficulty_scaling: Record<string, number>;
+    reward_scaling: Record<string, number>;
+  };
+}
+
+/**
+ * Fetches the current player's game state including phase, active mini-game,
+ * and progress across all mini-game campaigns.
+ *
+ * @param characterId - The character ID whose state to fetch
+ * @param auth - Authentication object with username and token
+ * @returns Promise<PlayerGameState> - Current game state
+ *
+ * Usage: Called on character selection and after mini-game transitions
+ */
+export async function getPlayerStateRequest(
+  characterId: number,
+  auth: { username: string; token: string }
+): Promise<PlayerGameState> {
+  const res = await apiPost<PlayerGameState>('getPlayerState', {
+    character_id: characterId
+  }, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return res.data as PlayerGameState;
+}
+
+/**
+ * Starts a mini-game session for the character.
+ * Validates prerequisites and returns level configuration.
+ *
+ * @param characterId - The character playing the mini-game
+ * @param miniGame - The mini-game name ('tower_defense' or 'weeding')
+ * @param auth - Authentication object with username and token
+ * @returns Promise<StartMiniGameResponse> - Level config for the client to render
+ *
+ * Usage: Called when player selects a level from the mini-game grid
+ */
+export async function startMiniGameRequest(
+  characterId: number,
+  miniGame: string,
+  auth: { username: string; token: string }
+): Promise<StartMiniGameResponse> {
+  const res = await apiPost<StartMiniGameResponse>('startMiniGame', {
+    character_id: characterId,
+    mini_game: miniGame
+  }, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return res.data as StartMiniGameResponse;
+}
+
+/**
+ * Ends a mini-game session and reports the outcome to the server.
+ * Processes rewards, updates progress, and potentially unlocks the base.
+ *
+ * @param characterId - The character who played
+ * @param miniGame - The mini-game name
+ * @param levelId - The level that was played
+ * @param won - Whether the player won
+ * @param score - The player's score
+ * @param auth - Authentication object with username and token
+ * @returns Promise<EndMiniGameResponse> - Results including rewards and next level
+ *
+ * Usage: Called when the mini-game finishes (win, lose, or quit)
+ */
+export async function endMiniGameRequest(
+  characterId: number,
+  miniGame: string,
+  levelId: number,
+  won: boolean,
+  score: number,
+  auth: { username: string; token: string }
+): Promise<EndMiniGameResponse> {
+  const res = await apiPost<EndMiniGameResponse>('endMiniGame', {
+    character_id: characterId,
+    mini_game: miniGame,
+    level_id: levelId,
+    won,
+    score
+  }, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return res.data as EndMiniGameResponse;
+}
+
+/**
+ * Retrieves mini-game configuration data.
+ *
+ * @param miniGame - Optional mini-game name to filter (returns all if omitted)
+ * @param auth - Authentication object with username and token
+ * @returns Promise<Record<string, MiniGameConfig>> - Mini-game configurations keyed by name
+ *
+ * Usage: Called to populate the mini-game selection screen with descriptions
+ */
+export async function getMiniGameConfigRequest(
+  miniGame: string | null,
+  auth: { username: string; token: string }
+): Promise<Record<string, MiniGameConfig>> {
+  const body: Record<string, unknown> = {};
+  if (miniGame) {
+    body.mini_game = miniGame;
+  }
+
+  const res = await apiPost<Record<string, MiniGameConfig>>('getMiniGameConfig', body, {
+    username: auth.username,
+    token: auth.token
+  });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return res.data as Record<string, MiniGameConfig>;
+}

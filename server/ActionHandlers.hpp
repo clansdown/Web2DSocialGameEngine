@@ -48,4 +48,17 @@ public:
 
 void registerAllActionHandlers(ActionRegistry& registry);
 
+namespace Validation {
+
+std::optional<nlohmann::json> getPrerequisitesForLevel(
+    const std::string& building_type,
+    int target_level
+);
+
+int getBuildingLevelInFiefdom(int fiefdom_id, const std::string& building_name);
+
+bool checkFiefdomPrerequisites(int fiefdom_id, const nlohmann::json& prerequisites);
+
+} // namespace Validation
+
 } // namespace GameLogic

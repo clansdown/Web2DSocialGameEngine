@@ -301,6 +301,7 @@ Coordinates are relative to the fiefdom center (0, 0):
 | `home_base_required` | You must build a Manor House (home_base) before other buildings | Fiefdom has no completed home_base |
 | `home_base_exists` | A Manor House (home_base) already exists | Cannot build another home_base |
 | `home_base_immutable` | Manor House cannot be demolished or moved | home_base is permanent |
+| `prerequisites_not_met` | Building prerequisites not satisfied | Required buildings not at specified levels |
 | `invalid_location` | Cannot build at specified location | Invalid coordinates, overlaps with existing buildings, or out of bounds |
 | `invalid_home_base_location` | Manor House (home_base) must be built at location (0, 0) | home_base not at center |
 | `invalid_config` | Building configuration not found | Building config missing |

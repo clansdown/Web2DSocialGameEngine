@@ -95,6 +95,26 @@ ApiResponse handleGetGameInfo(const nlohmann::json& body,
                                const ClientInfo& client,
                                const std::optional<std::string>& new_token);
 
+ApiResponse handleGetPlayerState(const nlohmann::json& body,
+                                  const std::optional<std::string>& username,
+                                  const ClientInfo& client,
+                                  const std::optional<std::string>& new_token);
+
+ApiResponse handleStartMiniGame(const nlohmann::json& body,
+                                 const std::optional<std::string>& username,
+                                 const ClientInfo& client,
+                                 const std::optional<std::string>& new_token);
+
+ApiResponse handleEndMiniGame(const nlohmann::json& body,
+                               const std::optional<std::string>& username,
+                               const ClientInfo& client,
+                               const std::optional<std::string>& new_token);
+
+ApiResponse handleGetMiniGameConfig(const nlohmann::json& body,
+                                     const std::optional<std::string>& username,
+                                     const ClientInfo& client,
+                                     const std::optional<std::string>& new_token);
+
 inline std::unordered_map<std::string, ApiHandler>& getEndpointHandlers() {
     static std::unordered_map<std::string, ApiHandler> handlers = {
         {"login",                  handleLogin},
@@ -107,7 +127,11 @@ inline std::unordered_map<std::string, ApiHandler>& getEndpointHandlers() {
         {"hunt",                   handleHunt},
         {"updateUserProfile",      handleUpdateUserProfile},
         {"updateCharacterProfile", handleUpdateCharacterProfile},
-        {"getGameInfo",            handleGetGameInfo}
+        {"getGameInfo",            handleGetGameInfo},
+        {"getPlayerState",        handleGetPlayerState},
+        {"startMiniGame",         handleStartMiniGame},
+        {"endMiniGame",           handleEndMiniGame},
+        {"getMiniGameConfig",     handleGetMiniGameConfig}
     };
     return handlers;
 }

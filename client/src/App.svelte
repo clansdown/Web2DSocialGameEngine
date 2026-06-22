@@ -2,13 +2,22 @@
   import { onMount } from 'svelte';
   import AuthPage from './components/AuthPage.svelte';
   import CharacterSelect from './components/CharacterSelect.svelte';
+  import MissionSelect from './components/MissionSelect.svelte';
+  import TownView from './components/TownView.svelte';
   import ErrorDisplay from './components/ErrorDisplay.svelte';
+  import MiniGameSelect from './minigames/MiniGameSelect.svelte';
+  import MiniGameContainer from './minigames/MiniGameContainer.svelte';
   import * as auth from './lib/auth';
-  import { user, characters, currentCharacter, isLoggedIn, authLoading } from './lib/stores';
+  import { user, characters, currentCharacter, authLoading, playerGameState } from './lib/stores';
   import { loginRequest, refreshToken } from './lib/api';
+  import { fetchPlayerState } from './lib/game_state';
+  import type { EndMiniGameResponse } from './lib/api';
+  import { handleError } from './lib/errors';
 
   let needsAuth = $state(false);
   let initialized = $state(false);
+  let selectedMiniGame = $state<string | null>(null);
+  let activeMiniGame = $state<string | null>(null);
 
   /**
    * Attempts to automatically log in using stored credentials.
@@ -82,9 +91,90 @@
     return false;
   }
 
+  /**
+   * Loads the player's game state from the server after a character is selected.
+   * Resets routing state to ensure the correct view is shown.
+   */
+  async function loadGameState() {
+    if (!$currentCharacter) return;
+
+    selectedMiniGame = null;
+    activeMiniGame = null;
+
+    try {
+      await fetchPlayerState($currentCharacter.id);
+    } catch (e) {
+      handleError('Failed to load game state', e);
+    }
+  }
+
+  /**
+   * Handles the start of a mini-game from the selection grid.
+   * Sets the active mini-game which triggers MiniGameContainer to render.
+   * 
+   * @param _levelId - The level ID to start (passed through to the container)
+   */
+  function handleStartLevel(_levelId: number) {
+    if (!selectedMiniGame) return;
+    activeMiniGame = selectedMiniGame;
+  }
+
+  /**
+   * Handles the completion of a mini-game session.
+   * Clears the active mini-game and refreshes game state.
+   * The routing auto-transitions to the correct view based on updated state.
+   * 
+   * @param _results - The results from the mini-game session
+   */
+  function handleGameComplete(_results: EndMiniGameResponse) {
+    activeMiniGame = null;
+  }
+
+  /**
+   * Handles errors from mini-game operations.
+   * Delegates to the global error handler for display.
+   * 
+   * @param error - Error message string
+   */
+  function handleGameError(error: string) {
+    handleError('Mini-game error', new Error(error));
+  }
+
+  /**
+   * Handles selecting a mini-game path from MissionSelect.
+   * 
+   * @param miniGame - The selected mini-game name
+   */
+  function handleSelectMission(miniGame: string) {
+    selectedMiniGame = miniGame;
+  }
+
+  /**
+   * Handles going back from MiniGameSelect to MissionSelect.
+   */
+  function handleBackToMissions() {
+    selectedMiniGame = null;
+  }
+
+  /**
+   * Handles starting a replay mini-game from TownView (sandbox phase).
+   * 
+   * @param miniGame - The mini-game to replay
+   */
+  function handleReplayMiniGame(miniGame: string) {
+    selectedMiniGame = miniGame;
+    activeMiniGame = miniGame;
+  }
+
   $effect(() => {
     if (initialized && !auth.hasSession()) {
       handleNeedsAuth();
+    }
+  });
+
+  $effect(() => {
+    if ($currentCharacter && initialized) {
+      loadGameState();
     }
   });
 
@@ -108,16 +198,28 @@
   <AuthPage />
 {:else if !$currentCharacter}
   <CharacterSelect />
-{:else}
-  <div class="container py-5">
-    <div class="d-flex justify-content-between align-items-center mb-4">
-      <h1>Ravenest</h1>
-      <div>
-        <span class="me-3">Playing as: <strong>{$currentCharacter?.display_name}</strong> (Level {$currentCharacter?.level})</span>
-      </div>
-    </div>
-    <div class="alert alert-info">
-      Game UI coming soon...
+{:else if activeMiniGame}
+  <MiniGameContainer
+    miniGame={activeMiniGame}
+    onComplete={handleGameComplete}
+    onError={handleGameError}
+  />
+{:else if !$playerGameState}
+  <div class="container d-flex justify-content-center align-items-center min-vh-50 py-5">
+    <div class="spinner-border" role="status">
+      <span class="visually-hidden">Loading game state...</span>
     </div>
   </div>
+{:else if $playerGameState.game_phase === 'initial_mission'}
+  {#if selectedMiniGame === null}
+    <MissionSelect onSelect={handleSelectMission} />
+  {:else}
+    <MiniGameSelect
+      miniGame={selectedMiniGame}
+      onStartLevel={handleStartLevel}
+      onBack={handleBackToMissions}
+    />
+  {/if}
+{:else if $playerGameState.game_phase === 'sandbox'}
+  <TownView onPlayMiniGame={handleReplayMiniGame} />
 {/if}

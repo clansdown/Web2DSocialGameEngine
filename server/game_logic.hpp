@@ -84,6 +84,13 @@ struct ProductionUpdate {
     int fiefdom_id;
 };
 
+struct FailedUpgrade {
+    int building_id;
+    int attempted_level;
+    std::string reason;
+    nlohmann::json refund;
+};
+
 struct TimeUpdateResult {
     Timestamp new_timestamp;
     double time_hours_elapsed;
@@ -91,6 +98,7 @@ struct TimeUpdateResult {
     std::vector<ProductionUpdate> productions;
     std::vector<std::pair<std::string, int>> completed_trainings;
     std::vector<std::pair<int, double>> morale_changes;
+    std::vector<FailedUpgrade> failed_upgrades;
     int fiefdoms_updated;
 };
 

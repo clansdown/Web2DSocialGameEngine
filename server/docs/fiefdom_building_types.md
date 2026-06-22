@@ -14,6 +14,10 @@ interface ResourceProduction {
     periodicity_multiplier?: number;
 }
 
+interface PrerequisiteObject {
+    [buildingId: string]: number;  // Required building type ID -> minimum level
+}
+
 interface FiefdomBuildingType {
     // --- Resource Production (all optional, defaults to 0) ---
     peasants?: ResourceProduction;
@@ -48,6 +52,9 @@ interface FiefdomBuildingType {
 
     // --- Construction ---
     construction_times: number[];       // Seconds per level (index = level)
+
+    // --- Prerequisites (optional, defaults to no prerequisites) ---
+    prerequisites?: PrerequisiteObject[];  // Required buildings per level
 }
 ```
 
@@ -87,6 +94,99 @@ Cost arrays specify the resource cost per building level. Index corresponds to l
 | Field | Type | Description |
 |-------|------|-------------|
 | `construction_times` | number[] | Seconds required for construction at each level |
+
+### Prerequisites Field
+
+The `prerequisites` field defines required buildings and their minimum levels for constructing or upgrading a building.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prerequisites` | PrerequisiteObject[] | none | Array of prerequisite requirements per level |
+
+#### Prerequisites Array Structure
+
+- Array index corresponds to building level (like `construction_times`)
+- Index 0 = requirements for building to reach level 1 (first active level)
+- Each array element is an object where:
+  - **Keys**: Building type IDs (e.g., "home_base", "farm", "barracks")
+  - **Values**: Minimum required level for that building
+
+#### Prerequisites Extrapolation Rules
+
+Prerequisites follow the same interpolation rules as other arrays-for-levels:
+
+| Array Length | Behavior |
+|--------------|----------|
+| 0 elements | No prerequisites at any level (building can always be built/upgraded) |
+| 1 element | Constant prerequisites for all levels |
+| 2+ elements | Linear extrapolation from last two elements |
+
+#### Prerequisites Interpolation Formula
+
+For each building ID in prerequisites, the required level is extrapolated:
+
+```
+required_level[i] = level[last] + (i - last) * (level[last] - level[last-1])
+```
+
+Where `last = array_length - 1` and `last-1 = array_length - 2`.
+
+#### Prerequisites Examples
+
+**Example 1: No prerequisites**
+```json
+"prerequisites": [{}]
+```
+- Building can be constructed at any time (only needs home_base check)
+- All upgrades available without additional requirements
+
+**Example 2: Level 1+ requires home_base**
+```json
+"prerequisites": [{"home_base": 1}]
+```
+- Level 0 (construction): Requires home_base level 1
+- Level 1+: Same requirement (constant from 1 element)
+
+**Example 3: Escalating requirements**
+```json
+"prerequisites": [
+    {},
+    {"farm": 2},
+    {"farm": 3, "sawmill": 1}
+]
+```
+- Level 0: No prerequisites (empty object)
+- Level 1: Requires farm at level 2
+- Level 2+: Requires farm level 3 AND sawmill level 1
+- Level 3+: Extrapolated (farm: 3, sawmill: 1 - constant since only 2 elements)
+
+**Example 4: Complete chain**
+```json
+"barracks": {
+    "prerequisites": [
+        {},
+        {"farm": 2},
+        {"farm": 3, "sawmill": 1}
+    ]
+}
+```
+- Build barracks at level 0: No prerequisites (just home_base)
+- Upgrade to level 1: Need farm at level 2
+- Upgrade to level 2+: Need farm at level 3 AND sawmill at level 1
+
+#### Validation Behavior
+
+Prerequisites are checked at three points:
+1. **Building creation**: Checks if prerequisites for level 1 are met
+2. **Building upgrade**: Checks if prerequisites for target level are met
+3. **Construction completion**: If prerequisites become unmet during construction, the upgrade fails, resources are refunded, and the building reverts to under construction
+
+#### Prerequisite Failure
+
+If a building's prerequisites are not met during construction completion:
+1. The building remains at level 0 (under construction)
+2. Resources for the attempted level are refunded to the fiefdom
+3. The failure is logged in the update result
 
 ## Extrapolation Rules
 
@@ -238,16 +338,30 @@ Available resource types for both production and costs:
 
 The building type ID is used as the key in the JSON array entries. All IDs must be unique and use lowercase with underscores (snake_case).
 
-Current building types:
+### Required Building ID: home_base
 
-| ID | Name | Size | Max Level | Wall | Primary Production |
-|----|------|------|-----------|------|--------------------|
-| `farm` | Farm | 2x2 | 5 | No | grain |
-| `barracks` | Barracks | 3x3 | 10 | Yes | peasants |
-| `home_base` | Manor House | 3x3 | 32 | No | none (required prerequisite) |
-| `mine` | Mine | 2x2 | 7 | No | stone, steel |
-| `sawmill` | Sawmill | 3x2 | 5 | No | wood |
-| `house` | House | 4x4 | 3 | Yes | all resources (small) |
+The `home_base` building type (Manor House) is **mandatory** and has special game rules:
+
+| Property | Requirement | Description |
+|----------|-------------|-------------|
+| **ID key** | `home_base` | Must be present in config |
+| **Mandatory fields** | `width`, `height`, `max_level`, `construction_times` | Required structural fields for validation |
+| **Placement** | Coordinates (0, 0) | Fixed location in the center of fiefdom |
+| **Max per fiefdom** | 1 | Only one home_base allowed |
+| **Immutable** | Yes | Cannot be demolished or moved |
+| **Prerequisite** | Required before other buildings | Must exist at level > 0 before any other building can be constructed |
+| **display_name** | "Manor House" or equivalent | User-facing name for UI |
+
+The server enforces these rules with specific error codes:
+
+| Error Code | Meaning | Returned When |
+|------------|---------|---------------|
+| `home_base_required` | Manor House must be built first | Attempting to build any other building before a completed home_base exists |
+| `home_base_exists` | Cannot build another | Attempting to build a second home_base |
+| `home_base_immutable` | Cannot demolish/move | Attempting to demolish or move the existing home_base |
+| `invalid_home_base_location` | Must be at (0,0) | Attempting to build home_base away from center |
+
+See `api/Build.md` for complete building API documentation including home_base rules.
 
 ## Level 0 Clarification
 

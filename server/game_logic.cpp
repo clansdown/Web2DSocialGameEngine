@@ -3,9 +3,12 @@
 #include "MoraleCalculator.hpp"
 #include "FiefdomFetcher.hpp"
 #include "ActionHandler.hpp"
+#include "ActionHandlers.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+
+using json = nlohmann::json;
 
 namespace GameLogic {
 
@@ -183,10 +186,55 @@ TimeUpdateResult updateStateSince(Timestamp last_update_time, const std::string&
                             int64_t elapsed_seconds = result.new_timestamp - building.construction_start_ts;
                             if (elapsed_seconds >= construction_seconds) {
                                 int new_level = building.level + 1;
-                                if (FiefdomFetcher::updateBuildingLevel(building.id, new_level, result.new_timestamp)) {
-                                    building.level = new_level;
-                                    building.construction_start_ts = 0;
-                                    result.completed_trainings.push_back({building.name, new_level});
+                                int old_level = building.level;
+                                int building_id = building.id;
+                                
+                                bool prerequisites_met = true;
+                                if (config.contains("prerequisites") && config["prerequisites"].is_array()) {
+                                    auto prerequisites_opt = Validation::getPrerequisitesForLevel(building.name, new_level);
+                                    if (prerequisites_opt && !prerequisites_opt->empty()) {
+                                        prerequisites_met = Validation::checkFiefdomPrerequisites(fiefdom.id, *prerequisites_opt);
+                                    }
+                                }
+                                
+                                if (prerequisites_met) {
+                                    if (FiefdomFetcher::updateBuildingLevel(building.id, new_level, result.new_timestamp)) {
+                                        building.level = new_level;
+                                        building.construction_start_ts = 0;
+                                        result.completed_trainings.push_back({building.name, new_level});
+                                    }
+                                } else {
+                                    nlohmann::json refund;
+                                    std::string cost_fields[] = {"gold_cost", "wood_cost", "stone_cost", "steel_cost", 
+                                                                 "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
+                                    std::string resource_fields[] = {"gold", "wood", "stone", "steel", 
+                                                                     "bronze", "grain", "leather", "mana"};
+                                    
+                                    for (size_t i = 0; i < 8; i++) {
+                                        const auto& cost_key = cost_fields[i];
+                                        const auto& resource_key = resource_fields[i];
+                                        
+                                        if (config.contains(cost_key) && config[cost_key].is_array()) {
+                                            auto costs = config[cost_key];
+                                            int level_index = old_level > 0 ? old_level - 1 : 0;
+                                            if (level_index >= 0 && level_index < costs.size()) {
+                                                int refund_amount = costs[level_index].get<int>();
+                                                if (refund_amount > 0) refund[resource_key] = refund_amount;
+                                            }
+                                        }
+                                    }
+                                    
+                                    if (!refund.empty()) {
+                                        ActionResult temp_result;
+                                        Validation::refundResources(fiefdom.id, refund, temp_result);
+                                    }
+                                    
+                                    FailedUpgrade fail;
+                                    fail.building_id = building_id;
+                                    fail.attempted_level = new_level;
+                                    fail.reason = "prerequisites_not_met";
+                                    fail.refund = refund;
+                                    result.failed_upgrades.push_back(fail);
                                 }
                             }
                         }

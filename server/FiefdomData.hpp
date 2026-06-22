@@ -169,6 +169,60 @@ struct StationedCombatant {
     }
 };
 
+struct MiniGameProgressData {
+    int id;
+    int character_id;
+    std::string mini_game;
+    int level_id;
+    bool completed;
+    int best_score;
+    int times_played;
+    int64_t last_played;
+
+    inline nlohmann::json toJson() const {
+        nlohmann::json json;
+        json["id"] = id;
+        json["character_id"] = character_id;
+        json["mini_game"] = mini_game;
+        json["level_id"] = level_id;
+        json["completed"] = completed;
+        json["best_score"] = best_score;
+        json["times_played"] = times_played;
+        json["last_played"] = last_played;
+        return json;
+    }
+};
+
+struct PlayerGameStateData {
+    int character_id;
+    std::string game_phase;
+    std::optional<std::string> current_mini_game;
+    std::optional<int> current_level_id;
+    bool base_unlocked;
+    int64_t entered_at;
+    int64_t last_updated;
+    std::vector<MiniGameProgressData> progress;
+
+    inline nlohmann::json toJson() const {
+        nlohmann::json json;
+        json["character_id"] = character_id;
+        json["game_phase"] = game_phase;
+        json["current_mini_game"] = current_mini_game ? nlohmann::json(*current_mini_game) : nlohmann::json(nullptr);
+        json["current_level_id"] = current_level_id ? nlohmann::json(*current_level_id) : nlohmann::json(nullptr);
+        json["base_unlocked"] = base_unlocked;
+        json["entered_at"] = entered_at;
+        json["last_updated"] = last_updated;
+
+        nlohmann::json progress_arr = nlohmann::json::array();
+        for (const auto& p : progress) {
+            progress_arr.push_back(p.toJson());
+        }
+        json["progress"] = progress_arr;
+
+        return json;
+    }
+};
+
 struct FiefdomData {
     int id;
     int owner_id;

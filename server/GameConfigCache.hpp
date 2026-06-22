@@ -16,6 +16,7 @@ public:
     const nlohmann::json& getHeroes() const;
     const nlohmann::json& getFiefdomOfficials() const;
     const nlohmann::json& getWallConfig() const;
+    const nlohmann::json& getMiniGames() const;
 
     nlohmann::json getAllConfigs() const;
 
@@ -35,5 +36,6 @@ private:
     nlohmann::json heroes_;
     nlohmann::json fiefdom_officials_;
     nlohmann::json wall_config_;
+    nlohmann::json mini_games_;
     bool loaded_ = false;
 };

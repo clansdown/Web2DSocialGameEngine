@@ -4,6 +4,9 @@
 #include "GameConfigCache.hpp"
 #include "GridCollision.hpp"
 #include <optional>
+#include <set>
+
+using json = nlohmann::json;
 
 namespace GameLogic {
 
@@ -66,6 +69,18 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
             result.error_code = "home_base_required";
             result.error_message = "You must build a " + display_name + " (home_base) before other buildings";
             return result;
+        }
+    }
+
+    if (config.contains("prerequisites") && config["prerequisites"].is_array()) {
+        auto prerequisites_opt = Validation::getPrerequisitesForLevel(building_type, 1);
+        if (prerequisites_opt && !prerequisites_opt->empty()) {
+            if (!Validation::checkFiefdomPrerequisites(fiefdom_id, *prerequisites_opt)) {
+                result.status = ActionStatus::FAIL;
+                result.error_code = "prerequisites_not_met";
+                result.error_message = "Building prerequisites not satisfied";
+                return result;
+            }
         }
     }
 
@@ -1076,6 +1091,19 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
             return result;
         }
 
+        if (config_opt->contains("prerequisites") && (*config_opt)["prerequisites"].is_array()) {
+            int next_level = current_level + 1;
+            auto prerequisites_opt = Validation::getPrerequisitesForLevel(building_name, next_level);
+            if (prerequisites_opt && !prerequisites_opt->empty()) {
+                if (!Validation::checkFiefdomPrerequisites(fiefdom_id, *prerequisites_opt)) {
+                    result.status = ActionStatus::FAIL;
+                    result.error_code = "prerequisites_not_met";
+                    result.error_message = "Building prerequisites not satisfied for next level";
+                    return result;
+                }
+            }
+        }
+
         nlohmann::json next_cost;
         std::string cost_fields[] = {"gold_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
         for (const auto& field : cost_fields) {
@@ -1301,6 +1329,73 @@ void registerAllActionHandlers(ActionRegistry& registry) {
         ResearchTechActionHandler().validate,
         ResearchTechActionHandler().execute,
         "Research technology");
+}
+
+std::optional<nlohmann::json> getPrerequisitesForLevel(
+    const std::string& building_type,
+    int target_level
+) {
+    auto config_opt = getBuildingConfig(building_type);
+    if (!config_opt) return std::nullopt;
+    
+    auto config = *config_opt;
+    if (!config.contains("prerequisites") || !config["prerequisites"].is_array()) {
+        return std::nullopt;
+    }
+    
+    auto prerequisites = config["prerequisites"];
+    int arr_size = static_cast<int>(prerequisites.size());
+    
+    if (arr_size == 0) {
+        return nlohmann::json::object();
+    }
+    
+    if (target_level < arr_size) {
+        return prerequisites[target_level];
+    }
+    
+    if (arr_size == 1) {
+        return prerequisites[0];
+    }
+    
+    nlohmann::json last_obj = prerequisites[arr_size - 1];
+    nlohmann::json prev_obj = prerequisites[arr_size - 2];
+    nlohmann::json result;
+    
+    std::set<std::string> all_keys;
+    for (auto& [key, val] : last_obj.items()) all_keys.insert(key);
+    for (auto& [key, val] : prev_obj.items()) all_keys.insert(key);
+    
+    for (const auto& key : all_keys) {
+        int last_val = last_obj.value(key, 0);
+        int prev_val = prev_obj.value(key, 0);
+        int delta = last_val - prev_val;
+        int extrapolated = last_val + delta * (target_level - (arr_size - 1));
+        result[key] = extrapolated;
+    }
+    
+    return result;
+}
+
+int getBuildingLevelInFiefdom(int fiefdom_id, const std::string& building_name) {
+    auto& db = Database::getInstance().gameDB();
+    int level = 0;
+    db << "SELECT MAX(level) FROM fiefdom_buildings WHERE fiefdom_id = ? AND name = ?;"
+       << fiefdom_id << building_name
+       >> [&](int lvl) { level = lvl; };
+    return level;
+}
+
+bool checkFiefdomPrerequisites(int fiefdom_id, const nlohmann::json& prerequisites) {
+    if (prerequisites.empty()) return true;
+    
+    for (auto& [building_id, required_level] : prerequisites.items()) {
+        int current_level = getBuildingLevelInFiefdom(fiefdom_id, building_id);
+        if (current_level < required_level.get<int>()) {
+            return false;
+        }
+    }
+    return true;
 }
 
 } // namespace Validation

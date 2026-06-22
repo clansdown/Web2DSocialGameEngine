@@ -27,6 +27,8 @@ namespace {
         ensureIndex(db, "idx_stationed_combatants_fiefdom", "stationed_combatants", "fiefdom_id");
         ensureIndex(db, "idx_fiefdom_walls_fiefdom", "fiefdom_walls", "fiefdom_id");
         ensureIndex(db, "idx_fiefdom_walls_fiefdom_gen", "fiefdom_walls", "fiefdom_id, generation");
+    ensureIndex(db, "idx_player_game_state_character", "player_game_state", "character_id");
+    ensureIndex(db, "idx_mini_game_progress_character", "mini_game_progress", "character_id, mini_game");
     }
 
     void ensureMessagesDBIndexes_private(sqlite::database& db) {
@@ -129,6 +131,30 @@ namespace {
             "last_updated INTEGER NOT NULL DEFAULT 0,"
             "FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id),"
             "UNIQUE(fiefdom_id, generation)"
+        );
+
+        createTable(db, "player_game_state",
+            "character_id INTEGER PRIMARY KEY NOT NULL,"
+            "game_phase TEXT NOT NULL DEFAULT 'initial_mission',"
+            "current_mini_game TEXT,"
+            "current_level_id INTEGER,"
+            "base_unlocked INTEGER NOT NULL DEFAULT 0,"
+            "entered_at INTEGER NOT NULL DEFAULT 0,"
+            "last_updated INTEGER NOT NULL DEFAULT 0,"
+            "FOREIGN KEY(character_id) REFERENCES characters(id)"
+        );
+
+        createTable(db, "mini_game_progress",
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "character_id INTEGER NOT NULL,"
+            "mini_game TEXT NOT NULL,"
+            "level_id INTEGER NOT NULL,"
+            "completed INTEGER NOT NULL DEFAULT 0,"
+            "best_score INTEGER DEFAULT 0,"
+            "times_played INTEGER DEFAULT 0,"
+            "last_played INTEGER DEFAULT 0,"
+            "FOREIGN KEY(character_id) REFERENCES characters(id),"
+            "UNIQUE(character_id, mini_game, level_id)"
         );
     }
 

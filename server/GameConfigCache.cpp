@@ -43,6 +43,7 @@ bool GameConfigCache::initialize(const std::string& config_dir) {
     success &= loadConfig(config_dir + "/heroes.json", "heroes", heroes_);
     success &= loadConfig(config_dir + "/fiefdom_officials.json", "fiefdom_officials", fiefdom_officials_);
     success &= loadConfig(config_dir + "/wall_config.json", "wall_config", wall_config_);
+    success &= loadConfig(config_dir + "/mini_games.json", "mini_games", mini_games_);
 
     loaded_ = success;
     return success;
@@ -76,6 +77,10 @@ const nlohmann::json& GameConfigCache::getWallConfig() const {
     return wall_config_;
 }
 
+const nlohmann::json& GameConfigCache::getMiniGames() const {
+    return mini_games_;
+}
+
 nlohmann::json GameConfigCache::getAllConfigs() const {
     nlohmann::json result;
     result["damage_types"] = damage_types_;
@@ -85,6 +90,7 @@ nlohmann::json GameConfigCache::getAllConfigs() const {
     result["heroes"] = heroes_;
     result["fiefdom_officials"] = fiefdom_officials_;
     result["wall_config"] = wall_config_;
+    result["mini_games"] = mini_games_;
     return result;
 }
 

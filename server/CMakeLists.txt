@@ -30,11 +30,12 @@ foreach(header IN LISTS UWS_HEADERS)
     execute_process(COMMAND ln -sf "${UWS_DEPS_DIR}/src/${header_name}" "${UWS_INCLUDE_DIR}/${header_name}" OUTPUT_QUIET ERROR_QUIET)
 endforeach()
 
-add_executable(server main.cpp SafeNameGenerator.cpp init_db.cpp FiefdomFetcher.cpp combatants.cpp heroes.cpp fiefdom_officials.cpp GameConfigCache.cpp MoraleCalculator.cpp ActionHandlers.cpp game_logic.cpp DigitalCredentialsVerifier.cpp images/ImageCache.cpp)
+add_executable(server main.cpp SafeNameGenerator.cpp init_db.cpp FiefdomFetcher.cpp combatants.cpp heroes.cpp fiefdom_officials.cpp GameConfigCache.cpp MoraleCalculator.cpp ActionHandlers.cpp game_logic.cpp DigitalCredentialsVerifier.cpp images/ImageCache.cpp PlayerStateDB.cpp mini_games/mini_game_registry.cpp mini_games/tower_defense_handler.cpp mini_games/weeding_handler.cpp)
 
 target_include_directories(server PRIVATE
     "${sqlite_modern_cpp_SOURCE_DIR}/hdr"
     "${CMAKE_CURRENT_SOURCE_DIR}/vendor/nlohmann"
+    "${CMAKE_CURRENT_SOURCE_DIR}"
     "${UWS_INCLUDE_DIR}"
     "${UWS_DEPS_DIR}/uSockets/src"
 )

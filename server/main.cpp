@@ -23,6 +23,8 @@
 #include "GridCollision.hpp"
 #include "DigitalCredentialsVerifier.hpp"
 #include "game_logic.hpp"
+#include "PlayerStateDB.hpp"
+#include "mini_games/mini_game_registry.hpp"
 
 using json = nlohmann::json;
 
@@ -493,6 +495,8 @@ ApiResponse handleCreateAccount(const json& body,
 
     int character_id = db.last_insert_rowid();
 
+    player_state_db::create_player_game_state(db, character_id);
+
     std::string ip = std::string(client.real_ip);
     std::string token = AuthManager::getInstance().authenticateWithPassword(
         new_username, password, ip);
@@ -725,6 +729,319 @@ ApiResponse handleGetGameInfo(const json& body,
     return response;
 }
 
+ApiResponse handleGetPlayerState(const json& body,
+                                  const std::optional<std::string>& username,
+                                  const ClientInfo& client,
+                                  const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+
+    if (!body.contains("character_id") || !body["character_id"].is_number_integer()) {
+        response.error = "character_id required";
+        return response;
+    }
+
+    int character_id = body["character_id"].get<int>();
+
+    try {
+        auto& db = Database::getInstance().gameDB();
+        auto state = player_state_db::get_player_game_state(db, character_id);
+
+        response.data = state.toJson();
+
+        if (new_token) {
+            response.data["token"] = *new_token;
+        }
+    } catch (const std::exception& e) {
+        response.error = std::string("Failed to get player state: ") + e.what();
+    }
+
+    return response;
+}
+
+ApiResponse handleStartMiniGame(const json& body,
+                                 const std::optional<std::string>& username,
+                                 const ClientInfo& client,
+                                 const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+
+    if (!body.contains("character_id") || !body["character_id"].is_number_integer()) {
+        response.error = "character_id required";
+        return response;
+    }
+
+    if (!body.contains("mini_game") || !body["mini_game"].is_string()) {
+        response.error = "mini_game required";
+        return response;
+    }
+
+    int character_id = body["character_id"].get<int>();
+    std::string mini_game = body["mini_game"].get<std::string>();
+
+    auto& registry = MiniGameRegistry::getInstance();
+    MiniGameHandler* handler = registry.get_handler(mini_game);
+
+    if (!handler) {
+        response.error = "Unknown mini_game: " + mini_game;
+        return response;
+    }
+
+    try {
+        auto& db = Database::getInstance().gameDB();
+        auto state = player_state_db::get_player_game_state(db, character_id);
+
+        if (state.current_mini_game.has_value()) {
+            response.error = "Already in a mini-game: " + *state.current_mini_game;
+            return response;
+        }
+
+        int level_id = 0;
+        bool is_random = false;
+
+        if (state.game_phase == "initial_mission") {
+            auto next_level = player_state_db::get_next_incomplete_level(db, character_id, mini_game, 3);
+
+            if (!next_level) {
+                response.error = "All levels completed for " + mini_game;
+                return response;
+            }
+
+            level_id = *next_level;
+
+            if (level_id > 1) {
+                bool prev_completed = player_state_db::has_completed_previous_level(db, character_id, mini_game, level_id);
+                if (!prev_completed) {
+                    response.error = "Previous level not completed";
+                    return response;
+                }
+            }
+        } else {
+            is_random = true;
+            level_id = 0;
+        }
+
+        auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        player_state_db::start_mini_game(db, character_id, mini_game, level_id, now);
+
+        MiniGameContext ctx;
+        ctx.character_id = character_id;
+        ctx.level_id = level_id;
+        ctx.is_random_generation = is_random;
+
+        nlohmann::json level_config = handler->start_level(ctx);
+        response.data = level_config;
+        response.data["character_id"] = character_id;
+
+        if (new_token) {
+            response.data["token"] = *new_token;
+        }
+    } catch (const std::exception& e) {
+        response.error = std::string("Failed to start mini-game: ") + e.what();
+    }
+
+    return response;
+}
+
+ApiResponse handleEndMiniGame(const json& body,
+                               const std::optional<std::string>& username,
+                               const ClientInfo& client,
+                               const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+
+    if (!body.contains("character_id") || !body["character_id"].is_number_integer()) {
+        response.error = "character_id required";
+        return response;
+    }
+
+    if (!body.contains("mini_game") || !body["mini_game"].is_string()) {
+        response.error = "mini_game required";
+        return response;
+    }
+
+    if (!body.contains("won") || !body["won"].is_boolean()) {
+        response.error = "won (boolean) required";
+        return response;
+    }
+
+    int character_id = body["character_id"].get<int>();
+    std::string mini_game = body["mini_game"].get<std::string>();
+    bool won = body["won"].get<bool>();
+    int score = body.value("score", 0);
+
+    int level_id = 0;
+    if (body.contains("level_id") && body["level_id"].is_number_integer()) {
+        level_id = body["level_id"].get<int>();
+    }
+
+    auto& registry = MiniGameRegistry::getInstance();
+    MiniGameHandler* handler = registry.get_handler(mini_game);
+
+    if (!handler) {
+        response.error = "Unknown mini_game: " + mini_game;
+        return response;
+    }
+
+    try {
+        auto& db = Database::getInstance().gameDB();
+        auto state = player_state_db::get_player_game_state(db, character_id);
+
+        if (!state.current_mini_game.has_value() || *state.current_mini_game != mini_game) {
+            response.error = "Not currently playing " + mini_game;
+            return response;
+        }
+
+        if (level_id == 0 && state.current_level_id.has_value()) {
+            level_id = *state.current_level_id;
+        }
+
+        auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+
+        MiniGameContext ctx;
+        ctx.character_id = character_id;
+        ctx.level_id = level_id;
+        ctx.is_random_generation = (state.game_phase != "initial_mission");
+
+        MiniGameResult result;
+        result.won = won;
+        result.score = score;
+
+        nlohmann::json outcome = handler->end_level(ctx, result);
+
+        auto end_result = player_state_db::end_mini_game(db, character_id, mini_game, level_id, won, score, now);
+
+        response.data["completed"] = end_result.completed;
+        response.data["score"] = score;
+        response.data["new_best_score"] = end_result.new_best_score;
+        response.data["times_played"] = end_result.new_times_played;
+        response.data["all_levels_done"] = end_result.all_levels_done;
+        response.data["base_unlocked"] = false;
+        response.data["rewards"] = nlohmann::json::object();
+
+        bool base_unlocked_this_run = false;
+
+        if (won && end_result.all_levels_done && !state.base_unlocked) {
+            auto& config_cache = GameConfigCache::getInstance();
+            const auto& mini_games_config = config_cache.getMiniGames();
+
+            if (mini_games_config.contains(mini_game)) {
+                const auto& mg_config = mini_games_config[mini_game];
+
+                if (mg_config.contains("completion_bonus")) {
+                    const auto& bonus = mg_config["completion_bonus"];
+
+                    if (bonus.contains("base_unlock") && bonus["base_unlock"].get<bool>()) {
+                        player_state_db::unlock_base(db, character_id, now);
+                        base_unlocked_this_run = true;
+                        response.data["base_unlocked"] = true;
+
+                        if (bonus.contains("resources")) {
+                            response.data["completion_bonus"] = bonus["resources"];
+                        }
+                    }
+                }
+            }
+        }
+
+        nlohmann::json level_rewards = nlohmann::json::object();
+        if (won) {
+            auto& config_cache = GameConfigCache::getInstance();
+            const auto& mini_games_config = config_cache.getMiniGames();
+
+            if (mini_games_config.contains(mini_game)) {
+                const auto& mg_config = mini_games_config[mini_game];
+                if (mg_config.contains("levels")) {
+                    for (const auto& lvl : mg_config["levels"]) {
+                        if (lvl["id"] == level_id && lvl.contains("reward")) {
+                            level_rewards = lvl["reward"];
+                            break;
+                        }
+                    }
+                }
+            }
+
+            response.data["rewards"] = level_rewards;
+        }
+
+        player_state_db::clear_current_mini_game(db, character_id, now);
+
+        if (end_result.all_levels_done && base_unlocked_this_run) {
+            auto updated_state = player_state_db::get_player_game_state(db, character_id);
+            response.data["game_phase"] = updated_state.game_phase;
+        } else {
+            response.data["game_phase"] = state.game_phase;
+        }
+
+        std::optional<int> next_level;
+        if (!end_result.all_levels_done || !base_unlocked_this_run) {
+            auto maybe_next = player_state_db::get_next_incomplete_level(db, character_id, mini_game, 3);
+            if (maybe_next) {
+                next_level = *maybe_next;
+            }
+        }
+        response.data["next_level_id"] = next_level ? nlohmann::json(*next_level) : nlohmann::json(nullptr);
+
+        if (new_token) {
+            response.data["token"] = *new_token;
+        }
+    } catch (const std::exception& e) {
+        response.error = std::string("Failed to end mini-game: ") + e.what();
+    }
+
+    return response;
+}
+
+ApiResponse handleGetMiniGameConfig(const json& body,
+                                     const std::optional<std::string>& username,
+                                     const ClientInfo& client,
+                                     const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+
+    auto& config_cache = GameConfigCache::getInstance();
+
+    if (body.contains("mini_game") && body["mini_game"].is_string()) {
+        std::string mini_game = body["mini_game"].get<std::string>();
+        const auto& mini_games = config_cache.getMiniGames();
+
+        if (mini_games.contains(mini_game)) {
+            response.data[mini_game] = mini_games[mini_game];
+        } else {
+            response.error = "Unknown mini_game: " + mini_game;
+            return response;
+        }
+    } else {
+        response.data = config_cache.getMiniGames();
+    }
+
+    if (new_token) {
+        response.data["token"] = *new_token;
+    }
+
+    return response;
+}
+
 void handleApiRequest(auto* res, auto* req) {
     std::string buffer;
     res->onData([res, req, buffer = std::move(buffer)](std::string_view data, bool isLast) mutable {
@@ -866,6 +1183,8 @@ int main(int argc, char* argv[]) {
     if (!ImageCache::getInstance().initialize("images")) {
         std::cerr << "Warning: Failed to initialize image cache" << std::endl;
     }
+
+    register_all_mini_game_handlers();
 
     std::string game_db_path = g_db_dir + "/game.db";
     std::string messages_db_path = g_db_dir + "/messages.db";

@@ -1,5 +1,5 @@
 import { writable, derived } from 'svelte/store';
-import type { Character } from './api';
+import type { Character, PlayerGameState } from './api';
 
 /**
  * User data structure containing account information.
@@ -70,3 +70,13 @@ export const isLoggedIn = derived(
   [user, currentCharacter],
   ([$user]) => $user !== null
 );
+
+/**
+ * Svelte store containing the player's current game state.
+ * Tracks mini-game phase, active mini-game, level progress, and base unlock status.
+ * 
+ * @type {writable<PlayerGameState | null>}
+ * 
+ * Usage: Use in components with $playerGameState to access game state
+ */
+export const playerGameState = writable<PlayerGameState | null>(null);

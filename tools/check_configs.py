@@ -955,6 +955,65 @@ class ConfigValidator:
                     Severity.ERROR
                 )
 
+    def _validate_building_prerequisites(
+        self,
+        file: Path,
+        content: str,
+        data: JsonDataType,
+        valid_building_ids: set[str]
+    ) -> None:
+        """Validate prerequisites field for all building types."""
+        for building_entry in data:
+            if not isinstance(building_entry, dict):
+                continue
+
+            for building_id, building_data in building_entry.items():
+                if not isinstance(building_data, dict):
+                    continue
+
+                if "prerequisites" not in building_data:
+                    continue
+
+                prerequisites: Any = building_data["prerequisites"]
+
+                if not isinstance(prerequisites, list):
+                    self._add_issue(
+                        file, 1, None,
+                        f"Building '{building_id}'.prerequisites must be an array, got {type(prerequisites).__name__}",
+                        Severity.ERROR
+                    )
+                    continue
+
+                for i, prereq_obj in enumerate(prerequisites):
+                    if not isinstance(prereq_obj, dict):
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.prerequisites[{i}] must be an object, got {type(prereq_obj).__name__}",
+                            Severity.ERROR
+                        )
+                        continue
+
+                    for req_building_id, required_level in prereq_obj.items():
+                        if req_building_id not in valid_building_ids:
+                            self._add_issue(
+                                file, 1, None,
+                                f"Building '{building_id}'.prerequisites[{i}] references unknown building type '{req_building_id}'",
+                                Severity.ERROR
+                            )
+
+                        if not isinstance(required_level, int):
+                            self._add_issue(
+                                file, 1, None,
+                                f"Building '{building_id}'.prerequisites[{i}].{req_building_id} must be an integer, got {type(required_level).__name__}",
+                                Severity.ERROR
+                            )
+                        elif required_level < 0:
+                            self._add_issue(
+                                file, 1, None,
+                                f"Building '{building_id}'.prerequisites[{i}].{req_building_id} must be non-negative, got {required_level}",
+                                Severity.ERROR
+                            )
+
     def validate_buildings(self, file: Path, content: str) -> bool:
         """Validate fiefdom_building_types.json."""
         data: JsonDataType = self._validate_json(content, file)
@@ -1008,6 +1067,8 @@ class ConfigValidator:
                     continue
 
                 self._validate_building(file, content, building_id, building_data)
+
+        self._validate_building_prerequisites(file, content, data, seen_ids)
 
         # Track IDs for image validation
         self.validated_building_ids.update(seen_ids)
