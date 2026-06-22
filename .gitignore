@@ -46,6 +46,7 @@
 /server/build/
 /server/bin/
 /server/images/
+/llm_image_creator/
 
 # Checkout of the SimpleGame engine
 /client/SimpleGame/
