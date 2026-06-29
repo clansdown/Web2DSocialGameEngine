@@ -17,6 +17,9 @@ public:
     const nlohmann::json& getFiefdomOfficials() const;
     const nlohmann::json& getWallConfig() const;
     const nlohmann::json& getMiniGames() const;
+    const nlohmann::json& getTowerDefenseMobs() const;
+    const nlohmann::json& getTowerDefenseTowers() const;
+    const nlohmann::json& getTowerDefenseUnits() const;
 
     nlohmann::json getAllConfigs() const;
 
@@ -37,5 +40,8 @@ private:
     nlohmann::json fiefdom_officials_;
     nlohmann::json wall_config_;
     nlohmann::json mini_games_;
+    nlohmann::json tower_defense_mobs_;
+    nlohmann::json tower_defense_towers_;
+    nlohmann::json tower_defense_units_;
     bool loaded_ = false;
 };

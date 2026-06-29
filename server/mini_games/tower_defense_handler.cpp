@@ -1,5 +1,6 @@
 #include "tower_defense_handler.hpp"
 #include "../GameConfigCache.hpp"
+#include "../TowerDefenseMapCache.hpp"
 #include <iostream>
 
 std::string TowerDefenseHandler::name() const {
@@ -9,15 +10,13 @@ std::string TowerDefenseHandler::name() const {
 nlohmann::json TowerDefenseHandler::start_level(const MiniGameContext& ctx) {
     nlohmann::json level_config;
 
+    auto& config_cache = GameConfigCache::getInstance();
+
     if (ctx.is_random_generation) {
         level_config["map"] = "random";
         level_config["difficulty"] = 1;
-        level_config["num_waves"] = 5;
-        level_config["lane_count"] = 1;
-        level_config["enemy_types"] = nlohmann::json::array({"basic"});
         level_config["rewards"] = {{"gold", 5}};
     } else {
-        auto& config_cache = GameConfigCache::getInstance();
         const auto& mini_games = config_cache.getMiniGames();
         const auto& td_config = mini_games["tower_defense"];
         const auto& levels = td_config["levels"];
@@ -29,11 +28,18 @@ nlohmann::json TowerDefenseHandler::start_level(const MiniGameContext& ctx) {
             }
         }
 
-        level_config["map"] = "tower_defense_level_" + std::to_string(ctx.level_id);
-        level_config["num_waves"] = 3 + ctx.level_id;
-        level_config["lane_count"] = 1;
-        level_config["enemy_types"] = nlohmann::json::array({"basic"});
+        std::string map_file = level_config.value("map", "");
+        if (!map_file.empty()) {
+            auto map_meta = TowerDefenseMapCache::get_instance().get_map(map_file);
+            if (map_meta.has_value()) {
+                level_config["map_metadata"] = *map_meta;
+            }
+        }
     }
+
+    level_config["mobs"] = config_cache.getTowerDefenseMobs();
+    level_config["towers"] = config_cache.getTowerDefenseTowers();
+    level_config["units"] = config_cache.getTowerDefenseUnits();
 
     level_config["mini_game"] = "tower_defense";
     level_config["level_id"] = ctx.level_id;

@@ -358,16 +358,23 @@ On startup, the server loads game configuration and image data:
    - `enemy_combatants.json` - Enemy unit definitions
    - `heroes.json` - Hero character definitions
    - `fiefdom_officials.json` - Fiefdom official templates
-   - `wall_config.json` - Wall configuration definitions
+    - `wall_config.json` - Wall configuration definitions
+    - `mini_games.json` - Mini-game definitions including level grids, rewards, and replay config
+    - `tower_defense/maps/` - Tower defense map metadata JSON files (dynamic: directory is rescanned on each request, allowing hot-reload of new maps without server restart)
 
-2. **ImageCache**: Scans the `images/` directory to build an in-memory cache of all available images:
+ 2. **TowerDefenseMapCache**: Dynamically loads tower defense map metadata from `config/tower_defense/maps/`. Each `.json` file follows the map metadata format documented in `/tower_defense_map_metadata_format.md`. The directory is rescanned when its modification time changes, so new maps can be added at runtime without restarting the server. Maps are served to clients as `map_metadata` in `/api/startMiniGame` responses.
+
+ 3. **ImageCache**: Scans the `images/` directory to build an in-memory cache of all available images:
    - `images/buildings/{building_id}/{action}/{frame}.png`
    - `images/combatants/{combatant_id}/{action}/{frame}.png`
    - `images/heroes/{hero_id}/{action}/{frame}.png`
    - `images/heroes/{hero_id}/skills/{skill_id}/{frame}.png`
-   - `images/portraits/{portrait_id}/{frame}.png`
+    - `images/portraits/{portrait_id}/{frame}.png`
+    - `images/tower_defense/maps/{map_filename}.png` - Tower defense map background images (served via dedicated GET route at `/images/tower_defense/maps/*`)
 
-Both caches are used by the `getGameInfo` endpoint to provide complete game data and image paths to clients.
+ The `TowerDefenseMapCache` is separate from the `ImageCache` because maps are loaded dynamically and served as JSON metadata (not enumerated image assets). Map background images are served directly via a static file GET route, bypassing the ImageCache entirely.
+
+ All caches are used by their respective endpoints to provide complete game data to clients.
 
 ## Future Enhancements
 

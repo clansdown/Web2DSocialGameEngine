@@ -1,4 +1,5 @@
 #include <iostream>
+#include <fstream>
 #include <optional>
 #include <chrono>
 #include <chrono>
@@ -25,6 +26,7 @@
 #include "game_logic.hpp"
 #include "PlayerStateDB.hpp"
 #include "mini_games/mini_game_registry.hpp"
+#include "TowerDefenseMapCache.hpp"
 
 using json = nlohmann::json;
 
@@ -1180,6 +1182,8 @@ int main(int argc, char* argv[]) {
         std::cerr << "Warning: Failed to load game configuration files" << std::endl;
     }
 
+    TowerDefenseMapCache::get_instance().initialize("config/tower_defense/maps");
+
     if (!ImageCache::getInstance().initialize("images")) {
         std::cerr << "Warning: Failed to initialize image cache" << std::endl;
     }
@@ -1262,6 +1266,34 @@ int main(int argc, char* argv[]) {
     uWS::App app;
 
     check_test_limits(app);
+
+    app.get("/images/tower_defense/maps/*", [](auto *res, auto *req) {
+        std::string url = req->getUrl();
+        std::string filename = url.substr(std::string("/images/tower_defense/maps/").length());
+
+        if (filename.empty() || filename.find("..") != std::string::npos) {
+            res->writeStatus("404 Not Found")->end("Not found");
+            return;
+        }
+
+        std::string filepath = "images/tower_defense/maps/" + filename;
+        std::ifstream file(filepath, std::ios::binary);
+        if (!file) {
+            res->writeStatus("404 Not Found")->end("Not found");
+            return;
+        }
+
+        std::string content((std::istreambuf_iterator<char>(file)),
+                            std::istreambuf_iterator<char>());
+
+        if (filename.size() >= 4) {
+            std::string ext = filename.substr(filename.size() - 4);
+            if (ext == ".png") res->writeHeader("Content-Type", "image/png");
+            else if (ext == ".jpg") res->writeHeader("Content-Type", "image/jpeg");
+        }
+
+        res->end(content);
+    });
 
     if (!quiet) {
         app.get("/*", [&quiet](auto *res, auto *req) {

@@ -446,7 +446,13 @@ Validates all JSON configuration files against their schema rules. Written in Py
    - `heroes.json` → `server/docs/heroes.md`
    - `fiefdom_officials.json` → `server/docs/fiefdom_officials.md`
 4. Update AGENTS.md if the change affects config structure or validation rules
-5. **Image directory updates required:** If adding new combatants, buildings, heroes, or officials:
+5. **Tower defense maps:** If adding or modifying tower defense maps:
+   - Map metadata JSON files go in `config/tower_defense/maps/`
+   - Map background images go in `images/tower_defense/maps/`
+   - Map files follow the format in `tower_defense_map_metadata_format.md`
+   - `mini_games.json` level entries reference maps by filename (e.g. `"map": "td_level_1.json"`)
+   - Maps are loaded dynamically at runtime — no server restart needed
+6. **Image directory updates required:** If adding new combatants, buildings, heroes, or officials:
    - Combatants: Create `images/combatants/{id}/idle/`, `attack/`, `defend/`, `die/` subdirectories
    - Buildings: Create `images/buildings/{id}/construction/`, `idle/` subdirectories
    - Heroes: Create `images/heroes/{id}/idle/`, `attack/` subdirectories and `skills/{skill_id}/` for icons

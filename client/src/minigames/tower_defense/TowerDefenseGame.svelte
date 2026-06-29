@@ -1,9 +1,9 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import GameBoard from '../../lib/GameBoard.svelte';
-  import { createEngine, renderFrame, updateEngine } from './tower_defense_engine';
+  import { create_engine, render_frame, update_engine } from './tower_defense_engine';
   import type { StartMiniGameResponse } from '../../lib/api';
-  import type { TowerDefenseLevelConfig } from './tower_defense_types';
+  import type { TowerDefenseLevelConfig, MapMetadata } from './tower_defense_types';
 
   interface Props {
     levelConfig: StartMiniGameResponse;
@@ -18,53 +18,54 @@
 
   let canvas: HTMLCanvasElement;
   let context: CanvasRenderingContext2D;
-  let engine = $state(createEngine(config, 800, 500));
+  let engine = $state(create_engine(config, 800, 500));
   let animFrameId: number | null = null;
   let lastTime = 0;
-  let startTime = 0;
 
-  /**
-   * The main game loop. Calculates delta time, updates engine state,
-   * and renders the current frame.
-   * 
-   * @param timestamp - Current time from requestAnimationFrame
-   */
   function gameLoop(timestamp: number) {
     if (engine.finished) return;
 
     const deltaMs = lastTime === 0 ? 0 : timestamp - lastTime;
     lastTime = timestamp;
 
-    engine = updateEngine(engine, deltaMs);
+    engine = update_engine(engine, deltaMs);
 
     if (canvas && context) {
       canvas.width = canvas.clientWidth;
       canvas.height = canvas.clientHeight;
       engine = { ...engine, width: canvas.width, height: canvas.height };
-      renderFrame(context, engine);
+      render_frame(context, engine);
     }
 
     animFrameId = requestAnimationFrame(gameLoop);
   }
 
-  /**
-   * Handles the Win button click. Stops the game loop and reports victory.
-   */
+  async function loadBackgroundImage() {
+    const meta = config.map_metadata as MapMetadata | undefined;
+    if (!meta?.image_filename) return;
+
+    const img = new Image();
+    img.onload = () => {
+      engine = { ...engine, background_image: img };
+    };
+    img.onerror = () => {
+      console.warn('Failed to load map image:', meta.image_filename);
+    };
+    img.src = `/images/tower_defense/maps/${meta.image_filename}`;
+  }
+
   function handleWin() {
     engine = { ...engine, finished: true, won: true, score: 100 };
     onGameOver(true, 100);
   }
 
-  /**
-   * Handles the Lose button click. Stops the game loop and reports defeat.
-   */
   function handleLose() {
     engine = { ...engine, finished: true, won: false, score: 0 };
     onGameOver(false, 0);
   }
 
-  onMount(() => {
-    startTime = performance.now();
+  onMount(async () => {
+    await loadBackgroundImage();
     animFrameId = requestAnimationFrame(gameLoop);
   });
 
