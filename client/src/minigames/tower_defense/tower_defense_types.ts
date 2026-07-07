@@ -82,6 +82,7 @@ export interface MobConfig {
   speed: number;
   reward_gold: number;
   image_file: string;
+  image_url: string;
   spawn_on_death: string[];
 }
 
@@ -106,6 +107,8 @@ export interface TowerDefensePiece {
   upgrade_cost: Record<string, number>[];
   abilities: TowerDefenseAbility[];
   becomes: string | null;
+  image_file?: string;
+  image_url?: string;
 }
 
 export interface TowerDefenseLevelConfig {

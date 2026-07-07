@@ -5,18 +5,20 @@
 
   interface Props {
     miniGame: string;
+    gridSize?: number;
     onStartLevel: (levelId: number) => void;
     onBack: () => void;
   }
 
-  let { miniGame, onStartLevel, onBack }: Props = $props();
+  let { miniGame, gridSize: propGridSize, onStartLevel, onBack }: Props = $props();
 
-  let config: MiniGameConfig | null = $state(null);
+  let config = $state<MiniGameConfig | null>(null);
   let loading = $state(true);
   let loadError = $state<string | null>(null);
 
   let displayName = $derived(config?.display_name ?? miniGame);
-  let gridSize = $derived(config?.grid_size ?? 3);
+  let configGridSize = $derived(config?.grid_size ?? 3);
+  let gridSize = $derived(propGridSize ?? configGridSize);
 
   /**
    * Loads the mini-game configuration to display the grid.

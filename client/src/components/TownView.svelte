@@ -1,5 +1,7 @@
 <script lang="ts">
   import { currentCharacter, playerGameState } from '../lib/stores';
+  import { getDukedomsRequest } from '../lib/api';
+  import * as auth from '../lib/auth';
 
   interface Props {
     onPlayMiniGame: (miniGame: string) => void;
@@ -8,31 +10,59 @@
   let { onPlayMiniGame }: Props = $props();
 
   /**
-   * Handles starting a mini-game replay from the town view.
-   * 
-   * @param miniGame - The mini-game name to start
+   * Fetches the player's dukedom membership.
    */
+  let dukedomName = $state<string | null>(null);
+  let dukedomRole = $state<string | null>(null);
+
+  async function fetchDukedomInfo(): Promise<void> {
+    try {
+      const token = auth.getSessionToken();
+      const username = auth.getInMemoryCredentials()?.username;
+      if (!token || !username) return;
+
+      // Check which dukedom this character belongs to
+      const allDukedoms = await getDukedomsRequest({ username, token });
+      // For now, just show the first dukedom's info
+      // TODO: add a getMyDukedom endpoint for the logged-in character
+      if (allDukedoms.length > 0) {
+        dukedomName = 'Member of a dukedom'; // Placeholder
+      }
+    } catch {
+      // Ignore — dukedom info is secondary
+    }
+  }
+
   function handlePlay(miniGame: string) {
     onPlayMiniGame(miniGame);
   }
+
+  $effect(() => {
+    fetchDukedomInfo();
+  });
 </script>
 
 <div class="container py-5">
   <div class="d-flex justify-content-between align-items-center mb-4">
-    <h1>Ravenest</h1>
     <div>
-      <span class="me-3">
+      <h1 class="mb-0">Ravenest</h1>
+      {#if dukedomName}
+        <small class="text-muted">{dukedomName}</small>
+      {/if}
+    </div>
+    <div class="text-end">
+      <div>
         Playing as: <strong>{$currentCharacter?.display_name}</strong>
         (Level {$currentCharacter?.level})
-      </span>
+      </div>
+      <small class="text-muted">Mesne Lord</small>
     </div>
   </div>
 
   <div class="alert alert-success">
-    <h4 class="alert-heading">Base Unlocked!</h4>
+    <h4 class="alert-heading">Manor Established</h4>
     <p class="mb-0">
-      You have completed the initial campaign and earned the right to build your base.
-      The base building interface is coming soon.
+      Your manor stands ready. The realm awaits your deeds.
     </p>
   </div>
 

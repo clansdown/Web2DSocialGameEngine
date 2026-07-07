@@ -20,12 +20,12 @@ std::optional<FiefdomData> fetchFiefdomById(
     
     bool found = false;
     db << R"(
-        SELECT owner_id, name, x, y, peasants, gold, grain, wood, steel, bronze, stone, leather, mana, wall_count, morale, last_update_time
+        SELECT owner_id, name, x, y, peasants, gold, grain, wood, steel, bronze, stone, leather, mana, wall_count, morale, last_update_time, manor_level
         FROM fiefdoms WHERE id = ?;
     )" << fiefdom_id
     >> [&](int owner_id, std::string name, int x, int y,
            int peasants, int gold, int grain, int wood, int steel,
-           int bronze, int stone, int leather, int mana, int wall_count, double morale, int64_t last_update_time) {
+           int bronze, int stone, int leather, int mana, int wall_count, double morale, int64_t last_update_time, int manor_level) {
         fiefdom.owner_id = owner_id;
         fiefdom.name = name;
         fiefdom.x = x;
@@ -42,6 +42,7 @@ std::optional<FiefdomData> fetchFiefdomById(
         fiefdom.wall_count = wall_count;
         fiefdom.morale = morale;
         fiefdom.last_update_time = last_update_time;
+        fiefdom.manor_level = manor_level;
         found = true;
     };
     

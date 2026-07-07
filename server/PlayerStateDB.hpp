@@ -48,14 +48,20 @@ void create_player_game_state(sqlite::database& db, int character_id);
 
 void start_mini_game(sqlite::database& db, int character_id, const std::string& mini_game, int level_id, int64_t timestamp);
 
-EndMiniGameResult end_mini_game(sqlite::database& db, int character_id, const std::string& mini_game, int level_id, bool won, int score, int64_t timestamp);
+EndMiniGameResult end_mini_game(sqlite::database& db, int character_id, const std::string& mini_game, int level_id, bool won, int score, int64_t timestamp, int expected_total_levels = 9);
 
 bool has_completed_previous_level(sqlite::database& db, int character_id, const std::string& mini_game, int level_id);
 
-std::optional<int> get_next_incomplete_level(sqlite::database& db, int character_id, const std::string& mini_game, int grid_size);
+std::optional<int> get_next_incomplete_level(sqlite::database& db, int character_id, const std::string& mini_game, int total_levels);
 
 void unlock_base(sqlite::database& db, int character_id, int64_t timestamp);
 
 void clear_current_mini_game(sqlite::database& db, int character_id, int64_t timestamp);
+
+void earn_land_patent(sqlite::database& db, int character_id, int64_t timestamp);
+
+void start_duke_track(sqlite::database& db, int character_id, int64_t timestamp);
+
+void earn_duke_right(sqlite::database& db, int character_id, int64_t timestamp);
 
 } // namespace player_state_db

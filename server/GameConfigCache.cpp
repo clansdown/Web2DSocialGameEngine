@@ -67,6 +67,7 @@ bool GameConfigCache::initialize(const std::string& config_dir) {
     if (tower_defense_units_.contains("units")) {
         scaleTDPieceValues(tower_defense_units_["units"]);
     }
+    success &= loadConfig(config_dir + "/tower_defense/unit_unlocks.json", "tower_defense_unit_unlocks", tower_defense_unit_unlocks_);
 
     loaded_ = success;
     return success;
@@ -114,6 +115,10 @@ const nlohmann::json& GameConfigCache::getTowerDefenseTowers() const {
 
 const nlohmann::json& GameConfigCache::getTowerDefenseUnits() const {
     return tower_defense_units_;
+}
+
+const nlohmann::json& GameConfigCache::getTowerDefenseUnitUnlocks() const {
+    return tower_defense_unit_unlocks_;
 }
 
 nlohmann::json GameConfigCache::getAllConfigs() const {

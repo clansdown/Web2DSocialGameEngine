@@ -1,7 +1,7 @@
 #include "MoraleCalculator.hpp"
 #include "GameConfigCache.hpp"
-#include "Heroes.hpp"
-#include "Combatants.hpp"
+#include "heroes.hpp"
+#include "combatants.hpp"
 #include "fiefdom_officials.hpp"
 #include <algorithm>
 #include <cmath>
@@ -116,30 +116,30 @@ double calculateFiefdomMorale(
 
     for (const auto& official : officials) {
         auto official_opt = official_registry.getOfficial(official.template_id);
-        if (official_opt && !official_opt->morale_boost.empty() && official.level > 0) {
-            int idx = std::min(official.level - 1, static_cast<int>(official_opt->morale_boost.size()) - 1);
+        if (official_opt && !(*official_opt)->morale_boost.empty() && official.level > 0) {
+            int idx = std::min(official.level - 1, static_cast<int>((*official_opt)->morale_boost.size()) - 1);
             if (idx >= 0) {
-                total_morale += official_opt->morale_boost[idx];
+                total_morale += (*official_opt)->morale_boost[idx];
             }
         }
     }
 
     for (const auto& hero : heroes) {
         auto hero_opt = hero_registry.getHero(hero.hero_config_id);
-        if (hero_opt && !hero_opt->morale_boost.empty() && hero.level > 0) {
-            int idx = std::min(hero.level - 1, static_cast<int>(hero_opt->morale_boost.size()) - 1);
+        if (hero_opt && !(*hero_opt)->morale_boost.empty() && hero.level > 0) {
+            int idx = std::min(hero.level - 1, static_cast<int>((*hero_opt)->morale_boost.size()) - 1);
             if (idx >= 0) {
-                total_morale += hero_opt->morale_boost[idx];
+                total_morale += (*hero_opt)->morale_boost[idx];
             }
         }
     }
 
     for (const auto& combatant : combatants) {
         auto combatant_opt = combatant_registry.getPlayerCombatant(combatant.combatant_config_id);
-        if (combatant_opt && !combatant_opt->morale_boost.empty() && combatant.level > 0) {
-            int idx = std::min(combatant.level - 1, static_cast<int>(combatant_opt->morale_boost.size()) - 1);
+        if (combatant_opt && !(*combatant_opt)->morale_boost.empty() && combatant.level > 0) {
+            int idx = std::min(combatant.level - 1, static_cast<int>((*combatant_opt)->morale_boost.size()) - 1);
             if (idx >= 0) {
-                total_morale += combatant_opt->morale_boost[idx];
+                total_morale += (*combatant_opt)->morale_boost[idx];
             }
         }
     }

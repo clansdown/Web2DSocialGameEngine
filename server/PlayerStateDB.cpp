@@ -92,7 +92,7 @@ void start_mini_game(sqlite::database& db, int character_id, const std::string& 
        << mini_game << level_id << timestamp << timestamp << character_id;
 }
 
-EndMiniGameResult end_mini_game(sqlite::database& db, int character_id, const std::string& mini_game, int level_id, bool won, int score, int64_t timestamp) {
+EndMiniGameResult end_mini_game(sqlite::database& db, int character_id, const std::string& mini_game, int level_id, bool won, int score, int64_t timestamp, int expected_total_levels) {
     EndMiniGameResult result;
     result.completed = won;
     result.all_levels_done = false;
@@ -144,7 +144,7 @@ EndMiniGameResult end_mini_game(sqlite::database& db, int character_id, const st
                 completed_levels = completed_sum.value_or(0);
             };
 
-        if (total_levels >= 9 && completed_levels >= 9) {
+        if (total_levels >= expected_total_levels && completed_levels >= expected_total_levels) {
             result.all_levels_done = true;
         }
     } else {
@@ -188,9 +188,7 @@ bool has_completed_previous_level(sqlite::database& db, int character_id, const 
     return completed != 0;
 }
 
-std::optional<int> get_next_incomplete_level(sqlite::database& db, int character_id, const std::string& mini_game, int grid_size) {
-    int total_levels = grid_size * grid_size;
-
+std::optional<int> get_next_incomplete_level(sqlite::database& db, int character_id, const std::string& mini_game, int total_levels) {
     for (int id = 1; id <= total_levels; ++id) {
         int completed = 0;
         db << "SELECT COALESCE(completed, 0) FROM mini_game_progress "
@@ -216,6 +214,27 @@ void unlock_base(sqlite::database& db, int character_id, int64_t timestamp) {
 void clear_current_mini_game(sqlite::database& db, int character_id, int64_t timestamp) {
     db << "UPDATE player_game_state SET "
           "current_mini_game = NULL, current_level_id = NULL, last_updated = ? "
+          "WHERE character_id = ?;"
+       << timestamp << character_id;
+}
+
+void earn_land_patent(sqlite::database& db, int character_id, int64_t timestamp) {
+    db << "UPDATE player_game_state SET "
+          "game_phase = 'land_patent', last_updated = ? "
+          "WHERE character_id = ?;"
+       << timestamp << character_id;
+}
+
+void start_duke_track(sqlite::database& db, int character_id, int64_t timestamp) {
+    db << "UPDATE player_game_state SET "
+          "game_phase = 'duke_track', last_updated = ? "
+          "WHERE character_id = ?;"
+       << timestamp << character_id;
+}
+
+void earn_duke_right(sqlite::database& db, int character_id, int64_t timestamp) {
+    db << "UPDATE player_game_state SET "
+          "game_phase = 'duke_right', last_updated = ? "
           "WHERE character_id = ?;"
        << timestamp << character_id;
 }

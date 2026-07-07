@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { createEventDispatcher } from 'svelte';
-  import { createAccountRequest } from '../lib/api';
+  import { createAccountRequest, verifyAgeOverrideRequest } from '../lib/api';
   import { handleError } from '../lib/errors';
   import * as auth from '../lib/auth';
-  import { checkDigitalCredentialsSupport, requestAgeVerification } from '../lib/digitalCredentials';
+  import { checkDigitalCredentialsSupport, requestAgeVerification, isBraveBrowser } from '../lib/digitalCredentials';
   import { user, characters, currentCharacter, authLoading } from '../lib/stores';
 
   const dispatch = createEventDispatcher<{
@@ -21,8 +21,15 @@
   let safeWords1: string[] = $state([]);
   let safeWords2: string[] = $state([]);
   let dcApiSupported = $state(false);
+  let isBrave = $state(false);
   let ageVerificationPending = $state(false);
   let ageVerified = $state(false);
+  let showOverrideInput = $state(false);
+  let overrideCode = $state('');
+  let overrideVerifying = $state(false);
+  let verifiedOverrideCode = $state('');
+  let sex = $state('');
+  let submitting = $state(false);
 
   /**
    * Updates the safe display name preview when word selections change.
@@ -33,7 +40,7 @@
    * 
    * Usage: Called when word1 or word2 selection changes
    */
-  function updateSafeDisplayPreview(): void {
+  function refreshSafeDisplayNamePreview(): void {
     if (word1 && word2) {
     }
   }
@@ -52,6 +59,7 @@
     }
 
     dcApiSupported = await checkDigitalCredentialsSupport();
+    isBrave = await isBraveBrowser();
   });
 
   /**
@@ -66,7 +74,7 @@
   function handleWord1Change(event: Event): void {
     const target = event.target as HTMLSelectElement;
     word1 = target.value;
-    updateSafeDisplayPreview();
+    refreshSafeDisplayNamePreview();
   }
 
   /**
@@ -81,7 +89,7 @@
   function handleWord2Change(event: Event): void {
     const target = event.target as HTMLSelectElement;
     word2 = target.value;
-    updateSafeDisplayPreview();
+    refreshSafeDisplayNamePreview();
   }
 
   /**
@@ -94,28 +102,27 @@
    * 
    * Usage: Attached to adult checkbox onchange event
    */
-  async function handleAdultChange(event: Event): Promise<void> {
+  async function handleAdultToggle(event: Event): Promise<void> {
     const target = event.target as HTMLInputElement;
     const checked = target.checked;
 
     if (!checked) {
       adult = false;
       ageVerified = false;
+      verifiedOverrideCode = '';
       return;
     }
 
     if (!dcApiSupported) {
-      handleError(
-        'Digital Credentials API not supported in this browser. Adult verification unavailable.',
-        new Error('DC API not available'),
-        { category: 'general', context: 'handleAdultChange' }
-      );
+      const msg = isBrave
+        ? 'WARNING: Brave ships with the Digital Credentials API disabled by default. Enable it for access to this feature.'
+        : 'Digital Credentials API not supported in this browser. Adult verification unavailable.';
+      handleError(msg, new Error('DC API not available'), { category: 'general', context: 'handleAdultToggle' });
       target.checked = false;
       return;
     }
 
     ageVerificationPending = true;
-    authLoading.set(true);
 
     try {
       const credential = await requestAgeVerification('create-account');
@@ -123,7 +130,7 @@
         handleError(
           'Age verification cancelled or failed. Adult flag will not be set.',
           new Error('Verification cancelled'),
-          { category: 'validation', context: 'handleAdultChange' }
+          { category: 'validation', context: 'handleAdultToggle' }
         );
         target.checked = false;
         adult = false;
@@ -131,16 +138,47 @@
       } else {
         adult = true;
         ageVerified = true;
+        verifiedOverrideCode = '';
       }
     } catch (err) {
-      handleError('Age verification failed. Adult flag will not be set.', err, { category: 'validation', context: 'handleAdultChange' });
+      handleError('Age verification failed. Adult flag will not be set.', err, { category: 'validation', context: 'handleAdultToggle' });
       target.checked = false;
       adult = false;
       ageVerified = false;
+      verifiedOverrideCode = '';
     } finally {
       ageVerificationPending = false;
-      authLoading.set(false);
     }
+  }
+
+  /**
+   * Handles age verification override code submission.
+   * Validates the override code against the server.
+   * Sets adult and ageVerified on success.
+   * 
+   * @param none - Uses overrideCode state
+   * @returns Promise<void>
+   * 
+   * Usage: Called when user submits override code form
+   */
+  async function handleOverrideCodeSubmit(): Promise<void> {
+    const code = overrideCode.trim();
+    if (!code) return;
+
+    overrideVerifying = true;
+
+    const verified = await verifyAgeOverrideRequest(code);
+    if (verified) {
+      adult = true;
+      ageVerified = true;
+      verifiedOverrideCode = code;
+      showOverrideInput = false;
+      overrideCode = '';
+    } else {
+      alert('Invalid override code.');
+    }
+
+    overrideVerifying = false;
   }
 
   /**
@@ -154,24 +192,24 @@
    * 
    * Usage: Called when form is submitted
    */
-  async function handleSubmit() {
-    authLoading.set(true);
+  async function handleCreateAccount() {
+    submitting = true;
 
     if (formPassword !== formConfirmPassword) {
-      handleError('Passwords do not match', new Error('Password mismatch'), { category: 'validation', context: 'handleSubmit' });
-      authLoading.set(false);
+      handleError('Passwords do not match', new Error('Password mismatch'), { category: 'validation', context: 'handleCreateAccount' });
+      submitting = false;
       return;
     }
 
     if (formPassword.length < 8) {
-      handleError('Password must be at least 8 characters', new Error('Password too short'), { category: 'validation', context: 'handleSubmit' });
-      authLoading.set(false);
+      handleError('Password must be at least 8 characters', new Error('Password too short'), { category: 'validation', context: 'handleCreateAccount' });
+      submitting = false;
       return;
     }
 
     if (!word1 || !word2) {
-      handleError('Please select both words for your character name', new Error('Missing words'), { category: 'validation', context: 'handleSubmit' });
-      authLoading.set(false);
+      handleError('Please select both words for your character name', new Error('Missing words'), { category: 'validation', context: 'handleCreateAccount' });
+      submitting = false;
       return;
     }
 
@@ -182,7 +220,10 @@
         adult,
         word1,
         word2,
-        displayName || undefined
+        displayName || undefined,
+        undefined,
+        verifiedOverrideCode || undefined,
+        sex || undefined
       );
 
       if (!response.token) {
@@ -204,9 +245,9 @@
       currentCharacter.set(lastChar || null);
 
     } catch (err: unknown) {
-      handleError('Account creation failed', err, { category: 'auth', context: 'handleSubmit' });
+      alert(`Account creation failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
-      authLoading.set(false);
+      submitting = false;
     }
   }
 
@@ -228,7 +269,37 @@
   <div class="card p-4" style="max-width: 500px; width: 100%;">
     <h2 class="mb-4 text-center">Create Account</h2>
 
-    <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
+    <div>
+      <fieldset class="mb-3">
+        <legend class="form-label">Character Sex</legend>
+        <div class="d-flex gap-3">
+          <div class="form-check">
+            <input
+              type="radio"
+              class="form-check-input"
+              id="sexMale"
+              name="sex"
+              value="male"
+              bind:group={sex}
+              disabled={submitting || overrideVerifying || ageVerificationPending}
+            />
+            <label class="form-check-label" for="sexMale">♂ Male</label>
+          </div>
+          <div class="form-check">
+            <input
+              type="radio"
+              class="form-check-input"
+              id="sexFemale"
+              name="sex"
+              value="female"
+              bind:group={sex}
+              disabled={submitting || overrideVerifying || ageVerificationPending}
+            />
+            <label class="form-check-label" for="sexFemale">♀ Female</label>
+          </div>
+        </div>
+      </fieldset>
+
       <div class="mb-3">
         <label for="username" class="form-label">Username</label>
         <input
@@ -236,7 +307,7 @@
           class="form-control"
           id="username"
           bind:value={formUsername}
-          disabled={$authLoading}
+          disabled={submitting || overrideVerifying || ageVerificationPending}
           required
         />
       </div>
@@ -248,7 +319,7 @@
           class="form-control"
           id="password"
           bind:value={formPassword}
-          disabled={$authLoading}
+          disabled={submitting || overrideVerifying || ageVerificationPending}
           required
           minlength="8"
         />
@@ -261,7 +332,7 @@
           class="form-control"
           id="confirmPassword"
           bind:value={formConfirmPassword}
-          disabled={$authLoading}
+          disabled={submitting || overrideVerifying || ageVerificationPending}
           required
         />
       </div>
@@ -273,7 +344,7 @@
           id="word1"
           bind:value={word1}
           onchange={handleWord1Change}
-          disabled={$authLoading}
+          disabled={submitting || overrideVerifying || ageVerificationPending}
           required
         >
           {#each safeWords1 as word}
@@ -289,7 +360,7 @@
           id="word2"
           bind:value={word2}
           onchange={handleWord2Change}
-          disabled={$authLoading}
+          disabled={submitting || overrideVerifying || ageVerificationPending}
           required
         >
           {#each safeWords2 as word}
@@ -310,16 +381,57 @@
           class="form-check-input"
           id="adult"
           bind:checked={adult}
-          onchange={handleAdultChange}
+          onchange={handleAdultToggle}
           disabled={$authLoading || ageVerificationPending}
         />
         <label class="form-check-label" for="adult">
           I am 18 or older (enable custom display name)
         </label>
         {#if !dcApiSupported}
-          <div class="form-text text-warning">
-            Digital Credentials API not available in this browser
+          {#if isBrave}
+            <div class="form-text text-warning">
+              WARNING: Brave ships with the Digital Credentials API disabled by default.
+              Enable it at <span class="fw-bold user-select-all">brave://flags/#web-digital-credentials</span>.
+            </div>
+          {:else}
+            <div class="form-text text-warning">
+              Digital Credentials API not available in this browser
+            </div>
+          {/if}
+        {/if}
+        {#if !ageVerified && !ageVerificationPending}
+          <div class="mt-2">
+            <button
+              type="button"
+              class="btn btn-sm btn-link p-0"
+              onclick={() => { showOverrideInput = !showOverrideInput; }}
+            >
+              {showOverrideInput ? 'Cancel' : 'Have an age verification code?'}
+            </button>
           </div>
+          {#if showOverrideInput}
+            <div class="mt-2 d-flex gap-2">
+              <input
+                type="text"
+                class="form-control form-control-sm"
+                placeholder="Enter override code"
+                bind:value={overrideCode}
+                disabled={overrideVerifying}
+                onkeydown={(e) => { if (e.key === 'Enter') handleOverrideCodeSubmit(); }}
+              />
+              <button
+                type="button"
+                class="btn btn-sm btn-outline-secondary"
+                onclick={handleOverrideCodeSubmit}
+                disabled={!overrideCode.trim() || overrideVerifying}
+              >
+                {#if overrideVerifying}
+                  <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                {/if}
+                Verify
+              </button>
+            </div>
+          {/if}
         {/if}
         {#if ageVerificationPending}
           <div class="form-text text-info">
@@ -341,7 +453,7 @@
             class="form-control"
             id="displayName"
             bind:value={displayName}
-            disabled={$authLoading}
+            disabled={submitting || overrideVerifying || ageVerificationPending}
             placeholder="Enter custom display name"
           />
           <div class="form-text">
@@ -351,21 +463,22 @@
       {/if}
 
       <button
-        type="submit"
+        type="button"
         class="btn btn-primary w-100"
-        disabled={$authLoading || ageVerificationPending}
+        onclick={handleCreateAccount}
+        disabled={submitting || overrideVerifying || ageVerificationPending}
       >
-        {#if $authLoading}
+        {#if submitting}
           <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
           Creating account...
         {:else}
           Create Account
         {/if}
       </button>
-    </form>
+    </div>
 
     <div class="mt-3 text-center">
-      <button class="btn btn-link" onclick={handleSwitchToLogin}>
+      <button type="button" class="btn btn-link" onclick={handleSwitchToLogin}>
         Back to Login
       </button>
     </div>

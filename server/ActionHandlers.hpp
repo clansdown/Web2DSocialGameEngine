@@ -59,6 +59,8 @@ int getBuildingLevelInFiefdom(int fiefdom_id, const std::string& building_name);
 
 bool checkFiefdomPrerequisites(int fiefdom_id, const nlohmann::json& prerequisites);
 
+bool hasCompletedHomeBase(int fiefdom_id);
+
 } // namespace Validation
 
 } // namespace GameLogic

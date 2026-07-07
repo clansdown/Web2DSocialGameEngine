@@ -66,7 +66,7 @@ std::optional<std::string> SafeNameGenerator::generateSafeDisplayName(
     auto& db = Database::getInstance().gameDB();
     int count = 0;
 
-    db << "SELECT COUNT(*) FROM users WHERE safeDisplayName LIKE ? || '%';"
+    db << "SELECT COUNT(*) FROM characters WHERE safe_display_name LIKE ? || '%';"
        << baseName
        >> [&](int c) { count = c; };
 

@@ -20,6 +20,7 @@ public:
     const nlohmann::json& getTowerDefenseMobs() const;
     const nlohmann::json& getTowerDefenseTowers() const;
     const nlohmann::json& getTowerDefenseUnits() const;
+    const nlohmann::json& getTowerDefenseUnitUnlocks() const;
 
     nlohmann::json getAllConfigs() const;
 
@@ -43,5 +44,6 @@ private:
     nlohmann::json tower_defense_mobs_;
     nlohmann::json tower_defense_towers_;
     nlohmann::json tower_defense_units_;
+    nlohmann::json tower_defense_unit_unlocks_;
     bool loaded_ = false;
 };

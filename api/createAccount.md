@@ -43,6 +43,7 @@ With age verification (adult=true requires digitalCredential):
 | word2 | string | Yes | Second word from safe_words_2.txt |
 | displayName | string | No | Custom display name (only allowed if adult=true) |
 | digitalCredential | object | Conditional | Digital credential for age verification (required if adult=true) |
+| sex | string | No | Character sex: `"male"` or `"female"` for gender-substituted text |
 
 ### digitalCredential Structure
 
@@ -89,6 +90,7 @@ No authentication required for this endpoint.
 | characters[].display_name | string | Character display name |
 | characters[].safe_display_name | string | Character safe display name |
 | characters[].level | integer | Character level (default: 1) |
+| characters[].sex | string or null | Character sex (`"male"` or `"female"`, null if not set) |
 | token | string | Authentication token for subsequent requests |
 
 ### Error (400 Bad Request)

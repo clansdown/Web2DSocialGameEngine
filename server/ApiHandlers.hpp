@@ -111,9 +111,49 @@ ApiResponse handleEndMiniGame(const nlohmann::json& body,
                                const std::optional<std::string>& new_token);
 
 ApiResponse handleGetMiniGameConfig(const nlohmann::json& body,
-                                     const std::optional<std::string>& username,
-                                     const ClientInfo& client,
-                                     const std::optional<std::string>& new_token);
+                                      const std::optional<std::string>& username,
+                                      const ClientInfo& client,
+                                      const std::optional<std::string>& new_token);
+
+ApiResponse handleGetTexts(const nlohmann::json& body,
+                            const std::optional<std::string>& username,
+                            const ClientInfo& client,
+                            const std::optional<std::string>& new_token);
+
+ApiResponse handleSetCharacterArchetype(const nlohmann::json& body,
+                                         const std::optional<std::string>& username,
+                                         const ClientInfo& client,
+                                         const std::optional<std::string>& new_token);
+
+ApiResponse handleGetDukedoms(const nlohmann::json& body,
+                               const std::optional<std::string>& username,
+                               const ClientInfo& client,
+                               const std::optional<std::string>& new_token);
+
+ApiResponse handleJoinDukedom(const nlohmann::json& body,
+                               const std::optional<std::string>& username,
+                               const ClientInfo& client,
+                               const std::optional<std::string>& new_token);
+
+ApiResponse handleCreateDukedom(const nlohmann::json& body,
+                                 const std::optional<std::string>& username,
+                                 const ClientInfo& client,
+                                 const std::optional<std::string>& new_token);
+
+ApiResponse handleStartDukeTrack(const nlohmann::json& body,
+                                  const std::optional<std::string>& username,
+                                  const ClientInfo& client,
+                                  const std::optional<std::string>& new_token);
+
+ApiResponse handleSetCharacterSex(const nlohmann::json& body,
+                                   const std::optional<std::string>& username,
+                                   const ClientInfo& client,
+                                   const std::optional<std::string>& new_token);
+
+ApiResponse handleGetUITextures(const nlohmann::json& body,
+                                 const std::optional<std::string>& username,
+                                 const ClientInfo& client,
+                                 const std::optional<std::string>& new_token);
 
 inline std::unordered_map<std::string, ApiHandler>& getEndpointHandlers() {
     static std::unordered_map<std::string, ApiHandler> handlers = {
@@ -131,7 +171,14 @@ inline std::unordered_map<std::string, ApiHandler>& getEndpointHandlers() {
         {"getPlayerState",        handleGetPlayerState},
         {"startMiniGame",         handleStartMiniGame},
         {"endMiniGame",           handleEndMiniGame},
-        {"getMiniGameConfig",     handleGetMiniGameConfig}
+        {"getMiniGameConfig",     handleGetMiniGameConfig},
+        {"getTexts",             handleGetTexts},
+        {"setCharacterArchetype", handleSetCharacterArchetype},
+        {"getDukedoms",          handleGetDukedoms},
+        {"joinDukedom",          handleJoinDukedom},
+        {"createDukedom",        handleCreateDukedom},
+        {"startDukeTrack",       handleStartDukeTrack},
+        {"setCharacterSex",      handleSetCharacterSex}
     };
     return handlers;
 }

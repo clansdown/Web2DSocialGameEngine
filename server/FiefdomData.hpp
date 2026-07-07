@@ -241,6 +241,7 @@ struct FiefdomData {
     int wall_count;
     double morale = 0.0;
     int64_t last_update_time = 0;
+    int manor_level = 1;
     std::vector<BuildingData> buildings;
     std::vector<WallData> walls;
     std::vector<OfficialData> officials;
@@ -266,6 +267,7 @@ struct FiefdomData {
         json["wall_count"] = wall_count;
         json["morale"] = morale;
         json["last_update_time"] = last_update_time;
+        json["manor_level"] = manor_level;
 
         nlohmann::json buildings_arr = nlohmann::json::array();
         for (const auto& b : buildings) {

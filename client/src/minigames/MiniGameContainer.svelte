@@ -122,6 +122,31 @@
               <p class="mb-0">You have proven yourself worthy. The right to build is yours.</p>
             </div>
           {/if}
+          {#if gameResults.land_patent_earned}
+            <div class="alert alert-info">
+              <h4 class="alert-heading">Land Patent Earned!</h4>
+              <p class="mb-0">You have completed all initial missions. You may now join a dukedom or earn the right to start your own.</p>
+            </div>
+          {/if}
+          {#if gameResults.duke_right_earned}
+            <div class="alert alert-warning">
+              <h4 class="alert-heading">Dukedom Right Earned!</h4>
+              <p class="mb-0">You have cleared the duke track. You may now found your own dukedom.</p>
+            </div>
+          {/if}
+          {#if gameResults.new_unlocks && (gameResults.new_unlocks.new_units.length > 0 || gameResults.new_unlocks.new_towers.length > 0)}
+            <div class="alert alert-info">
+              <h4 class="alert-heading">New Unlocks!</h4>
+              <p class="mb-0">
+                {#each gameResults.new_unlocks.new_units as unit}
+                  <span class="badge bg-info me-2 mb-1">Unit: {unit}</span>
+                {/each}
+                {#each gameResults.new_unlocks.new_towers as tower}
+                  <span class="badge bg-warning text-dark me-2 mb-1">Tower: {tower}</span>
+                {/each}
+              </p>
+            </div>
+          {/if}
           <button class="btn btn-primary btn-lg mt-4" onclick={() => onComplete(gameResults)}>
             Continue
           </button>

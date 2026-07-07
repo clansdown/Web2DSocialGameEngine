@@ -29,12 +29,39 @@ namespace {
         ensureIndex(db, "idx_fiefdom_walls_fiefdom_gen", "fiefdom_walls", "fiefdom_id, generation");
     ensureIndex(db, "idx_player_game_state_character", "player_game_state", "character_id");
     ensureIndex(db, "idx_mini_game_progress_character", "mini_game_progress", "character_id, mini_game");
+    ensureIndex(db, "idx_td_player_unlocks_character", "td_player_unlocks", "character_id");
+    ensureIndex(db, "idx_dukedoms_owner", "dukedoms", "owner_character_id");
+    ensureIndex(db, "idx_dukedom_members_dukedom", "dukedom_members", "dukedom_id");
+    ensureIndex(db, "idx_dukedom_members_character", "dukedom_members", "character_id");
     }
 
     void ensureMessagesDBIndexes_private(sqlite::database& db) {
         ensureIndex(db, "idx_messages_to_character", "player_messages", "to_character_id");
         ensureIndex(db, "idx_messages_from_character", "player_messages", "from_character_id");
         ensureIndex(db, "idx_messages_timestamp", "player_messages", "timestamp");
+    }
+
+    void migrate_character_archetype(sqlite::database& db) {
+        try {
+            db << "ALTER TABLE characters ADD COLUMN archetype TEXT;";
+        } catch (const std::exception&) {
+            // Column already exists — ignore
+        }
+    }
+
+    void migrate_character_sex(sqlite::database& db) {
+        try {
+            db << "ALTER TABLE characters ADD COLUMN sex TEXT;";
+        } catch (const std::exception&) {
+        }
+    }
+
+    void migrate_manor_level(sqlite::database& db) {
+        try {
+            db << "ALTER TABLE fiefdoms ADD COLUMN manor_level INTEGER NOT NULL DEFAULT 1;";
+        } catch (const std::exception&) {
+            // Column already exists — ignore
+        }
     }
 
     void createGameDBTables(sqlite::database& db) {
@@ -144,6 +171,37 @@ namespace {
             "FOREIGN KEY(character_id) REFERENCES characters(id)"
         );
 
+        createTable(db, "dukedoms",
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "name TEXT NOT NULL UNIQUE,"
+            "owner_character_id INTEGER NOT NULL,"
+            "description TEXT DEFAULT '',"
+            "created_at INTEGER NOT NULL,"
+            "FOREIGN KEY(owner_character_id) REFERENCES characters(id)"
+        );
+
+        createTable(db, "dukedom_members",
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "dukedom_id INTEGER NOT NULL,"
+            "character_id INTEGER NOT NULL UNIQUE,"
+            "fiefdom_id INTEGER NOT NULL,"
+            "joined_at INTEGER NOT NULL,"
+            "role TEXT NOT NULL DEFAULT 'member',"
+            "FOREIGN KEY(dukedom_id) REFERENCES dukedoms(id),"
+            "FOREIGN KEY(character_id) REFERENCES characters(id),"
+            "FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id)"
+        );
+
+        createTable(db, "td_player_unlocks",
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "character_id INTEGER NOT NULL,"
+            "item_type TEXT NOT NULL,"
+            "item_id TEXT NOT NULL,"
+            "unlocked_at INTEGER NOT NULL,"
+            "FOREIGN KEY(character_id) REFERENCES characters(id),"
+            "UNIQUE(character_id, item_type, item_id)"
+        );
+
         createTable(db, "mini_game_progress",
             "id INTEGER PRIMARY KEY AUTOINCREMENT,"
             "character_id INTEGER NOT NULL,"
@@ -178,6 +236,9 @@ namespace {
 
 void initializeGameDB(sqlite::database& db) {
     createGameDBTables(db);
+    migrate_character_archetype(db);
+    migrate_character_sex(db);
+    migrate_manor_level(db);
     ensureGameDBIndexes_private(db);
 }
 

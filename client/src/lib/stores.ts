@@ -80,3 +80,25 @@ export const isLoggedIn = derived(
  * Usage: Use in components with $playerGameState to access game state
  */
 export const playerGameState = writable<PlayerGameState | null>(null);
+
+/**
+ * Svelte store containing the user's selected language preference.
+ * Defaults to 'en' (English). Set by LanguageSelect component on first visit
+ * and loaded from OPFS on subsequent visits.
+ *
+ * @type {writable<string>}
+ *
+ * Usage: Pass to getTextsRequest() calls to fetch text in the correct language
+ */
+export const language = writable<string>('en');
+
+/**
+ * Reactive store tracking whether the user has an active session.
+ * Updated by auth.setSessionToken() / auth.logout().
+ * Used in App.svelte template to gate auth-required UI.
+ * 
+ * @type {writable<boolean>}
+ * 
+ * Usage: Use in components with $isAuthenticated
+ */
+export const isAuthenticated = writable<boolean>(false);

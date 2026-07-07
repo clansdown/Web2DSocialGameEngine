@@ -531,7 +531,7 @@ ActionResult deductResources(int fiefdom_id, const json& costs, ActionResult& re
     for (size_t i = 0; i < 8; i++) {
         if (costs.contains(resource_fields[i])) {
             int before = *resource_ptrs[i];
-            *resource_ptrs[i] -= costs[resource_fields[i]];
+            *resource_ptrs[i] -= costs[resource_fields[i]].get<int>();
             int after = *resource_ptrs[i];
             
             DiffValue diff;
@@ -847,6 +847,8 @@ nlohmann::json getDemolishRefund(int building_id) {
     return refund;
 }
 
+} // namespace Validation
+
 // === BuildWallActionHandler Implementation ===
 
 ActionResult BuildWallActionHandler::validate(const json& payload, const ActionContext& ctx) {
@@ -876,7 +878,7 @@ ActionResult BuildWallActionHandler::validate(const json& payload, const ActionC
         return result;
     }
 
-    auto config_opt = getWallConfigByGeneration(wall_generation);
+    auto config_opt = Validation::getWallConfigByGeneration(wall_generation);
     if (!config_opt) {
         result.status = ActionStatus::FAIL;
         result.error_code = "generation_invalid";
@@ -884,21 +886,21 @@ ActionResult BuildWallActionHandler::validate(const json& payload, const ActionC
         return result;
     }
 
-    if (wall_generation > 1 && !hasWallGeneration(fiefdom_id, wall_generation - 1)) {
+    if (wall_generation > 1 && !Validation::hasWallGeneration(fiefdom_id, wall_generation - 1)) {
         result.status = ActionStatus::FAIL;
         result.error_code = "generation_sequence_required";
         result.error_message = "Must build wall generation " + std::to_string(wall_generation - 1) + " first";
         return result;
     }
 
-    if (hasWallGeneration(fiefdom_id, wall_generation)) {
+    if (Validation::hasWallGeneration(fiefdom_id, wall_generation)) {
         result.status = ActionStatus::FAIL;
         result.error_code = "generation_exists";
         result.error_message = "Wall generation " + std::to_string(wall_generation) + " already exists";
         return result;
     }
 
-    if (!canAffordWall(fiefdom_id, wall_generation, 1)) {
+    if (!Validation::canAffordWall(fiefdom_id, wall_generation, 1)) {
         result.status = ActionStatus::FAIL;
         result.error_code = "insufficient_resources";
         result.error_message = "Not enough resources to build wall";
@@ -919,7 +921,7 @@ ActionResult BuildWallActionHandler::execute(const json& payload, const ActionCo
     int wall_generation = payload["wall_generation"];
     int64_t now = Validation::getCurrentTimestamp();
 
-    auto config_opt = getWallConfigByGeneration(wall_generation);
+    auto config_opt = Validation::getWallConfigByGeneration(wall_generation);
     auto config = *config_opt;
 
     try {
@@ -958,7 +960,7 @@ ActionResult BuildWallActionHandler::execute(const json& payload, const ActionCo
 
             if (GridCollision::overlapsWalls(fiefdom_id, wall_generation, bx, by, bw, bh)) {
                 int building_id = building["id"].get<int>();
-                auto refund = getDemolishRefund(building_id);
+                auto refund = Validation::getDemolishRefund(building_id);
 
                 Validation::refundResources(fiefdom_id, refund, result);
 
@@ -977,7 +979,7 @@ ActionResult BuildWallActionHandler::execute(const json& payload, const ActionCo
             }
         }
 
-        int initial_hp = getWallHP(wall_generation, 1);
+        int initial_hp = Validation::getWallHP(wall_generation, 1);
         if (!FiefdomFetcher::createWall(fiefdom_id, wall_generation, 1, initial_hp, now)) {
             result.status = ActionStatus::FAIL;
             result.error_code = "database_error";
@@ -1155,7 +1157,7 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
             return result;
         }
 
-        auto config_opt = getWallConfigByGeneration(generation);
+        auto config_opt = Validation::getWallConfigByGeneration(generation);
         if (!config_opt) {
             result.status = ActionStatus::FAIL;
             result.error_code = "invalid_config";
@@ -1174,7 +1176,7 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
             return result;
         }
 
-        auto cost = calculateWallUpgradeCost(generation, current_level);
+        auto cost = Validation::calculateWallUpgradeCost(generation, current_level);
         if (!Validation::hasEnoughResources(fiefdom_id, cost)) {
             result.status = ActionStatus::FAIL;
             result.error_code = "insufficient_resources";
@@ -1259,11 +1261,11 @@ ActionResult UpgradeActionHandler::execute(const json& payload, const ActionCont
                    current_level = lvl;
                };
 
-            auto cost = calculateWallUpgradeCost(generation, current_level);
+            auto cost = Validation::calculateWallUpgradeCost(generation, current_level);
             auto deduct_result = Validation::deductResources(fiefdom_id, cost, result);
             if (deduct_result.status != ActionStatus::OK) return deduct_result;
 
-            int new_hp = getWallHP(generation, current_level + 1);
+            int new_hp = Validation::getWallHP(generation, current_level + 1);
             if (!FiefdomFetcher::updateWallLevel(wall_id, current_level + 1, new_hp, now)) {
                 result.status = ActionStatus::FAIL;
                 result.error_code = "database_error";
@@ -1291,45 +1293,47 @@ ActionResult UpgradeActionHandler::execute(const json& payload, const ActionCont
 
 void registerAllActionHandlers(ActionRegistry& registry) {
     registry.registerHandler("build",
-        BuildActionHandler().validate,
-        BuildActionHandler().execute,
+        [](const json& p, const ActionContext& ctx) { BuildActionHandler h; return h.validate(p, ctx); },
+        [](const json& p, const ActionContext& ctx) { BuildActionHandler h; return h.execute(p, ctx); },
         "Build structures");
 
     registry.registerHandler("demolish",
-        DemolishActionHandler().validate,
-        DemolishActionHandler().execute,
+        [](const json& p, const ActionContext& ctx) { DemolishActionHandler h; return h.validate(p, ctx); },
+        [](const json& p, const ActionContext& ctx) { DemolishActionHandler h; return h.execute(p, ctx); },
         "Demolish buildings (80% refund)");
 
     registry.registerHandler("move",
-        MoveBuildingActionHandler().validate,
-        MoveBuildingActionHandler().execute,
+        [](const json& p, const ActionContext& ctx) { MoveBuildingActionHandler h; return h.validate(p, ctx); },
+        [](const json& p, const ActionContext& ctx) { MoveBuildingActionHandler h; return h.execute(p, ctx); },
         "Move buildings (10% cost)");
 
     registry.registerHandler("build_wall",
-        BuildWallActionHandler().validate,
-        BuildWallActionHandler().execute,
+        [](const json& p, const ActionContext& ctx) { BuildWallActionHandler h; return h.validate(p, ctx); },
+        [](const json& p, const ActionContext& ctx) { BuildWallActionHandler h; return h.execute(p, ctx); },
         "Build/upgrade walls");
 
     registry.registerHandler("upgrade",
-        UpgradeActionHandler().validate,
-        UpgradeActionHandler().execute,
+        [](const json& p, const ActionContext& ctx) { UpgradeActionHandler h; return h.validate(p, ctx); },
+        [](const json& p, const ActionContext& ctx) { UpgradeActionHandler h; return h.execute(p, ctx); },
         "Upgrade buildings and walls");
 
     registry.registerHandler("train_troops",
-        TrainTroopsActionHandler().validate,
-        TrainTroopsActionHandler().execute,
+        [](const json& p, const ActionContext& ctx) { TrainTroopsActionHandler h; return h.validate(p, ctx); },
+        [](const json& p, const ActionContext& ctx) { TrainTroopsActionHandler h; return h.execute(p, ctx); },
         "Train combatants");
 
     registry.registerHandler("research_magic",
-        ResearchMagicActionHandler().validate,
-        ResearchMagicActionHandler().execute,
+        [](const json& p, const ActionContext& ctx) { ResearchMagicActionHandler h; return h.validate(p, ctx); },
+        [](const json& p, const ActionContext& ctx) { ResearchMagicActionHandler h; return h.execute(p, ctx); },
         "Research magic");
 
     registry.registerHandler("research_tech",
-        ResearchTechActionHandler().validate,
-        ResearchTechActionHandler().execute,
+        [](const json& p, const ActionContext& ctx) { ResearchTechActionHandler h; return h.validate(p, ctx); },
+        [](const json& p, const ActionContext& ctx) { ResearchTechActionHandler h; return h.execute(p, ctx); },
         "Research technology");
 }
+
+namespace Validation {
 
 std::optional<nlohmann::json> getPrerequisitesForLevel(
     const std::string& building_type,

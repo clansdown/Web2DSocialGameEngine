@@ -1,9 +1,11 @@
 import * as storage from './storage';
 import type { Character } from './api';
+import { isAuthenticated } from './stores';
 
 const CONFIG_USERNAME = 'username';
 const CONFIG_PASSWORD = 'password';
 const CONFIG_CURRENT_CHARACTER_ID = 'current_character_id';
+const CONFIG_LANGUAGE = 'language';
 
 let sessionToken: string | null = null;
 let inMemoryUsername: string | null = null;
@@ -33,6 +35,7 @@ export function getSessionToken(): string | null {
  */
 export function setSessionToken(token: string | null): void {
   sessionToken = token;
+  isAuthenticated.set(token !== null);
 }
 
 /**
@@ -154,6 +157,44 @@ export async function saveCurrentCharacterId(characterId: number): Promise<void>
 }
 
 /**
+ * Loads the stored language preference from OPFS.
+ * Returns null if no language has been chosen yet.
+ *
+ * @param none
+ * @returns Promise<string | null> - Language code or null
+ *
+ * Usage: Called on app mount to check if language is set
+ */
+export async function loadStoredLanguage(): Promise<string | null> {
+  const lang = await storage.getConfigString(CONFIG_LANGUAGE, '');
+  return lang || null;
+}
+
+/**
+ * Saves the language preference to OPFS for persistence.
+ *
+ * @param lang - Language code to save (e.g. 'en', 'es', 'de')
+ * @returns Promise<void>
+ *
+ * Usage: Called when user selects a language in LanguageSelect
+ */
+export async function saveStoredLanguage(lang: string): Promise<void> {
+  await storage.setConfig(CONFIG_LANGUAGE, lang);
+}
+
+/**
+ * Clears the stored language preference from OPFS.
+ *
+ * @param none
+ * @returns Promise<void>
+ *
+ * Usage: Called during full logout or language reset
+ */
+export async function clearStoredLanguage(): Promise<void> {
+  await storage.deleteConfig(CONFIG_LANGUAGE);
+}
+
+/**
  * Checks if there is an active session in memory.
  * 
  * @param none
@@ -178,6 +219,7 @@ export async function logout(): Promise<void> {
   sessionToken = null;
   inMemoryUsername = null;
   inMemoryPassword = null;
+  isAuthenticated.set(false);
   await clearStoredCredentials();
 }
 

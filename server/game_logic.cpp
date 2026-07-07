@@ -323,7 +323,7 @@ TimeUpdateResult updateStateSince(Timestamp last_update_time, const std::string&
 
                                 double new_value = old_value + total_amount;
 
-                                db << "UPDATE fiefdoms SET " + resource + " = ? WHERE id = ?;"
+                                db << (std::string("UPDATE fiefdoms SET ") + resource + " = ? WHERE id = ?;").c_str()
                                    << new_value << fiefdom.id;
 
                                 ProductionUpdate pu;

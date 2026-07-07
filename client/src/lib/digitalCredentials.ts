@@ -1,3 +1,16 @@
+// Global DigitalCredential interface from the W3C Digital Credentials API spec
+// Not yet in TypeScript lib types; declare here for type safety.
+interface DigitalCredentialConstructor {
+  new(): DigitalCredentialInstance;
+  prototype: DigitalCredentialInstance;
+  userAgentAllowsProtocol(protocol: string): boolean;
+}
+interface DigitalCredentialInstance extends Credential {
+  protocol: string;
+  data: Record<string, unknown> | string;
+}
+declare var DigitalCredential: DigitalCredentialConstructor | undefined;
+
 export interface DigitalCredentialResponse {
   protocol: string;
   data: Record<string, unknown> | string;
@@ -23,6 +36,28 @@ export interface VerifierMetadata {
   };
 }
 
+/**
+ * Detects if the browser is Brave.
+ * Uses navigator.brave.isBrave() which Brave 1.0+ exposes.
+ * Falls back to false if the API is unavailable.
+ * 
+ * @param none
+ * @returns Promise<boolean> - true if browser identifies as Brave
+ * 
+ * Usage: Called to customize Digital Credentials error messaging
+ */
+export async function isBraveBrowser(): Promise<boolean> {
+  try {
+    const brave = (navigator as { brave?: { isBrave: () => Promise<boolean> } }).brave;
+    if (brave) {
+      return await brave.isBrave();
+    }
+  } catch {
+    // fall through
+  }
+  return false;
+}
+
 function generateNonce(): string {
   const array = new Uint8Array(32);
   crypto.getRandomValues(array);
@@ -31,40 +66,135 @@ function generateNonce(): string {
 
 /**
  * Checks if the browser supports the Digital Credentials API.
- * The API is available in some Chromium-based browsers.
+ * Feature-detects by attempting a silent digital credential request.
+ * Some browsers (e.g. Brave) support navigator.credentials.get({digital:...})
+ * but do not expose the DigitalCredential global constructor.
  * 
  * @param none
- * @returns Promise<boolean> - true if DigitalCredential is defined
+ * @returns Promise<boolean> - true if the browser accepts digital credential requests
  * 
  * Usage: Called before attempting age verification
  */
-export function checkDigitalCredentialsSupport(): Promise<boolean> {
-  return Promise.resolve(typeof DigitalCredential !== 'undefined');
+export async function checkDigitalCredentialsSupport(): Promise<boolean> {
+  // First try: spec-compliant typeof check (Chromium flag exposes DigitalCredential)
+  if (typeof DigitalCredential !== 'undefined') {
+    return true;
+  }
+
+  // Second try: feature-detect via actual call
+  try {
+    await navigator.credentials.get({
+      digital: { requests: [] },
+      mediation: 'silent'
+    } as CredentialRequestOptions);
+    return true;
+  } catch (error) {
+    const navRecord = navigator as unknown as Record<string, unknown>;
+    console.debug('[DC Debug] navigator.credentials.get({digital:...}) failed:', {
+      name: error instanceof Error ? error.name : typeof error,
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+      typeof_DigitalCredential: typeof DigitalCredential,
+      typeof_brave: typeof navRecord.brave,
+      user_agent: navigator.userAgent
+    });
+    return false;
+  }
 }
 
 /**
- * Gets list of digital credential protocols supported by the browser.
- * Queries browser for supported protocols using DigitalCredential API.
+ * Checks if the DigitalCredential global constructor exists (spec-compliant check).
  * 
  * @param none
- * @returns string[] - Array of supported protocol names
+ * @returns boolean - true if typeof DigitalCredential !== 'undefined'
  * 
- * Usage: Called to determine which protocol to use for verification
+ * Usage: Quick check whether the browser exposes the spec interface
  */
-export function getUserSupportedProtocols(): string[] {
-  if (typeof DigitalCredential === 'undefined') {
-    return [];
+export function checkDigitalCredentialGlobal(): boolean {
+  return typeof DigitalCredential !== 'undefined';
+}
+
+/**
+ * Test utility: attempts a real digital credential request with a non-empty protocol
+ * to distinguish "API not supported" from "empty requests rejected by spec validation".
+ * 
+ * @param none
+ * @returns Promise<object> - Diagnostic info about the request attempt
+ * 
+ * Usage: Call from console via __debugDC.testGetWithRealRequest()
+ */
+export async function testGetWithRealRequest(): Promise<Record<string, unknown>> {
+  const navRecord = navigator as unknown as Record<string, unknown>;
+  const diagnostics: Record<string, unknown> = {
+    typeof_DigitalCredential: typeof DigitalCredential,
+    typeof_brave: typeof navRecord.brave,
+    user_agent: navigator.userAgent,
+  };
+
+  if (typeof DigitalCredential !== 'undefined') {
+    const protocols = ['openid4vp-v1-signed', 'openid4vp-v1-unsigned', 'org-iso-mdoc'];
+    const supported: string[] = [];
+    for (const p of protocols) {
+      try {
+        if (DigitalCredential.userAgentAllowsProtocol(p)) {
+          supported.push(p);
+        }
+      } catch {
+        // skip
+      }
+    }
+    diagnostics.supported_protocols = supported;
   }
 
-  const protocols = [
+  try {
+    const result = await navigator.credentials.get({
+      digital: {
+        requests: [{
+          protocol: 'openid4vp-v1-unsigned',
+          data: {}
+        }]
+      },
+      mediation: 'silent'
+    } as CredentialRequestOptions);
+    diagnostics.digital_get_result = result;
+    diagnostics.digital_get_success = true;
+  } catch (error) {
+    diagnostics.digital_get_success = false;
+    diagnostics.digital_get_error = error instanceof Error
+      ? { name: error.name, message: error.message }
+      : String(error);
+  }
+
+  return diagnostics;
+}
+
+// Expose debug utilities globally for console inspection
+if (typeof window !== 'undefined') {
+  (window as unknown as Record<string, unknown>).__debugDC = {
+    checkSupport: checkDigitalCredentialsSupport,
+    isBrave: isBraveBrowser,
+    checkDigitalCredentialGlobal: checkDigitalCredentialGlobal,
+    testGetWithRealRequest: testGetWithRealRequest,
+  };
+}
+
+/**
+ * Gets list of known digital credential protocols.
+ * Returns all standard protocols — the browser accepts or rejects
+ * at request time; pre-filtering via DigitalCredential.userAgentAllowsProtocol
+ * is unreliable across Chromium forks (e.g. Brave doesn't expose it).
+ * 
+ * @param none
+ * @returns string[] - Array of known protocol names
+ * 
+ * Usage: Called to determine which protocol to attempt for verification
+ */
+export function getUserSupportedProtocols(): string[] {
+  return [
     'openid4vp-v1-signed',
     'openid4vp-v1-unsigned',
     'org-iso-mdoc'
   ];
-
-  return protocols.filter(protocol =>
-    DigitalCredential.userAgentAllowsProtocol(protocol)
-  );
 }
 
 /**
@@ -114,11 +244,6 @@ export function getVerifierMetadata(sessionId: string): VerifierMetadata {
 export async function requestAgeVerification(
   sessionId?: string
 ): Promise<DigitalCredentialResponse | null> {
-  if (typeof DigitalCredential === 'undefined') {
-    console.warn('Digital Credentials API not supported');
-    return null;
-  }
-
   const supportedProtocols = getUserSupportedProtocols();
   if (supportedProtocols.length === 0) {
     console.warn('No supported protocols available');
@@ -139,7 +264,7 @@ export async function requestAgeVerification(
         ]
       },
       mediation: 'required'
-    }) as DigitalCredentialResponse | null;
+    } as CredentialRequestOptions) as DigitalCredentialResponse | null;
 
     if (!credential) {
       return null;

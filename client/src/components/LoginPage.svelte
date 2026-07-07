@@ -98,7 +98,7 @@
           disabled={$authLoading}
         />
         <label class="form-check-label" for="rememberMe">
-          Store username/password locally (insecure)
+          Remember me
         </label>
       </div>
 
