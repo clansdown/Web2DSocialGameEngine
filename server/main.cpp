@@ -1264,11 +1264,37 @@ ApiResponse handleGetUITextures(const json& body,
 
     json textures = json::array();
 
+    std::string texture_prefix = "text_silk_";
+    int padding_vertical_px = 60;
+    int padding_horizontal_px = 60;
+
+    try {
+        std::ifstream f("config/ui_textures.json");
+        if (f.is_open()) {
+            json cfg = json::parse(f);
+            if (cfg.contains(component_id) && cfg[component_id].is_object()) {
+                if (cfg[component_id].contains("texture_prefix")
+                    && cfg[component_id]["texture_prefix"].is_string()) {
+                    texture_prefix = cfg[component_id]["texture_prefix"].get<std::string>();
+                }
+                if (cfg[component_id].contains("padding_vertical_px")
+                    && cfg[component_id]["padding_vertical_px"].is_number_integer()) {
+                    padding_vertical_px = cfg[component_id]["padding_vertical_px"].get<int>();
+                }
+                if (cfg[component_id].contains("padding_horizontal_px")
+                    && cfg[component_id]["padding_horizontal_px"].is_number_integer()) {
+                    padding_horizontal_px = cfg[component_id]["padding_horizontal_px"].get<int>();
+                }
+            }
+        }
+    } catch (const std::exception&) {
+    }
+
     try {
         for (const auto& entry : std::filesystem::directory_iterator("images/ui")) {
             if (!entry.is_regular_file()) continue;
             std::string filename = entry.path().filename().string();
-            if (filename.rfind("text_silk_", 0) != 0) continue;
+            if (filename.rfind(texture_prefix, 0) != 0) continue;
 
             auto dims = get_image_dimensions(entry.path().string());
             if (dims.width <= 0 || dims.height <= 0) continue;
@@ -1287,27 +1313,6 @@ ApiResponse handleGetUITextures(const json& body,
     });
 
     response.data["textures"] = textures;
-
-    int padding_vertical_px = 60;
-    int padding_horizontal_px = 60;
-    try {
-        std::ifstream f("config/ui_textures.json");
-        if (f.is_open()) {
-            json cfg = json::parse(f);
-            if (cfg.contains(component_id) && cfg[component_id].is_object()) {
-                if (cfg[component_id].contains("padding_vertical_px")
-                    && cfg[component_id]["padding_vertical_px"].is_number_integer()) {
-                    padding_vertical_px = cfg[component_id]["padding_vertical_px"].get<int>();
-                }
-                if (cfg[component_id].contains("padding_horizontal_px")
-                    && cfg[component_id]["padding_horizontal_px"].is_number_integer()) {
-                    padding_horizontal_px = cfg[component_id]["padding_horizontal_px"].get<int>();
-                }
-            }
-        }
-    } catch (const std::exception&) {
-    }
-
     response.data["padding_vertical_px"] = padding_vertical_px;
     response.data["padding_horizontal_px"] = padding_horizontal_px;
 
@@ -1435,20 +1440,26 @@ ApiResponse handleSetCharacterArchetype(const json& body,
     // Return updated character data
     std::string display_name, safe_display_name;
     int level;
-    db << "SELECT display_name, safe_display_name, level FROM characters WHERE id = ?;"
+    std::unique_ptr<std::string> sex;
+    db << "SELECT display_name, safe_display_name, level, sex FROM characters WHERE id = ?;"
        << character_id
-       >> [&](std::string dn, std::string sdn, int l) {
-             display_name = dn;
-             safe_display_name = sdn;
-             level = l;
-         };
+       >> [&](std::string dn, std::string sdn, int l, std::unique_ptr<std::string> s) {
+              display_name = dn;
+              safe_display_name = sdn;
+              level = l;
+              sex = std::move(s);
+          };
 
     response.data["id"] = character_id;
     response.data["display_name"] = display_name;
     response.data["safe_display_name"] = safe_display_name;
     response.data["level"] = level;
     response.data["archetype"] = archetype;
-    response.data["sex"] = nullptr;
+    if (sex) {
+        response.data["sex"] = *sex;
+    } else {
+        response.data["sex"] = nullptr;
+    }
 
     if (new_token) {
         response.data["token"] = *new_token;

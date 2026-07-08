@@ -162,10 +162,10 @@ All endpoints accept POST requests with JSON bodies and respond with:
 
 #### Quick Compile Check
 
-Use `compile_server.sh` to compile the server without running it:
+Run with **no arguments** (default/normal output) to test compilation:
 
 ```bash
-./compile_server.sh          # Compile with normal output
+./compile_server.sh          # Compile with normal output (default)
 ./compile_server.sh -q       # Compile silently (quiet mode)
 ./compile_server.sh -v       # Compile with verbose output
 ./compile_server.sh --help   # Show all options

@@ -1,9 +1,9 @@
+<script lang="ts">
 /**
  * Displays the character sex selection screen for new or legacy characters.
  * Shows two cards (Male / Female) with icons, loads text from the server,
  * and calls the API to persist the choice.
  */
-<script lang="ts">
   import { language, currentCharacter } from '../lib/stores';
   import { getTextsRequest, setCharacterSexRequest } from '../lib/api';
   import * as auth from '../lib/auth';

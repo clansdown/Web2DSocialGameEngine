@@ -1,22 +1,28 @@
 <script lang="ts">
-  import { playerGameState } from '../lib/stores';
+  import { playerGameState, language } from '../lib/stores';
   import { getMiniGameConfigs } from '../lib/game_state';
+  import { getTextsRequest } from '../lib/api';
   import type { MiniGameConfig } from '../lib/api';
+  import GameText from '../components/GameText.svelte';
 
   interface Props {
     miniGame: string;
     gridSize?: number;
+    mapImage?: string;
+    title?: string;
+    infoTextId?: string;
     onStartLevel: (levelId: number) => void;
     onBack: () => void;
   }
 
-  let { miniGame, gridSize: propGridSize, onStartLevel, onBack }: Props = $props();
+  let { miniGame, gridSize: propGridSize, mapImage, title, infoTextId, onStartLevel, onBack }: Props = $props();
 
   let config = $state<MiniGameConfig | null>(null);
   let loading = $state(true);
   let loadError = $state<string | null>(null);
+  let infoText = $state('');
 
-  let displayName = $derived(config?.display_name ?? miniGame);
+  let displayName = $derived(title ?? config?.display_name ?? miniGame);
   let configGridSize = $derived(config?.grid_size ?? 3);
   let gridSize = $derived(propGridSize ?? configGridSize);
 
@@ -94,6 +100,16 @@
   $effect(() => {
     loadConfig();
   });
+
+  $effect(() => {
+    if (infoTextId) {
+      getTextsRequest($language, [infoTextId]).then((texts) => {
+        infoText = texts[infoTextId] ?? '';
+      }).catch(() => {
+        infoText = '';
+      });
+    }
+  });
 </script>
 
 <div class="container py-5">
@@ -115,6 +131,36 @@
     </div>
   {:else if loadError}
     <div class="alert alert-danger">{loadError}</div>
+  {:else if mapImage}
+    <div style="position: relative; max-width: 800px; margin: 0 auto;">
+      <img src={mapImage} alt="Campaign Map" style="width: 100%; height: auto; display: block; border-radius: 8px;" />
+      <div
+        style="position: absolute; inset: 0; display: grid; grid-template-columns: repeat({gridSize}, 1fr); grid-template-rows: repeat({gridSize}, 1fr);"
+      >
+        {#each Array(gridSize * gridSize) as _, i}
+          {@const levelId = i + 1}
+          {@const conquered = isLevelCompleted(levelId)}
+          <div
+            role="button"
+            tabindex="0"
+            style="cursor: pointer; position: relative; transition: background 0.2s; border-radius: 4px; margin: 2px; {conquered ? '' : 'background: rgba(0, 0, 0, 0.35);'}"
+            onmouseenter={(e) => { (e.currentTarget as HTMLElement).style.background = conquered ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.2)'; }}
+            onmouseleave={(e) => { (e.currentTarget as HTMLElement).style.background = conquered ? '' : 'rgba(0, 0, 0, 0.35)'; }}
+            onclick={() => onStartLevel(levelId)}
+            onkeydown={(e) => { if (e.key === 'Enter') onStartLevel(levelId); }}
+          >
+            {#if conquered}
+              <div style="position: absolute; top: 4px; right: 4px; color: #22c55e; font-size: 18px; text-shadow: 0 1px 3px rgba(0,0,0,0.5);">&#10003;</div>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    </div>
+    {#if infoText}
+      <div class="mx-auto mt-4" style="max-width: 800px;">
+        <GameText text={infoText} />
+      </div>
+    {/if}
   {:else}
     <div class="row g-3 justify-content-center">
       {#each Array(gridSize) as _, row}

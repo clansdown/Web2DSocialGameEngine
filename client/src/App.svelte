@@ -343,6 +343,9 @@
     <MiniGameSelect
       miniGame={selectedMiniGame}
       gridSize={3}
+      mapImage={$currentCharacter?.archetype === 'wolf_warden' ? '/images/tower_defense/wolf_warden_map1.jpg' : undefined}
+      title={$currentCharacter?.archetype === 'wolf_warden' ? 'Wolf Warden' : undefined}
+      infoTextId={$currentCharacter?.archetype === 'wolf_warden' ? 'ui_campaign_intro_wolf_warden' : undefined}
       onStartLevel={handleStartLevel}
       onBack={handleBackToMissions}
     />
