@@ -149,7 +149,7 @@
       font-family: 'Georgia', 'Palatino', serif;
       line-height: 1.65;
       mix-blend-mode: multiply;
-      opacity: 0.85;
+      opacity: 0.8;
       text-align: justify;
     "
   >
@@ -160,3 +160,11 @@
     {/if}
   </div>
 </div>
+
+<style>
+.game-text {
+text-shadow: 
+    0 0 0.4px rgba(26, 26, 26, 0.6),      /* Soft edge bleed */
+    0.3px 0.3px 0.5px rgba(90, 70, 50, 0.3); /* Faint, warm micro-shadow for depth */
+}
+</style>
