@@ -127,6 +127,28 @@ CREATE TABLE message_queues (
 );
 ```
 
+### game.db Additional Tables
+
+```sql
+CREATE TABLE game_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    character_id INTEGER NOT NULL,
+    mini_game TEXT NOT NULL,
+    level_id INTEGER NOT NULL DEFAULT 0,
+    started_at INTEGER NOT NULL,
+    last_activity INTEGER NOT NULL,
+    total_rounds INTEGER NOT NULL DEFAULT 1,
+    current_round INTEGER NOT NULL DEFAULT 0,
+    difficulty INTEGER NOT NULL DEFAULT 1,
+    lives INTEGER NOT NULL DEFAULT 20,
+    gold INTEGER NOT NULL DEFAULT 100,
+    state TEXT NOT NULL DEFAULT 'active',
+    FOREIGN KEY(character_id) REFERENCES characters(id)
+);
+```
+
+Used for ongoing tower defense game sessions. Created on tdRound kickoff, updated on completion.
+
 ### API Endpoints
 
 All endpoints accept POST requests with JSON bodies and respond with:
@@ -144,6 +166,7 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - See `api/hunt.md` for `/api/hunt` documentation
 - See `api/updateUserProfile.md` for `/api/updateUserProfile` documentation
 - See `api/updateCharacterProfile.md` for `/api/updateCharacterProfile` documentation
+- See `api/tdRound.md` for `/api/tdRound` documentation
 
 #### Endpoint Overview
 
@@ -157,6 +180,7 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - **/api/sally**: Sally forth/battle actions (STUB - TODO: implement)
 - **/api/campaign**: Campaign management (STUB - TODO: implement)
 - **/api/hunt**: Hunting activities (STUB - TODO: implement)
+- **/api/tdRound**: Tower defense round lifecycle (kickoff + completion)
 
 ### Building
 
@@ -271,6 +295,14 @@ When testing or verifying the server, use the `agent_test_server.sh` script for 
 - Create RAII wrappers for memory management of code that doesn't natively support RAII
 - Follow C++ standard best practices for resource management
 
+**Filesystem Caching:**
+- `std::filesystem::file_time_type` is broken on Linux — comparisons against a default-constructed value always produce incorrect results
+- When comparing file modification times for cache invalidation, use POSIX `stat()` and `time_t` instead
+  - Use `stat(path, &st)` to get `st.st_mtime` (a plain `time_t`)
+  - Store the last-scan time as `time_t` initialized to `0`
+  - Compare: `st.st_mtime <= last_scan_time_` for simple integer comparison
+- The `TowerDefenseMapCache` (`server/TowerDefenseMapCache.cpp`) demonstrates the correct pattern
+
 **Rationale:** These standards ensure:
 - Consistent, readable code across codebase
 - Automatic resource cleanup via RAII prevents leaks
@@ -318,6 +350,15 @@ The client is a Vite + Svelte 5 + TypeScript application that provides the game 
   - Loading spinners, badges
 - Use Bootstrap's dark mode via `data-bs-theme="dark"` on `<html>` tag
 - Reference: https://getbootstrap.com/docs/5.3/
+
+**SimpleGame (client/SimpleGame/):**
+- **NEVER modify any file under `client/SimpleGame/`** under any circumstances
+- SimpleGame is an imported engine project (local package via `file:./SimpleGame/ui` in package.json)
+- If SimpleGame changes are needed for integration:
+  1. Document the required changes in `docs/SimpleGame_changes.md` as a feature request to the engine project
+  2. Only implement workarounds in our own code that avoid relying on the missing features
+- Our integration uses SimpleGame's class definitions (`EnemyClass`, `GameObjectClass`, `ProjectileClass`, etc.) and collections (`gameObjects`, `enemies`, `projectiles`) as a library
+- We do NOT call `initEngine()` — we run our own game loop via requestAnimationFrame
 
 **TypeScript - Strict Typing:**
 - Everything must have explicit types - no implicit or inferred types except in trivial cases

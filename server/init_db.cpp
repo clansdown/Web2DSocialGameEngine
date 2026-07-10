@@ -33,6 +33,7 @@ namespace {
     ensureIndex(db, "idx_dukedoms_owner", "dukedoms", "owner_character_id");
     ensureIndex(db, "idx_dukedom_members_dukedom", "dukedom_members", "dukedom_id");
     ensureIndex(db, "idx_dukedom_members_character", "dukedom_members", "character_id");
+    ensureIndex(db, "idx_game_sessions_character", "game_sessions", "character_id");
     }
 
     void ensureMessagesDBIndexes_private(sqlite::database& db) {
@@ -200,6 +201,22 @@ namespace {
             "unlocked_at INTEGER NOT NULL,"
             "FOREIGN KEY(character_id) REFERENCES characters(id),"
             "UNIQUE(character_id, item_type, item_id)"
+        );
+
+        createTable(db, "game_sessions",
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "character_id INTEGER NOT NULL,"
+            "mini_game TEXT NOT NULL,"
+            "level_id INTEGER NOT NULL DEFAULT 0,"
+            "started_at INTEGER NOT NULL,"
+            "last_activity INTEGER NOT NULL,"
+            "total_rounds INTEGER NOT NULL DEFAULT 1,"
+            "current_round INTEGER NOT NULL DEFAULT 0,"
+            "difficulty INTEGER NOT NULL DEFAULT 1,"
+            "lives INTEGER NOT NULL DEFAULT 20,"
+            "gold INTEGER NOT NULL DEFAULT 100,"
+            "state TEXT NOT NULL DEFAULT 'active',"
+            "FOREIGN KEY(character_id) REFERENCES characters(id)"
         );
 
         createTable(db, "mini_game_progress",

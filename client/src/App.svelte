@@ -25,6 +25,7 @@
   let initialized = $state(false);
   let selectedMiniGame = $state<string | null>(null);
   let activeMiniGame = $state<string | null>(null);
+  let selectedLevelId = $state<number>(0);
 
   // Language selection state
   let languageLoading = $state(true);
@@ -189,9 +190,10 @@
     showIntroOverlay = false;
   }
 
-  function handleStartLevel(_levelId: number) {
+  function handleStartLevel(levelId: number) {
     if (!selectedMiniGame) return;
     activeMiniGame = selectedMiniGame;
+    selectedLevelId = levelId;
   }
 
   function handleGameComplete(_results: EndMiniGameResponse) {
@@ -327,6 +329,7 @@
 {:else if activeMiniGame}
   <MiniGameContainer
     miniGame={activeMiniGame}
+    levelId={selectedLevelId}
     onComplete={handleGameCompleteFromGrid}
     onError={handleGameError}
   />

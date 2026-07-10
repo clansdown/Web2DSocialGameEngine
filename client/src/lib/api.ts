@@ -445,6 +445,91 @@ export async function endMiniGameRequest(
   return res.data as EndMiniGameResponse;
 }
 
+export interface SpawnScheduleEntry {
+  enemy_id: string;
+  count: number;
+  interval_ms: number;
+  initial_delay_ms: number;
+}
+
+export interface TDRoundKickoffResponse {
+  session_id: number;
+  character_id: number;
+  mini_game: string;
+  level_id: number;
+  difficulty: number;
+  round_number: number;
+  total_rounds: number;
+  lives: number;
+  gold: number;
+  spawn_schedule: SpawnScheduleEntry[];
+  map_metadata?: unknown;
+  mobs?: unknown;
+  towers?: unknown;
+  units?: unknown;
+  [key: string]: unknown;
+}
+
+export interface TDRoundCompleteResponse {
+  session_id: number;
+  game_over: boolean;
+  won: boolean;
+  lives: number;
+  gold: number;
+  score: number;
+  rewards: Record<string, number>;
+  completed: boolean;
+  new_best_score: number;
+  times_played: number;
+  all_levels_done: boolean;
+  base_unlocked?: boolean;
+  game_phase?: string;
+  land_patent_earned?: boolean;
+  duke_right_earned?: boolean;
+  [key: string]: unknown;
+}
+
+export type TDRoundResponse = TDRoundKickoffResponse | TDRoundCompleteResponse;
+
+/**
+ * Starts a new TD round session or completes an existing one.
+ * Without session_id: kicks off a new game session with round 0 data.
+ * With session_id + results: reports round completion and gets game over status.
+ *
+ * @param characterId - Character ID
+ * @param options - Either { mini_game, level_id } for kickoff or { session_id, lives_lost, gold_earned } for completion
+ * @param auth - Authentication object
+ * @returns Promise<TDRoundResponse> - Round data or game over results
+ *
+ * Usage: Called from SimpleGame component to manage round lifecycle
+ */
+export async function tdRoundRequest(
+  characterId: number,
+  options: { mini_game?: string; level_id?: number; session_id?: number; lives_lost?: number; gold_earned?: number },
+  auth: { username: string; token: string }
+): Promise<TDRoundResponse> {
+  const body: Record<string, unknown> = { character_id: characterId };
+
+  if (options.session_id !== undefined) {
+    body.session_id = options.session_id;
+    body.lives_lost = options.lives_lost ?? 0;
+    body.gold_earned = options.gold_earned ?? 0;
+  } else {
+    body.mini_game = options.mini_game;
+    body.level_id = options.level_id;
+  }
+
+  const res = await apiPost<TDRoundResponse>('tdRound', body, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  if (!res.data) {
+    throw new Error('Empty response from server');
+  }
+  return res.data as TDRoundResponse;
+}
+
 /**
  * Retrieves mini-game configuration data.
  *

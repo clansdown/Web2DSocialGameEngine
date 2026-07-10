@@ -1,5 +1,11 @@
-<script lang="ts">
+      <script lang="ts">
+  /**
+   * Container component that orchestrates the mini-game lifecycle.
+   * For tower defense, uses the new SimpleGame component with tdRound API.
+   * For weeding, uses the existing startMiniGame/endMiniGame flow.
+   */
   import TowerDefenseGame from './tower_defense/TowerDefenseGame.svelte';
+  import SimpleGame from './tower_defense/SimpleGame.svelte';
   import WeedingGame from './weeding/WeedingGame.svelte';
   import { startMiniGame, endMiniGame } from '../lib/game_state';
   import { currentCharacter, playerGameState } from '../lib/stores';
@@ -7,11 +13,12 @@
 
   interface Props {
     miniGame: string;
+    levelId?: number;
     onComplete: (results: EndMiniGameResponse) => void;
     onError: (error: string) => void;
   }
 
-  let { miniGame, onComplete, onError }: Props = $props();
+  let { miniGame, levelId = 0, onComplete, onError }: Props = $props();
 
   let loading = $state(true);
   let startError = $state<string | null>(null);
@@ -21,11 +28,19 @@
   let gameResults: EndMiniGameResponse | null = $state(null);
   let showResults = $state(false);
 
+  // For tower defense with new SimpleGame
+  let tdStarted = $state(false);
+
   /**
-   * Starts the mini-game session by calling the server API.
-   * Loads the level config that the client game component will render.
+   * Starts the mini-game session for non-TD games (weeding).
    */
   async function initializeGame() {
+    if (miniGame === 'tower_defense') {
+      tdStarted = true;
+      loading = false;
+      return;
+    }
+
     loading = true;
     startError = null;
     try {
@@ -46,11 +61,7 @@
   }
 
   /**
-   * Called by the mini-game component when the game finishes.
-   * Reports results to the server and transitions to results display.
-   * 
-   * @param won - Whether the player won
-   * @param score - The player's score
+   * Called by the mini-game component when the game finishes (weeding path).
    */
   async function handleGameOver(won: boolean, score: number) {
     if (gameFinished || !$currentCharacter || !levelConfig) return;
@@ -76,8 +87,18 @@
     }
   }
 
+  /**
+   * Called by SimpleGame when TD is complete.
+   */
+  function handleTDComplete(results: EndMiniGameResponse) {
+    if (gameFinished) return;
+    gameFinished = true;
+    gameResults = results;
+    showResults = true;
+  }
+
   $effect(() => {
-    if (!gameStarted && !gameFinished) {
+    if (!gameStarted && !gameFinished && !tdStarted) {
       initializeGame();
     }
   });
@@ -147,12 +168,20 @@
               </p>
             </div>
           {/if}
-          <button class="btn btn-primary btn-lg mt-4" onclick={() => onComplete(gameResults)}>
+          <button class="btn btn-primary btn-lg mt-4" onclick={() => { if (gameResults) onComplete(gameResults); }}>
             Continue
           </button>
         </div>
       </div>
     </div>
+  {:else if tdStarted && !gameFinished && $currentCharacter}
+    <SimpleGame
+      characterId={$currentCharacter.id}
+      {miniGame}
+      {levelId}
+      onComplete={handleTDComplete}
+      onError={onError}
+    />
   {:else if levelConfig && gameStarted}
     {#if miniGame === 'tower_defense'}
       <TowerDefenseGame

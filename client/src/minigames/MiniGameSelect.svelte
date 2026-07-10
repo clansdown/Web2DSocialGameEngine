@@ -140,14 +140,15 @@
         {#each Array(gridSize * gridSize) as _, i}
           {@const levelId = i + 1}
           {@const conquered = isLevelCompleted(levelId)}
+          {@const available = isLevelAvailable(levelId)}
           <div
             role="button"
-            tabindex="0"
-            style="cursor: pointer; position: relative; transition: background 0.2s; border-radius: 4px; margin: 2px; {conquered ? '' : 'background: rgba(0, 0, 0, 0.35);'}"
-            onmouseenter={(e) => { (e.currentTarget as HTMLElement).style.background = conquered ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.2)'; }}
+            tabindex={available ? 0 : -1}
+            style="cursor: {available ? 'pointer' : 'not-allowed'}; position: relative; transition: background 0.2s; border-radius: 4px; margin: 2px; {!available ? 'background: rgba(0, 0, 0, 0.55);' : conquered ? '' : 'background: rgba(0, 0, 0, 0.35);'}"
+            onmouseenter={(e) => { if (available) (e.currentTarget as HTMLElement).style.background = conquered ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.2)'; }}
             onmouseleave={(e) => { (e.currentTarget as HTMLElement).style.background = conquered ? '' : 'rgba(0, 0, 0, 0.35)'; }}
-            onclick={() => onStartLevel(levelId)}
-            onkeydown={(e) => { if (e.key === 'Enter') onStartLevel(levelId); }}
+            onclick={() => handleLevelClick(levelId)}
+            onkeydown={(e) => { if (e.key === 'Enter') handleLevelClick(levelId); }}
           >
             {#if conquered}
               <div style="position: absolute; top: 4px; right: 4px; color: #22c55e; font-size: 18px; text-shadow: 0 1px 3px rgba(0,0,0,0.5);">&#10003;</div>

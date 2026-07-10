@@ -15,6 +15,23 @@ nlohmann::json MiniGameProgressRow::toJson() const {
     return j;
 }
 
+nlohmann::json GameSessionRow::toJson() const {
+    nlohmann::json j;
+    j["id"] = id;
+    j["character_id"] = character_id;
+    j["mini_game"] = mini_game;
+    j["level_id"] = level_id;
+    j["started_at"] = started_at;
+    j["last_activity"] = last_activity;
+    j["total_rounds"] = total_rounds;
+    j["current_round"] = current_round;
+    j["difficulty"] = difficulty;
+    j["lives"] = lives;
+    j["gold"] = gold;
+    j["state"] = state;
+    return j;
+}
+
 nlohmann::json PlayerGameStateRow::toJson() const {
     nlohmann::json j;
     j["character_id"] = character_id;
@@ -238,5 +255,113 @@ void earn_duke_right(sqlite::database& db, int character_id, int64_t timestamp) 
           "WHERE character_id = ?;"
        << timestamp << character_id;
 }
+
+    GameSessionRow create_game_session(sqlite::database& db, int character_id, const std::string& mini_game, int level_id, int difficulty, int64_t timestamp) {
+        GameSessionRow row;
+        row.character_id = character_id;
+        row.mini_game = mini_game;
+        row.level_id = level_id;
+        row.difficulty = difficulty;
+        row.total_rounds = 1;
+
+        int lives_per_difficulty = 20;
+        if (difficulty <= 3) lives_per_difficulty = 25;
+        else if (difficulty <= 6) lives_per_difficulty = 20;
+        else lives_per_difficulty = 15;
+
+        row.lives = lives_per_difficulty;
+        row.gold = 100;
+        row.current_round = 0;
+        row.started_at = timestamp;
+        row.last_activity = timestamp;
+
+        db << "INSERT INTO game_sessions "
+              "(character_id, mini_game, level_id, started_at, last_activity, "
+              "total_rounds, current_round, difficulty, lives, gold, state) "
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active');"
+           << character_id << mini_game << level_id
+           << timestamp << timestamp
+           << row.total_rounds << row.current_round
+           << difficulty << row.lives << row.gold;
+
+        row.id = db.last_insert_rowid();
+        return row;
+    }
+
+    std::optional<GameSessionRow> get_game_session(sqlite::database& db, int session_id) {
+        GameSessionRow row;
+        bool found = false;
+
+        db << "SELECT id, character_id, mini_game, level_id, started_at, last_activity, "
+              "total_rounds, current_round, difficulty, lives, gold, state "
+              "FROM game_sessions WHERE id = ? AND state = 'active';"
+           << session_id
+           >> [&](int id, int cid, std::string mini_game, int level_id,
+                  int64_t started_at, int64_t last_activity,
+                  int total_rounds, int current_round, int difficulty,
+                  int lives, int gold, std::string state) {
+                row.id = id;
+                row.character_id = cid;
+                row.mini_game = mini_game;
+                row.level_id = level_id;
+                row.started_at = started_at;
+                row.last_activity = last_activity;
+                row.total_rounds = total_rounds;
+                row.current_round = current_round;
+                row.difficulty = difficulty;
+                row.lives = lives;
+                row.gold = gold;
+                row.state = state;
+                found = true;
+            };
+
+        if (!found) return std::nullopt;
+        return row;
+    }
+
+    std::optional<GameSessionRow> get_active_session(sqlite::database& db, int character_id, const std::string& mini_game) {
+        GameSessionRow row;
+        bool found = false;
+
+        db << "SELECT id, character_id, mini_game, level_id, started_at, last_activity, "
+              "total_rounds, current_round, difficulty, lives, gold, state "
+              "FROM game_sessions "
+              "WHERE character_id = ? AND mini_game = ? AND state = 'active' "
+              "ORDER BY id DESC LIMIT 1;"
+           << character_id << mini_game
+           >> [&](int id, int cid, std::string mg, int level_id,
+                  int64_t started_at, int64_t last_activity,
+                  int total_rounds, int current_round, int difficulty,
+                  int lives, int gold, std::string st) {
+                row.id = id;
+                row.character_id = cid;
+                row.mini_game = mg;
+                row.level_id = level_id;
+                row.started_at = started_at;
+                row.last_activity = last_activity;
+                row.total_rounds = total_rounds;
+                row.current_round = current_round;
+                row.difficulty = difficulty;
+                row.lives = lives;
+                row.gold = gold;
+                row.state = st;
+                found = true;
+            };
+
+        if (!found) return std::nullopt;
+        return row;
+    }
+
+    bool update_game_session(sqlite::database& db, int session_id, int lives, int gold, const std::string& state, int64_t timestamp) {
+        try {
+            db << "UPDATE game_sessions SET lives = ?, gold = ?, state = ?, "
+                  "last_activity = ?, current_round = current_round + 1 "
+                  "WHERE id = ?;"
+               << lives << gold << state << timestamp << session_id;
+            return true;
+        } catch (const std::exception&) {
+            return false;
+        }
+    }
 
 } // namespace player_state_db

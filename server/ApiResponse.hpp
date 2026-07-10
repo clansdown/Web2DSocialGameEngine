@@ -10,7 +10,7 @@ struct ApiResponse {
 
     nlohmann::json toJson() const {
         nlohmann::json result;
-        result["data"] = data;
+        result["data"] = data.is_null() ? nlohmann::json::object() : data;
         result["status"] = "ok";
         if (error) result["error"] = *error;
         result["needs-auth"] = needs_auth;

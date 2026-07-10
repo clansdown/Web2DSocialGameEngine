@@ -150,6 +150,11 @@ ApiResponse handleSetCharacterSex(const nlohmann::json& body,
                                    const ClientInfo& client,
                                    const std::optional<std::string>& new_token);
 
+ApiResponse handleTDRound(const nlohmann::json& body,
+                           const std::optional<std::string>& username,
+                           const ClientInfo& client,
+                           const std::optional<std::string>& new_token);
+
 ApiResponse handleGetUITextures(const nlohmann::json& body,
                                  const std::optional<std::string>& username,
                                  const ClientInfo& client,
@@ -178,7 +183,8 @@ inline std::unordered_map<std::string, ApiHandler>& getEndpointHandlers() {
         {"joinDukedom",          handleJoinDukedom},
         {"createDukedom",        handleCreateDukedom},
         {"startDukeTrack",       handleStartDukeTrack},
-        {"setCharacterSex",      handleSetCharacterSex}
+        {"setCharacterSex",      handleSetCharacterSex},
+        {"tdRound",              handleTDRound}
     };
     return handlers;
 }

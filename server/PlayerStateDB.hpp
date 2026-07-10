@@ -32,6 +32,23 @@ struct PlayerGameStateRow {
     nlohmann::json toJson() const;
 };
 
+struct GameSessionRow {
+    int id;
+    int character_id;
+    std::string mini_game;
+    int level_id;
+    int64_t started_at;
+    int64_t last_activity;
+    int total_rounds;
+    int current_round;
+    int difficulty;
+    int lives;
+    int gold;
+    std::string state;
+
+    nlohmann::json toJson() const;
+};
+
 struct EndMiniGameResult {
     bool completed;
     int new_times_played;
@@ -63,5 +80,14 @@ void earn_land_patent(sqlite::database& db, int character_id, int64_t timestamp)
 void start_duke_track(sqlite::database& db, int character_id, int64_t timestamp);
 
 void earn_duke_right(sqlite::database& db, int character_id, int64_t timestamp);
+
+// Game session management
+GameSessionRow create_game_session(sqlite::database& db, int character_id, const std::string& mini_game, int level_id, int difficulty, int64_t timestamp);
+
+std::optional<GameSessionRow> get_game_session(sqlite::database& db, int session_id);
+
+std::optional<GameSessionRow> get_active_session(sqlite::database& db, int character_id, const std::string& mini_game);
+
+bool update_game_session(sqlite::database& db, int session_id, int lives, int gold, const std::string& state, int64_t timestamp);
 
 } // namespace player_state_db

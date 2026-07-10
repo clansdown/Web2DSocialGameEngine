@@ -32,9 +32,12 @@
 #include "TowerDefenseMapCache.hpp"
 #include "TextManager.hpp"
 #include "ImageReader.hpp"
+#include "UnitUnlockCalculator.hpp"
 #include <sqlite_modern_cpp/errors.h>
 
 using json = nlohmann::json;
+
+static const bool login_debug = false;
 
 void log_error(const std::string& context, const std::string& message) {
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
@@ -196,8 +199,8 @@ ApiResponse handleLogin(const json& body,
                        const ClientInfo& client,
                        const std::optional<std::string>& new_token)
 {
-    std::cout << "[DEBUG] handleLogin: username=" << (username ? *username : "(nullopt)")
-              << " has_token=" << (new_token ? "yes" : "no") << std::endl;
+    if (login_debug) std::cout << "[DEBUG] handleLogin: username=" << (username ? *username : "(nullopt)")
+                               << " has_token=" << (new_token ? "yes" : "no") << std::endl;
     ApiResponse response;
 
     auto& db = Database::getInstance().gameDB();
@@ -919,7 +922,518 @@ ApiResponse handleGetPlayerState(const json& body,
             response.data["token"] = *new_token;
         }
     } catch (const std::exception& e) {
+        log_error("handleGetPlayerState", e.what());
         response.error = std::string("Failed to get player state: ") + e.what();
+    }
+
+    return response;
+}
+
+static void resolve_td_image_urls(nlohmann::json& entries, const std::string& category) {
+    for (auto& [id, entry] : entries.items()) {
+        std::string img = entry.value("image_file", id);
+        entry["image_url"] = "/images/tower_defense/" + category + "/" + img;
+    }
+}
+
+/** Generate a spawn schedule for a TD round based on difficulty. */
+static json generate_td_spawn_schedule(const GameConfigCache& config, int difficulty, int round_number) {
+    json schedule = json::array();
+    const auto& mobs_config = config.getTowerDefenseMobs();
+    if (!mobs_config.contains("mobs") || !mobs_config["mobs"].is_object()) {
+        // Fallback: basic dire rat schedule
+        json entry;
+        entry["enemy_id"] = "dire_rat";
+        entry["count"] = 5 + difficulty;
+        entry["interval_ms"] = 2000;
+        entry["initial_delay_ms"] = 1000;
+        schedule.push_back(entry);
+        return schedule;
+    }
+
+    const auto& mobs = mobs_config["mobs"];
+    // Build list of available mob ids with their hp threshold
+    struct MobEntry { std::string id; int hp; int reward; };
+    std::vector<MobEntry> available;
+    for (auto it = mobs.begin(); it != mobs.end(); ++it) {
+        int hp = it->value("hp", 10);
+        available.push_back({it.key(), hp, it->value("reward_gold", 1)});
+    }
+    // Sort by HP ascending
+    std::sort(available.begin(), available.end(), [](const MobEntry& a, const MobEntry& b) {
+        return a.hp < b.hp;
+    });
+
+    // Determine which mobs are available at this difficulty
+    double diff_mult = 1.0 + (difficulty - 1) * 0.3;
+    int total_count = static_cast<int>(5 * diff_mult + round_number * 2);
+    int remaining = total_count;
+
+    // Always include weakest mobs, add harder ones based on difficulty
+    int max_mob_index = std::min(static_cast<int>(difficulty / 2 + 1), static_cast<int>(available.size()));
+    if (max_mob_index < 1) max_mob_index = 1;
+
+    for (int i = 0; i < max_mob_index && remaining > 0; ++i) {
+        const auto& mob = available[i];
+        int count = (i == 0) ? std::max(1, remaining / 2) : std::max(1, remaining / (max_mob_index - i));
+        if (count > remaining) count = remaining;
+
+        json entry;
+        entry["enemy_id"] = mob.id;
+        entry["count"] = count;
+        entry["interval_ms"] = std::max(500, static_cast<int>(2000 - difficulty * 100));
+        entry["initial_delay_ms"] = (i == 0) ? 1500 : 1500 + (total_count - remaining) * 300;
+        schedule.push_back(entry);
+
+        remaining -= count;
+    }
+
+    if (remaining > 0 && !schedule.empty()) {
+        schedule[0]["count"] = schedule[0]["count"].get<int>() + remaining;
+    }
+
+    return schedule;
+}
+
+ApiResponse handleTDRound(const json& body,
+                           const std::optional<std::string>& username,
+                           const ClientInfo& client,
+                           const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+
+    if (!body.contains("character_id") || !body["character_id"].is_number_integer()) {
+        response.error = "character_id required";
+        return response;
+    }
+
+    int character_id = body["character_id"].get<int>();
+    auto& config_cache = GameConfigCache::getInstance();
+
+    // If session_id provided, this is a round completion report
+    if (body.contains("session_id") && body["session_id"].is_number_integer()) {
+        int session_id = body["session_id"].get<int>();
+
+        try {
+            auto& db = Database::getInstance().gameDB();
+            auto session = player_state_db::get_game_session(db, session_id);
+
+            if (!session) {
+                response.error = "Session not found or already completed";
+                return response;
+            }
+
+            if (session->character_id != character_id) {
+                response.error = "Session does not belong to this character";
+                return response;
+            }
+
+            int lives_lost = body.value("lives_lost", 0);
+            int gold_earned = body.value("gold_earned", 0);
+
+            int new_lives = session->lives - lives_lost;
+            int new_gold = session->gold + gold_earned;
+
+            if (new_lives < 0) new_lives = 0;
+            if (new_gold < 0) new_gold = 0;
+
+            bool won = (new_lives > 0);
+            std::string new_state = won ? "won" : "lost";
+
+            auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+            player_state_db::update_game_session(db, session_id, new_lives, new_gold, new_state, now);
+
+            // Call endMiniGame to handle phase transitions and unlocks
+            int score = new_gold + new_lives * 10;
+            // We need to call end_mini_game directly:
+            auto end_result = player_state_db::end_mini_game(
+                db, character_id, session->mini_game, session->level_id, won, score, now,
+                (session->level_id <= 9) ? 9 : 25
+            );
+
+            // Apply level rewards from config
+            json level_rewards = json::object();
+            if (won) {
+                const auto& mini_games_config = config_cache.getMiniGames();
+                if (mini_games_config.contains(session->mini_game)) {
+                    const auto& mg_config = mini_games_config[session->mini_game];
+                    auto check_rewards = [&](const json& levels) {
+                        for (const auto& lvl : levels) {
+                            if (lvl["id"] == session->level_id && lvl.contains("reward")) {
+                                level_rewards = lvl["reward"];
+                                return true;
+                            }
+                        }
+                        return false;
+                    };
+                    if (mg_config.contains("levels")) {
+                        check_rewards(mg_config["levels"]);
+                    }
+                    if (level_rewards.empty() && mg_config.contains("duke_levels")) {
+                        check_rewards(mg_config["duke_levels"]);
+                    }
+                }
+            }
+
+            // Check and grant milestone unlocks
+            if (won && session->mini_game == "tower_defense") {
+                int completed_count = 0;
+                db << "SELECT COUNT(*) FROM mini_game_progress "
+                      "WHERE character_id = ? AND mini_game = 'tower_defense' AND completed = 1;"
+                   << character_id
+                   >> [&](int count) { completed_count = count; };
+
+                nlohmann::json new_unlocks = UnitUnlockCalculator::check_and_grant_milestones(
+                    db, character_id, completed_count, now);
+
+                if (!new_unlocks["new_units"].empty() || !new_unlocks["new_towers"].empty()) {
+                    response.data["new_unlocks"] = new_unlocks;
+                }
+            }
+
+            player_state_db::clear_current_mini_game(db, character_id, now);
+
+            response.data["session_id"] = session_id;
+            response.data["game_over"] = true;
+            response.data["won"] = won;
+            response.data["lives"] = new_lives;
+            response.data["gold"] = new_gold;
+            response.data["score"] = score;
+            response.data["rewards"] = level_rewards;
+            response.data["completed"] = end_result.completed;
+            response.data["new_best_score"] = end_result.new_best_score;
+            response.data["times_played"] = end_result.new_times_played;
+            response.data["all_levels_done"] = end_result.all_levels_done;
+
+            if (end_result.all_levels_done && won) {
+                if (end_result.base_unlocked) {
+                    response.data["base_unlocked"] = true;
+                }
+                auto state = player_state_db::get_player_game_state(db, character_id);
+                response.data["game_phase"] = state.game_phase;
+                response.data["land_patent_earned"] = (state.game_phase == "land_patent");
+                response.data["duke_right_earned"] = (state.game_phase == "duke_right");
+            }
+
+            if (new_token) {
+                response.data["token"] = *new_token;
+            }
+        } catch (const std::exception& e) {
+            log_error("handleTDRound(completion)", e.what());
+            response.error = std::string("Failed to process round: ") + e.what();
+        }
+
+        return response;
+    }
+
+    // No session_id: create a new game session (kickoff)
+    if (!body.contains("mini_game") || !body["mini_game"].is_string()) {
+        response.error = "mini_game required for new session";
+        return response;
+    }
+
+    std::string mini_game = body["mini_game"].get<std::string>();
+
+    try {
+        auto& db = Database::getInstance().gameDB();
+        auto state = player_state_db::get_player_game_state(db, character_id);
+
+        // If already in this mini-game, resume the existing session
+        if (state.current_mini_game.has_value()) {
+            if (*state.current_mini_game == mini_game) {
+                auto existing = player_state_db::get_active_session(db, character_id, mini_game);
+                if (existing.has_value()) {
+                    int level_id = existing->level_id;
+                    int difficulty = existing->difficulty;
+
+                    auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                    player_state_db::start_mini_game(db, character_id, mini_game, level_id, now);
+
+                    json spawn_schedule = generate_td_spawn_schedule(config_cache, difficulty, 0);
+
+                    json map_metadata = json::object();
+                    std::cerr << "[tdRound] Resume: character=" << character_id
+                              << " session=" << existing->id
+                              << " level_id=" << level_id;
+                    {
+                        const auto& mini_games_config = config_cache.getMiniGames();
+                        bool has_td = mini_games_config.contains(mini_game);
+                        std::cerr << " has_td_config=" << has_td;
+                        if (has_td) {
+                            const auto& mg = mini_games_config[mini_game];
+                            std::string mf;
+                            if (mg.contains("levels")) {
+                                for (const auto& lvl : mg["levels"]) {
+                                    if (lvl["id"] == level_id) {
+                                        mf = lvl.value("map", std::string());
+                                        break;
+                                    }
+                                }
+                            }
+                            std::cerr << " map_file='" << mf << "'";
+                            if (!mf.empty()) {
+                                auto meta = TowerDefenseMapCache::get_instance().get_map(mf);
+                                std::cerr << " meta_has=" << meta.has_value();
+                                if (meta.has_value()) {
+                                    map_metadata = *meta;
+                                    std::cerr << " keys=" << map_metadata.size()
+                                              << " fn=" << map_metadata.value("image_filename", std::string("?"));
+                                }
+                            }
+                        }
+                    }
+                    std::cerr << std::endl;
+
+                    response.data["session_id"] = existing->id;
+                    response.data["character_id"] = character_id;
+                    response.data["mini_game"] = mini_game;
+                    response.data["level_id"] = level_id;
+                    response.data["difficulty"] = difficulty;
+                    response.data["round_number"] = existing->current_round;
+                    response.data["total_rounds"] = 1;
+                    response.data["lives"] = existing->lives;
+                    response.data["gold"] = existing->gold;
+                    response.data["spawn_schedule"] = spawn_schedule;
+                    response.data["map_metadata"] = map_metadata;
+                    response.data["resumed"] = true;
+
+                    response.data["mobs"] = config_cache.getTowerDefenseMobs();
+                    response.data["towers"] = config_cache.getTowerDefenseTowers();
+                    response.data["units"] = config_cache.getTowerDefenseUnits();
+
+                    // Filter towers/units by player unlocks
+                    {
+                        json unlocks = UnitUnlockCalculator::get_player_unlocks(db, character_id);
+                        std::set<std::string> allowed_towers;
+                        std::set<std::string> allowed_units;
+                        if (unlocks.contains("towers")) {
+                            for (const auto& id : unlocks["towers"]) allowed_towers.insert(id.get<std::string>());
+                        }
+                        if (unlocks.contains("units")) {
+                            for (const auto& id : unlocks["units"]) allowed_units.insert(id.get<std::string>());
+                        }
+                        if (response.data["towers"].contains("towers") && response.data["towers"]["towers"].is_object()) {
+                            json filtered = json::object();
+                            for (auto it = response.data["towers"]["towers"].begin(); it != response.data["towers"]["towers"].end(); ++it) {
+                                if (allowed_towers.count(it.key())) filtered[it.key()] = it.value();
+                            }
+                            response.data["towers"]["towers"] = filtered;
+                        }
+                        if (response.data["units"].contains("units") && response.data["units"]["units"].is_object()) {
+                            json filtered = json::object();
+                            for (auto it = response.data["units"]["units"].begin(); it != response.data["units"]["units"].end(); ++it) {
+                                if (allowed_units.count(it.key())) filtered[it.key()] = it.value();
+                            }
+                            response.data["units"]["units"] = filtered;
+                        }
+                    }
+
+                    std::cerr << "[tdRound] Resume filtered: "
+                              << response.data["towers"]["towers"].size() << " towers, "
+                              << response.data["units"]["units"].size() << " units"
+                              << std::endl;
+
+                    resolve_td_image_urls(response.data["mobs"]["mobs"], "mobs");
+                    resolve_td_image_urls(response.data["towers"]["towers"], "towers");
+                    resolve_td_image_urls(response.data["units"]["units"], "units");
+
+                    if (new_token) response.data["token"] = *new_token;
+                    return response;
+                }
+                // current_mini_game is set to this mini_game but no active session exists
+                // stale state from previous version — clear it and proceed fresh
+                auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                std::cerr << "[tdRound] Stale current_mini_game cleared for character "
+                          << character_id << " at phase " << state.game_phase << std::endl;
+                player_state_db::clear_current_mini_game(db, character_id, now);
+            } else {
+                response.error = "Already in a mini-game: " + *state.current_mini_game;
+                return response;
+            }
+        }
+
+        // Auto-determine level_id if not provided
+        int level_id = 0;
+        bool is_random = false;
+        if (body.contains("level_id") && body["level_id"].is_number_integer() && body["level_id"].get<int>() > 0) {
+            level_id = body["level_id"].get<int>();
+        } else if (state.game_phase == "initial_mission") {
+            auto next = player_state_db::get_next_incomplete_level(db, character_id, mini_game, 9);
+            if (!next) {
+                response.error = "All levels completed for " + mini_game;
+                return response;
+            }
+            level_id = *next;
+            if (level_id > 1) {
+                bool prev = player_state_db::has_completed_previous_level(db, character_id, mini_game, level_id);
+                if (!prev) {
+                    response.error = "Previous level not completed";
+                    return response;
+                }
+            }
+        } else if (state.game_phase == "duke_track") {
+            auto next = player_state_db::get_next_incomplete_level(db, character_id, mini_game, 25);
+            if (!next) {
+                response.error = "All duke levels completed";
+                return response;
+            }
+            level_id = *next;
+            if (level_id > 1) {
+                bool prev = player_state_db::has_completed_previous_level(db, character_id, mini_game, level_id);
+                if (!prev) {
+                    response.error = "Previous level not completed";
+                    return response;
+                }
+            }
+        } else {
+            is_random = true;
+            level_id = 0;
+        }
+
+        // Determine difficulty from level config
+        int difficulty = 1;
+        const auto& mini_games_config = config_cache.getMiniGames();
+        if (mini_games_config.contains(mini_game)) {
+            const auto& mg_config = mini_games_config[mini_game];
+            auto find_difficulty = [&](const json& levels) -> int {
+                for (const auto& lvl : levels) {
+                    if (lvl["id"] == level_id) {
+                        return lvl.value("difficulty", 1);
+                    }
+                }
+                return -1;
+            };
+            int d = find_difficulty(mg_config.value("levels", json::array()));
+            if (d < 0) d = find_difficulty(mg_config.value("duke_levels", json::array()));
+            if (d >= 0) difficulty = d;
+        }
+
+        auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+
+        // Grant starting unlocks on first play
+        UnitUnlockCalculator::grant_starting_unlocks(db, character_id, now);
+
+        player_state_db::start_mini_game(db, character_id, mini_game, level_id, now);
+
+        auto session = player_state_db::create_game_session(db, character_id, mini_game, level_id, difficulty, now);
+
+        json spawn_schedule = generate_td_spawn_schedule(config_cache, difficulty, 0);
+
+        // Load map metadata if available
+        json map_metadata = json::object();
+        if (mini_games_config.contains(mini_game)) {
+            const auto& mg_config = mini_games_config[mini_game];
+            auto find_map = [&](const json& levels) {
+                for (const auto& lvl : levels) {
+                    if (lvl["id"] == level_id && lvl.contains("map")) {
+                        return lvl["map"].get<std::string>();
+                    }
+                }
+                return std::string();
+            };
+            std::string map_file = find_map(mg_config.value("levels", json::array()));
+            if (map_file.empty()) map_file = find_map(mg_config.value("duke_levels", json::array()));
+
+            if (!map_file.empty()) {
+                auto map_meta = TowerDefenseMapCache::get_instance().get_map(map_file);
+                if (map_meta.has_value()) {
+                    map_metadata = *map_meta;
+                }
+            }
+        }
+
+        // Log diagnostics for map loading
+        std::cerr << "[tdRound] Kickoff: character=" << character_id
+                  << " phase=" << state.game_phase
+                  << " level_id=" << level_id
+                  << " is_random=" << is_random
+                  << " map_file=";
+        if (mini_games_config.contains(mini_game)) {
+            const auto& mg_config = mini_games_config[mini_game];
+            std::string mf;
+            for (const auto& lvl : mg_config.value("levels", json::array())) {
+                if (lvl["id"] == level_id && lvl.contains("map")) {
+                    mf = lvl["map"].get<std::string>();
+                    break;
+                }
+            }
+            std::cerr << (mf.empty() ? "(none)" : mf);
+        } else {
+            std::cerr << "no_mini_games_config";
+        }
+        std::cerr << " map_metadata_keys=" << map_metadata.size()
+                  << " image_filename=";
+        if (map_metadata.contains("image_filename")) {
+            std::cerr << map_metadata["image_filename"].get<std::string>();
+        } else {
+            std::cerr << "(missing)";
+        }
+        std::cerr << std::endl;
+
+        response.data["session_id"] = session.id;
+        response.data["character_id"] = character_id;
+        response.data["mini_game"] = mini_game;
+        response.data["level_id"] = level_id;
+        response.data["difficulty"] = difficulty;
+        response.data["round_number"] = 0;
+        response.data["total_rounds"] = 1;
+        response.data["lives"] = session.lives;
+        response.data["gold"] = session.gold;
+        response.data["spawn_schedule"] = spawn_schedule;
+        response.data["map_metadata"] = map_metadata;
+
+        // Load full catalogs for the client
+        response.data["mobs"] = config_cache.getTowerDefenseMobs();
+        response.data["towers"] = config_cache.getTowerDefenseTowers();
+        response.data["units"] = config_cache.getTowerDefenseUnits();
+
+        // Filter towers/units by player unlocks
+        {
+            json unlocks = UnitUnlockCalculator::get_player_unlocks(db, character_id);
+            std::set<std::string> allowed_towers;
+            std::set<std::string> allowed_units;
+            if (unlocks.contains("towers")) {
+                for (const auto& id : unlocks["towers"]) allowed_towers.insert(id.get<std::string>());
+            }
+            if (unlocks.contains("units")) {
+                for (const auto& id : unlocks["units"]) allowed_units.insert(id.get<std::string>());
+            }
+            if (response.data["towers"].contains("towers") && response.data["towers"]["towers"].is_object()) {
+                json filtered = json::object();
+                for (auto it = response.data["towers"]["towers"].begin(); it != response.data["towers"]["towers"].end(); ++it) {
+                    if (allowed_towers.count(it.key())) filtered[it.key()] = it.value();
+                }
+                response.data["towers"]["towers"] = filtered;
+            }
+            if (response.data["units"].contains("units") && response.data["units"]["units"].is_object()) {
+                json filtered = json::object();
+                for (auto it = response.data["units"]["units"].begin(); it != response.data["units"]["units"].end(); ++it) {
+                    if (allowed_units.count(it.key())) filtered[it.key()] = it.value();
+                }
+                response.data["units"]["units"] = filtered;
+            }
+        }
+
+        std::cerr << "[tdRound] Filtered: "
+                  << response.data["towers"]["towers"].size() << " towers, "
+                  << response.data["units"]["units"].size() << " units"
+                  << std::endl;
+
+        resolve_td_image_urls(response.data["mobs"]["mobs"], "mobs");
+        resolve_td_image_urls(response.data["towers"]["towers"], "towers");
+        resolve_td_image_urls(response.data["units"]["units"], "units");
+
+        if (new_token) {
+            response.data["token"] = *new_token;
+        }
+    } catch (const std::exception& e) {
+        log_error("handleTDRound(kickoff)", e.what());
+        response.error = std::string("Failed to start TD session: ") + e.what();
     }
 
     return response;
@@ -1025,6 +1539,7 @@ ApiResponse handleStartMiniGame(const json& body,
             response.data["token"] = *new_token;
         }
     } catch (const std::exception& e) {
+        log_error("handleStartMiniGame", e.what());
         response.error = std::string("Failed to start mini-game: ") + e.what();
     }
 
@@ -1205,6 +1720,7 @@ ApiResponse handleEndMiniGame(const json& body,
             response.data["token"] = *new_token;
         }
     } catch (const std::exception& e) {
+        log_error("handleEndMiniGame", e.what());
         response.error = std::string("Failed to end mini-game: ") + e.what();
     }
 
@@ -1690,6 +2206,7 @@ ApiResponse handleJoinDukedom(const json& body,
             response.data["token"] = *new_token;
         }
     } catch (const std::exception& e) {
+        log_error("handleJoinDukedom", e.what());
         response.error = std::string("Failed to join dukedom: ") + e.what();
     }
 

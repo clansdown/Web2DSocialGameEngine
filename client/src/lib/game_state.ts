@@ -4,8 +4,8 @@
  */
 
 import { playerGameState } from './stores';
-import { getPlayerStateRequest, startMiniGameRequest, endMiniGameRequest, getMiniGameConfigRequest } from './api';
-import type { PlayerGameState, StartMiniGameResponse, EndMiniGameResponse, MiniGameConfig } from './api';
+import { getPlayerStateRequest, startMiniGameRequest, endMiniGameRequest, getMiniGameConfigRequest, tdRoundRequest } from './api';
+import type { PlayerGameState, StartMiniGameResponse, EndMiniGameResponse, MiniGameConfig, TDRoundResponse } from './api';
 import * as auth from './auth';
 
 /**
@@ -95,6 +95,29 @@ export async function endMiniGame(
  * 
  * Usage: Called to populate the mission select screen
  */
+/**
+ * Performs a tower defense round operation — either kicks off a new game
+ * or completes an existing round. Thin wrapper around tdRoundRequest.
+ *
+ * @param characterId - Character ID
+ * @param options - Kickoff ({ mini_game, level_id }) or completion ({ session_id, lives_lost, gold_earned })
+ * @returns Promise<TDRoundResponse> - Server response
+ *
+ * Usage: Called by SimpleGame component for all TD round operations
+ */
+export async function tdRound(
+  characterId: number,
+  options: { mini_game?: string; level_id?: number; session_id?: number; lives_lost?: number; gold_earned?: number }
+): Promise<TDRoundResponse> {
+  const token = auth.getSessionToken();
+  const username = auth.getInMemoryCredentials()?.username;
+  if (!token || !username) {
+    throw new Error('Not authenticated');
+  }
+
+  return await tdRoundRequest(characterId, options, { username, token });
+}
+
 export async function getMiniGameConfigs(miniGame: string | null = null): Promise<Record<string, MiniGameConfig>> {
   const token = auth.getSessionToken();
   const username = auth.getInMemoryCredentials()?.username;

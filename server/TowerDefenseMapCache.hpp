@@ -6,6 +6,7 @@
 #include <optional>
 #include <filesystem>
 #include <mutex>
+#include <ctime>
 
 class TowerDefenseMapCache {
 public:
@@ -28,6 +29,6 @@ private:
 
     std::string maps_dir_;
     std::unordered_map<std::string, nlohmann::json> cache_;
-    std::filesystem::file_time_type last_scan_time_;
+    time_t last_scan_time_ = 0;
     std::mutex mutex_;
 };
