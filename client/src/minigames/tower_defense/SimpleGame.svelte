@@ -11,7 +11,8 @@
     initEngine, setCameraFollowsPlayer, setBoardSize, setButtonDebugLevel,
     clear, gameObjects, enemies, projectiles,
     boardWidth, boardHeight, getMousePosition, debug,
-    everyTick, onMouseClick, whenLoaded, removeEventListeners, afterDraw
+    everyTick, onMouseClick, whenLoaded, removeEventListeners, afterDraw,
+    onPause, onResume, togglePause, isPaused
   } from '../../../SimpleGame/ui/src/lib/simplegame';
 
   import {
@@ -76,6 +77,7 @@
   let goldText: Text | null = null;
   let livesText: Text | null = null;
   let startButton: Button | null = null;
+  let pauseButton: Button | null = null;
   let autoAdvance = false;
 
   // ============================================================
@@ -308,6 +310,16 @@
     startButton.setOnClick(() => startRound());
     bY += 50;
 
+    {
+      const pauseCls = new ButtonClass('sb_pause');
+      pauseButton = pauseCls.spawn(cX, bY, 'Pause', sW - 20, 30);
+      pauseButton.color = '#555555';
+      pauseButton.setOnClick(() => {
+        if (roundStarted && gameState !== 'won' && gameState !== 'lost') togglePause();
+      });
+      bY += 42;
+    }
+
     const fbc = new ButtonClass('sb_forfeit');
     const fbtn = fbc.spawn(cX, bY, 'Try Again Later', sW - 20, 42);
     fbtn.color = '#7A2D2D';
@@ -360,6 +372,10 @@
       projTick(dt);
       checkEnd();
     });
+
+    // Pause lifecycle callbacks
+    onPause(() => { if (pauseButton) pauseButton.text = 'Resume'; });
+    onResume(() => { if (pauseButton) pauseButton.text = 'Pause'; });
 
     // Click handler — placement (click-to-place) + tower selection
     onMouseClick(0, (_e, x, y) => {
@@ -563,6 +579,7 @@
       e.moveTo({ x: nx(wps[startIdx].x), y: ny(wps[startIdx].y) }, 1.0 / spd);
     }
     console.log(`[TD] doSpawn: ${enemyId} at (${nx(sp.x).toFixed(0)}, ${ny(sp.y).toFixed(0)}) hp=${cls.defaultHitpoints} spd=${spd} waypoints=${wps.length} startIdx=${startIdx}`);
+    e.logMovement();
   }
 
   function enemyEscaped(e: Enemy) {
@@ -710,6 +727,16 @@
 
   function forfeitGame() {
     if (gameState === 'won' || gameState === 'lost') return;
+    if (!roundStarted) {
+      gameState = 'lost';
+      placementMode = null;
+      boardDragActive = false;
+      dragUnitId = null;
+      showOverlay = false;
+      placementOverlay = null;
+      onComplete({ completed: false, score: 0, new_best_score: false, times_played: 0, all_levels_done: false, base_unlocked: false, game_phase: 'initial_mission', next_level_id: null, rewards: {}, land_patent_earned: false, duke_right_earned: false });
+      return;
+    }
     gameState = 'lost';
     endGame();
   }

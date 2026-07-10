@@ -35,19 +35,13 @@ static void normalize_map_metadata(nlohmann::json& map) {
         for (auto& path : map["paths"]) {
             rename_field(path, "endAtIntersectionId", "end_at_intersection_id");
             rename_field(path, "endAtEndPointId", "end_at_end_point_id");
-            if (path.contains("waypoints")) {
-                for (auto& wp : path["waypoints"]) {
-                    rename_field(wp, "x", "x");
-                    // x and y stay as-is
-                }
-            }
+            // waypoint x and y are already in snake_case, passed through as-is
         }
     }
 
     // intersections
     if (map.contains("intersections") && map["intersections"].is_array()) {
         for (auto& ints : map["intersections"]) {
-            rename_field(ints, "x", "x");
             // branches
             if (ints.contains("branches") && ints["branches"].is_array()) {
                 for (auto& br : ints["branches"]) {
