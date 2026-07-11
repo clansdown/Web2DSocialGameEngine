@@ -12,7 +12,8 @@
     clear, gameObjects, enemies, projectiles,
     boardWidth, boardHeight, getMousePosition, debug,
     everyTick, onMouseClick, whenLoaded, removeEventListeners, afterDraw,
-    onPause, onResume, togglePause, isPaused
+    onPause, onResume, togglePause, isPaused,
+    setBackground, setBackgroundMode
   } from '../../../SimpleGame/ui/src/lib/simplegame';
 
   import {
@@ -55,6 +56,10 @@
   let gameState: 'idle' | 'battle' | 'won' | 'lost' = 'idle';
   let currentGold = 100;
   let currentLives = 20;
+  let currentRound = 1;
+  let totalRounds = 1;
+  let roundInTransition = false;
+  let nextRoundSpawnSchedule: SpawnScheduleEntry[] | null = null;
   let selectedTower: { obj: GameObject; configId: string } | null = null;
   let placementMode: string | null = null;
   let boardDragActive = false;
@@ -64,6 +69,7 @@
   let showOverlay = false;
   let placementOverlay: Overlay | null = null;
   let btnOrigin = new Map<string, { x: number; y: number }>();
+  let unitButtons = new Map<string, Button>();
   let pathMap = new Map<string, any>();
   let intersectionMap = new Map<string, any>();
   let exclusionZones: any[] = [];
@@ -76,6 +82,7 @@
   // UI objects
   let goldText: Text | null = null;
   let livesText: Text | null = null;
+  let roundText: Text | null = null;
   let startButton: Button | null = null;
   let pauseButton: Button | null = null;
   let autoAdvance = false;
@@ -137,7 +144,7 @@
   function buildPlacementOverlay() {
     const ov = new Overlay(
       [{ x: 0, y: 0 }, { x: bw, y: 0 }, { x: bw, y: bh }, { x: 0, y: bh }],
-      'rgba(0, 180, 0, 0.18)'
+      'rgba(0, 180, 0, 0.1)'
     );
     for (const z of exclusionZones) {
       if (z.type === 'circle') ov.addCircleCutout(nx(z.center_x), ny(z.center_y), z.radius * bw, 24);
@@ -176,6 +183,8 @@
     // bw/bh already set by init() — don't read boardWidth which is now bw+sidebarW
     currentGold = data.gold;
     currentLives = data.lives;
+    currentRound = (data as any).round_number || 1;
+    totalRounds = (data as any).total_rounds || 1;
     mapMetadata = (data as any).map_metadata || undefined;
     exclusionZones = mapMetadata?.exclusion_zones || [];
 
@@ -192,24 +201,14 @@
     if (mapMetadata?.paths) for (const p of mapMetadata.paths) pathMap.set(p.id, p);
     if (mapMetadata?.intersections) for (const i of mapMetadata.intersections) intersectionMap.set(i.id, i);
 
-    // Background - map as GameObject (no tiling), aspect-ratio-preserving
+    // Background - map image stretched to fill canvas
     const mapUrl = mapMetadata?.image_filename
       ? `/images/tower_defense/maps/${mapMetadata.image_filename}`
       : null;
-    const bgCls = new GameObjectClass('_map_bg', mapUrl, null);
-    const bgObj = new GameObject(bgCls, 0, 0);
-    bgObj.width = 0;
-    bgObj.height = 0;
-    gameObjects.add(bgObj);
-    whenLoaded(() => {
-      if (bgCls.image?.naturalWidth > 0 && bgCls.image?.naturalHeight > 0) {
-        const sc = Math.min(bw / bgCls.image.naturalWidth, bh / bgCls.image.naturalHeight);
-        bgObj.width = Math.floor(bgCls.image.naturalWidth * sc);
-        bgObj.height = Math.floor(bgCls.image.naturalHeight * sc);
-        bgObj.x = bw / 2;
-        bgObj.y = bh / 2;
-      }
-    });
+    if (mapUrl) {
+      setBackground([mapUrl]);
+      setBackgroundMode('stretch');
+    }
 
     // Enemy classes
     const mobs = (data as any).mobs?.mobs || {};
@@ -220,19 +219,23 @@
       cls.defaultWidth = m.width || 48;
       cls.defaultHeight = m.height || 48;
       cls.setBoundingBox(cls.defaultWidth, cls.defaultHeight);
+      cls.defaultSpriteForwardVector = m.forward_vector || [1, 0];
       (cls as any).mobConfig = m;
       (cls as any).mobId = id;
       mobEnemyClassMap.set(id, cls);
     }
 
-    // Projectile classes
+    // Projectile classes from config
     projectileClasses = {};
-    const pHunting = new ProjectileClass('proj_hunting', '/images/tower_defense/projectiles/hunting_arrow.png');
-    pHunting.setBoundingBox(16, 6);
-    projectileClasses.hunting_arrow = pHunting;
-    const pWar = new ProjectileClass('proj_war', '/images/tower_defense/projectiles/war_arrow.png');
-    pWar.setBoundingBox(20, 8);
-    projectileClasses.war_arrow = pWar;
+    const projConfig = (data as any).projectiles?.projectiles || {};
+    for (const [id, cfg] of Object.entries(projConfig)) {
+      const entry = cfg as any;
+      const cls = new ProjectileClass(`proj_${id}`, `/images/tower_defense/projectiles/${entry.image_file}`);
+      cls.setBoundingBox(entry.width || 16, entry.height || 6);
+      cls.defaultSpriteForwardVector = entry.forward_vector || [1, 0];
+      (cls as any).config = entry;
+      projectileClasses[id] = cls;
+    }
 
     // Tower/Unit classes
     const allPieces = { ...((data as any).towers?.towers || {}), ...((data as any).units?.units || {}) };
@@ -258,6 +261,9 @@
     livesText = createText(`Lives: ${currentLives}`, { x: cX, y: 65 });
     livesText.size = 20;
     livesText.foreground = '#FF6666';
+    roundText = createText(`Round ${currentRound}/${totalRounds}`, { x: cX, y: 95 });
+    roundText.size = 18;
+    roundText.foreground = '#CCCCCC';
 
     let bY = 100;
     for (const id of Object.keys(allPieces)) {
@@ -266,6 +272,7 @@
       const label = `${p.name || id} (${cost}g)`;
       const bc = new ButtonClass(`sb_${id}`);
       const btn = bc.spawn(cX, bY, label, sW - 20, 34, undefined, '#4A4A6A', p.image_url);
+      unitButtons.set(id, btn);
       btn.iconSize = 24;
       btn.iconPadding = 10;
       btn.hoverColor = '#5A5A7A';
@@ -303,6 +310,7 @@
       });
       bY += 40;
     }
+    refreshButtonStates();
 
     const sbc = new ButtonClass('sb_start');
     startButton = sbc.spawn(cX, bY, 'Start Round', sW - 20, 42);
@@ -399,32 +407,37 @@
       const unitId = placementMode ?? dragUnitId;
       if (unitId) {
         const cls = towerGameClassMap.get(unitId);
+        const pos = getMousePosition();
         if (showOverlay && placementOverlay) placementOverlay.draw(ctx, 0, 0);
         // Ghost sprite
         if (cls?.image?.complete && cls.image.naturalWidth > 0) {
-          const pos = getMousePosition();
           ctx.save();
           ctx.globalAlpha = 0.5;
           ctx.drawImage(cls.image, pos.x - cls.defaultWidth / 2, pos.y - cls.defaultHeight / 2,
             cls.defaultWidth, cls.defaultHeight);
           ctx.restore();
         }
-        // Range circle
-        if (cls) {
-          const cfg = (cls as any).pieceConfig;
-          if (cfg) {
-            const range = (cfg.range || 0.2) * bw;
-            const pos = getMousePosition();
-            ctx.save();
-            ctx.beginPath();
-            ctx.arc(pos.x, pos.y, range, 0, Math.PI * 2);
+        // Validity check for range circle
+        const cfg = (cls as any).pieceConfig;
+        const cost = cfg?.cost?.[0]?.gold || 0;
+        const canPlace = !isBlocked(pos.x, pos.y) && currentGold >= cost;
+        // Range circle — blue when valid, red when invalid
+        if (cfg) {
+          const range = (cfg.range || 0.2) * bw;
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(pos.x, pos.y, range, 0, Math.PI * 2);
+          if (canPlace) {
             ctx.fillStyle = 'rgba(0, 100, 255, 0.08)';
-            ctx.fill();
             ctx.strokeStyle = 'rgba(0, 100, 255, 0.5)';
-            ctx.lineWidth = 1.5;
-            ctx.stroke();
-            ctx.restore();
+          } else {
+            ctx.fillStyle = 'rgba(255, 0, 0, 0.08)';
+            ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
           }
+          ctx.fill();
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+          ctx.restore();
         }
       }
     });
@@ -432,6 +445,16 @@
     // Loading timeout
     const loadTimer = setTimeout(() => { loading = false; }, 5000);
     whenLoaded(() => { clearTimeout(loadTimer); loading = false; });
+  }
+
+  function refreshButtonStates() {
+    for (const [id, btn] of unitButtons) {
+      const cls = towerGameClassMap.get(id);
+      if (!cls) continue;
+      const cfg = (cls as any).pieceConfig;
+      const cost = cfg?.cost?.[0]?.gold || 0;
+      btn.setDisabled(currentGold < cost);
+    }
   }
 
   // ============================================================
@@ -447,11 +470,14 @@
     if (currentGold < cost) { debug('Not enough gold!'); console.log('tryPlace: not enough gold, have', currentGold, 'need', cost); return; }
     if (isBlocked(x, y)) { debug('Cannot place here!'); console.log('tryPlace: blocked at', x, y); return; }
     const obj = new GameObject(cls, x, y);
+    obj.direction_x = 0;
+    obj.direction_y = 0;
     gameObjects.add(obj);
     cls.gameObjects.add(obj);
     activeTowers.push({ obj, configId: unitId, level: 0, piece: cfg });
     currentGold -= cost;
     if (goldText) goldText.text = `Gold: ${currentGold}`;
+    refreshButtonStates();
   }
 
   function doUpgrade() {
@@ -472,6 +498,8 @@
     const newCls = towerGameClassMap.get(piece.becomes);
     if (!newCls) return;
     const newObj = new GameObject(newCls, x, y);
+    newObj.direction_x = 0;
+    newObj.direction_y = 0;
     gameObjects.add(newObj);
     newCls.gameObjects.add(newObj);
 
@@ -491,6 +519,7 @@
     const refund = Math.floor(cost * 0.5);
     currentGold += refund;
     if (goldText) goldText.text = `Gold: ${currentGold}`;
+    refreshButtonStates();
     tower.obj.destroy();
     activeTowers.splice(towerIdx, 1);
     selectedTower = null;
@@ -555,6 +584,8 @@
     (e as any).waypointIndex = startIdx;
     (e as any).pathId = sp.target_path_id;
     e.decelerationDistance = 0;
+    // Enable sprite mirroring based on movement direction (spriteForwardVector inherited from class default)
+    e.mirrorOnDirection = true;
 
     e.onArrival(() => {
       const idx = (e as any).waypointIndex as number;
@@ -613,19 +644,34 @@
       (t as any).atkTimer = ((t as any).atkTimer || 0) + dt;
       if ((t as any).atkTimer >= 1.0 / rate) {
         (t as any).atkTimer = 0;
-        const projType = getProjectileType(t.configId);
-        if (projType) {
-          const pClass = projectileClasses[projType];
-          if (pClass) {
-            const p = pClass.spawn(t.obj.x, t.obj.y);
-            (p as any).trg = target;
-            (p as any).dmg = dmg;
-            (p as any).aoe = (t.piece.area_of_effect?.radius || 0) * bw;
-            p.setSpeed(400);
-            const dx = target.x - t.obj.x;
-            const dy = target.y - t.obj.y;
-            p.orientation = Math.atan2(dy, dx) + Math.PI;
-          }
+          const projType = getProjectileType(t.configId);
+          if (projType) {
+            const pClass = projectileClasses[projType];
+            if (pClass) {
+              const p = pClass.spawn(t.obj.x, t.obj.y);
+              (p as any).trg = target;
+              (p as any).dmg = dmg;
+              (p as any).aoe = (t.piece.area_of_effect?.radius || 0) * bw;
+              const cfg = (pClass as any).config as any;
+              p.setSpeed(cfg.speed || 1600);
+              p.mirrorOnDirection = true;
+              // Set initial direction toward target (engine handles movement via doMovement)
+              p.setOrientationTowards({ x: target.x, y: target.y });
+              // Register collision callback using SimpleGame's quadtree collision
+              p.onCollisionWithEnemy((enemy: Enemy) => {
+                const hitDmg = (p as any).dmg as number || 10;
+                const hitAoe = (p as any).aoe as number || 0;
+                console.log(`[TD] projHit: ${t.configId} → ${(enemy as any).enemyId} dmg=${hitDmg} dist=${Math.hypot(enemy.x - p.x, enemy.y - p.y).toFixed(1)}`);
+                if (hitAoe > 0) {
+                  for (const e of enemies) {
+                    if (Math.hypot(e.x - enemy.x, e.y - enemy.y) <= hitAoe) hitEnemy(e, hitDmg);
+                  }
+                } else {
+                  hitEnemy(enemy, hitDmg);
+                }
+                p.destroy();
+              });
+            }
         } else {
           const aoe = (t.piece.area_of_effect?.radius || 0) * bw;
           if (aoe > 0) {
@@ -644,28 +690,8 @@
     for (const p of projectiles) {
       const trg = (p as any).trg as Enemy | undefined;
       if (!trg || (trg as any).hp <= 0) { p.destroy(); continue; }
-      const dx = trg.x - p.x, dy = trg.y - p.y;
-      const dist = Math.hypot(dx, dy);
-      if (dist < 12) {
-        const dmg = (p as any).dmg || 10;
-        const aoe = (p as any).aoe || 0;
-        if (aoe > 0) {
-          for (const e of enemies) {
-            if (Math.hypot(e.x - trg.x, e.y - trg.y) <= aoe) hitEnemy(e, dmg);
-          }
-        } else {
-          hitEnemy(trg, dmg);
-        }
-        p.destroy();
-      } else {
-        const spd = p.speed || 400;
-        const amt = spd * dt;
-        p.x += (dx / dist) * amt;
-        p.y += (dy / dist) * amt;
-        const ndx = trg.x - p.x;
-        const ndy = trg.y - p.y;
-        p.orientation = Math.atan2(ndy, ndx) + Math.PI;
-      }
+      // Homing: update direction toward target each frame (engine handles position via doMovement, collision via onCollisionWithEnemy)
+      p.setOrientationTowards({ x: trg.x, y: trg.y });
     }
   }
 
@@ -678,6 +704,7 @@
       const mc = mobId ? (mobEnemyClassMap.get(mobId) as any)?.mobConfig : null;
       currentGold += mc?.reward_gold || 1;
       if (goldText) goldText.text = `Gold: ${currentGold}`;
+      refreshButtonStates();
       console.log(`[TD] hitEnemy: ${mobId} killed, reward=${mc?.reward_gold || 1}`);
       for (const spawnId of (mc?.spawn_on_death || [])) doSpawn(spawnId);
       enemies.delete(e);
@@ -686,13 +713,70 @@
   }
 
   function checkEnd() {
-    if (allSpawned && enemies.size === 0 && currentLives > 0) {
-      gameState = 'won';
-      endGame();
+    if (allSpawned && enemies.size === 0 && currentLives > 0 && !roundInTransition) {
+      if (currentRound < totalRounds) {
+        advanceRound();
+      } else {
+        gameState = 'won';
+        endGame();
+      }
     }
   }
 
-  async function endGame() {
+  async function advanceRound() {
+    roundInTransition = true;
+    gameState = 'idle';
+    try {
+      const result = await tdRound(characterId, {
+        session_id: (tdData as any).session_id as number,
+        lives_lost: Math.max(0, 20 - currentLives),
+        gold_earned: Math.max(0, currentGold - 100)
+      });
+      const ar = result as any;
+      if (ar.next_round) {
+        currentRound = ar.round_number;
+        totalRounds = ar.total_rounds;
+        // Clear old enemies and projectiles
+        for (const e of enemies) { enemies.delete(e); e.destroy(); }
+        for (const p of projectiles) { p.destroy(); }
+        // Reset spawn queue with new schedule
+        spawnQueue = [];
+        const schedule: SpawnScheduleEntry[] = ar.spawn_schedule || [];
+        for (const e of schedule) {
+          spawnQueue.push({
+            enemyId: e.enemy_id, remaining: e.count,
+            intervalMs: e.interval_ms, initialDelayMs: e.initial_delay_ms,
+            spawnTimer: 0, initialDone: false
+          });
+        }
+        allSpawned = false;
+        roundStarted = false;
+        // Update gold/lives from server response
+        if (ar.gold != null) currentGold = ar.gold;
+        if (ar.lives != null) currentLives = ar.lives;
+        refreshButtonStates();
+        // Update UI
+        if (goldText) goldText.text = `Gold: ${currentGold}`;
+        if (livesText) livesText.text = `Lives: ${currentLives}`;
+        if (roundText) roundText.text = `Round ${currentRound}/${totalRounds}`;
+        if (startButton) {
+          if (autoAdvance) {
+            startButton.text = 'Auto...';
+            setTimeout(() => startRound(), 2000);
+          } else {
+            startButton.text = 'Next Round';
+            startButton.color = '#2D5A2D';
+          }
+        }
+      }
+    } catch (e) {
+      onError(e instanceof Error ? e.message : 'Failed to advance round');
+    } finally {
+      roundInTransition = false;
+    }
+  }
+
+  async function endGame(forceLoss = false) {
     placementMode = null;
     boardDragActive = false;
     dragUnitId = null;
@@ -703,7 +787,7 @@
     try {
       const result = await tdRound(characterId, {
         session_id: (tdData as any).session_id as number,
-        lives_lost: Math.max(0, 20 - currentLives),
+        lives_lost: forceLoss ? 100 : Math.max(0, 20 - currentLives),
         gold_earned: Math.max(0, currentGold - 100)
       });
       const cr = result as TDRoundCompleteResponse;
@@ -738,7 +822,7 @@
       return;
     }
     gameState = 'lost';
-    endGame();
+    endGame(true);
   }
 
   // ============================================================

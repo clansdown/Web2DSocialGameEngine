@@ -1043,81 +1043,100 @@ ApiResponse handleTDRound(const json& body,
             if (new_gold < 0) new_gold = 0;
 
             bool won = (new_lives > 0);
-            std::string new_state = won ? "won" : "lost";
+            int old_round = session->current_round;
+            int total = session->total_rounds;
 
             auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-            player_state_db::update_game_session(db, session_id, new_lives, new_gold, new_state, now);
 
-            // Call endMiniGame to handle phase transitions and unlocks
-            int score = new_gold + new_lives * 10;
-            // We need to call end_mini_game directly:
-            auto end_result = player_state_db::end_mini_game(
-                db, character_id, session->mini_game, session->level_id, won, score, now,
-                (session->level_id <= 9) ? 9 : 25
-            );
+            if (won && old_round + 1 < total) {
+                // More rounds remain — advance to next round (don't end game)
+                player_state_db::update_game_session(db, session_id, new_lives, new_gold, "active", now);
 
-            // Apply level rewards from config
-            json level_rewards = json::object();
-            if (won) {
-                const auto& mini_games_config = config_cache.getMiniGames();
-                if (mini_games_config.contains(session->mini_game)) {
-                    const auto& mg_config = mini_games_config[session->mini_game];
-                    auto check_rewards = [&](const json& levels) {
-                        for (const auto& lvl : levels) {
-                            if (lvl["id"] == session->level_id && lvl.contains("reward")) {
-                                level_rewards = lvl["reward"];
-                                return true;
+                json next_schedule = generate_td_spawn_schedule(config_cache, session->difficulty, old_round);
+
+                response.data["session_id"] = session_id;
+                response.data["next_round"] = true;
+                response.data["game_over"] = false;
+                response.data["won"] = true;
+                response.data["round_number"] = old_round + 2;
+                response.data["total_rounds"] = total;
+                response.data["lives"] = new_lives;
+                response.data["gold"] = new_gold;
+                response.data["spawn_schedule"] = next_schedule;
+            } else {
+                // Game over: won last round or lost — end session normally
+                std::string new_state = won ? "won" : "lost";
+                player_state_db::update_game_session(db, session_id, new_lives, new_gold, new_state, now);
+
+                int score = new_gold + new_lives * 10;
+                auto end_result = player_state_db::end_mini_game(
+                    db, character_id, session->mini_game, session->level_id, won, score, now,
+                    (session->level_id <= 9) ? 9 : 25
+                );
+
+                // Apply level rewards from config
+                json level_rewards = json::object();
+                if (won) {
+                    const auto& mini_games_config = config_cache.getMiniGames();
+                    if (mini_games_config.contains(session->mini_game)) {
+                        const auto& mg_config = mini_games_config[session->mini_game];
+                        auto check_rewards = [&](const json& levels) {
+                            for (const auto& lvl : levels) {
+                                if (lvl["id"] == session->level_id && lvl.contains("reward")) {
+                                    level_rewards = lvl["reward"];
+                                    return true;
+                                }
                             }
+                            return false;
+                        };
+                        if (mg_config.contains("levels")) {
+                            check_rewards(mg_config["levels"]);
                         }
-                        return false;
-                    };
-                    if (mg_config.contains("levels")) {
-                        check_rewards(mg_config["levels"]);
-                    }
-                    if (level_rewards.empty() && mg_config.contains("duke_levels")) {
-                        check_rewards(mg_config["duke_levels"]);
+                        if (level_rewards.empty() && mg_config.contains("duke_levels")) {
+                            check_rewards(mg_config["duke_levels"]);
+                        }
                     }
                 }
-            }
 
-            // Check and grant milestone unlocks
-            if (won && session->mini_game == "tower_defense") {
-                int completed_count = 0;
-                db << "SELECT COUNT(*) FROM mini_game_progress "
-                      "WHERE character_id = ? AND mini_game = 'tower_defense' AND completed = 1;"
-                   << character_id
-                   >> [&](int count) { completed_count = count; };
+                // Check and grant milestone unlocks
+                if (won && session->mini_game == "tower_defense") {
+                    int completed_count = 0;
+                    db << "SELECT COUNT(*) FROM mini_game_progress "
+                          "WHERE character_id = ? AND mini_game = 'tower_defense' AND completed = 1;"
+                       << character_id
+                       >> [&](int count) { completed_count = count; };
 
-                nlohmann::json new_unlocks = UnitUnlockCalculator::check_and_grant_milestones(
-                    db, character_id, completed_count, now);
+                    nlohmann::json new_unlocks = UnitUnlockCalculator::check_and_grant_milestones(
+                        db, character_id, completed_count, now);
 
-                if (!new_unlocks["new_units"].empty() || !new_unlocks["new_towers"].empty()) {
-                    response.data["new_unlocks"] = new_unlocks;
+                    if (!new_unlocks["new_units"].empty() || !new_unlocks["new_towers"].empty()) {
+                        response.data["new_unlocks"] = new_unlocks;
+                    }
                 }
-            }
 
-            player_state_db::clear_current_mini_game(db, character_id, now);
+                player_state_db::clear_current_mini_game(db, character_id, now);
 
-            response.data["session_id"] = session_id;
-            response.data["game_over"] = true;
-            response.data["won"] = won;
-            response.data["lives"] = new_lives;
-            response.data["gold"] = new_gold;
-            response.data["score"] = score;
-            response.data["rewards"] = level_rewards;
-            response.data["completed"] = end_result.completed;
-            response.data["new_best_score"] = end_result.new_best_score;
-            response.data["times_played"] = end_result.new_times_played;
-            response.data["all_levels_done"] = end_result.all_levels_done;
+                response.data["session_id"] = session_id;
+                response.data["game_over"] = true;
+                response.data["won"] = won;
+                response.data["lives"] = new_lives;
+                response.data["gold"] = new_gold;
+                response.data["score"] = score;
+                response.data["rewards"] = level_rewards;
+                response.data["completed"] = end_result.completed;
+                response.data["new_best_score"] = end_result.new_best_score;
+                response.data["times_played"] = end_result.new_times_played;
+                response.data["all_levels_done"] = end_result.all_levels_done;
 
-            if (end_result.all_levels_done && won) {
-                if (end_result.base_unlocked) {
-                    response.data["base_unlocked"] = true;
+                if (end_result.all_levels_done && won) {
+                    if (end_result.base_unlocked) {
+                        response.data["base_unlocked"] = true;
+                    }
+                    auto state = player_state_db::get_player_game_state(db, character_id);
+                    response.data["game_phase"] = state.game_phase;
+                    response.data["land_patent_earned"] = (state.game_phase == "land_patent");
+                    response.data["duke_right_earned"] = (state.game_phase == "duke_right");
                 }
-                auto state = player_state_db::get_player_game_state(db, character_id);
-                response.data["game_phase"] = state.game_phase;
-                response.data["land_patent_earned"] = (state.game_phase == "land_patent");
-                response.data["duke_right_earned"] = (state.game_phase == "duke_right");
             }
 
             if (new_token) {
@@ -1194,8 +1213,11 @@ ApiResponse handleTDRound(const json& body,
                     response.data["mini_game"] = mini_game;
                     response.data["level_id"] = level_id;
                     response.data["difficulty"] = difficulty;
-                    response.data["round_number"] = existing->current_round;
-                    response.data["total_rounds"] = 1;
+                    int resume_round = existing->current_round + 1;
+                    json resume_schedule = generate_td_spawn_schedule(config_cache, difficulty, existing->current_round);
+                    response.data["spawn_schedule"] = resume_schedule;
+                    response.data["round_number"] = resume_round;
+                    response.data["total_rounds"] = existing->total_rounds;
                     response.data["lives"] = existing->lives;
                     response.data["gold"] = existing->gold;
                     response.data["spawn_schedule"] = spawn_schedule;
@@ -1205,6 +1227,7 @@ ApiResponse handleTDRound(const json& body,
                     response.data["mobs"] = config_cache.getTowerDefenseMobs();
                     response.data["towers"] = config_cache.getTowerDefenseTowers();
                     response.data["units"] = config_cache.getTowerDefenseUnits();
+                    response.data["projectiles"] = config_cache.getTowerDefenseProjectiles();
 
                     // Filter towers/units by player unlocks
                     {
@@ -1295,22 +1318,26 @@ ApiResponse handleTDRound(const json& body,
             level_id = 0;
         }
 
-        // Determine difficulty from level config
+        // Determine difficulty and rounds from level config
         int difficulty = 1;
+        int total_rounds = 1;
         const auto& mini_games_config = config_cache.getMiniGames();
         if (mini_games_config.contains(mini_game)) {
             const auto& mg_config = mini_games_config[mini_game];
-            auto find_difficulty = [&](const json& levels) -> int {
+            auto find_field = [&](const json& levels, const std::string& field, int def) -> int {
                 for (const auto& lvl : levels) {
                     if (lvl["id"] == level_id) {
-                        return lvl.value("difficulty", 1);
+                        return lvl.value(field, def);
                     }
                 }
                 return -1;
             };
-            int d = find_difficulty(mg_config.value("levels", json::array()));
-            if (d < 0) d = find_difficulty(mg_config.value("duke_levels", json::array()));
+            int d = find_field(mg_config.value("levels", json::array()), "difficulty", 1);
+            if (d < 0) d = find_field(mg_config.value("duke_levels", json::array()), "difficulty", 1);
             if (d >= 0) difficulty = d;
+            int r = find_field(mg_config.value("levels", json::array()), "rounds", 1);
+            if (r < 0) r = find_field(mg_config.value("duke_levels", json::array()), "rounds", 1);
+            if (r >= 0) total_rounds = r;
         }
 
         auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
@@ -1320,7 +1347,7 @@ ApiResponse handleTDRound(const json& body,
 
         player_state_db::start_mini_game(db, character_id, mini_game, level_id, now);
 
-        auto session = player_state_db::create_game_session(db, character_id, mini_game, level_id, difficulty, now);
+        auto session = player_state_db::create_game_session(db, character_id, mini_game, level_id, difficulty, total_rounds, now);
 
         json spawn_schedule = generate_td_spawn_schedule(config_cache, difficulty, 0);
 
@@ -1380,8 +1407,8 @@ ApiResponse handleTDRound(const json& body,
         response.data["mini_game"] = mini_game;
         response.data["level_id"] = level_id;
         response.data["difficulty"] = difficulty;
-        response.data["round_number"] = 0;
-        response.data["total_rounds"] = 1;
+        response.data["round_number"] = 1;
+        response.data["total_rounds"] = total_rounds;
         response.data["lives"] = session.lives;
         response.data["gold"] = session.gold;
         response.data["spawn_schedule"] = spawn_schedule;
@@ -1391,6 +1418,7 @@ ApiResponse handleTDRound(const json& body,
         response.data["mobs"] = config_cache.getTowerDefenseMobs();
         response.data["towers"] = config_cache.getTowerDefenseTowers();
         response.data["units"] = config_cache.getTowerDefenseUnits();
+        response.data["projectiles"] = config_cache.getTowerDefenseProjectiles();
 
         // Filter towers/units by player unlocks
         {

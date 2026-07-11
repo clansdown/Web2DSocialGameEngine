@@ -256,13 +256,13 @@ void earn_duke_right(sqlite::database& db, int character_id, int64_t timestamp) 
        << timestamp << character_id;
 }
 
-    GameSessionRow create_game_session(sqlite::database& db, int character_id, const std::string& mini_game, int level_id, int difficulty, int64_t timestamp) {
+    GameSessionRow create_game_session(sqlite::database& db, int character_id, const std::string& mini_game, int level_id, int difficulty, int total_rounds, int64_t timestamp) {
         GameSessionRow row;
         row.character_id = character_id;
         row.mini_game = mini_game;
         row.level_id = level_id;
         row.difficulty = difficulty;
-        row.total_rounds = 1;
+        row.total_rounds = total_rounds;
 
         int lives_per_difficulty = 20;
         if (difficulty <= 3) lives_per_difficulty = 25;

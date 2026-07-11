@@ -68,6 +68,7 @@ bool GameConfigCache::initialize(const std::string& config_dir) {
         scaleTDPieceValues(tower_defense_units_["units"]);
     }
     success &= loadConfig(config_dir + "/tower_defense/unit_unlocks.json", "tower_defense_unit_unlocks", tower_defense_unit_unlocks_);
+    success &= loadConfig(config_dir + "/tower_defense/projectiles.json", "tower_defense_projectiles", tower_defense_projectiles_);
 
     loaded_ = success;
     return success;
@@ -119,6 +120,10 @@ const nlohmann::json& GameConfigCache::getTowerDefenseUnits() const {
 
 const nlohmann::json& GameConfigCache::getTowerDefenseUnitUnlocks() const {
     return tower_defense_unit_unlocks_;
+}
+
+const nlohmann::json& GameConfigCache::getTowerDefenseProjectiles() const {
+    return tower_defense_projectiles_;
 }
 
 nlohmann::json GameConfigCache::getAllConfigs() const {

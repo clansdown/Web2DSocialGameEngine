@@ -506,3 +506,73 @@ This ensures:
 - Documentation stays synchronized with actual config structure
 - The linter accurately reflects validation requirements
 - Images directory matches config changes
+
+## Current Session Context
+
+### Goal
+Build the full game progression and content system with a working tower defense minigame and polished gameplay loop.
+
+### Progress
+
+#### Done
+- **Multi-round system**: Each level in `mini_games.json` has a configurable `rounds` field (3-8 per level). Server tracks current_round in game_sessions. On win, if more rounds remain, server returns `next_round: true` with fresh `spawn_schedule` instead of ending the game. Client shows "Round N/M" indicator, clears enemies between rounds, and offers "Next Round" button or auto-advance after 2s delay.
+- Created `text/` directory with translation system
+- Created `game/config/` with tower defense configs (mobs, towers, units, projectiles, maps)
+- Built server with auth, game sessions, TD round lifecycle
+- Built client with Svelte 5 + SimpleGame engine integration
+- **SimpleGame collision system**: Projectiles now use `onCollisionWithEnemy()` callbacks instead of manual `dist < 12` — engine's quadtree handles bounding-box overlap detection
+- **Projectile config**: New `game/config/tower_defense/projectiles.json` with width, height, speed (1600 = 4×), image_file, forward_vector. Server sends it in TD kickoff response
+- **Engine movement**: Projectiles move via `doMovement()` using `direction_x/direction_y` + `velocity` (set by `setOrientationTowards()`). `projTick()` only updates homing direction
+- **Mob sprite mirroring**: `mirrorOnDirection = true` + `forwardVector` from config on all mobs
+- **Soldier sizes**: Bumped +50% (archers 48×48, others 54×54)
+- **NaN destination fix**: Removed `rename_field(wp, "x", "x")` self-rename that destroyed waypoint x coordinates
+- **Pause button**: Added sidebar pause button using SimpleGame's exported `togglePause()`/`isPaused()`/`onPause`/`onResume` API
+- **Forfeit fix**: `forfeitGame()` skips server completion call if round never started
+- All `console.debug` → `console.log` for visible debug output
+
+#### In Progress
+- (none)
+
+#### Blocked
+- (none)
+
+### Key Decisions
+- **SimpleGame collision system**: Using `onCollisionWithEnemy()` for projectile-enemy hit detection. Fires every tick bounding boxes overlap, but `p.destroy()` in the callback prevents re-triggering. This is more accurate than manual `dist < 12` and follows engine patterns.
+- **Engine movement for projectiles**: `doMovement()` handles position updates via `direction_x/direction_y * velocity * delta_t`. `projTick()` only updates homing direction each frame (1-frame lag, standard).
+- **Speed from config**: Projectile speed in `projectiles.json`, set via `p.setSpeed(cfg.speed)` at spawn. No hardcoded 400 anymore.
+- **`setOrientationTowards()`** is used for both visual rotation AND movement direction — it sets `orientation` (for `ctx.rotate`) and `direction_x/direction_y` (for `doMovement`).
+- **`rename_field` self-rename bug**: `rename_field(wp, "x", "x")` with `from == to` destroys the field (self-move + erase). Solution: just delete these no-op calls.
+- **Sprite mirroring**: SimpleGame applies `ctx.scale(-1, 1)` at render time when dot product of movement direction and `forwardVector` is negative. Mob sprites should face RIGHT in source images (forward_vector: [1, 0]).
+
+### Next Steps
+- Add more map JSONs for levels 2–9 in `mini_games.json`
+- Fill in narrative placeholder text in `text/en/` with gender-substituted content
+- Create arrow/bolt projectile images at `game/images/tower_defense/projectiles/`
+- Implement Duke promotion check (21 members with manor ≥ 3 → duke role)
+- Generate parchment background and path icon images
+- Add `rounds` field to duke_levels in `mini_games.json` if needed
+
+### Critical Context
+- **Server compiles** with `./compile_server.sh` (no arguments). Client `npm run check` passes with only pre-existing WeedingGame errors.
+- **SimpleGame is never modified** — all changes in our code (`SimpleGame.svelte`). Required changes documented in `docs/SimpleGame_changes.md`.
+- **Tower defense maps** live in `game/config/tower_defense/maps/` as JSON. Only `map_1.json` exists (level 1). Map metadata normalized server-side from camelCase to snake_case.
+- **`TowerDefenseMapCache`** uses POSIX `stat()` with `time_t` (not `std::filesystem::file_time_type` — broken on this Linux).
+- **`enemies.delete(e)` required manually** — SimpleGame's `EnemyClass.destroy()` doesn't remove from the global `enemies` set, only from `gameObjects`.
+- **Projectile collision flow**: `combatTick()` (spawn) → `doMovement()` (engine moves) → `doCollisionDetection()` (engine detects overlap, fires callback) → `everyTick()` (our `projTick` updates homing direction).
+- **Projectile images** referenced at `/images/tower_defense/projectiles/hunting_arrow.png` and `war_arrow.png` — these files don't exist on disk yet.
+- **Login debug**: Conditional on `static const bool login_debug = false` in main.cpp (off by default).
+- **`rename_field` self-rename bug**: `rename_field(obj, "x", "x")` with `from == to` destroys the field. Fixed by removing these calls.
+- **Level ID** threaded through: `App.svelte → MiniGameContainer → SimpleGame` (not hardcoded 0).
+
+### Relevant Files
+- `game/config/tower_defense/projectiles.json` - Projectile config (width, height, speed, image_file, forward_vector)
+- `game/config/tower_defense/mobs.json` - Mob config with forward_vector per mob
+- `game/config/tower_defense/units.json` - Soldier/unit config with width/height
+- `game/config/tower_defense/towers.json` - Tower config
+- `game/config/tower_defense/maps/map_1.json` - Only map file (level 1)
+- `game/config/mini_games.json` - Level grids, map references
+- `server/GameConfigCache.hpp/.cpp` - Config loading, includes projectiles
+- `server/main.cpp` - All API handlers, TD kickoff sends projectiles config
+- `server/TowerDefenseMapCache.cpp` - Map loading/normalization (fixed self-rename bug)
+- `client/src/minigames/tower_defense/SimpleGame.svelte` - Main TD game: engine collision, homing, mirroring, projTick cleanup
+- `client/SimpleGame/Embedding.md` - SimpleGame API docs (pause, mirroring, collision, movement)
