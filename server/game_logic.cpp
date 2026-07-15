@@ -79,7 +79,7 @@ const std::string& ActionRegistry::getDescription(const std::string& action_type
     return it->second.description;
 }
 
-TimeUpdateResult updateStateSince(Timestamp last_update_time, const std::string& fiefdom_filter_id) {
+TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_update_time, const std::string& fiefdom_filter_id) {
     TimeUpdateResult result;
     result.new_timestamp = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     result.time_hours_elapsed = static_cast<double>(result.new_timestamp - last_update_time) / 3600.0;
@@ -90,8 +90,7 @@ TimeUpdateResult updateStateSince(Timestamp last_update_time, const std::string&
     }
     
     auto& db = Database::getInstance().gameDB();
-    auto& cache = GameConfigCache::getInstance();
-    auto building_types = cache.getFiefdomBuildingTypes();
+    auto building_types = config_cache.getFiefdomBuildingTypes();
     
     try {
         db << "BEGIN TRANSACTION;";
@@ -160,7 +159,7 @@ TimeUpdateResult updateStateSince(Timestamp last_update_time, const std::string&
 
             for (auto& building : fiefdom.buildings) {
                 if (building.construction_start_ts > 0) {
-                    auto config_opt = Validation::getBuildingConfig(building.name);
+                    auto config_opt = Validation::getBuildingConfig(config_cache, building.name);
                     if (config_opt) {
                         auto config = *config_opt;
                         int construction_seconds = 0;
@@ -191,7 +190,7 @@ TimeUpdateResult updateStateSince(Timestamp last_update_time, const std::string&
                                 
                                 bool prerequisites_met = true;
                                 if (config.contains("prerequisites") && config["prerequisites"].is_array()) {
-                                    auto prerequisites_opt = Validation::getPrerequisitesForLevel(building.name, new_level);
+                                    auto prerequisites_opt = Validation::getPrerequisitesForLevel(config_cache, building.name, new_level);
                                     if (prerequisites_opt && !prerequisites_opt->empty()) {
                                         prerequisites_met = Validation::checkFiefdomPrerequisites(fiefdom.id, *prerequisites_opt);
                                     }
@@ -244,7 +243,7 @@ TimeUpdateResult updateStateSince(Timestamp last_update_time, const std::string&
 
             for (auto& wall : fiefdom.walls) {
                 if (wall.construction_start_ts > 0) {
-                    auto config_opt = Validation::getWallConfigByGeneration(wall.generation);
+                    auto config_opt = Validation::getWallConfigByGeneration(config_cache, wall.generation);
                     if (config_opt) {
                         auto config = *config_opt;
                         int construction_seconds = 0;
@@ -270,7 +269,7 @@ TimeUpdateResult updateStateSince(Timestamp last_update_time, const std::string&
                             int64_t elapsed_seconds = result.new_timestamp - wall.construction_start_ts;
                             if (elapsed_seconds >= construction_seconds) {
                                 int new_level = wall.level + 1;
-                                int new_hp = Validation::getWallHP(wall.generation, new_level);
+                                int new_hp = Validation::getWallHP(config_cache, wall.generation, new_level);
                                 if (FiefdomFetcher::updateWallLevel(wall.id, new_level, new_hp, result.new_timestamp)) {
                                     wall.level = new_level;
                                     wall.hp = new_hp;

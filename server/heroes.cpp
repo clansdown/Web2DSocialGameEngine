@@ -79,7 +79,7 @@ bool HeroRegistry::loadHeroes(const std::string& config_path) {
     }
     
     try {
-        nlohmann::json data = nlohmann::json::parse(content, nullptr, true, true);
+        nlohmann::json data = nlohmann::json::parse(content, nullptr, true, true, true);
         
         for (auto& [heroId, heroJson] : data.items()) {
             Hero hero;

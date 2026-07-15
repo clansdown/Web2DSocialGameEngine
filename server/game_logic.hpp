@@ -5,6 +5,8 @@
 #include <chrono>
 #include <nlohmann/json.hpp>
 #include "Database.hpp"
+
+class GameConfigCache;
 #include "ApiResponse.hpp"
 #include "FiefdomData.hpp"
 
@@ -24,6 +26,7 @@ struct ActionContext {
     int requesting_character_id;
     std::string request_id;
     std::string ip_address;
+    GameConfigCache* config_cache = nullptr;
 };
 
 struct DiffValue {
@@ -103,6 +106,7 @@ struct TimeUpdateResult {
 };
 
 TimeUpdateResult updateStateSince(
+    GameConfigCache& config_cache,
     Timestamp last_update_time,
     const std::string& fiefdom_filter_id = ""
 );

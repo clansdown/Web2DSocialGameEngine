@@ -264,12 +264,7 @@ void earn_duke_right(sqlite::database& db, int character_id, int64_t timestamp) 
         row.difficulty = difficulty;
         row.total_rounds = total_rounds;
 
-        int lives_per_difficulty = 20;
-        if (difficulty <= 3) lives_per_difficulty = 25;
-        else if (difficulty <= 6) lives_per_difficulty = 20;
-        else lives_per_difficulty = 15;
-
-        row.lives = lives_per_difficulty;
+        row.lives = 1;
         row.gold = 100;
         row.current_round = 0;
         row.started_at = timestamp;
@@ -359,7 +354,8 @@ void earn_duke_right(sqlite::database& db, int character_id, int64_t timestamp) 
                   "WHERE id = ?;"
                << lives << gold << state << timestamp << session_id;
             return true;
-        } catch (const std::exception&) {
+        } catch (const std::exception& e) {
+            std::cerr << "[PlayerStateDB] Failed to update game session " << session_id << ": " << e.what() << std::endl;
             return false;
         }
     }

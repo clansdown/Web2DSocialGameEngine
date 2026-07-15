@@ -4,9 +4,8 @@
  */
 
 import { playerGameState } from './stores';
-import { getPlayerStateRequest, startMiniGameRequest, endMiniGameRequest, getMiniGameConfigRequest, tdRoundRequest } from './api';
+import { authenticatedPost } from './api';
 import type { PlayerGameState, StartMiniGameResponse, EndMiniGameResponse, MiniGameConfig, TDRoundResponse } from './api';
-import * as auth from './auth';
 
 /**
  * Fetches the current player state from the server and updates the store.
@@ -17,13 +16,9 @@ import * as auth from './auth';
  * Usage: Called after character selection and after state transitions
  */
 export async function fetchPlayerState(characterId: number): Promise<void> {
-  const token = auth.getSessionToken();
-  const username = auth.getInMemoryCredentials()?.username;
-  if (!token || !username) {
-    throw new Error('Not authenticated');
-  }
-
-  const state = await getPlayerStateRequest(characterId, { username, token });
+  const state = await authenticatedPost<PlayerGameState>('getPlayerState', {
+    character_id: characterId
+  });
   playerGameState.set(state);
 }
 
@@ -41,13 +36,10 @@ export async function startMiniGame(
   characterId: number,
   miniGame: string
 ): Promise<StartMiniGameResponse> {
-  const token = auth.getSessionToken();
-  const username = auth.getInMemoryCredentials()?.username;
-  if (!token || !username) {
-    throw new Error('Not authenticated');
-  }
-
-  const result = await startMiniGameRequest(characterId, miniGame, { username, token });
+  const result = await authenticatedPost<StartMiniGameResponse>('startMiniGame', {
+    character_id: characterId,
+    mini_game: miniGame
+  });
 
   await fetchPlayerState(characterId);
 
@@ -74,56 +66,39 @@ export async function endMiniGame(
   won: boolean,
   score: number
 ): Promise<EndMiniGameResponse> {
-  const token = auth.getSessionToken();
-  const username = auth.getInMemoryCredentials()?.username;
-  if (!token || !username) {
-    throw new Error('Not authenticated');
-  }
-
-  const result = await endMiniGameRequest(characterId, miniGame, levelId, won, score, { username, token });
+  const result = await authenticatedPost<EndMiniGameResponse>('endMiniGame', {
+    character_id: characterId,
+    mini_game: miniGame,
+    level_id: levelId,
+    won,
+    score
+  });
 
   await fetchPlayerState(characterId);
 
   return result;
 }
 
-/**
- * Fetches mini-game configuration from the server.
- * 
- * @param miniGame - Optional specific mini-game name (null returns all)
- * @returns Promise<Record<string, MiniGameConfig>> - Config data
- * 
- * Usage: Called to populate the mission select screen
- */
-/**
- * Performs a tower defense round operation — either kicks off a new game
- * or completes an existing round. Thin wrapper around tdRoundRequest.
- *
- * @param characterId - Character ID
- * @param options - Kickoff ({ mini_game, level_id }) or completion ({ session_id, lives_lost, gold_earned })
- * @returns Promise<TDRoundResponse> - Server response
- *
- * Usage: Called by SimpleGame component for all TD round operations
- */
 export async function tdRound(
   characterId: number,
   options: { mini_game?: string; level_id?: number; session_id?: number; lives_lost?: number; gold_earned?: number }
 ): Promise<TDRoundResponse> {
-  const token = auth.getSessionToken();
-  const username = auth.getInMemoryCredentials()?.username;
-  if (!token || !username) {
-    throw new Error('Not authenticated');
+  const body: Record<string, unknown> = { character_id: characterId };
+
+  if (options.session_id !== undefined) {
+    body.session_id = options.session_id;
+    body.lives_lost = options.lives_lost ?? 0;
+    body.gold_earned = options.gold_earned ?? 0;
+  } else {
+    body.mini_game = options.mini_game;
+    body.level_id = options.level_id;
   }
 
-  return await tdRoundRequest(characterId, options, { username, token });
+  return await authenticatedPost<TDRoundResponse>('tdRound', body);
 }
 
-export async function getMiniGameConfigs(miniGame: string | null = null): Promise<Record<string, MiniGameConfig>> {
-  const token = auth.getSessionToken();
-  const username = auth.getInMemoryCredentials()?.username;
-  if (!token || !username) {
-    throw new Error('Not authenticated');
-  }
-
-  return await getMiniGameConfigRequest(miniGame, { username, token });
+export async function getMiniGameConfigs(miniGame?: string | null): Promise<Record<string, MiniGameConfig>> {
+  const body: Record<string, unknown> = {};
+  if (miniGame) body.mini_game = miniGame;
+  return await authenticatedPost<Record<string, MiniGameConfig>>('getMiniGameConfig', body);
 }

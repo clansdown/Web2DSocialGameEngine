@@ -6,6 +6,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { tdRound } from '../../lib/game_state';
   import type { TDRoundKickoffResponse, TDRoundCompleteResponse, SpawnScheduleEntry, EndMiniGameResponse } from '../../lib/api';
+  import { setConfig, getConfig } from '../../lib/storage';
 
   import {
     initEngine, setCameraFollowsPlayer, setBoardSize, setButtonDebugLevel,
@@ -23,7 +24,7 @@
   } from '../../../SimpleGame/ui/src/lib/gameclasses';
 
   import { ButtonClass, Button } from '../../../SimpleGame/ui/src/lib/button';
-  import { Overlay } from '../../../SimpleGame/ui/src/lib/overlay';
+  // import { Overlay } removed — placement overlay replaced by range indicator
   import type { Position2D } from '../../../SimpleGame/ui/src/lib/util';
 
   interface Props {
@@ -35,6 +36,20 @@
   }
 
   let { characterId, miniGame, levelId, onComplete, onError }: Props = $props();
+
+  interface SavedPlacement {
+    configId: string;
+    x: number;
+    y: number;
+    level: number;
+    targeting: string;
+  }
+  interface SavedTDState {
+    session_id: number;
+    character_id: number;
+    level_id: number;
+    placements: SavedPlacement[];
+  }
 
   let canvasEl: HTMLCanvasElement;
   let debugEl: HTMLDivElement;
@@ -49,13 +64,14 @@
   let projectileClasses: Record<string, ProjectileClass> = {};
 
   // Runtime state
-  let activeTowers: { obj: GameObject; configId: string; level: number; piece: any }[] = [];
+  let activeTowers: { obj: GameObject; configId: string; level: number; piece: any; targeting: string }[] = [];
   let spawnQueue: { enemyId: string; remaining: number; intervalMs: number; initialDelayMs: number; spawnTimer: number; initialDone: boolean }[] = [];
   let allSpawned = false;
   let roundStarted = false;
   let gameState: 'idle' | 'battle' | 'won' | 'lost' = 'idle';
   let currentGold = 100;
-  let currentLives = 20;
+  let currentLives = 1;
+  let initialLives = 1;
   let currentRound = 1;
   let totalRounds = 1;
   let roundInTransition = false;
@@ -66,8 +82,7 @@
 
   // Drag-to-place state
   let dragUnitId: string | null = null;
-  let showOverlay = false;
-  let placementOverlay: Overlay | null = null;
+  let soldierIds = new Set<string>();
   let btnOrigin = new Map<string, { x: number; y: number }>();
   let unitButtons = new Map<string, Button>();
   let pathMap = new Map<string, any>();
@@ -86,12 +101,19 @@
   let startButton: Button | null = null;
   let pauseButton: Button | null = null;
   let autoAdvance = false;
+  let ringButtons: Button[] = [];
+  let showingTargetingPicker = false;
+
+  // OPFS persistence for unit placements
+  let pendingRestore: SavedPlacement[] | null = null;
+  let dirty = false;
+  let saveInterval: ReturnType<typeof setInterval> | null = null;
 
   // ============================================================
   // Helpers
   // ============================================================
 
-  function nx(v: number): number { return v * bw; }
+  function nx(v: number): number { return v * (bw + sidebarW); }
   function ny(v: number): number { return v * bh; }
 
   function pointInCircle(px: number, py: number, cx: number, cy: number, r: number): boolean {
@@ -127,7 +149,7 @@
     return zones;
   }
 
-  function isBlocked(x: number, y: number): boolean {
+  function isBlocked(x: number, y: number, skipObj?: GameObject): boolean {
     for (const z of exclusionZones) {
       if (z.type === 'circle' && pointInCircle(x, y, nx(z.center_x), ny(z.center_y), z.radius * bw)) return true;
       if (z.type === 'polygon' && z.vertices) {
@@ -138,24 +160,14 @@
     for (const pb of pathBuffers) {
       if (pointInCircle(x, y, pb.cx, pb.cy, pb.r)) return true;
     }
+    for (const t of activeTowers) {
+      if (t.obj === skipObj) continue;
+      const r = t.piece.exclusion_radius;
+      if (r && Math.hypot(t.obj.x - x, t.obj.y - y) < r) return true;
+    }
     return false;
   }
 
-  function buildPlacementOverlay() {
-    const ov = new Overlay(
-      [{ x: 0, y: 0 }, { x: bw, y: 0 }, { x: bw, y: bh }, { x: 0, y: bh }],
-      'rgba(0, 180, 0, 0.1)'
-    );
-    for (const z of exclusionZones) {
-      if (z.type === 'circle') ov.addCircleCutout(nx(z.center_x), ny(z.center_y), z.radius * bw, 24);
-      else if (z.type === 'polygon' && z.vertices) {
-        ov.addCutout(z.vertices.map((v: any) => ({ x: nx(v.x), y: ny(v.y) })));
-      }
-    }
-    for (const pb of pathBuffers) ov.addCircleCutout(pb.cx, pb.cy, pb.r, 16);
-    for (const t of activeTowers) ov.addCircleCutout(t.obj.x, t.obj.y, 20, 16);
-    placementOverlay = ov;
-  }
 
   function pickBranch(intersection: any): string | null {
     if (!intersection?.branches?.length) return null;
@@ -166,6 +178,63 @@
       if (r <= 0) return b.path_id;
     }
     return intersection.branches[0]?.path_id || null;
+  }
+
+  // ============================================================
+  // OPFS persistence
+  // ============================================================
+
+  async function savePlacements() {
+    if (!dirty || !tdData) return;
+    dirty = false;
+    try {
+      const data: SavedTDState = {
+        session_id: (tdData as any).session_id as number,
+        character_id: characterId,
+        level_id: levelId,
+        placements: activeTowers.map(t => ({
+          configId: t.configId,
+          x: t.obj.x,
+          y: t.obj.y,
+          level: t.level,
+          targeting: t.targeting
+        }))
+      };
+      await setConfig("td_placements", data);
+    } catch (e) {
+      console.log('[TD] Failed to save placements:', e);
+    }
+  }
+
+  function restorePlacement(p: SavedPlacement) {
+    const cls = towerGameClassMap.get(p.configId);
+    if (!cls) return;
+    const obj = new GameObject(cls, p.x, p.y);
+    obj.direction_x = 0;
+    obj.direction_y = 0;
+    gameObjects.add(obj);
+    cls.gameObjects.add(obj);
+    activeTowers.push({
+      obj,
+      configId: p.configId,
+      level: p.level,
+      piece: (cls as any).pieceConfig,
+      targeting: p.targeting
+    });
+    if (soldierIds.has(p.configId)) {
+      obj.draggable = true;
+      obj.dragFollowsCursor = true;
+      obj.onDragStart(0, () => {
+        (obj as any)._dragOrigX = obj.x;
+        (obj as any)._dragOrigY = obj.y;
+      });
+      obj.onDragEnd(0, () => {
+        if (isBlocked(obj.x, obj.y, obj)) {
+          obj.x = (obj as any)._dragOrigX;
+          obj.y = (obj as any)._dragOrigY;
+        }
+      });
+    }
   }
 
   // ============================================================
@@ -180,8 +249,8 @@
     const data = tdData;
     setCameraFollowsPlayer(false);
 
-    // bw/bh already set by init() — don't read boardWidth which is now bw+sidebarW
     currentGold = data.gold;
+    initialLives = data.lives;
     currentLives = data.lives;
     currentRound = (data as any).round_number || 1;
     totalRounds = (data as any).total_rounds || 1;
@@ -231,7 +300,10 @@
     for (const [id, cfg] of Object.entries(projConfig)) {
       const entry = cfg as any;
       const cls = new ProjectileClass(`proj_${id}`, `/images/tower_defense/projectiles/${entry.image_file}`);
-      cls.setBoundingBox(entry.width || 16, entry.height || 6);
+      cls.defaultWidth = entry.width || 16;
+      cls.defaultHeight = entry.height || 8;
+      cls.setBoundingBox(cls.defaultWidth, cls.defaultHeight);
+      cls.defaultSingleCollisionOnly = true;
       cls.defaultSpriteForwardVector = entry.forward_vector || [1, 0];
       (cls as any).config = entry;
       projectileClasses[id] = cls;
@@ -248,6 +320,8 @@
       cls.setBoundingBox(cls.defaultWidth, cls.defaultHeight);
       towerGameClassMap.set(id, cls);
     }
+    // Track which config IDs are soldiers (from units, not towers)
+    for (const id of Object.keys((data as any).units?.units || {})) soldierIds.add(id);
 
     // Sidebar UI (fixed-width sidebar)
     const sX = bw;
@@ -258,48 +332,57 @@
     goldText.size = 22;
     goldText.foreground = '#FFD700';
 
-    livesText = createText(`Lives: ${currentLives}`, { x: cX, y: 65 });
-    livesText.size = 20;
-    livesText.foreground = '#FF6666';
+    if (currentLives > 1) {
+      livesText = createText(`Lives: ${currentLives}`, { x: cX, y: 65 });
+      livesText.size = 20;
+      livesText.foreground = '#FF6666';
+    }
     roundText = createText(`Round ${currentRound}/${totalRounds}`, { x: cX, y: 95 });
     roundText.size = 18;
     roundText.foreground = '#CCCCCC';
 
     let bY = 100;
+    const sbBtnH = 100;
+    const sbBtnW = sW - 20;
     for (const id of Object.keys(allPieces)) {
       const p = allPieces[id];
       const cost = p.cost?.[0]?.gold || 0;
       const label = `${p.name || id} (${cost}g)`;
+      const cfgW = p.width || 64;
+      const cfgH = p.height || 64;
+      const targetArea = 4096;
+      const aspect = cfgH / cfgW;
+      const iconW = Math.round(Math.sqrt(targetArea / aspect));
+      const iconH = Math.round(Math.sqrt(targetArea * aspect));
       const bc = new ButtonClass(`sb_${id}`);
-      const btn = bc.spawn(cX, bY, label, sW - 20, 34, undefined, '#4A4A6A', p.image_url);
+      const btn = bc.spawn(cX, bY, label, p.image_url, {
+        width: sbBtnW, height: sbBtnH, color: '#4A4A6A',
+        iconWidth: iconW, iconHeight: iconH,
+        iconPadding: 10, iconLayout: "above",
+        backgroundOpacity: 0.8
+      });
       unitButtons.set(id, btn);
-      btn.iconSize = 24;
-      btn.iconPadding = 10;
       btn.hoverColor = '#5A5A7A';
       btn.clickColor = '#3A3A5A';
       btn.draggable = true;
       btn.dragFollowsCursor = false;
       btn.setOnClick(() => {
+        setSelectedTower(null);
         console.log('sidebar click:', id);
         placementMode = id;
-        buildPlacementOverlay();
-        showOverlay = true;
       });
       btn.onDragStart(0, () => {
         console.log('dragStart:', id, 'at', btn.x, btn.y);
         dragUnitId = id;
         btnOrigin.set(id, { x: btn.x, y: btn.y });
         btn.color = '#3A3A5A';
-        buildPlacementOverlay();
-        showOverlay = true;
       });
       btn.onDragEnd(0, () => {
         const orig = btnOrigin.get(id);
         if (orig) { btn.x = orig.x; btn.y = orig.y; }
         btn.color = '#4A4A6A';
-        showOverlay = false;
-        placementOverlay = null;
         const pos = getMousePosition();
+        setSelectedTower(null);
         console.log('dragEnd:', id, 'released at', pos.x, pos.y, 'on board?', pos.x < bw);
         if (pos.x < bw && pos.y >= 0 && pos.y < bh && !isBlocked(pos.x, pos.y)) {
           const cfg = allPieces[id];
@@ -308,52 +391,35 @@
         }
         dragUnitId = null;
       });
-      bY += 40;
+      bY += sbBtnH + 10;
     }
     refreshButtonStates();
 
     const sbc = new ButtonClass('sb_start');
-    startButton = sbc.spawn(cX, bY, 'Start Round', sW - 20, 42);
-    startButton.color = '#2D7A2D';
-    startButton.setOnClick(() => startRound());
+    startButton = sbc.spawn(cX, bY, `Round ${currentRound}/${totalRounds}`, null, { width: sbBtnW, height: 42, color: '#2D7A2D', backgroundOpacity: 0.8 });
+    startButton.setOnClick(() => { setSelectedTower(null); startRound(); });
     bY += 50;
 
     {
       const pauseCls = new ButtonClass('sb_pause');
-      pauseButton = pauseCls.spawn(cX, bY, 'Pause', sW - 20, 30);
-      pauseButton.color = '#555555';
+      pauseButton = pauseCls.spawn(cX, bY, 'Pause', null, { width: sbBtnW, height: 30, color: '#555555', backgroundOpacity: 0.8 });
       pauseButton.setOnClick(() => {
+        setSelectedTower(null);
         if (roundStarted && gameState !== 'won' && gameState !== 'lost') togglePause();
       });
       bY += 42;
     }
 
     const fbc = new ButtonClass('sb_forfeit');
-    const fbtn = fbc.spawn(cX, bY, 'Try Again Later', sW - 20, 42);
-    fbtn.color = '#7A2D2D';
+    const fbtn = fbc.spawn(cX, bY, 'Try Again Later', null, { width: sbBtnW, height: 42, color: '#7A2D2D', backgroundOpacity: 0.8 });
     fbtn.setOnClick(() => forfeitGame());
     bY += 50;
 
     {
-      const upgCls = new ButtonClass('sb_upgrade');
-      const upgBtn = upgCls.spawn(cX, bY, 'Upgrade', sW - 20, 34);
-      upgBtn.color = '#3D6A3D';
-      upgBtn.setOnClick(() => doUpgrade());
-      bY += 38;
-    }
-    {
-      const sellCls = new ButtonClass('sb_sell');
-      const sellBtn = sellCls.spawn(cX, bY, 'Sell (50%)', sW - 20, 34);
-      sellBtn.color = '#6A3D3D';
-      sellBtn.setOnClick(() => doSell());
-      bY += 46;
-    }
-
-    {
       const aaCls = new ButtonClass('sb_auto');
-      const autoBtn = aaCls.spawn(cX, bY, 'Auto: OFF', sW - 20, 30);
-      autoBtn.color = '#555555';
+      const autoBtn = aaCls.spawn(cX, bY, 'Auto: OFF', null, { width: sbBtnW, height: 30, color: '#555555', backgroundOpacity: 0.8 });
       autoBtn.setOnClick(() => {
+        setSelectedTower(null);
         autoAdvance = !autoAdvance;
         autoBtn.text = autoAdvance ? 'Auto: ON' : 'Auto: OFF';
         autoBtn.color = autoAdvance ? '#2D5A2D' : '#555555';
@@ -385,30 +451,28 @@
     onPause(() => { if (pauseButton) pauseButton.text = 'Resume'; });
     onResume(() => { if (pauseButton) pauseButton.text = 'Pause'; });
 
-    // Click handler — placement (click-to-place) + tower selection
+    // Click handler — placement (click-to-place) + tower selection + ring buttons
     onMouseClick(0, (_e, x, y) => {
       if (x >= bw) { console.log('click in sidebar'); return; }
       if (placementMode) {
         console.log('board click with placementMode:', placementMode, 'at', x, y);
         tryPlace(x, y, placementMode);
         placementMode = null;
-        showOverlay = false;
-        placementOverlay = null;
         return;
       }
+      // Ring button clicks are handled by ButtonClass natively
       for (const t of activeTowers) {
-        if (Math.hypot(t.obj.x - x, t.obj.y - y) < 28) { selectedTower = { obj: t.obj, configId: t.configId }; return; }
+        if (Math.hypot(t.obj.x - x, t.obj.y - y) < 28) { setSelectedTower({ obj: t.obj, configId: t.configId }); return; }
       }
-      selectedTower = null;
+      setSelectedTower(null);
     });
 
-    // Ghost + overlay rendering
+    // Ghost + ring + range rendering
     afterDraw((ctx, _offsetX, _offsetY) => {
       const unitId = placementMode ?? dragUnitId;
       if (unitId) {
         const cls = towerGameClassMap.get(unitId);
         const pos = getMousePosition();
-        if (showOverlay && placementOverlay) placementOverlay.draw(ctx, 0, 0);
         // Ghost sprite
         if (cls?.image?.complete && cls.image.naturalWidth > 0) {
           ctx.save();
@@ -440,11 +504,96 @@
           ctx.restore();
         }
       }
+      // Ring buttons handled by ButtonClass via updateRingButtons()
+      // Range circle for dragged placed units
+      for (const t of activeTowers) {
+        if (t.obj.isDragging && t.obj.draggable) {
+          const range = (t.piece.range || 0.2) * bw;
+          const canPlace = !isBlocked(t.obj.x, t.obj.y);
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(t.obj.x, t.obj.y, range, 0, Math.PI * 2);
+          ctx.fillStyle = canPlace ? 'rgba(0, 100, 255, 0.08)' : 'rgba(255, 0, 0, 0.08)';
+          ctx.strokeStyle = canPlace ? 'rgba(0, 100, 255, 0.5)' : 'rgba(255, 0, 0, 0.5)';
+          ctx.fill();
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
     });
+
+    // Restore units from OPFS if resuming
+    if (pendingRestore) {
+      for (const p of pendingRestore) restorePlacement(p);
+      pendingRestore = null;
+      refreshButtonStates();
+    }
+
+    // Periodic save interval
+    saveInterval = setInterval(() => savePlacements(), 10000);
 
     // Loading timeout
     const loadTimer = setTimeout(() => { loading = false; }, 5000);
     whenLoaded(() => { clearTimeout(loadTimer); loading = false; });
+  }
+
+  function setSelectedTower(val: { obj: GameObject; configId: string } | null) {
+    selectedTower = val;
+    showingTargetingPicker = false;
+    updateRingButtons();
+  }
+
+  function updateRingButtons() {
+    for (const b of ringButtons) b.destroy();
+    ringButtons = [];
+    if (!selectedTower) return;
+    const twr = activeTowers.find(t => t.obj === selectedTower!.obj);
+    if (!twr) return;
+
+    const btnW = 90, btnH = 42, gap = 8;
+    const yOff = twr.obj.y + 38;
+    const modes = ['closest', 'first', 'strongest', 'weakest'];
+    const upgradeTarget = twr.piece.becomes;
+    const targetExists = upgradeTarget ? towerGameClassMap.has(upgradeTarget) : false;
+    const modeLabel = twr.targeting || 'closest';
+
+    type BtnSpec = { text: string; color: string; disabled: boolean; action: () => void };
+    let specs: BtnSpec[];
+
+    if (showingTargetingPicker) {
+      specs = modes.map(m => ({
+        text: m.charAt(0).toUpperCase() + m.slice(1),
+        color: twr.targeting === m ? '#2A5A3A' : '#3A5A8B',
+        disabled: false,
+        action: () => { twr.targeting = m; setSelectedTower(null); }
+      }));
+    } else {
+      specs = [
+        { text: 'Recall', color: '#8B3A3A', disabled: false, action: doSell },
+        { text: modeLabel.charAt(0).toUpperCase() + modeLabel.slice(1), color: '#3A5A8B', disabled: false, action: () => { showingTargetingPicker = true; updateRingButtons(); } }
+      ];
+      if (targetExists) {
+        specs.push({
+          text: 'Upgrade', color: '#3A8B3A',
+          disabled: currentGold < (twr.piece.upgrade_cost?.[twr.level]?.gold || 0),
+          action: doUpgrade
+        });
+      } else if (!upgradeTarget) {
+        specs.push({ text: 'Max Lvl', color: '#555', disabled: true, action: () => {} });
+      }
+    }
+
+    const totalW = specs.length * btnW + (specs.length - 1) * gap;
+    const startX = twr.obj.x - totalW / 2 + btnW / 2;
+    for (let i = 0; i < specs.length; i++) {
+      const s = specs[i];
+      const bc = new ButtonClass(`ring_${i}`);
+      const btn = bc.spawn(startX + i * (btnW + gap), yOff, s.text, null, { width: btnW, height: btnH, color: s.color, backgroundOpacity: 0.8 });
+      btn.setDisabled(s.disabled);
+      btn.setOnClick(s.action);
+      ringButtons.push(btn);
+    }
   }
 
   function refreshButtonStates() {
@@ -474,16 +623,32 @@
     obj.direction_y = 0;
     gameObjects.add(obj);
     cls.gameObjects.add(obj);
-    activeTowers.push({ obj, configId: unitId, level: 0, piece: cfg });
+    activeTowers.push({ obj, configId: unitId, level: 0, piece: cfg, targeting: 'first' });
+    if (soldierIds.has(unitId)) {
+      obj.draggable = true;
+      obj.dragFollowsCursor = true;
+      obj.onDragStart(0, () => {
+        (obj as any)._dragOrigX = obj.x;
+        (obj as any)._dragOrigY = obj.y;
+      });
+      obj.onDragEnd(0, () => {
+        if (isBlocked(obj.x, obj.y, obj)) {
+          obj.x = (obj as any)._dragOrigX;
+          obj.y = (obj as any)._dragOrigY;
+        }
+      });
+    }
     currentGold -= cost;
     if (goldText) goldText.text = `Gold: ${currentGold}`;
     refreshButtonStates();
+    dirty = true;
+    savePlacements();
   }
 
   function doUpgrade() {
     if (!selectedTower) { debug('No tower selected'); return; }
     const tower = activeTowers.find(t => t.obj === selectedTower!.obj);
-    if (!tower) { selectedTower = null; return; }
+    if (!tower) { setSelectedTower(null); return; }
     const piece = tower.piece;
     if (!piece.becomes) { debug('Max level'); return; }
     const upgCost = piece.upgrade_cost?.[tower.level];
@@ -491,29 +656,48 @@
     const goldCost = upgCost.gold || 0;
     if (currentGold < goldCost) { debug('Not enough gold for upgrade!'); return; }
 
+    const newCls = towerGameClassMap.get(piece.becomes);
+    if (!newCls) { debug('Upgrade not available'); return; }
+
     const x = tower.obj.x;
     const y = tower.obj.y;
     tower.obj.destroy();
 
-    const newCls = towerGameClassMap.get(piece.becomes);
-    if (!newCls) return;
     const newObj = new GameObject(newCls, x, y);
     newObj.direction_x = 0;
     newObj.direction_y = 0;
     gameObjects.add(newObj);
     newCls.gameObjects.add(newObj);
 
+    if (soldierIds.has(piece.becomes)) {
+      newObj.draggable = true;
+      newObj.dragFollowsCursor = true;
+      newObj.onDragStart(0, () => {
+        (newObj as any)._dragOrigX = newObj.x;
+        (newObj as any)._dragOrigY = newObj.y;
+      });
+      newObj.onDragEnd(0, () => {
+        if (isBlocked(newObj.x, newObj.y, newObj)) {
+          newObj.x = (newObj as any)._dragOrigX;
+          newObj.y = (newObj as any)._dragOrigY;
+        }
+      });
+    }
+
     const newIdx = activeTowers.indexOf(tower);
-    activeTowers[newIdx] = { obj: newObj, configId: piece.becomes, level: tower.level + 1, piece: (newCls as any).pieceConfig };
+    activeTowers[newIdx] = { obj: newObj, configId: piece.becomes, level: tower.level + 1, piece: (newCls as any).pieceConfig, targeting: tower.targeting };
     currentGold -= goldCost;
     if (goldText) goldText.text = `Gold: ${currentGold}`;
-    selectedTower = { obj: newObj, configId: piece.becomes };
+    refreshButtonStates();
+    setSelectedTower(null);
+    dirty = true;
+    savePlacements();
   }
 
   function doSell() {
     if (!selectedTower) { debug('No tower selected'); return; }
     const towerIdx = activeTowers.findIndex(t => t.obj === selectedTower!.obj);
-    if (towerIdx < 0) { selectedTower = null; return; }
+    if (towerIdx < 0) { setSelectedTower(null); return; }
     const tower = activeTowers[towerIdx];
     const cost = tower.piece.cost?.[0]?.gold || 0;
     const refund = Math.floor(cost * 0.5);
@@ -522,7 +706,9 @@
     refreshButtonStates();
     tower.obj.destroy();
     activeTowers.splice(towerIdx, 1);
-    selectedTower = null;
+    setSelectedTower(null);
+    dirty = true;
+    savePlacements();
   }
 
   // ============================================================
@@ -603,11 +789,17 @@
       const mId = (e as any).enemyId as string;
       const mCls = mId ? mobEnemyClassMap.get(mId) : null;
       const s2 = mCls ? ((mCls as any).mobConfig?.speed || 1.0) : 1.0;
-      e.moveTo({ x: nx(nw.x), y: ny(nw.y) }, 1.0 / s2);
+      const dx = nx(nw.x) - e.x;
+      const dy = ny(nw.y) - e.y;
+      const dist = Math.hypot(dx, dy);
+      e.moveTo({ x: nx(nw.x), y: ny(nw.y) }, dist / (s2 * 60));
     });
 
     if (wps[startIdx]) {
-      e.moveTo({ x: nx(wps[startIdx].x), y: ny(wps[startIdx].y) }, 1.0 / spd);
+      const dx = nx(wps[startIdx].x) - e.x;
+      const dy = ny(wps[startIdx].y) - e.y;
+      const dist = Math.hypot(dx, dy);
+      e.moveTo({ x: nx(wps[startIdx].x), y: ny(wps[startIdx].y) }, dist / (spd * 60));
     }
     console.log(`[TD] doSpawn: ${enemyId} at (${nx(sp.x).toFixed(0)}, ${ny(sp.y).toFixed(0)}) hp=${cls.defaultHitpoints} spd=${spd} waypoints=${wps.length} startIdx=${startIdx}`);
     e.logMovement();
@@ -635,10 +827,26 @@
       const tier = Math.min(t.level, (t.piece.damage?.length || 1) - 1);
       const dmg = t.piece.damage?.[tier] || 10;
       let target: Enemy | null = null;
-      let bestD = range;
-      for (const e of enemies) {
-        const d = Math.hypot(e.x - t.obj.x, e.y - t.obj.y);
-        if (d <= bestD) { bestD = d; target = e; }
+      const targeting = (t as any).targeting || 'closest';
+      if (targeting === 'closest' || targeting === 'first') {
+        let best = targeting === 'closest' ? range : -1;
+        for (const e of enemies) {
+          const d = Math.hypot(e.x - t.obj.x, e.y - t.obj.y);
+          if (d > range) continue;
+          if (targeting === 'closest') {
+            if (d < best) { best = d; target = e; }
+          } else {
+            if ((e as any).timeExistedMillis > best) { best = (e as any).timeExistedMillis; target = e; }
+          }
+        }
+      } else {
+        let bestVal = targeting === 'strongest' ? -1 : Infinity;
+        for (const e of enemies) {
+          const d = Math.hypot(e.x - t.obj.x, e.y - t.obj.y);
+          if (d > range) continue;
+          const hp = (e as any).hp || 0;
+          if (targeting === 'strongest' ? hp > bestVal : hp < bestVal) { bestVal = hp; target = e; }
+        }
       }
       if (!target) continue;
       (t as any).atkTimer = ((t as any).atkTimer || 0) + dt;
@@ -729,10 +937,11 @@
     try {
       const result = await tdRound(characterId, {
         session_id: (tdData as any).session_id as number,
-        lives_lost: Math.max(0, 20 - currentLives),
+        lives_lost: Math.max(0, initialLives - currentLives),
         gold_earned: Math.max(0, currentGold - 100)
       });
       const ar = result as any;
+      console.log('[TD] advanceRound response:', ar);
       if (ar.next_round) {
         currentRound = ar.round_number;
         totalRounds = ar.total_rounds;
@@ -764,10 +973,31 @@
             startButton.text = 'Auto...';
             setTimeout(() => startRound(), 2000);
           } else {
-            startButton.text = 'Next Round';
+            startButton.text = `Round ${currentRound}/${totalRounds}`;
             startButton.color = '#2D5A2D';
           }
         }
+      } else {
+        // No next_round — server already ended the game
+        console.log('[TD] advanceRound: no next_round, ending game');
+        gameState = ar.won ? 'won' : 'lost';
+        placementMode = null;
+        boardDragActive = false;
+        dragUnitId = null;
+        setSelectedTower(null);
+        onComplete({
+          completed: ar.completed || false,
+          score: ar.score || 0,
+          new_best_score: ar.new_best_score || false,
+          times_played: ar.times_played || 0,
+          all_levels_done: ar.all_levels_done || false,
+          base_unlocked: ar.base_unlocked || false,
+          game_phase: ar.game_phase || 'initial_mission',
+          next_level_id: null,
+          rewards: ar.rewards || {},
+          land_patent_earned: ar.land_patent_earned || false,
+          duke_right_earned: ar.duke_right_earned || false
+        });
       }
     } catch (e) {
       onError(e instanceof Error ? e.message : 'Failed to advance round');
@@ -780,14 +1010,13 @@
     placementMode = null;
     boardDragActive = false;
     dragUnitId = null;
-    showOverlay = false;
-    placementOverlay = null;
+    selectedTower = null;
     const score = currentGold + currentLives * 10;
 
     try {
       const result = await tdRound(characterId, {
         session_id: (tdData as any).session_id as number,
-        lives_lost: forceLoss ? 100 : Math.max(0, 20 - currentLives),
+        lives_lost: forceLoss ? 100 : Math.max(0, initialLives - currentLives),
         gold_earned: Math.max(0, currentGold - 100)
       });
       const cr = result as TDRoundCompleteResponse;
@@ -811,13 +1040,12 @@
 
   function forfeitGame() {
     if (gameState === 'won' || gameState === 'lost') return;
-    if (!roundStarted) {
+    if (!roundStarted && currentRound === 1) {
       gameState = 'lost';
       placementMode = null;
       boardDragActive = false;
       dragUnitId = null;
-      showOverlay = false;
-      placementOverlay = null;
+      selectedTower = null;
       onComplete({ completed: false, score: 0, new_best_score: false, times_played: 0, all_levels_done: false, base_unlocked: false, game_phase: 'initial_mission', next_level_id: null, rewards: {}, land_patent_earned: false, duke_right_earned: false });
       return;
     }
@@ -833,12 +1061,35 @@
     try {
       const result = await tdRound(characterId, { mini_game: miniGame, level_id: levelId });
       tdData = result as TDRoundKickoffResponse;
-      const ratio = 16 / 9;
-      let boardW = window.innerHeight * ratio;
+
+      // Load saved placements from OPFS on resume
+      if ((tdData as any).resumed) {
+        try {
+          const saved = await getConfig<SavedTDState>("td_placements");
+          if (saved && saved.session_id === (tdData as any).session_id && saved.character_id === characterId) {
+            pendingRestore = saved.placements;
+          }
+        } catch (e) {
+          console.log('[TD] Failed to load saved placements:', e);
+        }
+      }
+
+      // Load map image to determine its aspect ratio
+      let mapAspect = 16 / 9;
+      const mapFilename = (tdData as any).map_metadata?.image_filename as string | undefined;
+      if (mapFilename) {
+        const img = new Image();
+        img.src = `/images/tower_defense/maps/${mapFilename}`;
+        await img.decode();
+        mapAspect = img.naturalWidth / img.naturalHeight;
+      }
+
+      // Size board to viewport, preserving map aspect ratio
+      let boardW = window.innerHeight * mapAspect;
       let boardH = window.innerHeight;
       if (boardW + sidebarW > window.innerWidth) {
         boardW = window.innerWidth - sidebarW;
-        boardH = boardW / ratio;
+        boardH = boardW / mapAspect;
       }
       bw = Math.floor(boardW);
       bh = Math.floor(boardH);
@@ -868,12 +1119,10 @@
             const cls = towerGameClassMap.get(placementMode);
             const cfg = cls ? (cls as any).pieceConfig : null;
             const pcost = cfg?.cost?.[0]?.gold || 0;
-            if (currentGold >= pcost) tryPlace(bx, by, placementMode);
-          }
-          placementMode = null;
-          showOverlay = false;
-          placementOverlay = null;
+          if (currentGold >= pcost) tryPlace(bx, by, placementMode);
         }
+        placementMode = null;
+      }
       };
       canvasEl.addEventListener('mousedown', onMouseDown);
       canvasEl.addEventListener('mouseup', onMouseUp);
@@ -887,6 +1136,8 @@
   onMount(() => { init(); });
 
   onDestroy(() => {
+    if (saveInterval) clearInterval(saveInterval);
+    savePlacements();
     try { removeEventListeners(); clear(); } catch (_e) { /* ignore */ }
   });
 </script>

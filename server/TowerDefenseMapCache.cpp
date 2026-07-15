@@ -141,13 +141,18 @@ void TowerDefenseMapCache::scan_directory() {
         try {
             nlohmann::json map_data = nlohmann::json::parse(
                 std::string((std::istreambuf_iterator<char>(file)),
-                            std::istreambuf_iterator<char>())
+                            std::istreambuf_iterator<char>()),
+                nullptr, true, true, true
             );
 
             cache_[filename] = std::move(map_data);
         } catch (const std::exception& e) {
             std::cerr << "[TowerDefenseMapCache] Failed to parse " << filename << ": " << e.what() << std::endl;
         }
+    }
+
+    if (ec) {
+        std::cerr << "[TowerDefenseMapCache] Warning: directory iteration error: " << ec.message() << std::endl;
     }
 
     std::cerr << "[TowerDefenseMapCache] Scanned " << cache_.size() << " map(s):";

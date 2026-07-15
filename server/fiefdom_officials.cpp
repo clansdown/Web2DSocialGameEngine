@@ -89,7 +89,7 @@ bool OfficialRegistry::loadOfficials(const std::string& config_path) {
     }
 
     try {
-        nlohmann::json data = nlohmann::json::parse(content, nullptr, true, true);
+        nlohmann::json data = nlohmann::json::parse(content, nullptr, true, true, true);
 
         if (!data.is_object()) {
             std::cerr << "Expected object with official definitions" << std::endl;

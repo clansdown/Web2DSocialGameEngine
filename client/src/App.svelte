@@ -232,7 +232,9 @@
 
   function handleGameCompleteFromGrid(results: EndMiniGameResponse) {
     activeMiniGame = null;
-
+    if ($currentCharacter) {
+      fetchPlayerState($currentCharacter.id);
+    }
     // If we just completed the duke track, show the create dukedom screen
     if (results.duke_right_earned) {
       showDukedomCreate = true;

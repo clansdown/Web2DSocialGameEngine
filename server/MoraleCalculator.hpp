@@ -4,6 +4,8 @@
 #include <nlohmann/json.hpp>
 #include "FiefdomData.hpp"
 
+class GameConfigCache;
+
 namespace Morale {
 
 enum class EffectMode {
@@ -21,9 +23,10 @@ double calculateBuildingMorale(
     const nlohmann::json& building_config
 );
 
-double calculateWallMorale(const std::vector<WallData>& walls);
+double calculateWallMorale(GameConfigCache& cache, const std::vector<WallData>& walls);
 
 double calculateFiefdomMorale(
+    GameConfigCache& cache,
     int fiefdom_id,
     const std::vector<BuildingData>& buildings,
     const std::vector<WallData>& walls,

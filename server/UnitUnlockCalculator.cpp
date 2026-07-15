@@ -3,6 +3,7 @@
 #include <iostream>
 
 void UnitUnlockCalculator::grant_starting_unlocks(
+    GameConfigCache& config_cache,
     sqlite::database& db,
     int character_id,
     int64_t timestamp)
@@ -17,7 +18,6 @@ void UnitUnlockCalculator::grant_starting_unlocks(
         return; // Already granted
     }
 
-    auto& config_cache = GameConfigCache::getInstance();
     const auto& unlocks_config = config_cache.getTowerDefenseUnitUnlocks();
 
     if (!unlocks_config.contains("starting")) {
@@ -68,6 +68,7 @@ nlohmann::json UnitUnlockCalculator::get_player_unlocks(
 }
 
 nlohmann::json UnitUnlockCalculator::check_and_grant_milestones(
+    GameConfigCache& config_cache,
     sqlite::database& db,
     int character_id,
     int completed_count,
@@ -77,7 +78,6 @@ nlohmann::json UnitUnlockCalculator::check_and_grant_milestones(
     new_unlocks["new_units"] = nlohmann::json::array();
     new_unlocks["new_towers"] = nlohmann::json::array();
 
-    auto& config_cache = GameConfigCache::getInstance();
     const auto& unlocks_config = config_cache.getTowerDefenseUnitUnlocks();
 
     if (!unlocks_config.contains("milestones")) {

@@ -7,8 +7,7 @@
 namespace GameLogic {
 namespace GridCollision {
 
-BuildingDimensions getBuildingDimensions(const std::string& building_type) {
-    auto& cache = GameConfigCache::getInstance();
+BuildingDimensions getBuildingDimensions(GameConfigCache& cache, const std::string& building_type) {
     auto types = cache.getFiefdomBuildingTypes();
 
     for (const auto& type_obj : types) {
@@ -25,8 +24,8 @@ BuildingDimensions getBuildingDimensions(const std::string& building_type) {
     return BuildingDimensions();
 }
 
-std::pair<int, int> getBuildingDimensionsPair(const std::string& building_type) {
-    auto dims = getBuildingDimensions(building_type);
+std::pair<int, int> getBuildingDimensionsPair(GameConfigCache& cache, const std::string& building_type) {
+    auto dims = getBuildingDimensions(cache, building_type);
     return {dims.width, dims.height};
 }
 
@@ -36,6 +35,7 @@ bool isValidPosition(int x, int y) {
 }
 
 PlacementCheck checkPlacementWithExisting(
+    GameConfigCache& cache,
     const std::string& building_type,
     int x,
     int y,
@@ -43,7 +43,7 @@ PlacementCheck checkPlacementWithExisting(
 ) {
     PlacementCheck result;
 
-    auto newDims = getBuildingDimensions(building_type);
+    auto newDims = getBuildingDimensions(cache, building_type);
     if (!newDims.valid) {
         result.valid = false;
         result.error_message = "Unknown building type: " + building_type;
@@ -57,7 +57,7 @@ PlacementCheck checkPlacementWithExisting(
             continue;
         }
 
-        auto [ew, eh] = getBuildingDimensionsPair(existing["name"]);
+        auto [ew, eh] = getBuildingDimensionsPair(cache, existing["name"]);
         Rect existingRect(existing["x"].get<int>(), existing["y"].get<int>(), ew, eh);
 
         if (newRect.overlaps(existingRect)) {
@@ -76,6 +76,7 @@ PlacementCheck checkPlacementWithExisting(
 }
 
 PlacementCheck checkPlacement(
+    GameConfigCache& cache,
     int fiefdom_id,
     const std::string& building_type,
     int x,
@@ -99,7 +100,7 @@ PlacementCheck checkPlacement(
         }
     }
 
-    auto newDims = getBuildingDimensions(building_type);
+    auto newDims = getBuildingDimensions(cache, building_type);
     if (!newDims.valid) {
         result.valid = false;
         result.error_message = "Unknown building type: " + building_type;
@@ -137,7 +138,7 @@ PlacementCheck checkPlacement(
     }
 
     for (const auto& existing : existingBuildings) {
-        auto [ew, eh] = getBuildingDimensionsPair(existing["name"]);
+        auto [ew, eh] = getBuildingDimensionsPair(cache, existing["name"]);
         Rect existingRect(existing["x"].get<int>(), existing["y"].get<int>(), ew, eh);
 
         if (newRect.overlaps(existingRect)) {
@@ -159,9 +160,9 @@ int getMaxBuildingSize() {
     return 32;
 }
 
-WallDimensions getWallDimensions(int generation) {
+WallDimensions getWallDimensions(GameConfigCache& cache, int generation) {
     WallDimensions dims;
-    auto config_opt = getWallConfigByGeneration(generation);
+    auto config_opt = getWallConfigByGeneration(cache, generation);
     if (!config_opt) return dims;
 
     auto config = *config_opt;
@@ -171,8 +172,7 @@ WallDimensions getWallDimensions(int generation) {
     return dims;
 }
 
-std::optional<nlohmann::json> getWallConfigByGeneration(int generation) {
-    auto& cache = GameConfigCache::getInstance();
+std::optional<nlohmann::json> getWallConfigByGeneration(GameConfigCache& cache, int generation) {
     if (!cache.isLoaded()) return std::nullopt;
 
     auto config = cache.getAllConfigs();
@@ -188,8 +188,8 @@ std::optional<nlohmann::json> getWallConfigByGeneration(int generation) {
     return std::nullopt;
 }
 
-bool overlapsWalls(int fiefdom_id, int generation, int x, int y, int building_width, int building_height) {
-    WallDimensions dims = getWallDimensions(generation);
+bool overlapsWalls(GameConfigCache& cache, int fiefdom_id, int generation, int x, int y, int building_width, int building_height) {
+    WallDimensions dims = getWallDimensions(cache, generation);
     if (dims.width == 0 || dims.length == 0 || dims.thickness == 0) return false;
 
     int half_w = dims.width / 2;
@@ -211,17 +211,17 @@ bool overlapsWalls(int fiefdom_id, int generation, int x, int y, int building_wi
     return false;
 }
 
-std::vector<nlohmann::json> getOverlappingBuildings(int fiefdom_id, int generation, int x, int y, int building_width, int building_height) {
+std::vector<nlohmann::json> getOverlappingBuildings(GameConfigCache& cache, int fiefdom_id, int generation, int x, int y, int building_width, int building_height) {
     std::vector<nlohmann::json> overlapping;
 
     auto& db = Database::getInstance().gameDB();
     db << "SELECT id, name, level, x, y FROM fiefdom_buildings WHERE fiefdom_id = ? AND level > 0;"
        << fiefdom_id
        >> [&](int id, std::string name, int level, int bx, int by) {
-               auto dims = getBuildingDimensionsPair(name);
+                auto dims = getBuildingDimensionsPair(cache, name);
                int bw = dims.first;
                int bh = dims.second;
-               if (overlapsWalls(fiefdom_id, generation, bx, by, bw, bh)) {
+                if (overlapsWalls(cache, fiefdom_id, generation, bx, by, bw, bh)) {
                nlohmann::json b;
                b["id"] = id;
                b["name"] = name;

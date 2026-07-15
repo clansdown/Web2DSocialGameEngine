@@ -30,7 +30,7 @@ bool CombatantRegistry::loadPlayerCombatants(const std::string& config_path) {
     }
     
     try {
-        nlohmann::json data = nlohmann::json::parse(content, nullptr, true, true);
+        nlohmann::json data = nlohmann::json::parse(content, nullptr, true, true, true);
         
         for (auto& [id, combatant_json] : data.items()) {
             Combatant c;
@@ -106,7 +106,7 @@ bool CombatantRegistry::loadEnemyCombatants(const std::string& config_path) {
     }
     
     try {
-        nlohmann::json data = nlohmann::json::parse(content, nullptr, true, true);
+        nlohmann::json data = nlohmann::json::parse(content, nullptr, true, true, true);
         
         for (auto& [id, combatant_json] : data.items()) {
             Combatant c;
@@ -182,7 +182,7 @@ bool CombatantRegistry::loadDamageTypes(const std::string& config_path) {
     }
     
     try {
-        nlohmann::json data = nlohmann::json::parse(content, nullptr, true, true);
+        nlohmann::json data = nlohmann::json::parse(content, nullptr, true, true, true);
         damage_types_ = data.get<std::vector<std::string>>();
         return true;
     } catch (const std::exception& e) {

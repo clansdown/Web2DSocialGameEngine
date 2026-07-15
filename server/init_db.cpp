@@ -54,6 +54,7 @@ namespace {
         try {
             db << "ALTER TABLE characters ADD COLUMN sex TEXT;";
         } catch (const std::exception&) {
+            // Column already exists — ignore
         }
     }
 

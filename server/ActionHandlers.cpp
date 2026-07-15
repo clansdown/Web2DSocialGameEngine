@@ -38,14 +38,14 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
         return result;
     }
     
-    if (!Validation::buildingTypeExists(building_type)) {
+    if (!Validation::buildingTypeExists(*ctx.config_cache, building_type)) {
         result.status = ActionStatus::FAIL;
         result.error_code = "unknown_building";
         result.error_message = "Unknown building type: " + building_type;
         return result;
     }
 
-    auto config_opt = Validation::getBuildingConfig(building_type);
+    auto config_opt = Validation::getBuildingConfig(*ctx.config_cache, building_type);
     if (!config_opt) {
         result.status = ActionStatus::FAIL;
         result.error_code = "invalid_config";
@@ -73,7 +73,7 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
     }
 
     if (config.contains("prerequisites") && config["prerequisites"].is_array()) {
-        auto prerequisites_opt = Validation::getPrerequisitesForLevel(building_type, 1);
+        auto prerequisites_opt = Validation::getPrerequisitesForLevel(*ctx.config_cache, building_type, 1);
         if (prerequisites_opt && !prerequisites_opt->empty()) {
             if (!Validation::checkFiefdomPrerequisites(fiefdom_id, *prerequisites_opt)) {
                 result.status = ActionStatus::FAIL;
@@ -94,7 +94,7 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
     int x = payload["x"];
     int y = payload["y"];
 
-    if (!Validation::canBuildBuildingHere(building_type, fiefdom_id, x, y)) {
+    if (!Validation::canBuildBuildingHere(*ctx.config_cache, building_type, fiefdom_id, x, y)) {
         result.status = ActionStatus::FAIL;
         result.error_code = "invalid_location";
         result.error_message = "Cannot build at specified location";
@@ -119,7 +119,7 @@ ActionResult BuildActionHandler::execute(const json& payload, const ActionContex
     int x = payload.value("x", 0);
     int y = payload.value("y", 0);
     
-    auto config = Validation::getBuildingConfig(building_type);
+    auto config = Validation::getBuildingConfig(*ctx.config_cache, building_type);
     if (!config) {
         result.status = ActionStatus::FAIL;
         result.error_code = "invalid_config";
@@ -228,7 +228,7 @@ public:
         try {
             Validation::TransactionGuard tx(Database::getInstance().gameDB());
 
-            auto cumulative = Validation::calculateCumulativeCost(building_name, level);
+            auto cumulative = Validation::calculateCumulativeCost(*ctx.config_cache, building_name, level);
             nlohmann::json refund;
 
             for (auto& [key, value] : cumulative.items()) {
@@ -237,7 +237,12 @@ public:
             }
 
             Validation::refundResources(fiefdom_id, refund, result);
-            Validation::deleteBuilding(building_id);
+            if (!Validation::deleteBuilding(building_id)) {
+                result.status = ActionStatus::FAIL;
+                result.error_code = "database_error";
+                result.error_message = "Failed to delete building";
+                return result;
+            }
 
             result.result["building_id"] = building_id;
             result.result["refund"] = refund;
@@ -313,7 +318,7 @@ public:
             return result;
         }
 
-        auto placement = GridCollision::checkPlacement(ctx.requesting_fiefdom_id, building_name, x, y, false, building_id);
+        auto placement = GridCollision::checkPlacement(*ctx.config_cache, ctx.requesting_fiefdom_id, building_name, x, y, false, building_id);
         if (!placement.valid) {
             result.status = ActionStatus::FAIL;
             result.error_code = "move_location_invalid";
@@ -352,7 +357,7 @@ public:
             std::string cost_fields[] = {"gold_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
             std::string resource_fields[] = {"gold", "wood", "stone", "steel", "bronze", "grain", "leather", "mana"};
 
-            auto config_opt = Validation::getBuildingConfig(building_name);
+            auto config_opt = Validation::getBuildingConfig(*ctx.config_cache, building_name);
             if (config_opt) {
                 auto config = *config_opt;
                 for (size_t i = 0; i < 8; i++) {
@@ -551,8 +556,7 @@ ActionResult deductResources(int fiefdom_id, const json& costs, ActionResult& re
     return r;
 }
 
-bool buildingTypeExists(const std::string& building_type) {
-    auto& cache = GameConfigCache::getInstance();
+bool buildingTypeExists(GameConfigCache& cache, const std::string& building_type) {
     auto types = cache.getFiefdomBuildingTypes();
     for (const auto& type_obj : types) {
         if (type_obj.contains(building_type)) return true;
@@ -560,8 +564,7 @@ bool buildingTypeExists(const std::string& building_type) {
     return false;
 }
 
-std::optional<json> getBuildingConfig(const std::string& building_type) {
-    auto& cache = GameConfigCache::getInstance();
+std::optional<json> getBuildingConfig(GameConfigCache& cache, const std::string& building_type) {
     auto types = cache.getFiefdomBuildingTypes();
     for (const auto& type_obj : types) {
         if (type_obj.contains(building_type)) return type_obj[building_type];
@@ -569,9 +572,9 @@ std::optional<json> getBuildingConfig(const std::string& building_type) {
     return std::nullopt;
 }
 
-bool canBuildBuildingHere(const std::string& building_type, int fiefdom_id, int x, int y) {
+bool canBuildBuildingHere(GameConfigCache& cache, const std::string& building_type, int fiefdom_id, int x, int y) {
     bool isHomeBase = (building_type == "home_base");
-    auto result = GridCollision::checkPlacement(fiefdom_id, building_type, x, y, isHomeBase);
+    auto result = GridCollision::checkPlacement(cache, fiefdom_id, building_type, x, y, isHomeBase);
     return result.valid;
 }
 
@@ -588,16 +591,15 @@ int64_t getCurrentTimestamp() {
     return std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 }
 
-std::optional<json> getWallConfig() {
-    auto& cache = GameConfigCache::getInstance();
+std::optional<json> getWallConfig(GameConfigCache& cache) {
     if (!cache.isLoaded()) return std::nullopt;
     auto config = cache.getAllConfigs();
     if (config.contains("wall_config")) return config["wall_config"];
     return std::nullopt;
 }
 
-bool validWallPlacement(int fiefdom_id, const json& payload) {
-    auto wall_config_opt = getWallConfig();
+bool validWallPlacement(GameConfigCache& cache, int fiefdom_id, const json& payload) {
+    auto wall_config_opt = getWallConfig(cache);
     if (!wall_config_opt) return false;
     auto wall_config = *wall_config_opt;
     
@@ -627,8 +629,8 @@ void TransactionGuard::commit() {
     committed_ = true;
 }
 
-nlohmann::json calculateCumulativeCost(const std::string& building_type, int current_level) {
-    auto config_opt = getBuildingConfig(building_type);
+nlohmann::json calculateCumulativeCost(GameConfigCache& cache, const std::string& building_type, int current_level) {
+    auto config_opt = getBuildingConfig(cache, building_type);
     if (!config_opt) return nlohmann::json::object();
 
     auto config = *config_opt;
@@ -725,8 +727,8 @@ bool updateBuildingPosition(int building_id, int x, int y) {
     }
 }
 
-std::optional<json> getWallConfigByGeneration(int generation) {
-    auto config_opt = getWallConfig();
+std::optional<json> getWallConfigByGeneration(GameConfigCache& cache, int generation) {
+    auto config_opt = getWallConfig(cache);
     if (!config_opt) return std::nullopt;
     auto config = *config_opt;
     std::string gen_key = std::to_string(generation);
@@ -750,8 +752,8 @@ bool hasWallGeneration(int fiefdom_id, int generation) {
     return wallGenerationExists(fiefdom_id, generation);
 }
 
-bool canAffordWall(int fiefdom_id, int generation, int level) {
-    auto config_opt = getWallConfigByGeneration(generation);
+bool canAffordWall(GameConfigCache& cache, int fiefdom_id, int generation, int level) {
+    auto config_opt = getWallConfigByGeneration(cache, generation);
     if (!config_opt) return false;
 
     std::string cost_fields[] = {"gold_cost", "stone_cost"};
@@ -777,8 +779,8 @@ bool canAffordWall(int fiefdom_id, int generation, int level) {
     return true;
 }
 
-int getWallHP(int generation, int level) {
-    auto config_opt = getWallConfigByGeneration(generation);
+int getWallHP(GameConfigCache& cache, int generation, int level) {
+    auto config_opt = getWallConfigByGeneration(cache, generation);
     if (!config_opt) return 0;
 
     if (config_opt->contains("hp")) {
@@ -790,8 +792,8 @@ int getWallHP(int generation, int level) {
     return 0;
 }
 
-double getWallMoraleBoost(int generation, int level) {
-    auto config_opt = getWallConfigByGeneration(generation);
+double getWallMoraleBoost(GameConfigCache& cache, int generation, int level) {
+    auto config_opt = getWallConfigByGeneration(cache, generation);
     if (!config_opt) return 0.0;
 
     if (config_opt->contains("morale_boost")) {
@@ -803,8 +805,8 @@ double getWallMoraleBoost(int generation, int level) {
     return 0.0;
 }
 
-nlohmann::json calculateWallUpgradeCost(int generation, int current_level) {
-    auto config_opt = getWallConfigByGeneration(generation);
+nlohmann::json calculateWallUpgradeCost(GameConfigCache& cache, int generation, int current_level) {
+    auto config_opt = getWallConfigByGeneration(cache, generation);
     nlohmann::json cost;
 
     if (!config_opt) return cost;
@@ -823,7 +825,7 @@ nlohmann::json calculateWallUpgradeCost(int generation, int current_level) {
     return cost;
 }
 
-nlohmann::json getDemolishRefund(int building_id) {
+nlohmann::json getDemolishRefund(GameConfigCache& cache, int building_id) {
     auto& db = Database::getInstance().gameDB();
     std::string building_name;
     int level;
@@ -836,7 +838,7 @@ nlohmann::json getDemolishRefund(int building_id) {
 
     if (building_name.empty()) return nlohmann::json::object();
 
-    auto cumulative = calculateCumulativeCost(building_name, level);
+    auto cumulative = calculateCumulativeCost(cache, building_name, level);
     nlohmann::json refund;
 
     for (auto& [key, value] : cumulative.items()) {
@@ -878,7 +880,7 @@ ActionResult BuildWallActionHandler::validate(const json& payload, const ActionC
         return result;
     }
 
-    auto config_opt = Validation::getWallConfigByGeneration(wall_generation);
+    auto config_opt = Validation::getWallConfigByGeneration(*ctx.config_cache, wall_generation);
     if (!config_opt) {
         result.status = ActionStatus::FAIL;
         result.error_code = "generation_invalid";
@@ -900,7 +902,7 @@ ActionResult BuildWallActionHandler::validate(const json& payload, const ActionC
         return result;
     }
 
-    if (!Validation::canAffordWall(fiefdom_id, wall_generation, 1)) {
+    if (!Validation::canAffordWall(*ctx.config_cache, fiefdom_id, wall_generation, 1)) {
         result.status = ActionStatus::FAIL;
         result.error_code = "insufficient_resources";
         result.error_message = "Not enough resources to build wall";
@@ -921,7 +923,7 @@ ActionResult BuildWallActionHandler::execute(const json& payload, const ActionCo
     int wall_generation = payload["wall_generation"];
     int64_t now = Validation::getCurrentTimestamp();
 
-    auto config_opt = Validation::getWallConfigByGeneration(wall_generation);
+    auto config_opt = Validation::getWallConfigByGeneration(*ctx.config_cache, wall_generation);
     auto config = *config_opt;
 
     try {
@@ -956,11 +958,11 @@ ActionResult BuildWallActionHandler::execute(const json& payload, const ActionCo
         for (auto& building : overlapping_buildings) {
             int bx = building["x"].get<int>();
             int by = building["y"].get<int>();
-            auto [bw, bh] = GridCollision::getBuildingDimensionsPair(building["name"]);
+            auto [bw, bh] = GridCollision::getBuildingDimensionsPair(*ctx.config_cache, building["name"]);
 
-            if (GridCollision::overlapsWalls(fiefdom_id, wall_generation, bx, by, bw, bh)) {
+            if (GridCollision::overlapsWalls(*ctx.config_cache, fiefdom_id, wall_generation, bx, by, bw, bh)) {
                 int building_id = building["id"].get<int>();
-                auto refund = Validation::getDemolishRefund(building_id);
+                auto refund = Validation::getDemolishRefund(*ctx.config_cache, building_id);
 
                 Validation::refundResources(fiefdom_id, refund, result);
 
@@ -979,7 +981,7 @@ ActionResult BuildWallActionHandler::execute(const json& payload, const ActionCo
             }
         }
 
-        int initial_hp = Validation::getWallHP(wall_generation, 1);
+        int initial_hp = Validation::getWallHP(*ctx.config_cache, wall_generation, 1);
         if (!FiefdomFetcher::createWall(fiefdom_id, wall_generation, 1, initial_hp, now)) {
             result.status = ActionStatus::FAIL;
             result.error_code = "database_error";
@@ -1077,7 +1079,7 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
             return result;
         }
 
-        auto config_opt = Validation::getBuildingConfig(building_name);
+        auto config_opt = Validation::getBuildingConfig(*ctx.config_cache, building_name);
         if (!config_opt) {
             result.status = ActionStatus::FAIL;
             result.error_code = "invalid_config";
@@ -1095,7 +1097,7 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
 
         if (config_opt->contains("prerequisites") && (*config_opt)["prerequisites"].is_array()) {
             int next_level = current_level + 1;
-            auto prerequisites_opt = Validation::getPrerequisitesForLevel(building_name, next_level);
+            auto prerequisites_opt = Validation::getPrerequisitesForLevel(*ctx.config_cache, building_name, next_level);
             if (prerequisites_opt && !prerequisites_opt->empty()) {
                 if (!Validation::checkFiefdomPrerequisites(fiefdom_id, *prerequisites_opt)) {
                     result.status = ActionStatus::FAIL;
@@ -1157,7 +1159,7 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
             return result;
         }
 
-        auto config_opt = Validation::getWallConfigByGeneration(generation);
+        auto config_opt = Validation::getWallConfigByGeneration(*ctx.config_cache, generation);
         if (!config_opt) {
             result.status = ActionStatus::FAIL;
             result.error_code = "invalid_config";
@@ -1176,7 +1178,7 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
             return result;
         }
 
-        auto cost = Validation::calculateWallUpgradeCost(generation, current_level);
+        auto cost = Validation::calculateWallUpgradeCost(*ctx.config_cache, generation, current_level);
         if (!Validation::hasEnoughResources(fiefdom_id, cost)) {
             result.status = ActionStatus::FAIL;
             result.error_code = "insufficient_resources";
@@ -1214,7 +1216,7 @@ ActionResult UpgradeActionHandler::execute(const json& payload, const ActionCont
                    current_level = lvl;
                };
 
-            auto config_opt = Validation::getBuildingConfig(building_name);
+            auto config_opt = Validation::getBuildingConfig(*ctx.config_cache, building_name);
             if (!config_opt) {
                 result.status = ActionStatus::FAIL;
                 result.error_code = "invalid_config";
@@ -1261,11 +1263,11 @@ ActionResult UpgradeActionHandler::execute(const json& payload, const ActionCont
                    current_level = lvl;
                };
 
-            auto cost = Validation::calculateWallUpgradeCost(generation, current_level);
+        auto cost = Validation::calculateWallUpgradeCost(*ctx.config_cache, generation, current_level);
             auto deduct_result = Validation::deductResources(fiefdom_id, cost, result);
             if (deduct_result.status != ActionStatus::OK) return deduct_result;
 
-            int new_hp = Validation::getWallHP(generation, current_level + 1);
+            int new_hp = Validation::getWallHP(*ctx.config_cache, generation, current_level + 1);
             if (!FiefdomFetcher::updateWallLevel(wall_id, current_level + 1, new_hp, now)) {
                 result.status = ActionStatus::FAIL;
                 result.error_code = "database_error";
@@ -1336,10 +1338,11 @@ void registerAllActionHandlers(ActionRegistry& registry) {
 namespace Validation {
 
 std::optional<nlohmann::json> getPrerequisitesForLevel(
+    GameConfigCache& cache,
     const std::string& building_type,
     int target_level
 ) {
-    auto config_opt = getBuildingConfig(building_type);
+    auto config_opt = getBuildingConfig(cache, building_type);
     if (!config_opt) return std::nullopt;
     
     auto config = *config_opt;

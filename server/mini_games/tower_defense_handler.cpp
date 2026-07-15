@@ -1,5 +1,4 @@
-#include "tower_defense_handler.hpp"
-#include "../GameConfigCache.hpp"
+#include "../mini_games.hpp"
 #include "../TowerDefenseMapCache.hpp"
 #include "../UnitUnlockCalculator.hpp"
 #include "../Database.hpp"
@@ -53,19 +52,18 @@ std::string TowerDefenseHandler::name() const {
 nlohmann::json TowerDefenseHandler::start_level(const MiniGameContext& ctx) {
     nlohmann::json level_config;
 
-    auto& config_cache = GameConfigCache::getInstance();
     auto& db = Database::getInstance().gameDB();
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 
     // Grant starting unlocks on first play
-    UnitUnlockCalculator::grant_starting_unlocks(db, ctx.character_id, now);
+    UnitUnlockCalculator::grant_starting_unlocks(config_cache_, db, ctx.character_id, now);
 
     if (ctx.is_random_generation) {
         level_config["map"] = "random";
         level_config["difficulty"] = 1;
         level_config["rewards"] = {{"gold", 5}};
     } else {
-        const auto& mini_games = config_cache.getMiniGames();
+        const auto& mini_games = config_cache_.getMiniGames();
         const auto& td_config = mini_games["tower_defense"];
         const auto& levels = td_config["levels"];
 
@@ -86,9 +84,9 @@ nlohmann::json TowerDefenseHandler::start_level(const MiniGameContext& ctx) {
     }
 
     // Load full item catalogs
-    level_config["mobs"] = config_cache.getTowerDefenseMobs();
-    level_config["towers"] = config_cache.getTowerDefenseTowers();
-    level_config["units"] = config_cache.getTowerDefenseUnits();
+    level_config["mobs"] = config_cache_.getTowerDefenseMobs();
+    level_config["towers"] = config_cache_.getTowerDefenseTowers();
+    level_config["units"] = config_cache_.getTowerDefenseUnits();
 
     // Filter towers/units by player unlocks minus level disallowed
     nlohmann::json unlocks = UnitUnlockCalculator::get_player_unlocks(db, ctx.character_id);
@@ -133,7 +131,7 @@ nlohmann::json TowerDefenseHandler::end_level(const MiniGameContext& ctx, const 
            >> [&](int count) { completed_count = count; };
 
         nlohmann::json new_unlocks = UnitUnlockCalculator::check_and_grant_milestones(
-            db, ctx.character_id, completed_count, now);
+            config_cache_, db, ctx.character_id, completed_count, now);
 
         if (!new_unlocks["new_units"].empty() || !new_unlocks["new_towers"].empty()) {
             outcome["new_unlocks"] = new_unlocks;
@@ -144,8 +142,7 @@ nlohmann::json TowerDefenseHandler::end_level(const MiniGameContext& ctx, const 
 }
 
 nlohmann::json TowerDefenseHandler::get_config() const {
-    auto& config_cache = GameConfigCache::getInstance();
-    const auto& mini_games = config_cache.getMiniGames();
+    const auto& mini_games = config_cache_.getMiniGames();
 
     if (mini_games.contains("tower_defense")) {
         return mini_games["tower_defense"];

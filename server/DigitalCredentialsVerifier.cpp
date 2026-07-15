@@ -120,7 +120,7 @@ DigitalCredentialsVerifier::parseVerifierResponse(const std::string& response_bo
     result.is_adult = false;
 
     try {
-        auto response = nlohmann::json::parse(response_body);
+        auto response = nlohmann::json::parse(response_body, nullptr, true, true, true);
 
         if (!response.contains("pages") || !response["pages"].is_array()) {
             result.error_message = "Invalid verifier service response: missing pages";

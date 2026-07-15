@@ -2,50 +2,53 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <optional>
+#include <unordered_map>
+#include <mutex>
+#include <ctime>
+#include <time.h>
 
 class GameConfigCache {
 public:
-    static GameConfigCache& getInstance();
+    GameConfigCache() = default;
 
     bool initialize(const std::string& config_dir);
 
-    const nlohmann::json& getDamageTypes() const;
-    const nlohmann::json& getFiefdomBuildingTypes() const;
-    const nlohmann::json& getPlayerCombatants() const;
-    const nlohmann::json& getEnemyCombatants() const;
-    const nlohmann::json& getHeroes() const;
-    const nlohmann::json& getFiefdomOfficials() const;
-    const nlohmann::json& getWallConfig() const;
-    const nlohmann::json& getMiniGames() const;
-    const nlohmann::json& getTowerDefenseMobs() const;
-    const nlohmann::json& getTowerDefenseTowers() const;
-    const nlohmann::json& getTowerDefenseUnits() const;
-    const nlohmann::json& getTowerDefenseUnitUnlocks() const;
-    const nlohmann::json& getTowerDefenseProjectiles() const;
+    nlohmann::json& getDamageTypes();
+    nlohmann::json& getFiefdomBuildingTypes();
+    nlohmann::json& getPlayerCombatants();
+    nlohmann::json& getEnemyCombatants();
+    nlohmann::json& getHeroes();
+    nlohmann::json& getFiefdomOfficials();
+    nlohmann::json& getWallConfig();
+    nlohmann::json& getMiniGames();
+    nlohmann::json& getTowerDefenseMobs();
+    nlohmann::json& getTowerDefenseTowers();
+    nlohmann::json& getTowerDefenseUnits();
+    nlohmann::json& getTowerDefenseUnitUnlocks();
+    nlohmann::json& getTowerDefenseProjectiles();
+    std::optional<nlohmann::json> getTowerDefenseSpawnSchedule(const std::string& filename);
 
     nlohmann::json getAllConfigs() const;
-
     bool isLoaded() const;
 
 private:
-    GameConfigCache() = default;
-    GameConfigCache(const GameConfigCache&) = delete;
-    GameConfigCache& operator=(const GameConfigCache&) = delete;
+    struct ConfigEntry {
+        std::string path;
+        nlohmann::json data;
+        void (*postprocess)(nlohmann::json&) = nullptr;
+        time_t mtime = 0;
+        int64_t last_check_ms = 0;
+    };
+
+    std::string config_dir_;
+    std::unordered_map<std::string, ConfigEntry> configs_;
+    std::mutex reload_mutex_;
+    bool loaded_ = false;
 
     bool loadConfig(const std::string& path, const std::string& name, nlohmann::json& target);
+    nlohmann::json& getConfig(const std::string& name);
+    void try_reload(const std::string& name, ConfigEntry& entry);
 
-    nlohmann::json damage_types_;
-    nlohmann::json fiefdom_building_types_;
-    nlohmann::json player_combatants_;
-    nlohmann::json enemy_combatants_;
-    nlohmann::json heroes_;
-    nlohmann::json fiefdom_officials_;
-    nlohmann::json wall_config_;
-    nlohmann::json mini_games_;
-    nlohmann::json tower_defense_mobs_;
-    nlohmann::json tower_defense_towers_;
-    nlohmann::json tower_defense_units_;
-    nlohmann::json tower_defense_unit_unlocks_;
-    nlohmann::json tower_defense_projectiles_;
-    bool loaded_ = false;
+    static int64_t monotonic_ms();
+    static void scaleTDPieceValues(nlohmann::json& pieces);
 };

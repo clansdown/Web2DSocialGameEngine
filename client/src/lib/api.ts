@@ -1,5 +1,7 @@
 const API_BASE = '';
 
+import * as auth from './auth';
+
 export interface ApiResponse<T = unknown> {
   status: 'ok';
   data: T;
@@ -86,6 +88,56 @@ export async function apiPost<T = unknown>(
     // Return a structured error instead of throwing an unhandled SyntaxError.
     return { status: 'ok', data: {} as T, error: `Server returned ${response.status} with invalid response` };
   }
+}
+
+/**
+ * Makes an authenticated API call with automatic token refresh.
+ * If the server returns needs_auth, refreshes via stored password
+ * and retries the request once. Transparent to callers.
+ *
+ * @param endpoint - API endpoint (e.g. 'tdRound', 'getPlayerState')
+ * @param body - Request body as JSON-compatible object
+ * @returns Promise<T> - The API response data
+ *
+ * Usage: General-purpose authenticated API entry point for all callers
+ */
+export async function authenticatedPost<T>(
+  endpoint: string,
+  body: Record<string, unknown>
+): Promise<T> {
+  if (endpoint === 'login') {
+    throw new Error('Use apiPost directly for login');
+  }
+
+  const creds = auth.getInMemoryCredentials();
+  const token = auth.getSessionToken();
+  if (!token || !creds) {
+    throw new Error('Not authenticated');
+  }
+
+  const doFetch = async (t: string) =>
+    await apiPost<T>(endpoint, body, { username: creds.username, token: t });
+
+  let response = await doFetch(token);
+
+  if (response.needs_auth) {
+    // Token rejected — refresh via stored password
+    const loginRes = await apiPost<any>('login', {}, {
+      username: creds.username,
+      password: creds.password
+    });
+    const newToken = loginRes.data?.token;
+    if (!newToken) throw new Error('Session expired');
+
+    auth.setSessionToken(newToken);
+
+    // Retry original request with fresh token
+    response = await doFetch(newToken);
+    if (response.needs_auth) throw new Error('Session expired');
+  }
+
+  if (response.error) throw new Error(response.error);
+  return response.data as T;
 }
 
 /**
@@ -358,92 +410,7 @@ export interface MiniGameConfig {
   };
 }
 
-/**
- * Fetches the current player's game state including phase, active mini-game,
- * and progress across all mini-game campaigns.
- *
- * @param characterId - The character ID whose state to fetch
- * @param auth - Authentication object with username and token
- * @returns Promise<PlayerGameState> - Current game state
- *
- * Usage: Called on character selection and after mini-game transitions
- */
-export async function getPlayerStateRequest(
-  characterId: number,
-  auth: { username: string; token: string }
-): Promise<PlayerGameState> {
-  const res = await apiPost<PlayerGameState>('getPlayerState', {
-    character_id: characterId
-  }, { username: auth.username, token: auth.token });
 
-  if (res.error) {
-    throw new Error(res.error);
-  }
-  return res.data as PlayerGameState;
-}
-
-/**
- * Starts a mini-game session for the character.
- * Validates prerequisites and returns level configuration.
- *
- * @param characterId - The character playing the mini-game
- * @param miniGame - The mini-game name ('tower_defense' or 'weeding')
- * @param auth - Authentication object with username and token
- * @returns Promise<StartMiniGameResponse> - Level config for the client to render
- *
- * Usage: Called when player selects a level from the mini-game grid
- */
-export async function startMiniGameRequest(
-  characterId: number,
-  miniGame: string,
-  auth: { username: string; token: string }
-): Promise<StartMiniGameResponse> {
-  const res = await apiPost<StartMiniGameResponse>('startMiniGame', {
-    character_id: characterId,
-    mini_game: miniGame
-  }, { username: auth.username, token: auth.token });
-
-  if (res.error) {
-    throw new Error(res.error);
-  }
-  return res.data as StartMiniGameResponse;
-}
-
-/**
- * Ends a mini-game session and reports the outcome to the server.
- * Processes rewards, updates progress, and potentially unlocks the base.
- *
- * @param characterId - The character who played
- * @param miniGame - The mini-game name
- * @param levelId - The level that was played
- * @param won - Whether the player won
- * @param score - The player's score
- * @param auth - Authentication object with username and token
- * @returns Promise<EndMiniGameResponse> - Results including rewards and next level
- *
- * Usage: Called when the mini-game finishes (win, lose, or quit)
- */
-export async function endMiniGameRequest(
-  characterId: number,
-  miniGame: string,
-  levelId: number,
-  won: boolean,
-  score: number,
-  auth: { username: string; token: string }
-): Promise<EndMiniGameResponse> {
-  const res = await apiPost<EndMiniGameResponse>('endMiniGame', {
-    character_id: characterId,
-    mini_game: miniGame,
-    level_id: levelId,
-    won,
-    score
-  }, { username: auth.username, token: auth.token });
-
-  if (res.error) {
-    throw new Error(res.error);
-  }
-  return res.data as EndMiniGameResponse;
-}
 
 export interface SpawnScheduleEntry {
   enemy_id: string;
@@ -490,45 +457,6 @@ export interface TDRoundCompleteResponse {
 }
 
 export type TDRoundResponse = TDRoundKickoffResponse | TDRoundCompleteResponse;
-
-/**
- * Starts a new TD round session or completes an existing one.
- * Without session_id: kicks off a new game session with round 0 data.
- * With session_id + results: reports round completion and gets game over status.
- *
- * @param characterId - Character ID
- * @param options - Either { mini_game, level_id } for kickoff or { session_id, lives_lost, gold_earned } for completion
- * @param auth - Authentication object
- * @returns Promise<TDRoundResponse> - Round data or game over results
- *
- * Usage: Called from SimpleGame component to manage round lifecycle
- */
-export async function tdRoundRequest(
-  characterId: number,
-  options: { mini_game?: string; level_id?: number; session_id?: number; lives_lost?: number; gold_earned?: number },
-  auth: { username: string; token: string }
-): Promise<TDRoundResponse> {
-  const body: Record<string, unknown> = { character_id: characterId };
-
-  if (options.session_id !== undefined) {
-    body.session_id = options.session_id;
-    body.lives_lost = options.lives_lost ?? 0;
-    body.gold_earned = options.gold_earned ?? 0;
-  } else {
-    body.mini_game = options.mini_game;
-    body.level_id = options.level_id;
-  }
-
-  const res = await apiPost<TDRoundResponse>('tdRound', body, { username: auth.username, token: auth.token });
-
-  if (res.error) {
-    throw new Error(res.error);
-  }
-  if (!res.data) {
-    throw new Error('Empty response from server');
-  }
-  return res.data as TDRoundResponse;
-}
 
 /**
  * Retrieves mini-game configuration data.
@@ -680,26 +608,6 @@ export async function verifyAgeOverrideRequest(code: string): Promise<boolean> {
     return false;
   }
   return (res.data as { verified: boolean }).verified === true;
-}
-
-export async function getMiniGameConfigRequest(
-  miniGame: string | null,
-  auth: { username: string; token: string }
-): Promise<Record<string, MiniGameConfig>> {
-  const body: Record<string, unknown> = {};
-  if (miniGame) {
-    body.mini_game = miniGame;
-  }
-
-  const res = await apiPost<Record<string, MiniGameConfig>>('getMiniGameConfig', body, {
-    username: auth.username,
-    token: auth.token
-  });
-
-  if (res.error) {
-    throw new Error(res.error);
-  }
-  return res.data as Record<string, MiniGameConfig>;
 }
 
 // ── Dukedom API types ─────────────────────────────────────────────

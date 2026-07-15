@@ -1,10 +1,13 @@
 #include "GameConfigCache.hpp"
 #include <fstream>
 #include <iostream>
+#include <filesystem>
+#include <sys/stat.h>
 
-GameConfigCache& GameConfigCache::getInstance() {
-    static GameConfigCache instance;
-    return instance;
+int64_t GameConfigCache::monotonic_ms() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<int64_t>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
 }
 
 static std::string readFileToString(const std::string& config_path) {
@@ -17,18 +20,22 @@ static std::string readFileToString(const std::string& config_path) {
     return content;
 }
 
-static void scaleTDPieceValues(nlohmann::json& pieces) {
-    for (auto& [id, piece] : pieces.items()) {
-        if (piece.contains("range") && piece["range"].is_number()) {
-            piece["range"] = piece["range"].get<double>() / 100.0;
-        }
-        if (piece.contains("area_of_effect") && piece["area_of_effect"].is_object()) {
-            auto& aoe = piece["area_of_effect"];
-            if (aoe.contains("radius") && aoe["radius"].is_number()) {
-                aoe["radius"] = aoe["radius"].get<double>() / 100.0;
+void GameConfigCache::scaleTDPieceValues(nlohmann::json& file_root) {
+    auto drill = [](nlohmann::json& pieces) {
+        for (auto& [id, piece] : pieces.items()) {
+            if (piece.contains("range") && piece["range"].is_number()) {
+                piece["range"] = piece["range"].get<double>() / 100.0;
+            }
+            if (piece.contains("area_of_effect") && piece["area_of_effect"].is_object()) {
+                auto& aoe = piece["area_of_effect"];
+                if (aoe.contains("radius") && aoe["radius"].is_number()) {
+                    aoe["radius"] = aoe["radius"].get<double>() / 100.0;
+                }
             }
         }
-    }
+    };
+    if (file_root.contains("towers") && file_root["towers"].is_object()) drill(file_root["towers"]);
+    if (file_root.contains("units") && file_root["units"].is_object()) drill(file_root["units"]);
 }
 
 bool GameConfigCache::loadConfig(const std::string& path, const std::string& name, nlohmann::json& target) {
@@ -39,7 +46,7 @@ bool GameConfigCache::loadConfig(const std::string& path, const std::string& nam
     }
 
     try {
-        target = nlohmann::json::parse(content, nullptr, true, true);
+        target = nlohmann::json::parse(content, nullptr, true, true, true);
         return true;
     } catch (const std::exception& e) {
         std::cerr << "Failed to parse " << name << ": " << e.what() << std::endl;
@@ -48,97 +55,118 @@ bool GameConfigCache::loadConfig(const std::string& path, const std::string& nam
 }
 
 bool GameConfigCache::initialize(const std::string& config_dir) {
+    config_dir_ = config_dir;
     bool success = true;
 
-    success &= loadConfig(config_dir + "/damage_types.json", "damage_types", damage_types_);
-    success &= loadConfig(config_dir + "/fiefdom_building_types.json", "fiefdom_building_types", fiefdom_building_types_);
-    success &= loadConfig(config_dir + "/player_combatants.json", "player_combatants", player_combatants_);
-    success &= loadConfig(config_dir + "/enemy_combatants.json", "enemy_combatants", enemy_combatants_);
-    success &= loadConfig(config_dir + "/heroes.json", "heroes", heroes_);
-    success &= loadConfig(config_dir + "/fiefdom_officials.json", "fiefdom_officials", fiefdom_officials_);
-    success &= loadConfig(config_dir + "/wall_config.json", "wall_config", wall_config_);
-    success &= loadConfig(config_dir + "/mini_games.json", "mini_games", mini_games_);
-    success &= loadConfig(config_dir + "/tower_defense/mobs.json", "tower_defense_mobs", tower_defense_mobs_);
-    success &= loadConfig(config_dir + "/tower_defense/towers.json", "tower_defense_towers", tower_defense_towers_);
-    if (tower_defense_towers_.contains("towers")) {
-        scaleTDPieceValues(tower_defense_towers_["towers"]);
+    auto add = [&](const std::string& rel_path, void (*pp)(nlohmann::json&) = nullptr) {
+        ConfigEntry e;
+        e.path = config_dir + "/" + rel_path;
+        e.postprocess = pp;
+        configs_[rel_path] = std::move(e);
+    };
+
+    add("damage_types.json");
+    add("fiefdom_building_types.json");
+    add("player_combatants.json");
+    add("enemy_combatants.json");
+    add("heroes.json");
+    add("fiefdom_officials.json");
+    add("wall_config.json");
+    add("mini_games.json");
+    add("tower_defense/mobs.json");
+    add("tower_defense/towers.json", scaleTDPieceValues);
+    add("tower_defense/units.json", scaleTDPieceValues);
+    add("tower_defense/unit_unlocks.json");
+    add("tower_defense/projectiles.json");
+
+    for (auto& [name, entry] : configs_) {
+        struct stat st;
+        if (stat(entry.path.c_str(), &st) == 0) {
+            entry.mtime = st.st_mtime;
+        }
+        success &= loadConfig(entry.path, name, entry.data);
+        if (entry.postprocess && !entry.data.is_null()) {
+            entry.postprocess(entry.data);
+        }
+        entry.last_check_ms = monotonic_ms();
     }
-    success &= loadConfig(config_dir + "/tower_defense/units.json", "tower_defense_units", tower_defense_units_);
-    if (tower_defense_units_.contains("units")) {
-        scaleTDPieceValues(tower_defense_units_["units"]);
-    }
-    success &= loadConfig(config_dir + "/tower_defense/unit_unlocks.json", "tower_defense_unit_unlocks", tower_defense_unit_unlocks_);
-    success &= loadConfig(config_dir + "/tower_defense/projectiles.json", "tower_defense_projectiles", tower_defense_projectiles_);
 
     loaded_ = success;
     return success;
 }
 
-const nlohmann::json& GameConfigCache::getDamageTypes() const {
-    return damage_types_;
+nlohmann::json& GameConfigCache::getConfig(const std::string& name) {
+    auto it = configs_.find(name);
+    if (it == configs_.end()) {
+        ConfigEntry e;
+        e.path = config_dir_ + "/" + name;
+        e.last_check_ms = 0;
+        it = configs_.emplace(name, std::move(e)).first;
+    }
+    std::lock_guard<std::mutex> lock(reload_mutex_);
+    try_reload(it->first, it->second);
+    return it->second.data;
 }
 
-const nlohmann::json& GameConfigCache::getFiefdomBuildingTypes() const {
-    return fiefdom_building_types_;
+void GameConfigCache::try_reload(const std::string& name, ConfigEntry& entry) {
+    int64_t now = monotonic_ms();
+    if (now - entry.last_check_ms < 5000) return;
+    entry.last_check_ms = now;
+
+    struct stat st;
+    if (stat(entry.path.c_str(), &st) != 0) {
+        // File deleted or doesn't exist — clear data so callers can detect
+        entry.data = nullptr;
+        entry.mtime = 0;
+        return;
+    }
+    if (st.st_mtime <= entry.mtime) return;
+    entry.mtime = st.st_mtime;
+    std::cerr << "[GameConfigCache] Hot-reload: " << name << " changed, re-parsing" << std::endl;
+    if (loadConfig(entry.path, name, entry.data)) {
+        if (entry.postprocess) entry.postprocess(entry.data);
+    }
 }
 
-const nlohmann::json& GameConfigCache::getPlayerCombatants() const {
-    return player_combatants_;
-}
+nlohmann::json& GameConfigCache::getDamageTypes() { return getConfig("damage_types.json"); }
+nlohmann::json& GameConfigCache::getFiefdomBuildingTypes() { return getConfig("fiefdom_building_types.json"); }
+nlohmann::json& GameConfigCache::getPlayerCombatants() { return getConfig("player_combatants.json"); }
+nlohmann::json& GameConfigCache::getEnemyCombatants() { return getConfig("enemy_combatants.json"); }
+nlohmann::json& GameConfigCache::getHeroes() { return getConfig("heroes.json"); }
+nlohmann::json& GameConfigCache::getFiefdomOfficials() { return getConfig("fiefdom_officials.json"); }
+nlohmann::json& GameConfigCache::getWallConfig() { return getConfig("wall_config.json"); }
+nlohmann::json& GameConfigCache::getMiniGames() { return getConfig("mini_games.json"); }
+nlohmann::json& GameConfigCache::getTowerDefenseMobs() { return getConfig("tower_defense/mobs.json"); }
+nlohmann::json& GameConfigCache::getTowerDefenseTowers() { return getConfig("tower_defense/towers.json"); }
+nlohmann::json& GameConfigCache::getTowerDefenseUnits() { return getConfig("tower_defense/units.json"); }
+nlohmann::json& GameConfigCache::getTowerDefenseUnitUnlocks() { return getConfig("tower_defense/unit_unlocks.json"); }
+nlohmann::json& GameConfigCache::getTowerDefenseProjectiles() { return getConfig("tower_defense/projectiles.json"); }
 
-const nlohmann::json& GameConfigCache::getEnemyCombatants() const {
-    return enemy_combatants_;
-}
-
-const nlohmann::json& GameConfigCache::getHeroes() const {
-    return heroes_;
-}
-
-const nlohmann::json& GameConfigCache::getFiefdomOfficials() const {
-    return fiefdom_officials_;
-}
-
-const nlohmann::json& GameConfigCache::getWallConfig() const {
-    return wall_config_;
-}
-
-const nlohmann::json& GameConfigCache::getMiniGames() const {
-    return mini_games_;
-}
-
-const nlohmann::json& GameConfigCache::getTowerDefenseMobs() const {
-    return tower_defense_mobs_;
-}
-
-const nlohmann::json& GameConfigCache::getTowerDefenseTowers() const {
-    return tower_defense_towers_;
-}
-
-const nlohmann::json& GameConfigCache::getTowerDefenseUnits() const {
-    return tower_defense_units_;
-}
-
-const nlohmann::json& GameConfigCache::getTowerDefenseUnitUnlocks() const {
-    return tower_defense_unit_unlocks_;
-}
-
-const nlohmann::json& GameConfigCache::getTowerDefenseProjectiles() const {
-    return tower_defense_projectiles_;
+std::optional<nlohmann::json> GameConfigCache::getTowerDefenseSpawnSchedule(const std::string& filename) {
+    nlohmann::json& data = getConfig("tower_defense/spawn_schedules/" + filename);
+    if (data.is_null()) return std::nullopt;
+    return data;
 }
 
 nlohmann::json GameConfigCache::getAllConfigs() const {
     nlohmann::json result;
-    result["damage_types"] = damage_types_;
-    result["fiefdom_building_types"] = fiefdom_building_types_;
-    result["player_combatants"] = player_combatants_;
-    result["enemy_combatants"] = enemy_combatants_;
-    result["heroes"] = heroes_;
-    result["fiefdom_officials"] = fiefdom_officials_;
-    result["wall_config"] = wall_config_;
-    result["mini_games"] = mini_games_;
-    result["tower_defense_mobs"] = tower_defense_mobs_;
-    result["tower_defense_towers"] = tower_defense_towers_;
-    result["tower_defense_units"] = tower_defense_units_;
+    auto get = [&](const std::string& name) -> const nlohmann::json& {
+        auto it = configs_.find(name);
+        if (it != configs_.end()) return it->second.data;
+        static nlohmann::json null_data;
+        return null_data;
+    };
+    result["damage_types"] = get("damage_types.json");
+    result["fiefdom_building_types"] = get("fiefdom_building_types.json");
+    result["player_combatants"] = get("player_combatants.json");
+    result["enemy_combatants"] = get("enemy_combatants.json");
+    result["heroes"] = get("heroes.json");
+    result["fiefdom_officials"] = get("fiefdom_officials.json");
+    result["wall_config"] = get("wall_config.json");
+    result["mini_games"] = get("mini_games.json");
+    result["tower_defense_mobs"] = get("tower_defense_mobs.json");
+    result["tower_defense_towers"] = get("tower_defense_towers.json");
+    result["tower_defense_units"] = get("tower_defense_units.json");
     return result;
 }
 

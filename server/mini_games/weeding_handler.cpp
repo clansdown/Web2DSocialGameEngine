@@ -1,5 +1,4 @@
-#include "weeding_handler.hpp"
-#include "../GameConfigCache.hpp"
+#include "../mini_games.hpp"
 #include <iostream>
 
 std::string WeedingHandler::name() const {
@@ -16,8 +15,7 @@ nlohmann::json WeedingHandler::start_level(const MiniGameContext& ctx) {
         level_config["weed_density"] = 0.3;
         level_config["rewards"] = {{"gold", 5}, {"wood", 3}};
     } else {
-        auto& config_cache = GameConfigCache::getInstance();
-        const auto& mini_games = config_cache.getMiniGames();
+        const auto& mini_games = config_cache_.getMiniGames();
         const auto& weed_config = mini_games["weeding"];
         const auto& levels = weed_config["levels"];
 
@@ -49,8 +47,7 @@ nlohmann::json WeedingHandler::end_level(const MiniGameContext& ctx, const MiniG
 }
 
 nlohmann::json WeedingHandler::get_config() const {
-    auto& config_cache = GameConfigCache::getInstance();
-    const auto& mini_games = config_cache.getMiniGames();
+    const auto& mini_games = config_cache_.getMiniGames();
 
     if (mini_games.contains("weeding")) {
         return mini_games["weeding"];

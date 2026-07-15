@@ -1,9 +1,10 @@
 #pragma once
 #include "game_logic.hpp"
 #include "FiefdomData.hpp"
-#include "GameConfigCache.hpp"
 #include "MoraleCalculator.hpp"
 #include <nlohmann/json.hpp>
+
+class GameConfigCache;
 
 namespace GameLogic {
 
@@ -33,26 +34,26 @@ namespace Validation {
     bool fiefdomExists(int fiefdom_id);
     bool hasEnoughResources(int fiefdom_id, const nlohmann::json& costs);
     ActionResult deductResources(int fiefdom_id, const nlohmann::json& costs, ActionResult& result);
-    bool buildingTypeExists(const std::string& building_type);
-    std::optional<nlohmann::json> getBuildingConfig(const std::string& building_type);
-    bool canBuildBuildingHere(const std::string& building_type, int fiefdom_id, int x, int y);
+    bool buildingTypeExists(GameConfigCache& cache, const std::string& building_type);
+    std::optional<nlohmann::json> getBuildingConfig(GameConfigCache& cache, const std::string& building_type);
+    bool canBuildBuildingHere(GameConfigCache& cache, const std::string& building_type, int fiefdom_id, int x, int y);
     int64_t getCurrentTimestamp();
-    std::optional<nlohmann::json> getWallConfig();
-    bool validWallPlacement(int fiefdom_id, const nlohmann::json& payload);
-    nlohmann::json calculateCumulativeCost(const std::string& building_type, int current_level);
+    std::optional<nlohmann::json> getWallConfig(GameConfigCache& cache);
+    bool validWallPlacement(GameConfigCache& cache, int fiefdom_id, const nlohmann::json& payload);
+    nlohmann::json calculateCumulativeCost(GameConfigCache& cache, const std::string& building_type, int current_level);
     bool userOwnsBuilding(int building_id, const ActionContext& ctx);
     ActionResult refundResources(int fiefdom_id, const nlohmann::json& amounts, ActionResult& result);
     bool deleteBuilding(int building_id);
     bool updateBuildingPosition(int building_id, int x, int y);
-    std::optional<nlohmann::json> getWallConfig();
-    std::optional<nlohmann::json> getWallConfigByGeneration(int generation);
+    std::optional<nlohmann::json> getPrerequisitesForLevel(GameConfigCache& cache, const std::string& building_type, int target_level);
+    std::optional<nlohmann::json> getWallConfigByGeneration(GameConfigCache& cache, int generation);
     bool wallGenerationExists(int fiefdom_id, int generation);
     bool hasWallGeneration(int fiefdom_id, int generation);
-    bool canAffordWall(int fiefdom_id, int generation, int level);
-    int getWallHP(int generation, int level);
-    double getWallMoraleBoost(int generation, int level);
-    nlohmann::json calculateWallUpgradeCost(int generation, int current_level);
-    nlohmann::json getDemolishRefund(int building_id);
+    bool canAffordWall(GameConfigCache& cache, int fiefdom_id, int generation, int level);
+    int getWallHP(GameConfigCache& cache, int generation, int level);
+    double getWallMoraleBoost(GameConfigCache& cache, int generation, int level);
+    nlohmann::json calculateWallUpgradeCost(GameConfigCache& cache, int generation, int current_level);
+    nlohmann::json getDemolishRefund(GameConfigCache& cache, int building_id);
 
     class TransactionGuard {
     public:

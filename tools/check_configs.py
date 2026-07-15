@@ -2,7 +2,6 @@
 """Config file linter for Ravenest Build and Battle game configs.
 
 Validates all JSON config files against their schema rules.
-Supports lenient JSON parsing (allows comments, trailing commas).
 
 Usage:
     ./tools/check_configs.py          # Show errors and warnings
@@ -267,7 +266,7 @@ class ConfigValidator:
         return line, column
 
     def _validate_json(self, content: str, file: Path) -> JsonDataType:
-        """Parse JSON with lenient handling. Returns None on error."""
+        """Parse JSON using strict json.loads. Returns None on error."""
         try:
             return json.loads(content)
         except json.JSONDecodeError as e:
@@ -2138,9 +2137,198 @@ class ConfigValidator:
                                 Severity.WARN
                             )
 
+    def validate_spawn_schedules(self, game_config_dir: Path) -> None:
+        """Validate tower defense spawn schedule files."""
+        spawn_dir: Path = game_config_dir / "tower_defense" / "spawn_schedules"
+        if not spawn_dir.exists():
+            return
+
+        # Load mobs.json for enemy_id cross-referencing
+        mobs_file: Path = game_config_dir / "tower_defense" / "mobs.json"
+        valid_enemy_ids: set[str] = set()
+
+        if mobs_file.exists():
+            try:
+                mobs_content: str = mobs_file.read_text(encoding="utf-8")
+                mobs_data: object = self._validate_json(mobs_content, mobs_file)
+                if isinstance(mobs_data, dict) and "mobs" in mobs_data:
+                    mobs_obj: object = mobs_data["mobs"]
+                    if isinstance(mobs_obj, dict):
+                        valid_enemy_ids = set(mobs_obj.keys())
+            except Exception:
+                pass
+        else:
+            self._add_issue(
+                mobs_file, 1, None,
+                "Can't find mobs.json for enemy_id cross-reference; skipping cross-reference checks",
+                Severity.WARN
+            )
+
+        for schedule_file in sorted(spawn_dir.iterdir()):
+            if not schedule_file.is_file() or schedule_file.suffix != ".json":
+                continue
+
+            try:
+                content: str = schedule_file.read_text(encoding="utf-8")
+            except Exception as e:
+                self._add_issue(
+                    schedule_file, 1, None,
+                    f"Failed to read file: {e}",
+                    Severity.ERROR
+                )
+                continue
+
+            data: object = self._validate_json(content, schedule_file)
+            if data is None:
+                continue
+
+            if not isinstance(data, dict):
+                self._add_issue(
+                    schedule_file, 1, None,
+                    "Expected a JSON object",
+                    Severity.ERROR
+                )
+                continue
+
+            if "display_name_key" not in data:
+                self._add_issue(
+                    schedule_file, 1, None,
+                    "Missing required key: display_name_key",
+                    Severity.ERROR
+                )
+            elif not isinstance(data["display_name_key"], str):
+                self._add_issue(
+                    schedule_file, 1, None,
+                    "display_name_key must be a string",
+                    Severity.ERROR
+                )
+
+            if "levels" not in data:
+                self._add_issue(
+                    schedule_file, 1, None,
+                    "Missing required key: levels",
+                    Severity.ERROR
+                )
+                continue
+
+            levels_obj: object = data["levels"]
+            if not isinstance(levels_obj, dict):
+                self._add_issue(
+                    schedule_file, 1, None,
+                    "levels must be an object",
+                    Severity.ERROR
+                )
+                continue
+
+            for level_key, level_data in levels_obj.items():
+                if not level_key.isdigit():
+                    self._add_issue(
+                        schedule_file, 1, None,
+                        f"Level key '{level_key}' is not a numeric string",
+                        Severity.WARN
+                    )
+
+                if not isinstance(level_data, dict):
+                    self._add_issue(
+                        schedule_file, 1, None,
+                        f"Level '{level_key}' must be an object",
+                        Severity.ERROR
+                    )
+                    continue
+
+                if "rounds" not in level_data:
+                    self._add_issue(
+                        schedule_file, 1, None,
+                        f"Level '{level_key}' missing required key: rounds",
+                        Severity.ERROR
+                    )
+                    continue
+
+                rounds_obj: object = level_data["rounds"]
+                if not isinstance(rounds_obj, list):
+                    self._add_issue(
+                        schedule_file, 1, None,
+                        f"Level '{level_key}'.rounds must be an array",
+                        Severity.ERROR
+                    )
+                    continue
+
+                for round_idx, round_data in enumerate(rounds_obj):
+                    if not isinstance(round_data, list):
+                        self._add_issue(
+                            schedule_file, 1, None,
+                            f"Level '{level_key}'.rounds[{round_idx}] must be an array of spawn entries",
+                            Severity.ERROR
+                        )
+                        continue
+
+                    for entry_idx, entry in enumerate(round_data):
+                        if not isinstance(entry, dict):
+                            self._add_issue(
+                                schedule_file, 1, None,
+                                f"Level '{level_key}'.rounds[{round_idx}][{entry_idx}] must be an object",
+                                Severity.ERROR
+                            )
+                            continue
+
+                        for field in ("enemy_id", "count", "interval_ms", "initial_delay_ms"):
+                            if field not in entry:
+                                self._add_issue(
+                                    schedule_file, 1, None,
+                                    f"Level '{level_key}'.rounds[{round_idx}][{entry_idx}] missing required field: {field}",
+                                    Severity.ERROR
+                                )
+
+                        enemy_id: object = entry.get("enemy_id")
+                        if isinstance(enemy_id, str):
+                            if valid_enemy_ids and enemy_id not in valid_enemy_ids:
+                                self._add_issue(
+                                    schedule_file, 1, None,
+                                    f"Level '{level_key}'.rounds[{round_idx}][{entry_idx}]: "
+                                    f"unknown enemy_id '{enemy_id}'",
+                                    Severity.ERROR
+                                )
+                        elif enemy_id is not None:
+                            self._add_issue(
+                                schedule_file, 1, None,
+                                f"Level '{level_key}'.rounds[{round_idx}][{entry_idx}]: "
+                                f"enemy_id must be a string",
+                                Severity.ERROR
+                            )
+
+                        count_val: object = entry.get("count")
+                        if isinstance(count_val, int) and count_val < 1:
+                            self._add_issue(
+                                schedule_file, 1, None,
+                                f"Level '{level_key}'.rounds[{round_idx}][{entry_idx}]: "
+                                f"count must be >= 1, got {count_val}",
+                                Severity.ERROR
+                            )
+
+                        interval_val: object = entry.get("interval_ms")
+                        if isinstance(interval_val, int) and interval_val <= 0:
+                            self._add_issue(
+                                schedule_file, 1, None,
+                                f"Level '{level_key}'.rounds[{round_idx}][{entry_idx}]: "
+                                f"interval_ms must be > 0, got {interval_val}",
+                                Severity.ERROR
+                            )
+
+                        delay_val: object = entry.get("initial_delay_ms")
+                        if isinstance(delay_val, int) and delay_val < 0:
+                            self._add_issue(
+                                schedule_file, 1, None,
+                                f"Level '{level_key}'.rounds[{round_idx}][{entry_idx}]: "
+                                f"initial_delay_ms must be >= 0, got {delay_val}",
+                                Severity.ERROR
+                            )
+
+            self.validated_files.append(schedule_file)
+
     def validate_all(
         self,
         config_dir: Path,
+        game_config_dir: Path | None = None,
         show_warnings: bool = True
     ) -> tuple[list[LinterIssue], list[LinterIssue]]:
         """Validate all config files in the given directory."""
@@ -2217,6 +2405,17 @@ class ConfigValidator:
             if images_dir.exists():
                 self.validate_images_directory(images_dir)
 
+        # Validate tower defense spawn schedules
+        if game_config_dir is not None:
+            if not game_config_dir.exists():
+                self._add_issue(
+                    game_config_dir, 1, None,
+                    "Game config directory not found",
+                    Severity.WARN
+                )
+            else:
+                self.validate_spawn_schedules(game_config_dir)
+
         # Re-sort issues after image validation
         errors = [issue for issue in self.issues if issue.severity == Severity.ERROR]
         warnings = [issue for issue in self.issues if issue.severity == Severity.WARN]
@@ -2234,10 +2433,11 @@ def parse_args() -> argparse.Namespace:
         description="Validate config files against schema rules",
         epilog="""
 Examples:
-  ./tools/check_configs.py              # Show errors and warnings
-  ./tools/check_configs.py --no-warnings  # Show errors only
-  ./tools/check_configs.py -h           # Show this help
-  ./tools/check_configs.py --verbose    # Show validated files on success
+  ./tools/check_configs.py                    # Show errors and warnings
+  ./tools/check_configs.py --no-warnings      # Show errors only
+  ./tools/check_configs.py -h                 # Show this help
+  ./tools/check_configs.py --verbose          # Show validated files on success
+  ./tools/check_configs.py -c server/config -g game/config   # Explicit paths
 
 Exit codes:
   0: All configs valid (no errors)
@@ -2261,6 +2461,12 @@ Exit codes:
         default=Path("server/config"),
         help="Directory containing config files (default: server/config)"
     )
+    parser.add_argument(
+        "--game-config-dir", "-g",
+        type=Path,
+        default=Path("game/config"),
+        help="Directory containing game config files (default: game/config)"
+    )
     return parser.parse_args()
 
 
@@ -2268,17 +2474,26 @@ def main() -> Literal[0, 1]:
     """Main entry point."""
     args: argparse.Namespace = parse_args()
 
+    project_root: Path = Path(__file__).parent.parent
+
     config_dir: Path = args.config_dir
     if not config_dir.is_absolute():
-        project_root: Path = Path(__file__).parent.parent
         config_dir = project_root / config_dir
 
     if not config_dir.exists():
         print(f"Error: Config directory not found: {config_dir}", file=sys.stderr)
         return 1
 
+    game_config_dir: Path = args.game_config_dir
+    if not game_config_dir.is_absolute():
+        game_config_dir = project_root / game_config_dir
+
     validator: ConfigValidator = ConfigValidator()
-    errors, warnings = validator.validate_all(config_dir, show_warnings=not args.no_warnings)
+    errors, warnings = validator.validate_all(
+        config_dir,
+        game_config_dir=game_config_dir,
+        show_warnings=not args.no_warnings
+    )
 
     has_output: bool = False
 

@@ -13,8 +13,8 @@ struct ApiResponse {
         result["data"] = data.is_null() ? nlohmann::json::object() : data;
         result["status"] = "ok";
         if (error) result["error"] = *error;
-        result["needs-auth"] = needs_auth;
-        result["auth-failed"] = auth_failed;
+        result["needs_auth"] = needs_auth;
+        result["auth_failed"] = auth_failed;
         return result;
     }
 };

@@ -20,7 +20,7 @@
 #include "SafeNameGenerator.hpp"
 #include "init_db.hpp"
 #include "FiefdomFetcher.hpp"
-#include "GameConfigCache.hpp"
+#include "mini_games.hpp"
 #include "images/ImageCache.hpp"
 #include "ActionHandler.hpp"
 #include "ActionHandlers.hpp"
@@ -38,6 +38,7 @@
 using json = nlohmann::json;
 
 static const bool login_debug = false;
+static MiniGames* g_mini_games = nullptr;
 
 void log_error(const std::string& context, const std::string& message) {
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
@@ -194,7 +195,7 @@ AuthResult handleAuth(const std::string& endpoint,
     return result;
 }
 
-ApiResponse handleLogin(const json& body,
+ApiResponse handleLogin(GameConfigCache& config_cache, const json& body,
                        const std::optional<std::string>& username,
                        const ClientInfo& client,
                        const std::optional<std::string>& new_token)
@@ -250,7 +251,7 @@ ApiResponse handleLogin(const json& body,
     return response;
 }
 
-ApiResponse handleGetCharacter(const json& body,
+ApiResponse handleGetCharacter(GameConfigCache& config_cache, const json& body,
                                const std::optional<std::string>& username,
                                const ClientInfo& client,
                                const std::optional<std::string>& new_token)
@@ -303,7 +304,7 @@ ApiResponse handleGetCharacter(const json& body,
     return response;
 }
 
-ApiResponse handleBuild(const json& body,
+ApiResponse handleBuild(GameConfigCache& config_cache, const json& body,
                          const std::optional<std::string>& username,
                          const ClientInfo& client,
                          const std::optional<std::string>& new_token)
@@ -325,6 +326,7 @@ ApiResponse handleBuild(const json& body,
 
     ctx.requesting_character_id = character_id;
     ctx.requesting_fiefdom_id = fiefdom_id;
+    ctx.config_cache = &config_cache;
 
     auto& registry = GameLogic::ActionRegistry::getInstance();
     if (!registry.hasType(registry_type)) {
@@ -347,7 +349,7 @@ ApiResponse handleBuild(const json& body,
     return response;
 }
 
-ApiResponse handleGetWorld(const json& body,
+ApiResponse handleGetWorld(GameConfigCache& config_cache, const json& body,
                            const std::optional<std::string>& username,
                            const ClientInfo& client,
                            const std::optional<std::string>& new_token)
@@ -360,7 +362,7 @@ ApiResponse handleGetWorld(const json& body,
     return response;
 }
 
-ApiResponse handleGetFiefdom(const json& body,
+ApiResponse handleGetFiefdom(GameConfigCache& config_cache, const json& body,
                              const std::optional<std::string>& username,
                              const ClientInfo& client,
                              const std::optional<std::string>& new_token)
@@ -383,7 +385,7 @@ ApiResponse handleGetFiefdom(const json& body,
     db << "SELECT last_update_time FROM fiefdoms WHERE id = ?;" << fiefdom_id
        >> [&](int64_t ts) { last_update_time = ts; };
 
-    GameLogic::updateStateSince(last_update_time, std::to_string(fiefdom_id));
+    GameLogic::updateStateSince(config_cache, last_update_time, std::to_string(fiefdom_id));
 
     auto fiefdom_opt = FiefdomFetcher::fetchFiefdomById(
         fiefdom_id,
@@ -407,7 +409,7 @@ ApiResponse handleGetFiefdom(const json& body,
     return response;
 }
 
-ApiResponse handleSally(const json& body,
+ApiResponse handleSally(GameConfigCache& config_cache, const json& body,
                         const std::optional<std::string>& username,
                         const ClientInfo& client,
                         const std::optional<std::string>& new_token)
@@ -420,7 +422,7 @@ ApiResponse handleSally(const json& body,
     return response;
 }
 
-ApiResponse handleCampaign(const json& body,
+ApiResponse handleCampaign(GameConfigCache& config_cache, const json& body,
                            const std::optional<std::string>& username,
                            const ClientInfo& client,
                            const std::optional<std::string>& new_token)
@@ -433,7 +435,7 @@ ApiResponse handleCampaign(const json& body,
     return response;
 }
 
-ApiResponse handleHunt(const json& body,
+ApiResponse handleHunt(GameConfigCache& config_cache, const json& body,
                        const std::optional<std::string>& username,
                        const ClientInfo& client,
                        const std::optional<std::string>& new_token)
@@ -446,7 +448,7 @@ ApiResponse handleHunt(const json& body,
     return response;
 }
 
-ApiResponse handleCreateAccount(const json& body,
+ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
                                 const std::optional<std::string>& username,
                                 const ClientInfo& client,
                                 const std::optional<std::string>& new_token)
@@ -680,7 +682,7 @@ ApiResponse handleCreateAccount(const json& body,
     return response;
 }
 
-ApiResponse handleUpdateUserProfile(const json& body,
+ApiResponse handleUpdateUserProfile(GameConfigCache& config_cache, const json& body,
                                     const std::optional<std::string>& username,
                                     const ClientInfo& client,
                                     const std::optional<std::string>& new_token)
@@ -722,7 +724,7 @@ ApiResponse handleUpdateUserProfile(const json& body,
     return response;
 }
 
-ApiResponse handleUpdateCharacterProfile(const json& body,
+ApiResponse handleUpdateCharacterProfile(GameConfigCache& config_cache, const json& body,
                                         const std::optional<std::string>& username,
                                         const ClientInfo& client,
                                         const std::optional<std::string>& new_token)
@@ -805,25 +807,14 @@ ApiResponse handleUpdateCharacterProfile(const json& body,
     return response;
 }
 
-ApiResponse handleGetGameInfo(const json& body,
+ApiResponse handleGetGameInfo(GameConfigCache& config_cache, const json& body,
                               const std::optional<std::string>& username,
                               const ClientInfo& client,
                               const std::optional<std::string>& new_token)
 {
     ApiResponse response;
 
-    auto& cache = GameConfigCache::getInstance();
     auto& img_cache = ImageCache::getInstance();
-
-    if (!cache.isLoaded()) {
-        response.error = "Game configuration not loaded";
-        return response;
-    }
-
-    if (!img_cache.isLoaded()) {
-        response.error = "Images not loaded";
-        return response;
-    }
 
     nlohmann::json configs;
     nlohmann::json images;
@@ -839,19 +830,19 @@ ApiResponse handleGetGameInfo(const json& body,
                 std::string asset_type = type.get<std::string>();
 
                 if (asset_type == "damage_types") {
-                    filtered_configs["damage_types"] = cache.getDamageTypes();
+                    filtered_configs["damage_types"] = config_cache.getDamageTypes();
                 } else if (asset_type == "fiefdom_building_types") {
-                    filtered_configs["fiefdom_building_types"] = cache.getFiefdomBuildingTypes();
+                    filtered_configs["fiefdom_building_types"] = config_cache.getFiefdomBuildingTypes();
                 } else if (asset_type == "player_combatants") {
-                    filtered_configs["player_combatants"] = cache.getPlayerCombatants();
+                    filtered_configs["player_combatants"] = config_cache.getPlayerCombatants();
                 } else if (asset_type == "enemy_combatants") {
-                    filtered_configs["enemy_combatants"] = cache.getEnemyCombatants();
+                    filtered_configs["enemy_combatants"] = config_cache.getEnemyCombatants();
                 } else if (asset_type == "heroes") {
-                    filtered_configs["heroes"] = cache.getHeroes();
+                    filtered_configs["heroes"] = config_cache.getHeroes();
                 } else if (asset_type == "fiefdom_officials") {
-                    filtered_configs["fiefdom_officials"] = cache.getFiefdomOfficials();
+                    filtered_configs["fiefdom_officials"] = config_cache.getFiefdomOfficials();
                 } else if (asset_type == "wall_config") {
-                    filtered_configs["wall_config"] = cache.getWallConfig();
+                    filtered_configs["wall_config"] = config_cache.getWallConfig();
                 } else if (asset_type == "buildings") {
                     filtered_images["buildings"] = img_cache.getImagesByType("buildings");
                 } else if (asset_type == "combatants") {
@@ -879,7 +870,7 @@ ApiResponse handleGetGameInfo(const json& body,
             images = json::object();
         }
     } else {
-        configs = cache.getAllConfigs();
+        configs = config_cache.getAllConfigs();
         images = img_cache.getImages();
     }
 
@@ -893,7 +884,7 @@ ApiResponse handleGetGameInfo(const json& body,
     return response;
 }
 
-ApiResponse handleGetPlayerState(const json& body,
+ApiResponse handleGetPlayerState(GameConfigCache& config_cache, const json& body,
                                   const std::optional<std::string>& username,
                                   const ClientInfo& client,
                                   const std::optional<std::string>& new_token)
@@ -937,7 +928,7 @@ static void resolve_td_image_urls(nlohmann::json& entries, const std::string& ca
 }
 
 /** Generate a spawn schedule for a TD round based on difficulty. */
-static json generate_td_spawn_schedule(const GameConfigCache& config, int difficulty, int round_number) {
+static json generate_td_spawn_schedule(GameConfigCache& config, int difficulty, int round_number) {
     json schedule = json::array();
     const auto& mobs_config = config.getTowerDefenseMobs();
     if (!mobs_config.contains("mobs") || !mobs_config["mobs"].is_object()) {
@@ -995,7 +986,74 @@ static json generate_td_spawn_schedule(const GameConfigCache& config, int diffic
     return schedule;
 }
 
-ApiResponse handleTDRound(const json& body,
+/**
+ * Resolve the schedule file name for a given level ID from the mini-games config.
+ */
+static std::string resolve_schedule_file(const nlohmann::json& mg_config, int level_id) {
+    if (mg_config.contains("levels")) {
+        for (const auto& lvl : mg_config["levels"]) {
+            if (lvl["id"] == level_id) {
+                return mg_config.value("schedule_file", std::string());
+            }
+        }
+    }
+    if (mg_config.contains("duke_levels")) {
+        for (const auto& lvl : mg_config["duke_levels"]) {
+            if (lvl["id"] == level_id) {
+                return mg_config.value("duke_schedule_file", std::string());
+            }
+        }
+    }
+    return std::string();
+}
+
+/**
+ * Load spawn schedule for a specific round from a schedule file.
+ * Falls back to procedural generation if file/level/round not found.
+ * Overrides out_total_rounds and out_display_name_key from the schedule data.
+ */
+static json load_spawn_schedule_for_round(
+    GameConfigCache& config_cache,
+    const std::string& schedule_file,
+    int level_id,
+    int round_index,
+    int difficulty,
+    int& out_total_rounds,
+    std::string& out_display_name_key)
+{
+    if (schedule_file.empty() || level_id <= 0) {
+        return generate_td_spawn_schedule(config_cache, difficulty, round_index);
+    }
+
+    auto schedule_opt = config_cache.getTowerDefenseSpawnSchedule(schedule_file);
+    if (!schedule_opt.has_value()) {
+        std::cerr << "[tdRound] Schedule file '" << schedule_file << "' not found, falling back" << std::endl;
+        return generate_td_spawn_schedule(config_cache, difficulty, round_index);
+    }
+
+    const json& data = *schedule_opt;
+    std::string level_key = std::to_string(level_id);
+
+    if (data.contains("levels") && data["levels"].contains(level_key)) {
+        const json& level = data["levels"][level_key];
+        if (level.contains("rounds") && level["rounds"].is_array()) {
+            int total = static_cast<int>(level["rounds"].size());
+            out_total_rounds = total;
+            out_display_name_key = data.value("display_name_key", std::string());
+
+            if (round_index >= 0 && round_index < total) {
+                return level["rounds"][round_index];
+            }
+        }
+    }
+
+    std::cerr << "[tdRound] Schedule file '" << schedule_file
+              << "' missing level " << level_key << " round " << round_index
+              << ", falling back to procedural" << std::endl;
+    return generate_td_spawn_schedule(config_cache, difficulty, round_index);
+}
+
+ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
                            const std::optional<std::string>& username,
                            const ClientInfo& client,
                            const std::optional<std::string>& new_token)
@@ -1013,8 +1071,6 @@ ApiResponse handleTDRound(const json& body,
     }
 
     int character_id = body["character_id"].get<int>();
-    auto& config_cache = GameConfigCache::getInstance();
-
     // If session_id provided, this is a round completion report
     if (body.contains("session_id") && body["session_id"].is_number_integer()) {
         int session_id = body["session_id"].get<int>();
@@ -1033,8 +1089,22 @@ ApiResponse handleTDRound(const json& body,
                 return response;
             }
 
+            std::cerr << "[tdRound] Completion: "
+                      << "session=" << session_id
+                      << " db_lives=" << session->lives
+                      << " db_gold=" << session->gold
+                      << " db_round=" << session->current_round
+                      << " db_total=" << session->total_rounds
+                      << " db_difficulty=" << session->difficulty
+                      << " db_state=" << session->state
+                      << std::endl;
+
             int lives_lost = body.value("lives_lost", 0);
             int gold_earned = body.value("gold_earned", 0);
+
+            std::cerr << "[tdRound] Completion body: lives_lost=" << lives_lost
+                      << " gold_earned=" << gold_earned
+                      << std::endl;
 
             int new_lives = session->lives - lives_lost;
             int new_gold = session->gold + gold_earned;
@@ -1046,13 +1116,36 @@ ApiResponse handleTDRound(const json& body,
             int old_round = session->current_round;
             int total = session->total_rounds;
 
+            std::cerr << "[tdRound] Computed: new_lives=" << new_lives
+                      << " new_gold=" << new_gold
+                      << " won=" << won
+                      << " old_round=" << old_round
+                      << " total=" << total
+                      << " take_next_round=" << (won && old_round + 1 < total)
+                      << std::endl;
+
             auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 
             if (won && old_round + 1 < total) {
                 // More rounds remain — advance to next round (don't end game)
                 player_state_db::update_game_session(db, session_id, new_lives, new_gold, "active", now);
 
-                json next_schedule = generate_td_spawn_schedule(config_cache, session->difficulty, old_round);
+                std::string next_display_name_key;
+                json next_schedule;
+                {
+                    const auto& mini_games_config = config_cache.getMiniGames();
+                    if (mini_games_config.contains(session->mini_game)) {
+                        const auto& mg = mini_games_config[session->mini_game];
+                        std::string sched_file = resolve_schedule_file(mg, session->level_id);
+                        if (!sched_file.empty()) {
+                            json sched = load_spawn_schedule_for_round(config_cache, sched_file, session->level_id, old_round + 1, session->difficulty, total, next_display_name_key);
+                            next_schedule = sched;
+                        }
+                    }
+                    if (next_schedule.empty()) {
+                        next_schedule = generate_td_spawn_schedule(config_cache, session->difficulty, old_round);
+                    }
+                }
 
                 response.data["session_id"] = session_id;
                 response.data["next_round"] = true;
@@ -1063,10 +1156,15 @@ ApiResponse handleTDRound(const json& body,
                 response.data["lives"] = new_lives;
                 response.data["gold"] = new_gold;
                 response.data["spawn_schedule"] = next_schedule;
+                response.data["display_name_key"] = next_display_name_key;
             } else {
                 // Game over: won last round or lost — end session normally
                 std::string new_state = won ? "won" : "lost";
                 player_state_db::update_game_session(db, session_id, new_lives, new_gold, new_state, now);
+
+                std::cerr << "[tdRound] Game over: state=" << new_state
+                          << " score=" << (new_gold + new_lives * 10)
+                          << std::endl;
 
                 int score = new_gold + new_lives * 10;
                 auto end_result = player_state_db::end_mini_game(
@@ -1107,7 +1205,7 @@ ApiResponse handleTDRound(const json& body,
                        >> [&](int count) { completed_count = count; };
 
                     nlohmann::json new_unlocks = UnitUnlockCalculator::check_and_grant_milestones(
-                        db, character_id, completed_count, now);
+                        config_cache, db, character_id, completed_count, now);
 
                     if (!new_unlocks["new_units"].empty() || !new_unlocks["new_towers"].empty()) {
                         response.data["new_unlocks"] = new_unlocks;
@@ -1167,13 +1265,40 @@ ApiResponse handleTDRound(const json& body,
             if (*state.current_mini_game == mini_game) {
                 auto existing = player_state_db::get_active_session(db, character_id, mini_game);
                 if (existing.has_value()) {
-                    int level_id = existing->level_id;
+                    // Guard against stale sessions where current_round >= total_rounds
+                    // (leftover from previous double-call bug or interrupted game)
+                    if (existing->current_round >= existing->total_rounds) {
+                        std::cerr << "[tdRound] Stale session " << existing->id
+                                  << " at round " << existing->current_round
+                                  << "/" << existing->total_rounds
+                                  << " — clearing and starting fresh" << std::endl;
+                        auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                        player_state_db::update_game_session(db, existing->id,
+                            existing->lives, existing->gold, "interrupted", now);
+                        player_state_db::clear_current_mini_game(db, character_id, now);
+                    } else {
+                        int level_id = existing->level_id;
                     int difficulty = existing->difficulty;
 
                     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
                     player_state_db::start_mini_game(db, character_id, mini_game, level_id, now);
 
-                    json spawn_schedule = generate_td_spawn_schedule(config_cache, difficulty, 0);
+                    std::string resume_display_name_key;
+                    json resume_spawn_schedule;
+                    {
+                        const auto& mini_games_config = config_cache.getMiniGames();
+                        if (mini_games_config.contains(mini_game)) {
+                            const auto& mg = mini_games_config[mini_game];
+                            std::string sched_file = resolve_schedule_file(mg, level_id);
+                            if (!sched_file.empty()) {
+                                json sched = load_spawn_schedule_for_round(config_cache, sched_file, level_id, existing->current_round, difficulty, existing->total_rounds, resume_display_name_key);
+                                resume_spawn_schedule = sched;
+                            }
+                        }
+                        if (resume_spawn_schedule.empty()) {
+                            resume_spawn_schedule = generate_td_spawn_schedule(config_cache, difficulty, existing->current_round);
+                        }
+                    }
 
                     json map_metadata = json::object();
                     std::cerr << "[tdRound] Resume: character=" << character_id
@@ -1214,15 +1339,14 @@ ApiResponse handleTDRound(const json& body,
                     response.data["level_id"] = level_id;
                     response.data["difficulty"] = difficulty;
                     int resume_round = existing->current_round + 1;
-                    json resume_schedule = generate_td_spawn_schedule(config_cache, difficulty, existing->current_round);
-                    response.data["spawn_schedule"] = resume_schedule;
+                    response.data["spawn_schedule"] = resume_spawn_schedule;
                     response.data["round_number"] = resume_round;
                     response.data["total_rounds"] = existing->total_rounds;
                     response.data["lives"] = existing->lives;
                     response.data["gold"] = existing->gold;
-                    response.data["spawn_schedule"] = spawn_schedule;
                     response.data["map_metadata"] = map_metadata;
                     response.data["resumed"] = true;
+                    response.data["display_name_key"] = resume_display_name_key;
 
                     response.data["mobs"] = config_cache.getTowerDefenseMobs();
                     response.data["towers"] = config_cache.getTowerDefenseTowers();
@@ -1267,6 +1391,7 @@ ApiResponse handleTDRound(const json& body,
 
                     if (new_token) response.data["token"] = *new_token;
                     return response;
+                    }
                 }
                 // current_mini_game is set to this mini_game but no active session exists
                 // stale state from previous version — clear it and proceed fresh
@@ -1321,6 +1446,8 @@ ApiResponse handleTDRound(const json& body,
         // Determine difficulty and rounds from level config
         int difficulty = 1;
         int total_rounds = 1;
+        json spawn_schedule;
+        std::string campaign_display_name_key;
         const auto& mini_games_config = config_cache.getMiniGames();
         if (mini_games_config.contains(mini_game)) {
             const auto& mg_config = mini_games_config[mini_game];
@@ -1332,24 +1459,47 @@ ApiResponse handleTDRound(const json& body,
                 }
                 return -1;
             };
+            bool is_duke = false;
             int d = find_field(mg_config.value("levels", json::array()), "difficulty", 1);
-            if (d < 0) d = find_field(mg_config.value("duke_levels", json::array()), "difficulty", 1);
+            if (d < 0) {
+                d = find_field(mg_config.value("duke_levels", json::array()), "difficulty", 1);
+                is_duke = true;
+            }
             if (d >= 0) difficulty = d;
             int r = find_field(mg_config.value("levels", json::array()), "rounds", 1);
             if (r < 0) r = find_field(mg_config.value("duke_levels", json::array()), "rounds", 1);
             if (r >= 0) total_rounds = r;
+
+            // Resolve schedule file for this level
+            std::string schedule_file;
+            if (!is_duke && mg_config.contains("schedule_file")) {
+                schedule_file = mg_config["schedule_file"].get<std::string>();
+            } else if (is_duke && mg_config.contains("duke_schedule_file")) {
+                schedule_file = mg_config["duke_schedule_file"].get<std::string>();
+            }
+
+            if (!schedule_file.empty()) {
+                json sched = load_spawn_schedule_for_round(config_cache, schedule_file, level_id, 0, difficulty, total_rounds, campaign_display_name_key);
+                spawn_schedule = sched;
+                std::cerr << "[tdRound] Using schedule file '" << schedule_file
+                          << "' for level " << level_id
+                          << " total_rounds=" << total_rounds
+                          << " display_name_key=" << campaign_display_name_key << std::endl;
+            } else {
+                spawn_schedule = generate_td_spawn_schedule(config_cache, difficulty, 0);
+            }
+        } else {
+            spawn_schedule = generate_td_spawn_schedule(config_cache, difficulty, 0);
         }
 
         auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 
         // Grant starting unlocks on first play
-        UnitUnlockCalculator::grant_starting_unlocks(db, character_id, now);
+        UnitUnlockCalculator::grant_starting_unlocks(config_cache, db, character_id, now);
 
         player_state_db::start_mini_game(db, character_id, mini_game, level_id, now);
 
         auto session = player_state_db::create_game_session(db, character_id, mini_game, level_id, difficulty, total_rounds, now);
-
-        json spawn_schedule = generate_td_spawn_schedule(config_cache, difficulty, 0);
 
         // Load map metadata if available
         json map_metadata = json::object();
@@ -1412,6 +1562,7 @@ ApiResponse handleTDRound(const json& body,
         response.data["lives"] = session.lives;
         response.data["gold"] = session.gold;
         response.data["spawn_schedule"] = spawn_schedule;
+        response.data["display_name_key"] = campaign_display_name_key;
         response.data["map_metadata"] = map_metadata;
 
         // Load full catalogs for the client
@@ -1467,7 +1618,7 @@ ApiResponse handleTDRound(const json& body,
     return response;
 }
 
-ApiResponse handleStartMiniGame(const json& body,
+ApiResponse handleStartMiniGame(GameConfigCache& config_cache, const json& body,
                                  const std::optional<std::string>& username,
                                  const ClientInfo& client,
                                  const std::optional<std::string>& new_token)
@@ -1492,8 +1643,7 @@ ApiResponse handleStartMiniGame(const json& body,
     int character_id = body["character_id"].get<int>();
     std::string mini_game = body["mini_game"].get<std::string>();
 
-    auto& registry = MiniGameRegistry::getInstance();
-    MiniGameHandler* handler = registry.get_handler(mini_game);
+    MiniGameHandler* handler = g_mini_games->get(mini_game);
 
     if (!handler) {
         response.error = "Unknown mini_game: " + mini_game;
@@ -1574,7 +1724,7 @@ ApiResponse handleStartMiniGame(const json& body,
     return response;
 }
 
-ApiResponse handleEndMiniGame(const json& body,
+ApiResponse handleEndMiniGame(GameConfigCache& config_cache, const json& body,
                                const std::optional<std::string>& username,
                                const ClientInfo& client,
                                const std::optional<std::string>& new_token)
@@ -1611,8 +1761,7 @@ ApiResponse handleEndMiniGame(const json& body,
             level_id = body["level_id"].get<int>();
         }
 
-        auto& registry = MiniGameRegistry::getInstance();
-        MiniGameHandler* handler = registry.get_handler(mini_game);
+        MiniGameHandler* handler = g_mini_games->get(mini_game);
 
     if (!handler) {
         response.error = "Unknown mini_game: " + mini_game;
@@ -1671,7 +1820,6 @@ ApiResponse handleEndMiniGame(const json& body,
                 response.data["land_patent_earned"] = true;
 
                 // Award completion bonus resources
-                auto& config_cache = GameConfigCache::getInstance();
                 const auto& mini_games_config = config_cache.getMiniGames();
                 if (mini_games_config.contains(mini_game)) {
                     const auto& mg_config = mini_games_config[mini_game];
@@ -1688,7 +1836,6 @@ ApiResponse handleEndMiniGame(const json& body,
 
         nlohmann::json level_rewards = nlohmann::json::object();
         if (won) {
-            auto& config_cache = GameConfigCache::getInstance();
             const auto& mini_games_config = config_cache.getMiniGames();
 
             if (mini_games_config.contains(mini_game)) {
@@ -1755,7 +1902,7 @@ ApiResponse handleEndMiniGame(const json& body,
     return response;
 }
 
-ApiResponse handleGetMiniGameConfig(const json& body,
+ApiResponse handleGetMiniGameConfig(GameConfigCache& config_cache, const json& body,
                                      const std::optional<std::string>& username,
                                      const ClientInfo& client,
                                      const std::optional<std::string>& new_token)
@@ -1766,8 +1913,6 @@ ApiResponse handleGetMiniGameConfig(const json& body,
         response.needs_auth = true;
         return response;
     }
-
-    auto& config_cache = GameConfigCache::getInstance();
 
     if (body.contains("mini_game") && body["mini_game"].is_string()) {
         std::string mini_game = body["mini_game"].get<std::string>();
@@ -1793,7 +1938,7 @@ ApiResponse handleGetMiniGameConfig(const json& body,
 // Global TextManager instance, set during startup
 TextManager* g_text_manager = nullptr;
 
-ApiResponse handleGetUITextures(const json& body,
+ApiResponse handleGetUITextures(GameConfigCache& config_cache, const json& body,
                                 const std::optional<std::string>& username,
                                 const ClientInfo& client,
                                 const std::optional<std::string>& new_token)
@@ -1815,7 +1960,7 @@ ApiResponse handleGetUITextures(const json& body,
     try {
         std::ifstream f("config/ui_textures.json");
         if (f.is_open()) {
-            json cfg = json::parse(f);
+            json cfg = json::parse(f, nullptr, true, true, true);
             if (cfg.contains(component_id) && cfg[component_id].is_object()) {
                 if (cfg[component_id].contains("texture_prefix")
                     && cfg[component_id]["texture_prefix"].is_string()) {
@@ -1831,11 +1976,13 @@ ApiResponse handleGetUITextures(const json& body,
                 }
             }
         }
-    } catch (const std::exception&) {
+    } catch (const std::exception& e) {
+        std::cerr << "[handleGetUITextures] Failed to load ui_textures.json: " << e.what() << std::endl;
     }
 
     try {
-        for (const auto& entry : std::filesystem::directory_iterator("images/ui")) {
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator("images/ui", ec)) {
             if (!entry.is_regular_file()) continue;
             std::string filename = entry.path().filename().string();
             if (filename.rfind(texture_prefix, 0) != 0) continue;
@@ -1849,7 +1996,8 @@ ApiResponse handleGetUITextures(const json& body,
             tex["height"] = dims.height;
             textures.push_back(tex);
         }
-    } catch (const std::exception&) {
+    } catch (const std::exception& e) {
+        std::cerr << "[handleGetUITextures] Failed to scan images/ui: " << e.what() << std::endl;
     }
 
     std::sort(textures.begin(), textures.end(), [](const json& a, const json& b) {
@@ -1867,7 +2015,7 @@ ApiResponse handleGetUITextures(const json& body,
     return response;
 }
 
-ApiResponse handleGetTexts(const json& body,
+ApiResponse handleGetTexts(GameConfigCache& config_cache, const json& body,
                            const std::optional<std::string>& username,
                            const ClientInfo& client,
                            const std::optional<std::string>& new_token)
@@ -1909,7 +2057,7 @@ ApiResponse handleGetTexts(const json& body,
     return response;
 }
 
-ApiResponse handleVerifyAgeOverride(const json& body,
+ApiResponse handleVerifyAgeOverride(GameConfigCache& config_cache, const json& body,
                                      const std::optional<std::string>& username,
                                      const ClientInfo& client,
                                      const std::optional<std::string>& new_token)
@@ -1930,7 +2078,7 @@ ApiResponse handleVerifyAgeOverride(const json& body,
     return response;
 }
 
-ApiResponse handleSetCharacterArchetype(const json& body,
+ApiResponse handleSetCharacterArchetype(GameConfigCache& config_cache, const json& body,
                                         const std::optional<std::string>& username,
                                         const ClientInfo& client,
                                         const std::optional<std::string>& new_token)
@@ -2012,7 +2160,7 @@ ApiResponse handleSetCharacterArchetype(const json& body,
     return response;
 }
 
-ApiResponse handleSetCharacterSex(const json& body,
+ApiResponse handleSetCharacterSex(GameConfigCache& config_cache, const json& body,
                                    const std::optional<std::string>& username,
                                    const ClientInfo& client,
                                    const std::optional<std::string>& new_token)
@@ -2091,7 +2239,7 @@ ApiResponse handleSetCharacterSex(const json& body,
     return response;
 }
 
-ApiResponse handleGetDukedoms(const json& body,
+ApiResponse handleGetDukedoms(GameConfigCache& config_cache, const json& body,
                                const std::optional<std::string>& username,
                                const ClientInfo& client,
                                const std::optional<std::string>& new_token)
@@ -2132,13 +2280,14 @@ ApiResponse handleGetDukedoms(const json& body,
             response.data["token"] = *new_token;
         }
     } catch (const std::exception& e) {
+        log_error("handleGetDukedoms", e.what());
         response.error = std::string("Failed to fetch dukedoms: ") + e.what();
     }
 
     return response;
 }
 
-ApiResponse handleJoinDukedom(const json& body,
+ApiResponse handleJoinDukedom(GameConfigCache& config_cache, const json& body,
                                const std::optional<std::string>& username,
                                const ClientInfo& client,
                                const std::optional<std::string>& new_token)
@@ -2241,7 +2390,7 @@ ApiResponse handleJoinDukedom(const json& body,
     return response;
 }
 
-ApiResponse handleCreateDukedom(const json& body,
+ApiResponse handleCreateDukedom(GameConfigCache& config_cache, const json& body,
                                  const std::optional<std::string>& username,
                                  const ClientInfo& client,
                                  const std::optional<std::string>& new_token)
@@ -2344,13 +2493,14 @@ ApiResponse handleCreateDukedom(const json& body,
             response.data["token"] = *new_token;
         }
     } catch (const std::exception& e) {
+        log_error("handleCreateDukedom", e.what());
         response.error = std::string("Failed to create dukedom: ") + e.what();
     }
 
     return response;
 }
 
-ApiResponse handleStartDukeTrack(const json& body,
+ApiResponse handleStartDukeTrack(GameConfigCache& config_cache, const json& body,
                                   const std::optional<std::string>& username,
                                   const ClientInfo& client,
                                   const std::optional<std::string>& new_token)
@@ -2401,13 +2551,14 @@ ApiResponse handleStartDukeTrack(const json& body,
             response.data["token"] = *new_token;
         }
     } catch (const std::exception& e) {
+        log_error("handleStartDukeTrack", e.what());
         response.error = std::string("Failed to start duke track: ") + e.what();
     }
 
     return response;
 }
 
-void handleApiRequest(auto* res, auto* req) {
+void handleApiRequest(GameConfigCache& config_cache, auto* res, auto* req) {
     // Extract req data NOW while req is still valid (uWS only guarantees req
     // lifetime during the synchronous handler call — the onData callback fires
     // later when the POST body arrives, at which point req may be freed).
@@ -2424,13 +2575,14 @@ void handleApiRequest(auto* res, auto* req) {
 
     std::string buffer;
     res->onData([res, endpoint = std::move(endpoint), client = std::move(client),
-                 ip_address = std::move(ip_address), buffer = std::move(buffer)]
+                 ip_address = std::move(ip_address), buffer = std::move(buffer),
+                 &config_cache]
                 (std::string_view data, bool isLast) mutable {
         buffer += data;
         if (!isLast) return;
 
         try {
-            json body = json::parse(buffer);
+            json body = json::parse(buffer, nullptr, true, true, true);
 
             json auth_object;
             if (body.contains("auth") && body["auth"].is_object()) {
@@ -2441,13 +2593,13 @@ void handleApiRequest(auto* res, auto* req) {
             if (PUBLIC_ENDPOINTS.count(endpoint)) {
                 ApiResponse response;
                 if (endpoint == "createAccount") {
-                    response = handleCreateAccount(body, std::nullopt, client, std::nullopt);
+                    response = handleCreateAccount(config_cache, body, std::nullopt, client, std::nullopt);
                 } else if (endpoint == "getTexts") {
-                    response = handleGetTexts(body, std::nullopt, client, std::nullopt);
+                    response = handleGetTexts(config_cache, body, std::nullopt, client, std::nullopt);
                 } else if (endpoint == "verifyAgeOverride") {
-                    response = handleVerifyAgeOverride(body, std::nullopt, client, std::nullopt);
+                    response = handleVerifyAgeOverride(config_cache, body, std::nullopt, client, std::nullopt);
                 } else if (endpoint == "getUITextures") {
-                    response = handleGetUITextures(body, std::nullopt, client, std::nullopt);
+                    response = handleGetUITextures(config_cache, body, std::nullopt, client, std::nullopt);
                 }
                 sendJsonResponse(res, response);
                 return;
@@ -2469,9 +2621,9 @@ void handleApiRequest(auto* res, auto* req) {
             }
 
             // Authenticated endpoints
-            auto& handlers = getEndpointHandlers();
+            auto handlers = getEndpointHandlers(config_cache);
             if (handlers.count(endpoint)) {
-                ApiResponse response = handlers[endpoint](body, auth_result.username, client, auth_result.new_token);
+                ApiResponse response = handlers[endpoint](config_cache, body, auth_result.username, client, auth_result.new_token);
                 sendJsonResponse(res, response);
             } else {
                 ApiResponse error_response;
@@ -2577,7 +2729,9 @@ int main(int argc, char* argv[]) {
         std::cerr << "Warning: Failed to load safe word lists" << std::endl;
     }
 
-    if (!GameConfigCache::getInstance().initialize("config")) {
+    MiniGames mini_games;
+    g_mini_games = &mini_games;
+    if (!mini_games.initialize("config")) {
         std::cerr << "Warning: Failed to load game configuration files" << std::endl;
     }
 
@@ -2593,7 +2747,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Text directory: " << g_text_dir << std::endl;
     }
 
-    register_all_mini_game_handlers();
+
 
     std::string game_db_path = g_db_dir + "/game.db";
     std::string messages_db_path = g_db_dir + "/messages.db";
@@ -2734,8 +2888,8 @@ int main(int argc, char* argv[]) {
         });
     }
 
-    app.post("/api/*", [](auto *res, auto *req) {
-        handleApiRequest(res, req);
+    app.post("/api/*", [&mini_games](auto *res, auto *req) {
+        handleApiRequest(mini_games.config_cache(), res, req);
     });
 
     app.listen(port, [port, quiet](auto *listenSocket) {
