@@ -24,8 +24,10 @@
   } from '../../../SimpleGame/ui/src/lib/gameclasses';
 
   import { ButtonClass, Button } from '../../../SimpleGame/ui/src/lib/button';
+  import { Column } from '../../../SimpleGame/ui/src/lib/layout';
   // import { Overlay } removed — placement overlay replaced by range indicator
   import type { Position2D } from '../../../SimpleGame/ui/src/lib/util';
+  import type { InlineImageMap } from '../../../SimpleGame/ui/src/lib/gameclasses';
 
   interface Props {
     characterId: number;
@@ -70,6 +72,7 @@
   let roundStarted = false;
   let gameState: 'idle' | 'battle' | 'won' | 'lost' = 'idle';
   let currentGold = 100;
+  let roundStartGold = 100;
   let currentLives = 1;
   let initialLives = 1;
   let currentRound = 1;
@@ -95,14 +98,16 @@
   let mapMetadata: any = null;
 
   // UI objects
-  let goldText: Text | null = null;
+  let resourceText: Text | null = null;
   let livesText: Text | null = null;
-  let roundText: Text | null = null;
   let startButton: Button | null = null;
   let pauseButton: Button | null = null;
   let autoAdvance = false;
   let ringButtons: Button[] = [];
   let showingTargetingPicker = false;
+
+  // Sidebar column for hide/show on drag/place
+  let sidebarColumn: Column | null = null;
 
   // OPFS persistence for unit placements
   let pendingRestore: SavedPlacement[] | null = null;
@@ -149,7 +154,7 @@
     return zones;
   }
 
-  function isBlocked(x: number, y: number, skipObj?: GameObject): boolean {
+  function isBlocked(x: number, y: number, unitTypeId: string, movingObj?: GameObject): boolean {
     for (const z of exclusionZones) {
       if (z.type === 'circle' && pointInCircle(x, y, nx(z.center_x), ny(z.center_y), z.radius * bw)) return true;
       if (z.type === 'polygon' && z.vertices) {
@@ -160,10 +165,13 @@
     for (const pb of pathBuffers) {
       if (pointInCircle(x, y, pb.cx, pb.cy, pb.r)) return true;
     }
+    const cls = towerGameClassMap.get(unitTypeId);
+    const placingR = (cls as any)?.pieceConfig?.exclusion_radius || 0;
     for (const t of activeTowers) {
-      if (t.obj === skipObj) continue;
-      const r = t.piece.exclusion_radius;
-      if (r && Math.hypot(t.obj.x - x, t.obj.y - y) < r) return true;
+      if (t.obj === movingObj) continue;
+      const tR = t.piece.exclusion_radius || 0;
+      const r = Math.max(tR, placingR);
+      if (r > 0 && Math.hypot(t.obj.x - x, t.obj.y - y) < r * bw) return true;
     }
     return false;
   }
@@ -229,7 +237,7 @@
         (obj as any)._dragOrigY = obj.y;
       });
       obj.onDragEnd(0, () => {
-        if (isBlocked(obj.x, obj.y, obj)) {
+        if (isBlocked(obj.x, obj.y, p.configId, obj)) {
           obj.x = (obj as any)._dragOrigX;
           obj.y = (obj as any)._dragOrigY;
         }
@@ -250,6 +258,7 @@
     setCameraFollowsPlayer(false);
 
     currentGold = data.gold;
+    roundStartGold = data.gold;
     initialLives = data.lives;
     currentLives = data.lives;
     currentRound = (data as any).round_number || 1;
@@ -328,18 +337,25 @@
     const sW = sidebarW;
     const cX = sX + sW / 2;
 
-    goldText = createText(`Gold: ${currentGold}`, { x: cX, y: 35 });
-    goldText.size = 22;
-    goldText.foreground = '#FFD700';
+    const copperImages: InlineImageMap = {
+      copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
+    };
+    resourceText = createText(
+      `{img:copper} ${currentGold}   Round ${currentRound}/${totalRounds}`,
+      { x: cX, y: 35 },
+      copperImages
+    );
+    resourceText.size = 22;
+    resourceText.foreground = '#FFD700';
+    resourceText.setTextAlign('center');
+    resourceText.setShadow('#000000', 4, 2, 2);
 
     if (currentLives > 1) {
       livesText = createText(`Lives: ${currentLives}`, { x: cX, y: 65 });
       livesText.size = 20;
       livesText.foreground = '#FF6666';
+      livesText.setShadow('#000000', 4, 2, 2);
     }
-    roundText = createText(`Round ${currentRound}/${totalRounds}`, { x: cX, y: 95 });
-    roundText.size = 18;
-    roundText.foreground = '#CCCCCC';
 
     let bY = 100;
     const sbBtnH = 100;
@@ -369,7 +385,7 @@
       btn.setOnClick(() => {
         setSelectedTower(null);
         console.log('sidebar click:', id);
-        placementMode = id;
+        setTimeout(() => { placementMode = id; }, 1);
       });
       btn.onDragStart(0, () => {
         console.log('dragStart:', id, 'at', btn.x, btn.y);
@@ -384,7 +400,7 @@
         const pos = getMousePosition();
         setSelectedTower(null);
         console.log('dragEnd:', id, 'released at', pos.x, pos.y, 'on board?', pos.x < bw);
-        if (pos.x < bw && pos.y >= 0 && pos.y < bh && !isBlocked(pos.x, pos.y)) {
+        if (pos.x < bw && pos.y >= 0 && pos.y < bh && !isBlocked(pos.x, pos.y, id)) {
           const cfg = allPieces[id];
           const pcost = cfg?.cost?.[0]?.gold || 0;
           if (currentGold >= pcost) tryPlace(pos.x, pos.y, id);
@@ -415,15 +431,27 @@
     fbtn.setOnClick(() => forfeitGame());
     bY += 50;
 
+    let autoBtn: Button;
     {
       const aaCls = new ButtonClass('sb_auto');
-      const autoBtn = aaCls.spawn(cX, bY, 'Auto: OFF', null, { width: sbBtnW, height: 30, color: '#555555', backgroundOpacity: 0.8 });
+      autoBtn = aaCls.spawn(cX, bY, 'Auto: OFF', null, { width: sbBtnW, height: 30, color: '#555555', backgroundOpacity: 0.8 });
       autoBtn.setOnClick(() => {
         setSelectedTower(null);
         autoAdvance = !autoAdvance;
         autoBtn.text = autoAdvance ? 'Auto: ON' : 'Auto: OFF';
         autoBtn.color = autoAdvance ? '#2D5A2D' : '#555555';
       });
+    }
+
+    // Group sidebar buttons in a Column for visibility toggling
+    {
+      const col = new Column(0, 0);
+      for (const [, btn] of unitButtons) col.addChild(btn);
+      col.addChild(startButton!);
+      col.addChild(pauseButton!);
+      col.addChild(fbtn);
+      col.addChild(autoBtn);
+      sidebarColumn = col;
     }
 
     createText('───', { x: cX, y: bh - 15 }).foreground = '#444';
@@ -443,7 +471,6 @@
       if (gameState !== 'battle') return;
       spawnTick(dt);
       combatTick(dt);
-      projTick(dt);
       checkEnd();
     });
 
@@ -469,6 +496,13 @@
 
     // Ghost + ring + range rendering
     afterDraw((ctx, _offsetX, _offsetY) => {
+      // Toggle sidebar visibility when dragging/placing units
+      if (sidebarColumn) {
+        const shouldHide = !!(placementMode || dragUnitId);
+        if (shouldHide !== !sidebarColumn.visible) {
+          sidebarColumn.setVisible(!shouldHide);
+        }
+      }
       const unitId = placementMode ?? dragUnitId;
       if (unitId) {
         const cls = towerGameClassMap.get(unitId);
@@ -484,7 +518,7 @@
         // Validity check for range circle
         const cfg = (cls as any).pieceConfig;
         const cost = cfg?.cost?.[0]?.gold || 0;
-        const canPlace = !isBlocked(pos.x, pos.y) && currentGold >= cost;
+        const canPlace = !isBlocked(pos.x, pos.y, unitId) && currentGold >= cost;
         // Range circle — blue when valid, red when invalid
         if (cfg) {
           const range = (cfg.range || 0.2) * bw;
@@ -509,7 +543,7 @@
       for (const t of activeTowers) {
         if (t.obj.isDragging && t.obj.draggable) {
           const range = (t.piece.range || 0.2) * bw;
-          const canPlace = !isBlocked(t.obj.x, t.obj.y);
+          const canPlace = !isBlocked(t.obj.x, t.obj.y, t.configId, t.obj);
           ctx.save();
           ctx.beginPath();
           ctx.arc(t.obj.x, t.obj.y, range, 0, Math.PI * 2);
@@ -617,7 +651,7 @@
     const cfg = (cls as any).pieceConfig;
     const cost = cfg?.cost?.[0]?.gold || 0;
     if (currentGold < cost) { debug('Not enough gold!'); console.log('tryPlace: not enough gold, have', currentGold, 'need', cost); return; }
-    if (isBlocked(x, y)) { debug('Cannot place here!'); console.log('tryPlace: blocked at', x, y); return; }
+    if (isBlocked(x, y, unitId)) { debug('Cannot place here!'); console.log('tryPlace: blocked at', x, y); return; }
     const obj = new GameObject(cls, x, y);
     obj.direction_x = 0;
     obj.direction_y = 0;
@@ -632,14 +666,19 @@
         (obj as any)._dragOrigY = obj.y;
       });
       obj.onDragEnd(0, () => {
-        if (isBlocked(obj.x, obj.y, obj)) {
+        if (isBlocked(obj.x, obj.y, unitId, obj)) {
           obj.x = (obj as any)._dragOrigX;
           obj.y = (obj as any)._dragOrigY;
         }
       });
     }
     currentGold -= cost;
-    if (goldText) goldText.text = `Gold: ${currentGold}`;
+    if (resourceText) {
+      resourceText.text = `{img:copper} ${currentGold}   Round ${currentRound}/${totalRounds}`;
+      resourceText.setInlineImages({
+        copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
+      });
+    }
     refreshButtonStates();
     dirty = true;
     savePlacements();
@@ -677,7 +716,7 @@
         (newObj as any)._dragOrigY = newObj.y;
       });
       newObj.onDragEnd(0, () => {
-        if (isBlocked(newObj.x, newObj.y, newObj)) {
+        if (isBlocked(newObj.x, newObj.y, piece.becomes, newObj)) {
           newObj.x = (newObj as any)._dragOrigX;
           newObj.y = (newObj as any)._dragOrigY;
         }
@@ -687,7 +726,12 @@
     const newIdx = activeTowers.indexOf(tower);
     activeTowers[newIdx] = { obj: newObj, configId: piece.becomes, level: tower.level + 1, piece: (newCls as any).pieceConfig, targeting: tower.targeting };
     currentGold -= goldCost;
-    if (goldText) goldText.text = `Gold: ${currentGold}`;
+    if (resourceText) {
+      resourceText.text = `{img:copper} ${currentGold}   Round ${currentRound}/${totalRounds}`;
+      resourceText.setInlineImages({
+        copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
+      });
+    }
     refreshButtonStates();
     setSelectedTower(null);
     dirty = true;
@@ -702,7 +746,12 @@
     const cost = tower.piece.cost?.[0]?.gold || 0;
     const refund = Math.floor(cost * 0.5);
     currentGold += refund;
-    if (goldText) goldText.text = `Gold: ${currentGold}`;
+    if (resourceText) {
+      resourceText.text = `{img:copper} ${currentGold}   Round ${currentRound}/${totalRounds}`;
+      resourceText.setInlineImages({
+        copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
+      });
+    }
     refreshButtonStates();
     tower.obj.destroy();
     activeTowers.splice(towerIdx, 1);
@@ -815,9 +864,23 @@
   }
 
   function getProjectileType(configId: string): string | null {
+    const cls = towerGameClassMap.get(configId);
+    const pid = (cls as any)?.pieceConfig?.projectile_id;
+    if (pid) return pid;
     if (['shortbow_archer', 'single_archer_tower', 'three_archer_tower'].includes(configId)) return 'hunting_arrow';
     if (['longbow_archer', 'ballista'].includes(configId)) return 'war_arrow';
     return null;
+  }
+
+  function predictIntercept(shooter: { x: number; y: number }, target: Enemy, projectileSpeed: number): { x: number; y: number } {
+    const dx = target.x - shooter.x;
+    const dy = target.y - shooter.y;
+    const dist = Math.hypot(dx, dy);
+    const travelTime = dist / projectileSpeed;
+    return {
+      x: target.x + target.direction_x * target.velocity * travelTime,
+      y: target.y + target.direction_y * target.velocity * travelTime,
+    };
   }
 
   function combatTick(dt: number) {
@@ -857,28 +920,53 @@
             const pClass = projectileClasses[projType];
             if (pClass) {
               const p = pClass.spawn(t.obj.x, t.obj.y);
-              (p as any).trg = target;
               (p as any).dmg = dmg;
-              (p as any).aoe = (t.piece.area_of_effect?.radius || 0) * bw;
               const cfg = (pClass as any).config as any;
-              p.setSpeed(cfg.speed || 1600);
-              p.mirrorOnDirection = true;
-              // Set initial direction toward target (engine handles movement via doMovement)
-              p.setOrientationTowards({ x: target.x, y: target.y });
-              // Register collision callback using SimpleGame's quadtree collision
-              p.onCollisionWithEnemy((enemy: Enemy) => {
-                const hitDmg = (p as any).dmg as number || 10;
-                const hitAoe = (p as any).aoe as number || 0;
-                console.log(`[TD] projHit: ${t.configId} → ${(enemy as any).enemyId} dmg=${hitDmg} dist=${Math.hypot(enemy.x - p.x, enemy.y - p.y).toFixed(1)}`);
-                if (hitAoe > 0) {
-                  for (const e of enemies) {
-                    if (Math.hypot(e.x - enemy.x, e.y - enemy.y) <= hitAoe) hitEnemy(e, hitDmg);
+              if (cfg.orbit_radius) {
+                // Orbital melee swing (swordsman, etc.)
+                (p as any).isOrbital = true;
+                p.singleCollisionOnly = false;
+                (p as any).hitEnemies = new Set();
+                p.alignToTravel = false;
+                const angleDeg = Math.atan2(target.y - t.obj.y, target.x - t.obj.x) * (180 / Math.PI);
+                const arcDeg = cfg.arc_degrees || 90;
+                p.circleAround({
+                  center: t.obj,
+                  radius: cfg.orbit_radius,
+                  velocity: cfg.speed || 800,
+                  startAngleDeg: angleDeg - arcDeg / 2,
+                  arcDeg: arcDeg,
+                  facing: { x: 0, y: 1 },
+                  fadeInTime: (cfg.fade_in_ms || 15) / 1000,
+                  fadeOutTime: (cfg.fade_out_ms || 15) / 1000,
+                  onComplete: () => p.destroy(),
+                });
+                p.onCollisionWithEnemy((enemy: Enemy) => {
+                  const hitSet = (p as any).hitEnemies as Set<Enemy>;
+                  if (hitSet.has(enemy)) return;
+                  hitSet.add(enemy);
+                  hitEnemy(enemy, dmg);
+                });
+              } else {
+                (p as any).trg = target;
+                (p as any).aoe = (t.piece.area_of_effect?.radius || 0) * bw;
+                p.setSpeed(cfg.speed || 1600);
+                p.mirrorOnDirection = true;
+                p.setOrientationTowards(predictIntercept(t.obj, target, cfg.speed || 1600));
+                p.onCollisionWithEnemy((enemy: Enemy) => {
+                  const hitDmg = (p as any).dmg as number || 10;
+                  const hitAoe = (p as any).aoe as number || 0;
+                  console.log(`[TD] projHit: ${t.configId} → ${(enemy as any).enemyId} dmg=${hitDmg} dist=${Math.hypot(enemy.x - p.x, enemy.y - p.y).toFixed(1)}`);
+                  if (hitAoe > 0) {
+                    for (const e of enemies) {
+                      if (Math.hypot(e.x - enemy.x, e.y - enemy.y) <= hitAoe) hitEnemy(e, hitDmg);
+                    }
+                  } else {
+                    hitEnemy(enemy, hitDmg);
                   }
-                } else {
-                  hitEnemy(enemy, hitDmg);
-                }
-                p.destroy();
-              });
+                  p.destroy();
+                });
+              }
             }
         } else {
           const aoe = (t.piece.area_of_effect?.radius || 0) * bw;
@@ -894,15 +982,6 @@
     }
   }
 
-  function projTick(dt: number) {
-    for (const p of projectiles) {
-      const trg = (p as any).trg as Enemy | undefined;
-      if (!trg || (trg as any).hp <= 0) { p.destroy(); continue; }
-      // Homing: update direction toward target each frame (engine handles position via doMovement, collision via onCollisionWithEnemy)
-      p.setOrientationTowards({ x: trg.x, y: trg.y });
-    }
-  }
-
   function hitEnemy(e: Enemy, dmg: number) {
     const before = (e as any).hp;
     (e as any).hp = ((e as any).hp || 0) - dmg;
@@ -911,7 +990,12 @@
       const mobId = (e as any).enemyId;
       const mc = mobId ? (mobEnemyClassMap.get(mobId) as any)?.mobConfig : null;
       currentGold += mc?.reward_gold || 1;
-      if (goldText) goldText.text = `Gold: ${currentGold}`;
+      if (resourceText) {
+        resourceText.text = `{img:copper} ${currentGold}   Round ${currentRound}/${totalRounds}`;
+        resourceText.setInlineImages({
+          copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
+        });
+      }
       refreshButtonStates();
       console.log(`[TD] hitEnemy: ${mobId} killed, reward=${mc?.reward_gold || 1}`);
       for (const spawnId of (mc?.spawn_on_death || [])) doSpawn(spawnId);
@@ -938,7 +1022,7 @@
       const result = await tdRound(characterId, {
         session_id: (tdData as any).session_id as number,
         lives_lost: Math.max(0, initialLives - currentLives),
-        gold_earned: Math.max(0, currentGold - 100)
+        gold_earned: Math.max(0, currentGold - roundStartGold)
       });
       const ar = result as any;
       console.log('[TD] advanceRound response:', ar);
@@ -961,13 +1045,17 @@
         allSpawned = false;
         roundStarted = false;
         // Update gold/lives from server response
-        if (ar.gold != null) currentGold = ar.gold;
+        if (ar.gold != null) { currentGold = ar.gold; roundStartGold = ar.gold; }
         if (ar.lives != null) currentLives = ar.lives;
         refreshButtonStates();
         // Update UI
-        if (goldText) goldText.text = `Gold: ${currentGold}`;
+        if (resourceText) {
+          resourceText.text = `{img:copper} ${currentGold}   Round ${currentRound}/${totalRounds}`;
+          resourceText.setInlineImages({
+            copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
+          });
+        }
         if (livesText) livesText.text = `Lives: ${currentLives}`;
-        if (roundText) roundText.text = `Round ${currentRound}/${totalRounds}`;
         if (startButton) {
           if (autoAdvance) {
             startButton.text = 'Auto...';
@@ -1017,7 +1105,7 @@
       const result = await tdRound(characterId, {
         session_id: (tdData as any).session_id as number,
         lives_lost: forceLoss ? 100 : Math.max(0, initialLives - currentLives),
-        gold_earned: Math.max(0, currentGold - 100)
+        gold_earned: Math.max(0, currentGold - roundStartGold)
       });
       const cr = result as TDRoundCompleteResponse;
       onComplete({
@@ -1046,7 +1134,7 @@
       boardDragActive = false;
       dragUnitId = null;
       selectedTower = null;
-      onComplete({ completed: false, score: 0, new_best_score: false, times_played: 0, all_levels_done: false, base_unlocked: false, game_phase: 'initial_mission', next_level_id: null, rewards: {}, land_patent_earned: false, duke_right_earned: false });
+      onComplete({ completed: false, score: 0, new_best_score: 0, times_played: 0, all_levels_done: false, base_unlocked: false, game_phase: 'initial_mission', next_level_id: null, rewards: {}, land_patent_earned: false, duke_right_earned: false });
       return;
     }
     gameState = 'lost';
@@ -1115,7 +1203,7 @@
           const bx = (bw + sidebarW) * (e.clientX / canvasEl.clientWidth);
           const by = bh * (e.clientY / canvasEl.clientHeight);
           console.log('native mouseup: placing', placementMode, 'at', bx, by);
-          if (bx < bw && by >= 0 && by < bh && !isBlocked(bx, by)) {
+          if (bx < bw && by >= 0 && by < bh && !isBlocked(bx, by, placementMode!)) {
             const cls = towerGameClassMap.get(placementMode);
             const cfg = cls ? (cls as any).pieceConfig : null;
             const pcost = cfg?.cost?.[0]?.gold || 0;

@@ -103,6 +103,7 @@ export interface TowerDefensePiece {
   area_of_effect: boolean | { radius: number };
   attack_rate: number;
   range: number;
+  projectile_id?: string;
   attack_spawns: { id: string; duration_ms: number } | null;
   upgrade_cost: Record<string, number>[];
   abilities: TowerDefenseAbility[];

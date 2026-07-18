@@ -26,6 +26,9 @@ void GameConfigCache::scaleTDPieceValues(nlohmann::json& file_root) {
             if (piece.contains("range") && piece["range"].is_number()) {
                 piece["range"] = piece["range"].get<double>() / 100.0;
             }
+            if (piece.contains("exclusion_radius") && piece["exclusion_radius"].is_number()) {
+                piece["exclusion_radius"] = piece["exclusion_radius"].get<double>() / 100.0;
+            }
             if (piece.contains("area_of_effect") && piece["area_of_effect"].is_object()) {
                 auto& aoe = piece["area_of_effect"];
                 if (aoe.contains("radius") && aoe["radius"].is_number()) {

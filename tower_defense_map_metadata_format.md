@@ -11,6 +11,7 @@ This document specifies the JSON metadata format produced by TowerDefenseMapper 
   "formatVersion": "1.0",
   "name": "MyMap",
   "imageFilename": "my_map.png",
+  "difficulty": 1.0,
   "spawnPoints": [ ... ],
   "paths": [ ... ],
   "intersections": [ ... ],
@@ -24,6 +25,7 @@ This document specifies the JSON metadata format produced by TowerDefenseMapper 
 | `formatVersion` | string | yes | Format version string for compatibility checking |
 | `name` | string | yes | Human-readable map name |
 | `imageFilename` | string | yes | Original map image filename (for reference only) |
+| `difficulty` | number | yes | Map difficulty rating (1.0 = easy, higher = harder) |
 | `spawnPoints` | SpawnPoint[] | yes | Array of enemy spawn points |
 | `paths` | Path[] | yes | Array of path polylines |
 | `intersections` | Intersection[] | yes | Array of path intersection nodes |
