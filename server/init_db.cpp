@@ -217,6 +217,7 @@ namespace {
             "lives INTEGER NOT NULL DEFAULT 20,"
             "gold INTEGER NOT NULL DEFAULT 100,"
             "state TEXT NOT NULL DEFAULT 'active',"
+            "current_spawn_schedule TEXT DEFAULT NULL,"
             "FOREIGN KEY(character_id) REFERENCES characters(id)"
         );
 
@@ -252,11 +253,20 @@ namespace {
 
 }
 
+void migrate_spawn_schedule(sqlite::database& db) {
+    try {
+        db << "ALTER TABLE game_sessions ADD COLUMN current_spawn_schedule TEXT DEFAULT NULL;";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+}
+
 void initializeGameDB(sqlite::database& db) {
     createGameDBTables(db);
     migrate_character_archetype(db);
     migrate_character_sex(db);
     migrate_manor_level(db);
+    migrate_spawn_schedule(db);
     ensureGameDBIndexes_private(db);
 }
 

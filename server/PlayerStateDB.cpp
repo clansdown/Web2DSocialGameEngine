@@ -360,4 +360,34 @@ void earn_duke_right(sqlite::database& db, int character_id, int64_t timestamp) 
         }
     }
 
+    void store_spawn_schedule(sqlite::database& db, int session_id, const nlohmann::json& schedule) {
+        try {
+            std::string serialized = schedule.dump();
+            db << "UPDATE game_sessions SET current_spawn_schedule = ? WHERE id = ?;"
+               << serialized << session_id;
+        } catch (const std::exception& e) {
+            std::cerr << "[PlayerStateDB] Failed to store spawn schedule for session "
+                      << session_id << ": " << e.what() << std::endl;
+        }
+    }
+
+    nlohmann::json load_spawn_schedule(sqlite::database& db, int session_id) {
+        try {
+            std::string serialized;
+            bool found = false;
+            db << "SELECT current_spawn_schedule FROM game_sessions WHERE id = ?;"
+               << session_id
+               >> [&](std::string val) {
+                    serialized = val;
+                    found = true;
+                };
+            if (!found || serialized.empty()) return nlohmann::json();
+            return nlohmann::json::parse(serialized);
+        } catch (const std::exception& e) {
+            std::cerr << "[PlayerStateDB] Failed to load spawn schedule for session "
+                      << session_id << ": " << e.what() << std::endl;
+            return nlohmann::json();
+        }
+    }
+
 } // namespace player_state_db

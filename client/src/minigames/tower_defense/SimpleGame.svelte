@@ -33,7 +33,7 @@
     characterId: number;
     miniGame: string;
     levelId: number;
-    onComplete: (results: EndMiniGameResponse) => void;
+    onComplete: (results: EndMiniGameResponse, forfeited?: boolean) => void;
     onError: (error: string) => void;
   }
 
@@ -45,6 +45,7 @@
     y: number;
     level: number;
     targeting: string;
+    flaskId?: string;
   }
   interface SavedTDState {
     session_id: number;
@@ -66,19 +67,19 @@
   let projectileClasses: Record<string, ProjectileClass> = {};
 
   // Runtime state
-  let activeTowers: { obj: GameObject; configId: string; level: number; piece: any; targeting: string }[] = [];
-  let spawnQueue: { enemyId: string; remaining: number; intervalMs: number; initialDelayMs: number; spawnTimer: number; initialDone: boolean }[] = [];
+  let activeTowers: { obj: GameObject; configId: string; level: number; piece: any; targeting: string; flaskId?: string }[] = [];
+  let spawnQueue: { enemyId: string; remaining: number; intervalMs: number; initialDelayMs: number; spawnTimer: number; initialDone: boolean; spawnPointId?: string }[] = [];
   let allSpawned = false;
   let roundStarted = false;
   let gameState: 'idle' | 'battle' | 'won' | 'lost' = 'idle';
   let currentGold = 100;
-  let roundStartGold = 100;
   let currentLives = 1;
   let initialLives = 1;
   let currentRound = 1;
   let totalRounds = 1;
   let roundInTransition = false;
   let nextRoundSpawnSchedule: SpawnScheduleEntry[] | null = null;
+  let leakedEnemies: Record<string, number> = {};
   let selectedTower: { obj: GameObject; configId: string } | null = null;
   let placementMode: string | null = null;
   let boardDragActive = false;
@@ -105,6 +106,19 @@
   let autoAdvance = false;
   let ringButtons: Button[] = [];
   let showingTargetingPicker = false;
+
+  // Ground effect pools
+  let groundPools: {
+    id: string; obj: GameObject;
+    timer: number; opacity: number;
+    slowFactor: number; damagePerSecond: number;
+    damageType: string | null; radius: number;
+  }[] = [];
+  let poolClasses: Record<string, GameObjectClass> = {};
+
+  // Path segments for nearest_path targeting
+  let pathSegments: { ax: number; ay: number; bx: number; by: number }[] = [];
+  let showingFlaskPicker = false;
 
   // Sidebar column for hide/show on drag/place
   let sidebarColumn: Column | null = null;
@@ -188,6 +202,111 @@
     return intersection.branches[0]?.path_id || null;
   }
 
+  function closestPointOnSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): { x: number; y: number } {
+    const dx = bx - ax, dy = by - ay;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq === 0) return { x: ax, y: ay };
+    let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+    t = Math.max(0, Math.min(1, t));
+    return { x: ax + t * dx, y: ay + t * dy };
+  }
+
+  function findNearestPathSegInfo(px: number, py: number): { seg: { ax: number; ay: number; bx: number; by: number }; point: { x: number; y: number }; dist: number } | null {
+    let best: any = null;
+    let bestDist = Infinity;
+    for (const seg of pathSegments) {
+      const pt = closestPointOnSegment(px, py, seg.ax, seg.ay, seg.bx, seg.by);
+      const d = Math.hypot(pt.x - px, pt.y - py);
+      if (d < bestDist) {
+        bestDist = d;
+        best = { seg, point: pt, dist: d };
+      }
+    }
+    return best;
+  }
+
+  function recachePathTarget(t: { obj: { x: number; y: number }; piece: any }) {
+    const info = findNearestPathSegInfo(t.obj.x, t.obj.y);
+    if (info) (t as any)._pathTarget = info.point;
+  }
+
+  function spawnGroundPool(x: number, y: number, aeConfig: any, targetX: number, targetY: number) {
+    const radiusPx = aeConfig.radius * bw;
+    const clsName = `pool_${aeConfig.id}`;
+    let cls = poolClasses[clsName];
+    if (!cls) {
+      cls = new GameObjectClass(clsName, `/images/tower_defense/projectiles/${aeConfig.image_file}`, null);
+      cls.defaultWidth = radiusPx * 2;
+      cls.defaultHeight = radiusPx * 2;
+      cls.setBoundingBox(cls.defaultWidth, cls.defaultHeight);
+      cls.onCollisionWith(EnemyClass.rootEnemyClass, (poolObj: GameObject, enemy: GameObject) => {
+        const pd = (poolObj as any).poolData;
+        if (pd.slowFactor > (enemy as any).slowFactor) {
+          (enemy as any).slowFactor = pd.slowFactor;
+        }
+        if (pd.damagePerSecond > 0) {
+          const map = (poolObj as any).damageMap as Map<GameObject, number>;
+          const now = (poolObj as any).timeExistedMillis || 0;
+          const lastTime = map.get(enemy) || now;
+          const elapsed = now - lastTime;
+          if (elapsed >= 50) {
+            const dmg = pd.damagePerSecond * (elapsed / 1000);
+            hitEnemy(enemy, dmg);
+            map.set(enemy, now);
+          }
+        }
+      });
+      poolClasses[clsName] = cls;
+    }
+    const seg = findNearestPathSegInfo(x, y);
+    let angle = 0;
+    if (seg) {
+      angle = Math.atan2(seg.seg.by - seg.seg.ay, seg.seg.bx - seg.seg.ax) * (180 / Math.PI);
+    }
+    const obj = new GameObject(cls, x, y);
+    obj.setOrientation(angle);
+    (obj as any).alpha = aeConfig.opacity || 1.0;
+    (obj as any).poolData = {
+      id: aeConfig.id,
+      slowFactor: aeConfig.slow_factor || 0,
+      damagePerSecond: aeConfig.damage_per_second || 0,
+    };
+    (obj as any).damageMap = new Map();
+    gameObjects.add(obj);
+    cls.gameObjects.add(obj);
+    groundPools.push({
+      id: aeConfig.id, obj,
+      timer: aeConfig.duration_ms || 0,
+      opacity: aeConfig.opacity || 1.0,
+      slowFactor: aeConfig.slow_factor || 0,
+      damagePerSecond: aeConfig.damage_per_second || 0,
+      damageType: aeConfig.damage_type || null,
+      radius: radiusPx,
+    });
+  }
+
+  function poolTick(dt: number) {
+    for (let i = groundPools.length - 1; i >= 0; i--) {
+      const pool = groundPools[i];
+      pool.timer -= dt * 1000;
+      if (pool.timer <= 0) {
+        pool.obj.destroy();
+        groundPools.splice(i, 1);
+        continue;
+      }
+      if (pool.timer < 500) {
+        (pool.obj as any).alpha = (pool.timer / 500) * pool.opacity;
+      }
+    }
+    for (const e of enemies) {
+      const sf = (e as any).slowFactor || 0;
+      if (sf > 0 && (e as any).baseSpeed) {
+        e.velocity = (e as any).baseSpeed * (1 - sf);
+      }
+      (e as any).slowFactor = 0;
+    }
+  }
+
   // ============================================================
   // OPFS persistence
   // ============================================================
@@ -205,7 +324,8 @@
           x: t.obj.x,
           y: t.obj.y,
           level: t.level,
-          targeting: t.targeting
+          targeting: t.targeting,
+          flaskId: t.flaskId
         }))
       };
       await setConfig("td_placements", data);
@@ -222,14 +342,19 @@
     obj.direction_y = 0;
     gameObjects.add(obj);
     cls.gameObjects.add(obj);
+    const piece = (cls as any).pieceConfig;
+    const targeting = p.targeting || piece.default_targeting || 'first';
+    const flaskId = p.flaskId || (piece.projectile_ids?.includes('naptha_flask') ? 'naptha_flask' : piece.projectile_ids?.[0]);
     activeTowers.push({
       obj,
       configId: p.configId,
       level: p.level,
-      piece: (cls as any).pieceConfig,
-      targeting: p.targeting
+      piece,
+      targeting,
+      flaskId
     });
     if (soldierIds.has(p.configId)) {
+      const towerEntry = activeTowers[activeTowers.length - 1];
       obj.draggable = true;
       obj.dragFollowsCursor = true;
       obj.onDragStart(0, () => {
@@ -241,6 +366,7 @@
           obj.x = (obj as any)._dragOrigX;
           obj.y = (obj as any)._dragOrigY;
         }
+        recachePathTarget(towerEntry);
       });
     }
   }
@@ -258,7 +384,6 @@
     setCameraFollowsPlayer(false);
 
     currentGold = data.gold;
-    roundStartGold = data.gold;
     initialLives = data.lives;
     currentLives = data.lives;
     currentRound = (data as any).round_number || 1;
@@ -278,6 +403,18 @@
     intersectionMap = new Map();
     if (mapMetadata?.paths) for (const p of mapMetadata.paths) pathMap.set(p.id, p);
     if (mapMetadata?.intersections) for (const i of mapMetadata.intersections) intersectionMap.set(i.id, i);
+    pathSegments = [];
+    if (mapMetadata?.paths) {
+      for (const p of mapMetadata.paths) {
+        const wps = p.waypoints || [];
+        for (let i = 0; i < wps.length - 1; i++) {
+          pathSegments.push({
+            ax: nx(wps[i].x), ay: ny(wps[i].y),
+            bx: nx(wps[i + 1].x), by: ny(wps[i + 1].y),
+          });
+        }
+      }
+    }
 
     // Background - map image stretched to fill canvas
     const mapUrl = mapMetadata?.image_filename
@@ -462,7 +599,8 @@
       spawnQueue.push({
         enemyId: e.enemy_id, remaining: e.count,
         intervalMs: e.interval_ms, initialDelayMs: e.initial_delay_ms,
-        spawnTimer: 0, initialDone: false
+        spawnTimer: 0, initialDone: false,
+        spawnPointId: e.spawn_point_id
       });
     }
 
@@ -471,6 +609,19 @@
       if (gameState !== 'battle') return;
       spawnTick(dt);
       combatTick(dt);
+      poolTick(dt);
+      // Proximity fallback for flask projectiles that miss enemies
+      for (const p of projectiles) {
+        const tX = (p as any).targetX as number | undefined;
+        const tY = (p as any).targetY as number | undefined;
+        const aeCfg = (p as any).aeCfg as any | undefined;
+        if (tX != null && tY != null && aeCfg) {
+          if (Math.hypot(p.x - tX, p.y - tY) < 15) {
+            spawnGroundPool(p.x, p.y, aeCfg, tX, tY);
+            p.destroy();
+          }
+        }
+      }
       checkEnd();
     });
 
@@ -478,7 +629,7 @@
     onPause(() => { if (pauseButton) pauseButton.text = 'Resume'; });
     onResume(() => { if (pauseButton) pauseButton.text = 'Pause'; });
 
-    // Click handler — placement (click-to-place) + tower selection + ring buttons
+    // Click handler — placement (click-to-place) + tower selection + selectable targeting + ring buttons
     onMouseClick(0, (_e, x, y) => {
       if (x >= bw) { console.log('click in sidebar'); return; }
       if (placementMode) {
@@ -486,6 +637,18 @@
         tryPlace(x, y, placementMode);
         placementMode = null;
         return;
+      }
+      // Selectable targeting — if a tower with selectable mode is selected, set its target
+      if (selectedTower) {
+        const twr = activeTowers.find(t => t.obj === selectedTower!.obj);
+        if (twr && twr.targeting === 'selectable') {
+          const range = (twr.piece.range || 0.2) * bw;
+          if (Math.hypot(x - twr.obj.x, y - twr.obj.y) <= range) {
+            (twr as any).selectableTarget = { x, y };
+            setSelectedTower(null);
+            return;
+          }
+        }
       }
       // Ring button clicks are handled by ButtonClass natively
       for (const t of activeTowers) {
@@ -538,6 +701,24 @@
           ctx.restore();
         }
       }
+      // Selectable target crosshair for units in selectable mode
+      for (const t of activeTowers) {
+        if (t.targeting === 'selectable' && (t as any).selectableTarget) {
+          const st = (t as any).selectableTarget as { x: number; y: number };
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255, 200, 0, 0.6)';
+          ctx.lineWidth = 2;
+          const cs = 8;
+          ctx.beginPath();
+          ctx.moveTo(st.x - cs, st.y); ctx.lineTo(st.x + cs, st.y);
+          ctx.moveTo(st.x, st.y - cs); ctx.lineTo(st.x, st.y + cs);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(st.x, st.y, cs * 1.5, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
       // Ring buttons handled by ButtonClass via updateRingButtons()
       // Range circle for dragged placed units
       for (const t of activeTowers) {
@@ -575,6 +756,7 @@
   function setSelectedTower(val: { obj: GameObject; configId: string } | null) {
     selectedTower = val;
     showingTargetingPicker = false;
+    showingFlaskPicker = false;
     updateRingButtons();
   }
 
@@ -587,7 +769,7 @@
 
     const btnW = 90, btnH = 42, gap = 8;
     const yOff = twr.obj.y + 38;
-    const modes = ['closest', 'first', 'strongest', 'weakest'];
+    const modes = ['closest', 'first', 'strongest', 'weakest', 'nearest_path', 'selectable'];
     const upgradeTarget = twr.piece.becomes;
     const targetExists = upgradeTarget ? towerGameClassMap.has(upgradeTarget) : false;
     const modeLabel = twr.targeting || 'closest';
@@ -597,16 +779,37 @@
 
     if (showingTargetingPicker) {
       specs = modes.map(m => ({
-        text: m.charAt(0).toUpperCase() + m.slice(1),
+        text: m === 'nearest_path' ? 'Nearest Path' : (m === 'selectable' ? 'Selectable' : m.charAt(0).toUpperCase() + m.slice(1)),
         color: twr.targeting === m ? '#2A5A3A' : '#3A5A8B',
         disabled: false,
         action: () => { twr.targeting = m; setSelectedTower(null); }
       }));
+    } else if (showingFlaskPicker && twr.piece.projectile_ids) {
+      const flaskIds: string[] = twr.piece.projectile_ids;
+      specs = flaskIds.map((fid: string) => {
+        const cfg = projectileClasses[fid] ? (projectileClasses[fid] as any).config : null;
+        const label = cfg?.name || fid.charAt(0).toUpperCase() + fid.slice(1);
+        return {
+          text: label,
+          color: twr.flaskId === fid ? '#2A5A3A' : '#5A3A8B',
+          disabled: false,
+          action: () => { twr.flaskId = fid; dirty = true; savePlacements(); setSelectedTower(null); }
+        };
+      });
     } else {
       specs = [
         { text: 'Recall', color: '#8B3A3A', disabled: false, action: doSell },
-        { text: modeLabel.charAt(0).toUpperCase() + modeLabel.slice(1), color: '#3A5A8B', disabled: false, action: () => { showingTargetingPicker = true; updateRingButtons(); } }
+        { text: modeLabel === 'nearest_path' ? 'Nearest Path' : (modeLabel === 'selectable' ? 'Selectable' : modeLabel.charAt(0).toUpperCase() + modeLabel.slice(1)), color: '#3A5A8B', disabled: false, action: () => { showingTargetingPicker = true; updateRingButtons(); } }
       ];
+      if (twr.piece.projectile_ids) {
+        const fCfg = twr.flaskId ? projectileClasses[twr.flaskId] : null;
+        const fLabel = fCfg ? (fCfg as any).config?.name || twr.flaskId : 'Flask';
+        specs.push({
+          text: 'Flask: ' + fLabel, color: '#5A3A8B',
+          disabled: false,
+          action: () => { showingFlaskPicker = true; updateRingButtons(); }
+        });
+      }
       if (targetExists) {
         specs.push({
           text: 'Upgrade', color: '#3A8B3A',
@@ -657,7 +860,19 @@
     obj.direction_y = 0;
     gameObjects.add(obj);
     cls.gameObjects.add(obj);
-    activeTowers.push({ obj, configId: unitId, level: 0, piece: cfg, targeting: 'first' });
+    const targeting = cfg.default_targeting || 'first';
+    const projIds = cfg.projectile_ids as string[] | undefined;
+    const flaskId = projIds?.includes('naptha_flask')
+      ? 'naptha_flask'
+      : (projIds?.[0]) || undefined;
+    const towerEntry = { obj, configId: unitId, level: 0, piece: cfg, targeting, flaskId };
+    activeTowers.push(towerEntry);
+    if (targeting === 'nearest_path') {
+      recachePathTarget(towerEntry);
+    } else if (targeting === 'selectable') {
+      const info = findNearestPathSegInfo(x, y);
+      if (info) (towerEntry as any).selectableTarget = { x: info.point.x, y: info.point.y };
+    }
     if (soldierIds.has(unitId)) {
       obj.draggable = true;
       obj.dragFollowsCursor = true;
@@ -670,6 +885,7 @@
           obj.x = (obj as any)._dragOrigX;
           obj.y = (obj as any)._dragOrigY;
         }
+        recachePathTarget(towerEntry);
       });
     }
     currentGold -= cost;
@@ -724,7 +940,7 @@
     }
 
     const newIdx = activeTowers.indexOf(tower);
-    activeTowers[newIdx] = { obj: newObj, configId: piece.becomes, level: tower.level + 1, piece: (newCls as any).pieceConfig, targeting: tower.targeting };
+    activeTowers[newIdx] = { obj: newObj, configId: piece.becomes, level: tower.level + 1, piece: (newCls as any).pieceConfig, targeting: tower.targeting, flaskId: tower.flaskId };
     currentGold -= goldCost;
     if (resourceText) {
       resourceText.text = `{img:copper} ${currentGold}   Round ${currentRound}/${totalRounds}`;
@@ -782,7 +998,7 @@
         if (sq.spawnTimer >= sq.initialDelayMs) {
           sq.initialDone = true;
           sq.spawnTimer = 0;
-          doSpawn(sq.enemyId);
+          doSpawn(sq.enemyId, sq);
           sq.remaining--;
         }
         continue;
@@ -790,34 +1006,38 @@
       sq.spawnTimer += dt * 1000;
       if (sq.spawnTimer >= sq.intervalMs) {
         sq.spawnTimer = 0;
-        doSpawn(sq.enemyId);
+        doSpawn(sq.enemyId, sq);
         sq.remaining--;
       }
     }
     if (!anyLeft) allSpawned = true;
   }
 
-  function doSpawn(enemyId: string) {
+  function doSpawn(enemyId: string, sq?: { spawnPointId?: string }) {
     const cls = mobEnemyClassMap.get(enemyId);
     if (!cls || !mapMetadata?.spawn_points?.length) return;
-    const sp = mapMetadata.spawn_points[0];
-    const e = cls.spawn(nx(sp.x), ny(sp.y));
+    const sp = sq?.spawnPointId
+      ? mapMetadata.spawn_points.find((s: any) => s.id === sq.spawnPointId)
+      : null;
+    const spawn = sp ?? mapMetadata.spawn_points[0];
+    const e = cls.spawn(nx(spawn.x), ny(spawn.y));
     (e as any).enemyId = enemyId;
     (e as any).hp = cls.defaultHitpoints;
 
-    const p = pathMap.get(sp.target_path_id);
+    const p = pathMap.get(spawn.target_path_id);
     if (!p?.waypoints?.length) {
-      console.log(`[TD] doSpawn: no waypoints for path ${sp.target_path_id}`);
+      console.log(`[TD] doSpawn: no waypoints for path ${spawn.target_path_id}`);
       return;
     }
     const mobCfg = (cls as any).mobConfig as any;
     const spd = mobCfg?.speed || 1.0;
+    (e as any).baseSpeed = spd;
     const wps = p.waypoints;
     const startIdx = (wps.length > 1
-      && Math.abs(wps[0].x - sp.x) < 0.0001
-      && Math.abs(wps[0].y - sp.y) < 0.0001) ? 1 : 0;
+      && Math.abs(wps[0].x - spawn.x) < 0.0001
+      && Math.abs(wps[0].y - spawn.y) < 0.0001) ? 1 : 0;
     (e as any).waypointIndex = startIdx;
-    (e as any).pathId = sp.target_path_id;
+    (e as any).pathId = spawn.target_path_id;
     e.decelerationDistance = 0;
     // Enable sprite mirroring based on movement direction (spriteForwardVector inherited from class default)
     e.mirrorOnDirection = true;
@@ -850,25 +1070,30 @@
       const dist = Math.hypot(dx, dy);
       e.moveTo({ x: nx(wps[startIdx].x), y: ny(wps[startIdx].y) }, dist / (spd * 60));
     }
-    console.log(`[TD] doSpawn: ${enemyId} at (${nx(sp.x).toFixed(0)}, ${ny(sp.y).toFixed(0)}) hp=${cls.defaultHitpoints} spd=${spd} waypoints=${wps.length} startIdx=${startIdx}`);
+    console.log(`[TD] doSpawn: ${enemyId} at (${nx(spawn.x).toFixed(0)}, ${ny(spawn.y).toFixed(0)}) hp=${cls.defaultHitpoints} spd=${spd} waypoints=${wps.length} startIdx=${startIdx}`);
     e.logMovement();
   }
 
   function enemyEscaped(e: Enemy) {
     currentLives--;
-    console.log(`[TD] enemyEscaped: ${(e as any).enemyId} at (${e.x.toFixed(0)}, ${e.y.toFixed(0)}) lives=${currentLives}`);
+    const eid = (e as any).enemyId as string;
+    if (eid) leakedEnemies[eid] = (leakedEnemies[eid] || 0) + 1;
+    console.log(`[TD] enemyEscaped: ${eid} at (${e.x.toFixed(0)}, ${e.y.toFixed(0)}) lives=${currentLives}`);
     if (livesText) livesText.text = `Lives: ${currentLives}`;
     enemies.delete(e);
     e.destroy();
     if (currentLives <= 0) { gameState = 'lost'; endGame(); }
   }
 
-  function getProjectileType(configId: string): string | null {
-    const cls = towerGameClassMap.get(configId);
-    const pid = (cls as any)?.pieceConfig?.projectile_id;
+  function getProjectileType(t: { configId: string; flaskId?: string; piece: any }): string | null {
+    const projIds = t.piece.projectile_ids as string[] | undefined;
+    if (projIds && projIds.length > 0) {
+      return t.flaskId || projIds[0];
+    }
+    const pid = t.piece.projectile_id as string | undefined;
     if (pid) return pid;
-    if (['shortbow_archer', 'single_archer_tower', 'three_archer_tower'].includes(configId)) return 'hunting_arrow';
-    if (['longbow_archer', 'ballista'].includes(configId)) return 'war_arrow';
+    if (['shortbow_archer', 'single_archer_tower', 'three_archer_tower'].includes(t.configId)) return 'hunting_arrow';
+    if (['longbow_archer', 'ballista'].includes(t.configId)) return 'war_arrow';
     return null;
   }
 
@@ -887,96 +1112,132 @@
     for (const t of activeTowers) {
       const range = (t.piece.range || 0.2) * bw;
       const rate = t.piece.attack_rate || 1.0;
-      const tier = Math.min(t.level, (t.piece.damage?.length || 1) - 1);
-      const dmg = t.piece.damage?.[tier] || 10;
-      let target: Enemy | null = null;
+      const tdmg = t.piece.damage?.[Math.min(t.level, (t.piece.damage?.length || 1) - 1)] || 10;
       const targeting = (t as any).targeting || 'closest';
-      if (targeting === 'closest' || targeting === 'first') {
-        let best = targeting === 'closest' ? range : -1;
-        for (const e of enemies) {
-          const d = Math.hypot(e.x - t.obj.x, e.y - t.obj.y);
-          if (d > range) continue;
-          if (targeting === 'closest') {
-            if (d < best) { best = d; target = e; }
-          } else {
-            if ((e as any).timeExistedMillis > best) { best = (e as any).timeExistedMillis; target = e; }
+      let fireX: number | null = null;
+      let fireY: number | null = null;
+      let reasonEnemy: Enemy | null = null;
+
+      if (targeting === 'nearest_path') {
+        const pt = (t as any)._pathTarget as { x: number; y: number } | undefined;
+        if (pt) { fireX = pt.x; fireY = pt.y; }
+      } else if (targeting === 'selectable') {
+        const st = (t as any).selectableTarget as { x: number; y: number } | undefined;
+        if (st) {
+          const poolRadius = (t.piece.area_of_effect?.radius || 0) * bw;
+          const triggerR = poolRadius > 0 ? poolRadius : range * 0.3;
+          for (const e of enemies) {
+            if (Math.hypot(e.x - st.x, e.y - st.y) <= triggerR) {
+              fireX = st.x; fireY = st.y;
+              break;
+            }
           }
         }
       } else {
-        let bestVal = targeting === 'strongest' ? -1 : Infinity;
-        for (const e of enemies) {
-          const d = Math.hypot(e.x - t.obj.x, e.y - t.obj.y);
-          if (d > range) continue;
-          const hp = (e as any).hp || 0;
-          if (targeting === 'strongest' ? hp > bestVal : hp < bestVal) { bestVal = hp; target = e; }
+        let target: Enemy | null = null;
+        if (targeting === 'closest' || targeting === 'first') {
+          let best = targeting === 'closest' ? range : -1;
+          for (const e of enemies) {
+            const d = Math.hypot(e.x - t.obj.x, e.y - t.obj.y);
+            if (d > range) continue;
+            if (targeting === 'closest') {
+              if (d < best) { best = d; target = e; }
+            } else {
+              if ((e as any).timeExistedMillis > best) { best = (e as any).timeExistedMillis; target = e; }
+            }
+          }
+        } else {
+          let bestVal = targeting === 'strongest' ? -1 : Infinity;
+          for (const e of enemies) {
+            const d = Math.hypot(e.x - t.obj.x, e.y - t.obj.y);
+            if (d > range) continue;
+            const hp = (e as any).hp || 0;
+            if (targeting === 'strongest' ? hp > bestVal : hp < bestVal) { bestVal = hp; target = e; }
+          }
+        }
+        if (target) {
+          fireX = target.x; fireY = target.y;
+          reasonEnemy = target;
         }
       }
-      if (!target) continue;
+
+      if (fireX === null) continue;
+      const fx = fireX;
+      const fy = fireY!;
+
       (t as any).atkTimer = ((t as any).atkTimer || 0) + dt;
       if ((t as any).atkTimer >= 1.0 / rate) {
         (t as any).atkTimer = 0;
-          const projType = getProjectileType(t.configId);
-          if (projType) {
-            const pClass = projectileClasses[projType];
-            if (pClass) {
-              const p = pClass.spawn(t.obj.x, t.obj.y);
-              (p as any).dmg = dmg;
-              const cfg = (pClass as any).config as any;
-              if (cfg.orbit_radius) {
-                // Orbital melee swing (swordsman, etc.)
-                (p as any).isOrbital = true;
-                p.singleCollisionOnly = false;
-                (p as any).hitEnemies = new Set();
-                p.alignToTravel = false;
-                const angleDeg = Math.atan2(target.y - t.obj.y, target.x - t.obj.x) * (180 / Math.PI);
-                const arcDeg = cfg.arc_degrees || 90;
-                p.circleAround({
-                  center: t.obj,
-                  radius: cfg.orbit_radius,
-                  velocity: cfg.speed || 800,
-                  startAngleDeg: angleDeg - arcDeg / 2,
-                  arcDeg: arcDeg,
-                  facing: { x: 0, y: 1 },
-                  fadeInTime: (cfg.fade_in_ms || 15) / 1000,
-                  fadeOutTime: (cfg.fade_out_ms || 15) / 1000,
-                  onComplete: () => p.destroy(),
-                });
-                p.onCollisionWithEnemy((enemy: Enemy) => {
-                  const hitSet = (p as any).hitEnemies as Set<Enemy>;
-                  if (hitSet.has(enemy)) return;
-                  hitSet.add(enemy);
-                  hitEnemy(enemy, dmg);
-                });
-              } else {
-                (p as any).trg = target;
-                (p as any).aoe = (t.piece.area_of_effect?.radius || 0) * bw;
-                p.setSpeed(cfg.speed || 1600);
-                p.mirrorOnDirection = true;
-                p.setOrientationTowards(predictIntercept(t.obj, target, cfg.speed || 1600));
-                p.onCollisionWithEnemy((enemy: Enemy) => {
-                  const hitDmg = (p as any).dmg as number || 10;
-                  const hitAoe = (p as any).aoe as number || 0;
-                  console.log(`[TD] projHit: ${t.configId} → ${(enemy as any).enemyId} dmg=${hitDmg} dist=${Math.hypot(enemy.x - p.x, enemy.y - p.y).toFixed(1)}`);
-                  if (hitAoe > 0) {
-                    for (const e of enemies) {
-                      if (Math.hypot(e.x - enemy.x, e.y - enemy.y) <= hitAoe) hitEnemy(e, hitDmg);
-                    }
-                  } else {
-                    hitEnemy(enemy, hitDmg);
-                  }
-                  p.destroy();
-                });
-              }
-            }
+        const projType = getProjectileType(t);
+        if (!projType) continue;
+        const pClass = projectileClasses[projType];
+        if (!pClass) continue;
+        const p = pClass.spawn(t.obj.x, t.obj.y);
+        const cfg = (pClass as any).config as any;
+
+        if (cfg.orbit_radius) {
+          (p as any).isOrbital = true;
+          p.singleCollisionOnly = false;
+          (p as any).hitEnemies = new Set();
+          p.alignToTravel = false;
+          const angleDeg = Math.atan2(fy - t.obj.y, fx - t.obj.x) * (180 / Math.PI);
+          const arcDeg = cfg.arc_degrees || 90;
+          p.circleAround({
+            center: t.obj,
+            radius: cfg.orbit_radius,
+            velocity: cfg.speed || 800,
+            startAngleDeg: angleDeg - arcDeg / 2,
+            arcDeg: arcDeg,
+            facing: { x: 0, y: 1 },
+            fadeInTime: (cfg.fade_in_ms || 15) / 1000,
+            fadeOutTime: (cfg.fade_out_ms || 15) / 1000,
+            onComplete: () => p.destroy(),
+          });
+          p.onCollisionWithEnemy((enemy: Enemy) => {
+            const hitSet = (p as any).hitEnemies as Set<Enemy>;
+            if (hitSet.has(enemy)) return;
+            hitSet.add(enemy);
+            hitEnemy(enemy, tdmg);
+          });
+          continue;
+        }
+
+        const aeCfg = cfg.area_effect;
+        if (aeCfg) {
+          // Flask projectile — no direct damage, spawns pool on impact
+          p.setSpeed(cfg.speed || 400);
+          p.mirrorOnDirection = true;
+          p.setOrientationTowards({ x: fx, y: fy });
+          (p as any).targetX = fx;
+          (p as any).targetY = fy;
+          p.onCollisionWithEnemy((enemy: Enemy) => {
+            spawnGroundPool(enemy.x, enemy.y, aeCfg, fx, fy);
+            p.destroy();
+          });
         } else {
-          const aoe = (t.piece.area_of_effect?.radius || 0) * bw;
-          if (aoe > 0) {
-            for (const e of enemies) {
-              if (Math.abs(e.x - target.x) <= aoe && Math.abs(e.y - target.y) <= aoe) hitEnemy(e, dmg);
-            }
+          // Standard homing projectile (arrows)
+          (p as any).dmg = tdmg;
+          (p as any).aoe = (t.piece.area_of_effect?.radius || 0) * bw;
+          p.setSpeed(cfg.speed || 1600);
+          p.mirrorOnDirection = true;
+          if (reasonEnemy) {
+            p.setOrientationTowards(predictIntercept(t.obj, reasonEnemy, cfg.speed || 1600));
           } else {
-            hitEnemy(target, dmg);
+            p.setOrientationTowards({ x: fx, y: fy });
           }
+          p.onCollisionWithEnemy((enemy: Enemy) => {
+            const hitDmg = (p as any).dmg as number || 10;
+            const hitAoe = (p as any).aoe as number || 0;
+            console.log(`[TD] projHit: ${t.configId} → ${(enemy as any).enemyId} dmg=${hitDmg} dist=${Math.hypot(enemy.x - p.x, enemy.y - p.y).toFixed(1)}`);
+            if (hitAoe > 0) {
+              for (const e of enemies) {
+                if (Math.hypot(e.x - enemy.x, e.y - enemy.y) <= hitAoe) hitEnemy(e, hitDmg);
+              }
+            } else {
+              hitEnemy(enemy, hitDmg);
+            }
+            p.destroy();
+          });
         }
       }
     }
@@ -1022,7 +1283,7 @@
       const result = await tdRound(characterId, {
         session_id: (tdData as any).session_id as number,
         lives_lost: Math.max(0, initialLives - currentLives),
-        gold_earned: Math.max(0, currentGold - roundStartGold)
+        leaked_enemies: leakedEnemies
       });
       const ar = result as any;
       console.log('[TD] advanceRound response:', ar);
@@ -1039,14 +1300,15 @@
           spawnQueue.push({
             enemyId: e.enemy_id, remaining: e.count,
             intervalMs: e.interval_ms, initialDelayMs: e.initial_delay_ms,
-            spawnTimer: 0, initialDone: false
+            spawnTimer: 0, initialDone: false,
+            spawnPointId: e.spawn_point_id
           });
         }
         allSpawned = false;
         roundStarted = false;
-        // Update gold/lives from server response
-        if (ar.gold != null) { currentGold = ar.gold; roundStartGold = ar.gold; }
+        // Update lives from server response
         if (ar.lives != null) currentLives = ar.lives;
+        leakedEnemies = {};
         refreshButtonStates();
         // Update UI
         if (resourceText) {
@@ -1084,7 +1346,8 @@
           next_level_id: null,
           rewards: ar.rewards || {},
           land_patent_earned: ar.land_patent_earned || false,
-          duke_right_earned: ar.duke_right_earned || false
+          duke_right_earned: ar.duke_right_earned || false,
+          new_unlocks: ar.new_unlocks
         });
       }
     } catch (e) {
@@ -1094,7 +1357,7 @@
     }
   }
 
-  async function endGame(forceLoss = false) {
+  async function endGame(forceLoss = false, forfeited = false) {
     placementMode = null;
     boardDragActive = false;
     dragUnitId = null;
@@ -1105,7 +1368,7 @@
       const result = await tdRound(characterId, {
         session_id: (tdData as any).session_id as number,
         lives_lost: forceLoss ? 100 : Math.max(0, initialLives - currentLives),
-        gold_earned: Math.max(0, currentGold - roundStartGold)
+        leaked_enemies: leakedEnemies
       });
       const cr = result as TDRoundCompleteResponse;
       onComplete({
@@ -1119,8 +1382,9 @@
         next_level_id: null,
         rewards: cr.rewards || {},
         land_patent_earned: cr.land_patent_earned || false,
-        duke_right_earned: cr.duke_right_earned || false
-      });
+        duke_right_earned: cr.duke_right_earned || false,
+        new_unlocks: cr.new_unlocks
+      }, forfeited);
     } catch (e) {
       onError(e instanceof Error ? e.message : 'Failed to end game');
     }
@@ -1134,11 +1398,11 @@
       boardDragActive = false;
       dragUnitId = null;
       selectedTower = null;
-      onComplete({ completed: false, score: 0, new_best_score: 0, times_played: 0, all_levels_done: false, base_unlocked: false, game_phase: 'initial_mission', next_level_id: null, rewards: {}, land_patent_earned: false, duke_right_earned: false });
+      onComplete({ completed: false, score: 0, new_best_score: 0, times_played: 0, all_levels_done: false, base_unlocked: false, game_phase: 'initial_mission', next_level_id: null, rewards: {}, land_patent_earned: false, duke_right_earned: false }, true);
       return;
     }
     gameState = 'lost';
-    endGame(true);
+    endGame(true, true);
   }
 
   // ============================================================

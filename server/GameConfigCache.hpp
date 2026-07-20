@@ -26,6 +26,7 @@ public:
     nlohmann::json& getTowerDefenseUnits();
     nlohmann::json& getTowerDefenseUnitUnlocks();
     nlohmann::json& getTowerDefenseProjectiles();
+    nlohmann::json& getTowerDefenseWaveTemplates();
     std::optional<nlohmann::json> getTowerDefenseSpawnSchedule(const std::string& filename);
 
     nlohmann::json getAllConfigs() const;

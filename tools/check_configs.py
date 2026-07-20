@@ -2325,6 +2325,118 @@ class ConfigValidator:
 
             self.validated_files.append(schedule_file)
 
+    def validate_wave_templates(self, game_config_dir: Path) -> None:
+        """Validate tower_defense/wave_templates.json."""
+        wt_file: Path = game_config_dir / "tower_defense" / "wave_templates.json"
+        if not wt_file.exists():
+            return
+
+        try:
+            content: str = wt_file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(wt_file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+
+        data: object = self._validate_json(content, wt_file)
+        if data is None:
+            return
+
+        if not isinstance(data, dict):
+            self._add_issue(wt_file, 1, None, "Expected a JSON object", Severity.ERROR)
+            return
+
+        # Validate mob_unlocks
+        if "mob_unlocks" in data:
+            mu: object = data["mob_unlocks"]
+            if isinstance(mu, dict):
+                for key, val in mu.items():
+                    try:
+                        int(key)
+                    except ValueError:
+                        self._add_issue(wt_file, 1, None, f"mob_unlocks key '{key}' must be an integer", Severity.ERROR)
+                    if not isinstance(val, list):
+                        self._add_issue(wt_file, 1, None, f"mob_unlocks.{key} must be an array of mob IDs", Severity.ERROR)
+            else:
+                self._add_issue(wt_file, 1, None, "mob_unlocks must be an object", Severity.ERROR)
+
+        # Validate difficulty_templates
+        if "difficulty_templates" in data:
+            dt: object = data["difficulty_templates"]
+            if isinstance(dt, dict):
+                for diff_key, diff_val in dt.items():
+                    try:
+                        int(diff_key)
+                    except ValueError:
+                        self._add_issue(wt_file, 1, None, f"difficulty_templates key '{diff_key}' must be an integer", Severity.ERROR)
+                        continue
+
+                    if not isinstance(diff_val, dict):
+                        self._add_issue(wt_file, 1, None, f"difficulty_templates.{diff_key} must be an object", Severity.ERROR)
+                        continue
+
+                    rounds_val: object = diff_val.get("rounds")
+                    if not isinstance(rounds_val, list):
+                        self._add_issue(wt_file, 1, None, f"difficulty_templates.{diff_key}.rounds must be an array", Severity.ERROR)
+                        continue
+
+                    for round_idx, round_val in enumerate(rounds_val):
+                        if not isinstance(round_val, list):
+                            self._add_issue(wt_file, 1, None, f"difficulty_templates.{diff_key}.rounds[{round_idx}] must be an array", Severity.ERROR)
+                            continue
+
+                        for entry_idx, entry in enumerate(round_val):
+                            if not isinstance(entry, dict):
+                                self._add_issue(wt_file, 1, None, f"difficulty_templates.{diff_key}.rounds[{round_idx}][{entry_idx}] must be an object", Severity.ERROR)
+                                continue
+
+                            has_mobs: bool = "mobs" in entry
+                            has_escalation: bool = "escalation" in entry
+
+                            if not has_mobs and not has_escalation:
+                                self._add_issue(wt_file, 1, None, f"difficulty_templates.{diff_key}.rounds[{round_idx}][{entry_idx}]: missing mobs or escalation", Severity.ERROR)
+                                continue
+
+                            if has_mobs:
+                                mobs_val: object = entry["mobs"]
+                                if not isinstance(mobs_val, list) or len(mobs_val) == 0:
+                                    self._add_issue(wt_file, 1, None, f"difficulty_templates.{diff_key}.rounds[{round_idx}][{entry_idx}].mobs must be a non-empty array", Severity.ERROR)
+
+                                for field in ("count", "interval_ms", "initial_delay_ms"):
+                                    if field not in entry:
+                                        self._add_issue(wt_file, 1, None, f"difficulty_templates.{diff_key}.rounds[{round_idx}][{entry_idx}].{field} is required", Severity.ERROR)
+                                    else:
+                                        fv: object = entry[field]
+                                        if isinstance(fv, dict):
+                                            has_min: bool = "min" in fv
+                                            has_max: bool = "max" in fv
+                                            if not has_min or not has_max:
+                                                self._add_issue(wt_file, 1, None, f"difficulty_templates.{diff_key}.rounds[{round_idx}][{entry_idx}].{field} must have min and max", Severity.ERROR)
+                                            if has_min and has_max:
+                                                mn = fv["min"]
+                                                mx = fv["max"]
+                                                if not isinstance(mn, (int, float)) or not isinstance(mx, (int, float)):
+                                                    self._add_issue(wt_file, 1, None, f"difficulty_templates.{diff_key}.rounds[{round_idx}][{entry_idx}].{field} min/max must be numbers", Severity.ERROR)
+                                                elif mn > mx:
+                                                    self._add_issue(wt_file, 1, None, f"difficulty_templates.{diff_key}.rounds[{round_idx}][{entry_idx}].{field} min > max", Severity.ERROR)
+                                        else:
+                                            self._add_issue(wt_file, 1, None, f"difficulty_templates.{diff_key}.rounds[{round_idx}][{entry_idx}].{field} must be an object with min/max", Severity.ERROR)
+
+                            if has_escalation:
+                                esc: object = entry["escalation"]
+                                if not isinstance(esc, dict):
+                                    self._add_issue(wt_file, 1, None, f"difficulty_templates.{diff_key}.rounds[{round_idx}][{entry_idx}].escalation must be an object", Severity.ERROR)
+                                else:
+                                    for ef in ("count", "interval_ms", "initial_delay_ms"):
+                                        if ef in esc:
+                                            efv: object = esc[ef]
+                                            if isinstance(efv, dict):
+                                                if "min" not in efv or "max" not in efv:
+                                                    self._add_issue(wt_file, 1, None, f"difficulty_templates.{diff_key}.rounds[{round_idx}][{entry_idx}].escalation.{ef} must have min and max", Severity.ERROR)
+        else:
+            self._add_issue(wt_file, 1, None, "Missing required top-level key: difficulty_templates", Severity.ERROR)
+
+        self.validated_files.append(wt_file)
+
     def validate_all(
         self,
         config_dir: Path,
@@ -2415,6 +2527,7 @@ class ConfigValidator:
                 )
             else:
                 self.validate_spawn_schedules(game_config_dir)
+                self.validate_wave_templates(game_config_dir)
 
         # Re-sort issues after image validation
         errors = [issue for issue in self.issues if issue.severity == Severity.ERROR]

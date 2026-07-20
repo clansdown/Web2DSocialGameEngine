@@ -12,4 +12,5 @@ fi
 echo "Resetting tower defense progress in $DB..."
 sqlite3 "$DB" "DELETE FROM mini_game_progress WHERE mini_game = 'tower_defense';"
 sqlite3 "$DB" "DELETE FROM game_sessions WHERE mini_game = 'tower_defense';"
+sqlite3 "$DB" "DELETE FROM td_player_unlocks;"
 echo "Done."

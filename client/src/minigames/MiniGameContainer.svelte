@@ -7,9 +7,19 @@
   import TowerDefenseGame from './tower_defense/TowerDefenseGame.svelte';
   import SimpleGame from './tower_defense/SimpleGame.svelte';
   import WeedingGame from './weeding/WeedingGame.svelte';
+  import DialogOverlay from '../components/DialogOverlay.svelte';
+  import StoryText from '../components/StoryText.svelte';
   import { startMiniGame, endMiniGame } from '../lib/game_state';
-  import { currentCharacter, playerGameState } from '../lib/stores';
-  import type { StartMiniGameResponse, EndMiniGameResponse } from '../lib/api';
+  import { currentCharacter, playerGameState, language } from '../lib/stores';
+  import { getTextsRequest } from '../lib/api';
+  import type { StartMiniGameResponse, EndMiniGameResponse, UnlockItem } from '../lib/api';
+  import { marked } from 'marked';
+
+  interface QueueItem {
+    id: string;
+    textKey: string;
+    imageUrl: string;
+  }
 
   interface Props {
     miniGame: string;
@@ -30,6 +40,13 @@
 
   // For tower defense with new SimpleGame
   let tdStarted = $state(false);
+
+  // King's message overlay state
+  let showKingsMessage = $state(false);
+  let unlockQueue: QueueItem[] = $state([]);
+  let unlockIndex = $state(0);
+  let kingsMsgTemplate = $state('');
+  let itemTexts: Record<string, string> = $state({});
 
   /**
    * Starts the mini-game session for non-TD games (weeding).
@@ -89,12 +106,93 @@
 
   /**
    * Called by SimpleGame when TD is complete.
+   * Checks for new unlocks and shows the king's message overlay before results.
    */
-  function handleTDComplete(results: EndMiniGameResponse) {
+  async function handleTDComplete(results: EndMiniGameResponse, forfeited = false) {
     if (gameFinished) return;
     gameFinished = true;
     gameResults = results;
-    showResults = true;
+
+    if (forfeited) {
+      onComplete(results);
+      return;
+    }
+
+    const unlocks = results.new_unlocks;
+    if (unlocks && (unlocks.new_units.length > 0 || unlocks.new_towers.length > 0)) {
+      // Build the unlock queue
+      const queue: QueueItem[] = [];
+      const textKeysToFetch: string[] = ['kings_message_unlock'];
+
+      for (const u of unlocks.new_units) {
+        queue.push({
+          id: u.id,
+          textKey: u.text_key,
+          imageUrl: `/images/tower_defense/units/${u.id}.png`
+        });
+        textKeysToFetch.push(u.text_key);
+      }
+
+      for (const t of unlocks.new_towers) {
+        queue.push({
+          id: t.id,
+          textKey: t.text_key,
+          imageUrl: `/images/tower_defense/towers/${t.id}.png`
+        });
+        textKeysToFetch.push(t.text_key);
+      }
+
+      // Fetch all text content
+      const sex = $currentCharacter?.sex || 'male';
+      const texts = await getTextsRequest($language, textKeysToFetch, sex);
+
+      kingsMsgTemplate = texts['kings_message_unlock'] || '';
+
+      // Store item texts keyed by text_key
+      const itemMap: Record<string, string> = {};
+      for (const qi of queue) {
+        itemMap[qi.id] = texts[qi.textKey] || '';
+      }
+      itemTexts = itemMap;
+
+      unlockQueue = queue;
+      unlockIndex = 0;
+      showKingsMessage = true;
+    } else {
+      showResults = true;
+    }
+  }
+
+  /**
+   * Builds the full markdown for the current unlock item.
+   */
+  function currentFullText(): string {
+    const item = unlockQueue[unlockIndex];
+    if (!item) return '';
+    const itemText = itemTexts[item.id] || '';
+
+    // Replace {unit_name} in the king's message with the item's display name (first line of item text)
+    const firstLine = itemText.split('\n')[0].replace(/^\*\*|\*\*$/g, '').trim();
+    let msg = kingsMsgTemplate.replace(/\{unit_name\}/g, firstLine);
+
+    // Replace {character_name} if present
+    if ($currentCharacter) {
+      msg = msg.replace(/\{character_name\}/g, $currentCharacter.display_name);
+    }
+
+    return `${msg}\n\n![](${item.imageUrl})\n\n${itemText}`;
+  }
+
+  /**
+   * Advances through the unlock queue or shows results.
+   */
+  function dismissKingsMessage() {
+    if (unlockIndex < unlockQueue.length - 1) {
+      unlockIndex++;
+    } else {
+      showKingsMessage = false;
+      showResults = true;
+    }
   }
 
   $effect(() => {
@@ -118,6 +216,10 @@
     <div class="container py-5">
       <div class="alert alert-danger">{startError}</div>
     </div>
+  {:else if showKingsMessage && unlockQueue.length > 0}
+    <DialogOverlay title="" size="xlg" noPadding onDismiss={dismissKingsMessage}>
+      <StoryText text={currentFullText()} />
+    </DialogOverlay>
   {:else if showResults && gameResults}
     <div class="container py-5">
       <div class="card">
@@ -155,19 +257,7 @@
               <p class="mb-0">You have cleared the duke track. You may now found your own dukedom.</p>
             </div>
           {/if}
-          {#if gameResults.new_unlocks && (gameResults.new_unlocks.new_units.length > 0 || gameResults.new_unlocks.new_towers.length > 0)}
-            <div class="alert alert-info">
-              <h4 class="alert-heading">New Unlocks!</h4>
-              <p class="mb-0">
-                {#each gameResults.new_unlocks.new_units as unit}
-                  <span class="badge bg-info me-2 mb-1">Unit: {unit}</span>
-                {/each}
-                {#each gameResults.new_unlocks.new_towers as tower}
-                  <span class="badge bg-warning text-dark me-2 mb-1">Tower: {tower}</span>
-                {/each}
-              </p>
-            </div>
-          {/if}
+
           <button class="btn btn-primary btn-lg mt-4" onclick={() => { if (gameResults) onComplete(gameResults); }}>
             Continue
           </button>

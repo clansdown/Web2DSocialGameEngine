@@ -164,3 +164,12 @@
     {/if}
   </div>
 </div>
+
+<style>
+  .story-text :global(img) {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 1rem auto;
+  }
+</style>

@@ -88,6 +88,10 @@ std::optional<GameSessionRow> get_game_session(sqlite::database& db, int session
 
 std::optional<GameSessionRow> get_active_session(sqlite::database& db, int character_id, const std::string& mini_game);
 
-bool update_game_session(sqlite::database& db, int session_id, int lives, int gold, const std::string& state, int64_t timestamp);
+    bool update_game_session(sqlite::database& db, int session_id, int lives, int gold, const std::string& state, int64_t timestamp);
+
+    void store_spawn_schedule(sqlite::database& db, int session_id, const nlohmann::json& schedule);
+
+    nlohmann::json load_spawn_schedule(sqlite::database& db, int session_id);
 
 } // namespace player_state_db

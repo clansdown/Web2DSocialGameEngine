@@ -10,6 +10,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <unordered_set>
+#include <random>
+#include <map>
+#include <set>
 #include <nlohmann/json.hpp>
 #include <uWebSockets/App.h>
 #include "Database.hpp"
@@ -927,63 +930,309 @@ static void resolve_td_image_urls(nlohmann::json& entries, const std::string& ca
     }
 }
 
-/** Generate a spawn schedule for a TD round based on difficulty. */
-static json generate_td_spawn_schedule(GameConfigCache& config, int difficulty, int round_number) {
+/** Thread-local RNG for procedural generation. */
+static std::mt19937& get_rng() {
+    static thread_local std::mt19937 rng(std::random_device{}());
+    return rng;
+}
+
+/** Random integer in [min, max] inclusive. */
+static int random_int(int min, int max) {
+    if (min > max) std::swap(min, max);
+    if (min == max) return min;
+    std::uniform_int_distribution<int> dist(min, max);
+    return dist(get_rng());
+}
+
+/** Random double in [0, val). */
+static double random_double(double val) {
+    if (val <= 0.0) return 0.0;
+    std::uniform_real_distribution<double> dist(0.0, val);
+    return dist(get_rng());
+}
+
+/** Pick a spawn point by weighted priority from the list. */
+static json pick_spawn_point(const json& spawn_points) {
+    if (!spawn_points.is_array() || spawn_points.empty()) {
+        return json::object();
+    }
+    double total_weight = 0;
+    for (auto& sp : spawn_points) {
+        total_weight += sp.value("priority", 1.0);
+    }
+    if (total_weight <= 0) {
+        return spawn_points[0];
+    }
+    double roll = random_double(total_weight);
+    for (auto& sp : spawn_points) {
+        roll -= sp.value("priority", 1.0);
+        if (roll <= 0) {
+            return sp;
+        }
+    }
+    return spawn_points.back();
+}
+
+/** Resolve a min/max range JSON object to a random value. */
+static int resolve_range(const json& range_obj) {
+    if (range_obj.is_number()) return range_obj.get<int>();
+    if (range_obj.is_object()) {
+        int mn = range_obj.value("min", 0);
+        int mx = range_obj.value("max", 10);
+        return random_int(mn, mx);
+    }
+    return 10;
+}
+
+/**
+ * Apply escalation to generate the next round from a previous round's groups.
+ * Follows the compounding escalation pattern.
+ */
+static json escalate_round(
+    const json& previous_groups,       // the full round that just finished
+    const json& escalation_cfg,        // {waves_per_round, total_escalation, default_escalation}
+    const json& escalation_base,       // round 13's groups from template (for recycling)
+    int extra)                         // number of rounds beyond the escalation base
+{
+    // 1. Deep copy previous groups (only entries with mobs)
+    json new_groups = json::array();
+    for (auto& g : previous_groups) {
+        if (g.contains("mobs")) {
+            new_groups.push_back(g);
+        }
+    }
+
+    // 2. Add recycled groups from escalation_base (sequential cycle)
+    json base_mob_groups = json::array();
+    for (auto& g : escalation_base) {
+        if (g.contains("mobs")) {
+            base_mob_groups.push_back(g);
+        }
+    }
+
+    double waves_per_round = escalation_cfg.value("waves_per_round", 0.0);
+    int extra_waves = static_cast<int>(std::floor(extra * waves_per_round));
+    json default_esc = escalation_cfg.value("default_escalation", json::object());
+
+    for (int i = 0; i < extra_waves; ++i) {
+        int src_idx = i % static_cast<int>(base_mob_groups.size());
+        json recycled = base_mob_groups[src_idx];
+        if (!recycled.contains("escalation") && !default_esc.is_null()) {
+            recycled["escalation"] = default_esc;
+        }
+        new_groups.push_back(recycled);
+    }
+
+    // 3. Calculate escalation budget
+    int total_points = resolve_range(escalation_cfg["total_escalation"]);
+
+    // 4. Distribute points across groups (one pass then refill)
+    std::vector<int> pool;
+    for (int i = 0; i < static_cast<int>(new_groups.size()); ++i) {
+        pool.push_back(i);
+    }
+
+    for (int p = 0; p < total_points; ++p) {
+        if (pool.empty()) {
+            for (int i = 0; i < static_cast<int>(new_groups.size()); ++i) {
+                pool.push_back(i);
+            }
+        }
+        int pick = random_int(0, static_cast<int>(pool.size()) - 1);
+        int idx = pool[pick];
+        pool.erase(pool.begin() + pick);
+
+        auto& group = new_groups[idx];
+        json esc;
+        if (group.contains("escalation") && group["escalation"].is_object()) {
+            esc = group["escalation"];
+        } else if (!default_esc.is_null()) {
+            esc = default_esc;
+        } else {
+            continue;
+        }
+
+        if (esc.contains("count")) {
+            group["count"]["min"] = group["count"]["min"].get<int>() + resolve_range(esc["count"]);
+            group["count"]["max"] = group["count"]["max"].get<int>() + resolve_range(esc["count"]);
+        }
+        if (esc.contains("interval_ms")) {
+            int e_int = resolve_range(esc["interval_ms"]);
+            group["interval_ms"]["min"] = std::max(650, group["interval_ms"]["min"].get<int>() + e_int);
+            group["interval_ms"]["max"] = std::max(650, group["interval_ms"]["max"].get<int>() + e_int);
+        }
+        if (esc.contains("initial_delay_ms")) {
+            int e_del = resolve_range(esc["initial_delay_ms"]);
+            group["initial_delay_ms"]["min"] = std::max(100, group["initial_delay_ms"]["min"].get<int>() + e_del);
+            group["initial_delay_ms"]["max"] = std::max(100, group["initial_delay_ms"]["max"].get<int>() + e_del);
+        }
+    }
+
+    // 5. Resolve randomized values for each group and emit entries
     json schedule = json::array();
-    const auto& mobs_config = config.getTowerDefenseMobs();
-    if (!mobs_config.contains("mobs") || !mobs_config["mobs"].is_object()) {
-        // Fallback: basic dire rat schedule
+    for (auto& group : new_groups) {
+        if (!group.contains("mobs")) continue;
+
+        std::vector<std::string> available;
+        for (auto& m : group["mobs"]) {
+            available.push_back(m.get<std::string>());
+        }
+        if (available.empty()) continue;
+
+        int mi = random_int(0, static_cast<int>(available.size()) - 1);
+        json entry;
+        entry["enemy_id"] = available[mi];
+        entry["count"] = resolve_range(group["count"]);
+        entry["interval_ms"] = resolve_range(group["interval_ms"]);
+        entry["initial_delay_ms"] = resolve_range(group["initial_delay_ms"]);
+        schedule.push_back(entry);
+    }
+
+    return schedule;
+}
+
+/** Resolve a template round into a spawn schedule (randomizes ranges, filters mobs). */
+static json resolve_template_round(
+    const json& round_groups,
+    const std::set<std::string>& unlocked_mobs,
+    const json& spawn_points)
+{
+    json schedule = json::array();
+    json round_escalation;
+    for (auto& g : round_groups) {
+        if (!g.contains("mobs") && g.contains("escalation")) {
+            round_escalation = g["escalation"];
+        }
+    }
+
+    for (auto& group : round_groups) {
+        if (!group.contains("mobs")) continue;
+
+        std::vector<std::string> available;
+        for (auto& m : group["mobs"]) {
+            std::string mid = m.get<std::string>();
+            if (unlocked_mobs.count(mid)) {
+                available.push_back(mid);
+            }
+        }
+        if (available.empty()) continue;
+
+        int mi = random_int(0, static_cast<int>(available.size()) - 1);
+        json entry;
+        entry["enemy_id"] = available[mi];
+        entry["count"] = resolve_range(group["count"]);
+        entry["interval_ms"] = resolve_range(group["interval_ms"]);
+        entry["initial_delay_ms"] = resolve_range(group["initial_delay_ms"]);
+
+        json sp = pick_spawn_point(spawn_points);
+        if (sp.contains("id")) {
+            entry["spawn_point_id"] = sp["id"];
+        }
+        schedule.push_back(entry);
+    }
+    return schedule;
+}
+
+/** Generate a spawn schedule using wave templates. */
+static json generate_td_spawn_schedule(
+    GameConfigCache& config,
+    int difficulty,
+    int round_number,
+    int completed_count,
+    const json& spawn_points,
+    const json& previous_schedule = json::array(),
+    int total_rounds = 0)
+{
+    const auto& wt = config.getTowerDefenseWaveTemplates();
+
+    auto fallback = [&]() -> json {
         json entry;
         entry["enemy_id"] = "dire_rat";
         entry["count"] = 5 + difficulty;
         entry["interval_ms"] = 2000;
         entry["initial_delay_ms"] = 1000;
-        schedule.push_back(entry);
-        return schedule;
+        json fb = json::array();
+        fb.push_back(entry);
+        return fb;
+    };
+
+    if (wt.is_null() || !wt.contains("difficulty_templates")) {
+        return fallback();
     }
 
-    const auto& mobs = mobs_config["mobs"];
-    // Build list of available mob ids with their hp threshold
-    struct MobEntry { std::string id; int hp; int reward; };
-    std::vector<MobEntry> available;
-    for (auto it = mobs.begin(); it != mobs.end(); ++it) {
-        int hp = it->value("hp", 10);
-        available.push_back({it.key(), hp, it->value("reward_gold", 1)});
+    // Build unlocked mob set from completed_count
+    std::set<std::string> unlocked_mobs;
+    if (wt.contains("mob_unlocks")) {
+        for (auto& [key, val] : wt["mob_unlocks"].items()) {
+            int threshold = std::stoi(key);
+            if (completed_count >= threshold) {
+                for (auto& m : val) {
+                    unlocked_mobs.insert(m.get<std::string>());
+                }
+            }
+        }
     }
-    // Sort by HP ascending
-    std::sort(available.begin(), available.end(), [](const MobEntry& a, const MobEntry& b) {
-        return a.hp < b.hp;
-    });
-
-    // Determine which mobs are available at this difficulty
-    double diff_mult = 1.0 + (difficulty - 1) * 0.3;
-    int total_count = static_cast<int>(5 * diff_mult + round_number * 2);
-    int remaining = total_count;
-
-    // Always include weakest mobs, add harder ones based on difficulty
-    int max_mob_index = std::min(static_cast<int>(difficulty / 2 + 1), static_cast<int>(available.size()));
-    if (max_mob_index < 1) max_mob_index = 1;
-
-    for (int i = 0; i < max_mob_index && remaining > 0; ++i) {
-        const auto& mob = available[i];
-        int count = (i == 0) ? std::max(1, remaining / 2) : std::max(1, remaining / (max_mob_index - i));
-        if (count > remaining) count = remaining;
-
-        json entry;
-        entry["enemy_id"] = mob.id;
-        entry["count"] = count;
-        entry["interval_ms"] = std::max(500, static_cast<int>(2000 - difficulty * 100));
-        entry["initial_delay_ms"] = (i == 0) ? 1500 : 1500 + (total_count - remaining) * 300;
-        schedule.push_back(entry);
-
-        remaining -= count;
+    if (unlocked_mobs.empty()) {
+        unlocked_mobs.insert("dire_rat");
     }
 
-    if (remaining > 0 && !schedule.empty()) {
-        schedule[0]["count"] = schedule[0]["count"].get<int>() + remaining;
+    // Find the template for this difficulty
+    const auto& templates = wt["difficulty_templates"];
+    const json* tmpl = nullptr;
+    for (int d = difficulty; d >= 1; --d) {
+        std::string dk = std::to_string(d);
+        if (templates.contains(dk)) {
+            tmpl = &templates[dk];
+            break;
+        }
+    }
+    if (!tmpl) {
+        tmpl = &templates.begin().value();
     }
 
-    return schedule;
+    if (!tmpl->contains("rounds") || !(*tmpl)["rounds"].is_array()) {
+        return fallback();
+    }
+
+    const auto& rounds = (*tmpl)["rounds"];
+    int num_template_rounds = static_cast<int>(rounds.size());
+    int escalation_base_round = num_template_rounds - 1;
+
+    // Escalation round (beyond escalation base)
+    if (!previous_schedule.is_null() && !previous_schedule.empty() && round_number > escalation_base_round) {
+        // Load escalation config from the template's last round
+        const auto& base_groups = rounds[escalation_base_round];
+        json escalation_cfg;
+        for (auto& g : base_groups) {
+            if (!g.contains("mobs") && g.contains("escalation")) {
+                escalation_cfg = g["escalation"];
+                break;
+            }
+        }
+        if (escalation_cfg.is_null()) {
+            return fallback();
+        }
+
+        int extra = round_number - escalation_base_round;
+        return escalate_round(previous_schedule, escalation_cfg, base_groups, extra);
+    }
+
+    // Template round
+    int template_index = round_number;
+    if (template_index >= num_template_rounds) {
+        template_index = escalation_base_round;
+    }
+
+    const auto& round_groups = rounds[template_index];
+    if (!round_groups.is_array()) {
+        return fallback();
+    }
+
+    json result = resolve_template_round(round_groups, unlocked_mobs, spawn_points);
+    if (result.empty()) {
+        return fallback();
+    }
+    return result;
 }
 
 /**
@@ -1007,6 +1256,44 @@ static std::string resolve_schedule_file(const nlohmann::json& mg_config, int le
     return std::string();
 }
 
+/** Load map metadata for a given level from mini-games config. */
+static json load_map_for_level(const json& mg_config, int level_id) {
+    auto find_map = [&](const json& levels) -> std::string {
+        for (const auto& lvl : levels) {
+            if (lvl["id"] == level_id && lvl.contains("map")) {
+                return lvl["map"].get<std::string>();
+            }
+        }
+        return std::string();
+    };
+    std::string map_file = find_map(mg_config.value("levels", json::array()));
+    if (map_file.empty()) map_file = find_map(mg_config.value("duke_levels", json::array()));
+
+    if (!map_file.empty()) {
+        auto map_meta = TowerDefenseMapCache::get_instance().get_map(map_file);
+        if (map_meta.has_value()) return *map_meta;
+    }
+    return json::object();
+}
+
+/** Extract spawn_points array from map metadata (normalized). */
+static json extract_spawn_points(const json& map_metadata) {
+    if (map_metadata.contains("spawn_points") && map_metadata["spawn_points"].is_array()) {
+        return map_metadata["spawn_points"];
+    }
+    return json::array();
+}
+
+/** Query tower_defense completion count for a character. */
+static int query_td_completed_count(sqlite::database& db, int character_id) {
+    int count = 0;
+    db << "SELECT COUNT(*) FROM mini_game_progress "
+          "WHERE character_id = ? AND mini_game = 'tower_defense' AND completed = 1;"
+       << character_id
+       >> [&](int c) { count = c; };
+    return count;
+}
+
 /**
  * Load spawn schedule for a specific round from a schedule file.
  * Falls back to procedural generation if file/level/round not found.
@@ -1019,16 +1306,18 @@ static json load_spawn_schedule_for_round(
     int round_index,
     int difficulty,
     int& out_total_rounds,
-    std::string& out_display_name_key)
+    std::string& out_display_name_key,
+    int completed_count = 0,
+    const json& spawn_points = json::array())
 {
     if (schedule_file.empty() || level_id <= 0) {
-        return generate_td_spawn_schedule(config_cache, difficulty, round_index);
+        return generate_td_spawn_schedule(config_cache, difficulty, round_index, completed_count, spawn_points);
     }
 
     auto schedule_opt = config_cache.getTowerDefenseSpawnSchedule(schedule_file);
     if (!schedule_opt.has_value()) {
         std::cerr << "[tdRound] Schedule file '" << schedule_file << "' not found, falling back" << std::endl;
-        return generate_td_spawn_schedule(config_cache, difficulty, round_index);
+        return generate_td_spawn_schedule(config_cache, difficulty, round_index, completed_count, spawn_points);
     }
 
     const json& data = *schedule_opt;
@@ -1050,7 +1339,7 @@ static json load_spawn_schedule_for_round(
     std::cerr << "[tdRound] Schedule file '" << schedule_file
               << "' missing level " << level_key << " round " << round_index
               << ", falling back to procedural" << std::endl;
-    return generate_td_spawn_schedule(config_cache, difficulty, round_index);
+    return generate_td_spawn_schedule(config_cache, difficulty, round_index, completed_count, spawn_points);
 }
 
 ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
@@ -1100,7 +1389,26 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
                       << std::endl;
 
             int lives_lost = body.value("lives_lost", 0);
-            int gold_earned = body.value("gold_earned", 0);
+
+            // Calculate gold earned from spawn schedule and leaked enemies
+            nlohmann::json leaked = body.value("leaked_enemies", nlohmann::json::object());
+            nlohmann::json schedule = player_state_db::load_spawn_schedule(db, session_id);
+            int gold_earned = 0;
+            if (!schedule.empty()) {
+                std::unordered_map<std::string, int> schedule_totals;
+                for (auto& entry : schedule) {
+                    std::string eid = entry["enemy_id"].get<std::string>();
+                    schedule_totals[eid] += entry["count"].get<int>();
+                }
+                auto& mobs = config_cache.getTowerDefenseMobs()["mobs"];
+                for (auto& [eid, total] : schedule_totals) {
+                    int leaked_count = leaked.contains(eid) ? leaked[eid].get<int>() : 0;
+                    int killed = std::max(0, total - leaked_count);
+                    if (killed > 0 && mobs.contains(eid) && mobs[eid].contains("reward_gold")) {
+                        gold_earned += killed * mobs[eid]["reward_gold"].get<int>();
+                    }
+                }
+            }
 
             std::cerr << "[tdRound] Completion body: lives_lost=" << lives_lost
                       << " gold_earned=" << gold_earned
@@ -1130,22 +1438,29 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
                 // More rounds remain — advance to next round (don't end game)
                 player_state_db::update_game_session(db, session_id, new_lives, new_gold, "active", now);
 
+                int advance_completed = query_td_completed_count(db, character_id);
+                json advance_spawn_points = json::array();
                 std::string next_display_name_key;
                 json next_schedule;
                 {
                     const auto& mini_games_config = config_cache.getMiniGames();
                     if (mini_games_config.contains(session->mini_game)) {
                         const auto& mg = mini_games_config[session->mini_game];
+                        json map_meta = load_map_for_level(mg, session->level_id);
+                        advance_spawn_points = extract_spawn_points(map_meta);
+
                         std::string sched_file = resolve_schedule_file(mg, session->level_id);
                         if (!sched_file.empty()) {
-                            json sched = load_spawn_schedule_for_round(config_cache, sched_file, session->level_id, old_round + 1, session->difficulty, total, next_display_name_key);
+                            json sched = load_spawn_schedule_for_round(config_cache, sched_file, session->level_id, old_round + 1, session->difficulty, total, next_display_name_key, advance_completed, advance_spawn_points);
                             next_schedule = sched;
                         }
                     }
                     if (next_schedule.empty()) {
-                        next_schedule = generate_td_spawn_schedule(config_cache, session->difficulty, old_round);
+                        int new_round = old_round + 1;
+                        next_schedule = generate_td_spawn_schedule(config_cache, session->difficulty, new_round, advance_completed, advance_spawn_points, schedule, total);
                     }
                 }
+                player_state_db::store_spawn_schedule(db, session_id, next_schedule);
 
                 response.data["session_id"] = session_id;
                 response.data["next_round"] = true;
@@ -1283,24 +1598,41 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
                     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
                     player_state_db::start_mini_game(db, character_id, mini_game, level_id, now);
 
+                    int resume_completed = query_td_completed_count(db, character_id);
+
                     std::string resume_display_name_key;
                     json resume_spawn_schedule;
-                    {
+                    json map_metadata = json::object();
+
+                    // First check for a stored schedule from the previous session
+                    resume_spawn_schedule = player_state_db::load_spawn_schedule(db, existing->id);
+
+                    if (resume_spawn_schedule.empty()) {
                         const auto& mini_games_config = config_cache.getMiniGames();
                         if (mini_games_config.contains(mini_game)) {
                             const auto& mg = mini_games_config[mini_game];
+                            map_metadata = load_map_for_level(mg, level_id);
+                            json sp = extract_spawn_points(map_metadata);
+
                             std::string sched_file = resolve_schedule_file(mg, level_id);
                             if (!sched_file.empty()) {
-                                json sched = load_spawn_schedule_for_round(config_cache, sched_file, level_id, existing->current_round, difficulty, existing->total_rounds, resume_display_name_key);
+                                json sched = load_spawn_schedule_for_round(config_cache, sched_file, level_id, existing->current_round, difficulty, existing->total_rounds, resume_display_name_key, resume_completed, sp);
                                 resume_spawn_schedule = sched;
                             }
                         }
                         if (resume_spawn_schedule.empty()) {
-                            resume_spawn_schedule = generate_td_spawn_schedule(config_cache, difficulty, existing->current_round);
+                            json sp = extract_spawn_points(map_metadata);
+                            resume_spawn_schedule = generate_td_spawn_schedule(config_cache, difficulty, existing->current_round, resume_completed, sp);
+                        }
+                    } else {
+                        // Load map metadata separately for the response
+                        const auto& mini_games_config = config_cache.getMiniGames();
+                        if (mini_games_config.contains(mini_game)) {
+                            const auto& mg = mini_games_config[mini_game];
+                            map_metadata = load_map_for_level(mg, level_id);
                         }
                     }
 
-                    json map_metadata = json::object();
                     std::cerr << "[tdRound] Resume: character=" << character_id
                               << " session=" << existing->id
                               << " level_id=" << level_id;
@@ -1408,6 +1740,7 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
         // Auto-determine level_id if not provided
         int level_id = 0;
         bool is_random = false;
+        json map_metadata = json::object();
         if (body.contains("level_id") && body["level_id"].is_number_integer() && body["level_id"].get<int>() > 0) {
             level_id = body["level_id"].get<int>();
         } else if (state.game_phase == "initial_mission") {
@@ -1478,18 +1811,26 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
                 schedule_file = mg_config["duke_schedule_file"].get<std::string>();
             }
 
+            // Load map metadata and query completion count
+            map_metadata = load_map_for_level(mg_config, level_id);
+            json local_spawn_points = extract_spawn_points(map_metadata);
+            int kickoff_completed = query_td_completed_count(db, character_id);
+
             if (!schedule_file.empty()) {
-                json sched = load_spawn_schedule_for_round(config_cache, schedule_file, level_id, 0, difficulty, total_rounds, campaign_display_name_key);
+                json sched = load_spawn_schedule_for_round(config_cache, schedule_file, level_id, 0, difficulty, total_rounds, campaign_display_name_key, kickoff_completed, local_spawn_points);
                 spawn_schedule = sched;
                 std::cerr << "[tdRound] Using schedule file '" << schedule_file
                           << "' for level " << level_id
                           << " total_rounds=" << total_rounds
                           << " display_name_key=" << campaign_display_name_key << std::endl;
             } else {
-                spawn_schedule = generate_td_spawn_schedule(config_cache, difficulty, 0);
+                spawn_schedule = generate_td_spawn_schedule(config_cache, difficulty, 0, kickoff_completed, local_spawn_points);
             }
         } else {
-            spawn_schedule = generate_td_spawn_schedule(config_cache, difficulty, 0);
+            json empty_sp = json::array();
+            int kickoff_completed = 0;
+            if (character_id > 0) kickoff_completed = query_td_completed_count(db, character_id);
+            spawn_schedule = generate_td_spawn_schedule(config_cache, difficulty, 0, kickoff_completed, empty_sp);
         }
 
         auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
@@ -1500,29 +1841,9 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
         player_state_db::start_mini_game(db, character_id, mini_game, level_id, now);
 
         auto session = player_state_db::create_game_session(db, character_id, mini_game, level_id, difficulty, total_rounds, now);
+        player_state_db::store_spawn_schedule(db, session.id, spawn_schedule);
 
-        // Load map metadata if available
-        json map_metadata = json::object();
-        if (mini_games_config.contains(mini_game)) {
-            const auto& mg_config = mini_games_config[mini_game];
-            auto find_map = [&](const json& levels) {
-                for (const auto& lvl : levels) {
-                    if (lvl["id"] == level_id && lvl.contains("map")) {
-                        return lvl["map"].get<std::string>();
-                    }
-                }
-                return std::string();
-            };
-            std::string map_file = find_map(mg_config.value("levels", json::array()));
-            if (map_file.empty()) map_file = find_map(mg_config.value("duke_levels", json::array()));
-
-            if (!map_file.empty()) {
-                auto map_meta = TowerDefenseMapCache::get_instance().get_map(map_file);
-                if (map_meta.has_value()) {
-                    map_metadata = *map_meta;
-                }
-            }
-        }
+        // (map_metadata already loaded above for spawn schedule generation)
 
         // Log diagnostics for map loading
         std::cerr << "[tdRound] Kickoff: character=" << character_id
@@ -1606,6 +1927,7 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
         resolve_td_image_urls(response.data["mobs"]["mobs"], "mobs");
         resolve_td_image_urls(response.data["towers"]["towers"], "towers");
         resolve_td_image_urls(response.data["units"]["units"], "units");
+        resolve_td_image_urls(response.data["projectiles"]["projectiles"], "projectiles");
 
         if (new_token) {
             response.data["token"] = *new_token;

@@ -11,7 +11,7 @@
   import PatentScreen from './components/PatentScreen.svelte';
   import DukedomJoin from './components/DukedomJoin.svelte';
   import DukedomCreate from './components/DukedomCreate.svelte';
-  import ParchmentOverlay from './components/ParchmentOverlay.svelte';
+  import DialogOverlay from './components/DialogOverlay.svelte';
   import MiniGameSelect from './minigames/MiniGameSelect.svelte';
   import MiniGameContainer from './minigames/MiniGameContainer.svelte';
   import * as auth from './lib/auth';
@@ -289,7 +289,7 @@
 <ErrorDisplay />
 
 {#if showIntroOverlay && selectedMiniGame}
-  <ParchmentOverlay
+  <DialogOverlay
     title={introTitle}
     body={introBody}
     onDismiss={handleIntroDismiss}

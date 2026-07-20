@@ -132,7 +132,11 @@ nlohmann::json UnitUnlockCalculator::check_and_grant_milestones(
                   "(character_id, item_type, item_id, unlocked_at) "
                   "VALUES (?, 'unit', ?, ?);"
                << character_id << unit_id << timestamp;
-            new_unlocks["new_units"].push_back(unit_id);
+
+            nlohmann::json item;
+            item["id"] = unit_id;
+            item["text_key"] = "ui_unit_" + unit_id;
+            new_unlocks["new_units"].push_back(item);
         }
 
         for (const auto& tower_id : to_unlock_towers) {
@@ -140,7 +144,11 @@ nlohmann::json UnitUnlockCalculator::check_and_grant_milestones(
                   "(character_id, item_type, item_id, unlocked_at) "
                   "VALUES (?, 'tower', ?, ?);"
                << character_id << tower_id << timestamp;
-            new_unlocks["new_towers"].push_back(tower_id);
+
+            nlohmann::json titem;
+            titem["id"] = tower_id;
+            titem["text_key"] = "ui_tower_" + tower_id;
+            new_unlocks["new_towers"].push_back(titem);
         }
     }
 

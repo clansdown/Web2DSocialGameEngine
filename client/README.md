@@ -162,6 +162,22 @@ Bootstrap is bundled in `index.html` with:
 - CSS: `https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css`
 - JS: `https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js`
 
+## Display Components
+
+The client provides three reusable display components for showing text and content:
+
+| Component | File | Role |
+|-----------|------|------|
+| **`DialogOverlay`** | `src/components/DialogOverlay.svelte` | Modal shell — dark backdrop, centered panel, title, Continue button. Use for any full-screen overlay that needs a dismiss action. Content via `children` snippet (preferred) or legacy `body` prop. |
+| **`StoryText`** | `src/components/StoryText.svelte` | Silk-texture background. Use for narrative/story text (king's messages, intro lore). Supports markdown via `text` prop or arbitrary content via `children` snippet. |
+| **`GameText`** | `src/components/GameText.svelte` | Vellum-texture background. Use for game text (descriptions, tooltips, UI text). Supports markdown via `text` prop or arbitrary content via `children` snippet. |
+
+**Usage guidelines:**
+- For narrative overlays (king's messages, story reveals): nest `StoryText` inside `DialogOverlay`
+- For inline story text on a page: use `StoryText` alone
+- For game descriptions and tooltips: use `GameText`
+- Pass markdown content via the `text` prop, or use `children` for custom HTML/Svelte content
+
 ## IDE Setup
 
 **Recommended:** VS Code + Svelte extension

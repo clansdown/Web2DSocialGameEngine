@@ -371,9 +371,14 @@ export interface StartMiniGameResponse {
   [key: string]: unknown;
 }
 
+export interface UnlockItem {
+  id: string;
+  text_key: string;
+}
+
 export interface NewUnlocks {
-  new_units: string[];
-  new_towers: string[];
+  new_units: UnlockItem[];
+  new_towers: UnlockItem[];
 }
 
 export interface EndMiniGameResponse {
@@ -417,6 +422,7 @@ export interface SpawnScheduleEntry {
   count: number;
   interval_ms: number;
   initial_delay_ms: number;
+  spawn_point_id?: string;
 }
 
 export interface TDRoundKickoffResponse {
@@ -453,6 +459,7 @@ export interface TDRoundCompleteResponse {
   game_phase?: string;
   land_patent_earned?: boolean;
   duke_right_earned?: boolean;
+  new_unlocks?: NewUnlocks;
   [key: string]: unknown;
 }
 

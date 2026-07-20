@@ -39,6 +39,19 @@ void GameConfigCache::scaleTDPieceValues(nlohmann::json& file_root) {
     };
     if (file_root.contains("towers") && file_root["towers"].is_object()) drill(file_root["towers"]);
     if (file_root.contains("units") && file_root["units"].is_object()) drill(file_root["units"]);
+    if (file_root.contains("projectiles") && file_root["projectiles"].is_object()) {
+        auto scaleAeRadius = [](nlohmann::json& piece) {
+            if (piece.contains("area_effect") && piece["area_effect"].is_object()) {
+                auto& ae = piece["area_effect"];
+                if (ae.contains("radius") && ae["radius"].is_number()) {
+                    ae["radius"] = ae["radius"].get<double>() / 100.0;
+                }
+            }
+        };
+        for (auto& [id, proj] : file_root["projectiles"].items()) {
+            scaleAeRadius(proj);
+        }
+    }
 }
 
 bool GameConfigCache::loadConfig(const std::string& path, const std::string& name, nlohmann::json& target) {
@@ -81,6 +94,7 @@ bool GameConfigCache::initialize(const std::string& config_dir) {
     add("tower_defense/units.json", scaleTDPieceValues);
     add("tower_defense/unit_unlocks.json");
     add("tower_defense/projectiles.json");
+    add("tower_defense/wave_templates.json");
 
     for (auto& [name, entry] : configs_) {
         struct stat st;
@@ -144,6 +158,7 @@ nlohmann::json& GameConfigCache::getTowerDefenseTowers() { return getConfig("tow
 nlohmann::json& GameConfigCache::getTowerDefenseUnits() { return getConfig("tower_defense/units.json"); }
 nlohmann::json& GameConfigCache::getTowerDefenseUnitUnlocks() { return getConfig("tower_defense/unit_unlocks.json"); }
 nlohmann::json& GameConfigCache::getTowerDefenseProjectiles() { return getConfig("tower_defense/projectiles.json"); }
+nlohmann::json& GameConfigCache::getTowerDefenseWaveTemplates() { return getConfig("tower_defense/wave_templates.json"); }
 
 std::optional<nlohmann::json> GameConfigCache::getTowerDefenseSpawnSchedule(const std::string& filename) {
     nlohmann::json& data = getConfig("tower_defense/spawn_schedules/" + filename);
