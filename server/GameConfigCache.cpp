@@ -20,40 +20,6 @@ static std::string readFileToString(const std::string& config_path) {
     return content;
 }
 
-void GameConfigCache::scaleTDPieceValues(nlohmann::json& file_root) {
-    auto drill = [](nlohmann::json& pieces) {
-        for (auto& [id, piece] : pieces.items()) {
-            if (piece.contains("range") && piece["range"].is_number()) {
-                piece["range"] = piece["range"].get<double>() / 100.0;
-            }
-            if (piece.contains("exclusion_radius") && piece["exclusion_radius"].is_number()) {
-                piece["exclusion_radius"] = piece["exclusion_radius"].get<double>() / 100.0;
-            }
-            if (piece.contains("area_of_effect") && piece["area_of_effect"].is_object()) {
-                auto& aoe = piece["area_of_effect"];
-                if (aoe.contains("radius") && aoe["radius"].is_number()) {
-                    aoe["radius"] = aoe["radius"].get<double>() / 100.0;
-                }
-            }
-        }
-    };
-    if (file_root.contains("towers") && file_root["towers"].is_object()) drill(file_root["towers"]);
-    if (file_root.contains("units") && file_root["units"].is_object()) drill(file_root["units"]);
-    if (file_root.contains("projectiles") && file_root["projectiles"].is_object()) {
-        auto scaleAeRadius = [](nlohmann::json& piece) {
-            if (piece.contains("area_effect") && piece["area_effect"].is_object()) {
-                auto& ae = piece["area_effect"];
-                if (ae.contains("radius") && ae["radius"].is_number()) {
-                    ae["radius"] = ae["radius"].get<double>() / 100.0;
-                }
-            }
-        };
-        for (auto& [id, proj] : file_root["projectiles"].items()) {
-            scaleAeRadius(proj);
-        }
-    }
-}
-
 bool GameConfigCache::loadConfig(const std::string& path, const std::string& name, nlohmann::json& target) {
     std::string content = readFileToString(path);
     if (content.empty()) {
@@ -90,8 +56,8 @@ bool GameConfigCache::initialize(const std::string& config_dir) {
     add("wall_config.json");
     add("mini_games.json");
     add("tower_defense/mobs.json");
-    add("tower_defense/towers.json", scaleTDPieceValues);
-    add("tower_defense/units.json", scaleTDPieceValues);
+    add("tower_defense/towers.json");
+    add("tower_defense/units.json");
     add("tower_defense/unit_unlocks.json");
     add("tower_defense/projectiles.json");
     add("tower_defense/wave_templates.json");

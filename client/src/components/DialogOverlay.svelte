@@ -11,6 +11,7 @@
    *   children - Snippet for custom content inside the overlay panel
    *   size - Panel width: 'md' (600px), 'lg' (800px), 'xlg' (1000px)
    *   noPadding - When true, removes inner padding (for components with their own padding)
+   *   scrollable - When true, enables internal scrolling (max-height 80vh). Default false.
    */
 
   import type { Snippet } from 'svelte';
@@ -22,9 +23,10 @@
     children?: Snippet;
     size?: 'md' | 'lg' | 'xlg';
     noPadding?: boolean;
+    scrollable?: boolean;
   }
 
-  let { title, body = '', onDismiss, children, size = 'md', noPadding = false }: Props = $props();
+  let { title, body = '', onDismiss, children, size = 'md', noPadding = false, scrollable = false }: Props = $props();
 
   const panelWidth = $derived(
     size === 'xlg' ? '1000px' : size === 'lg' ? '800px' : '600px'
@@ -49,8 +51,7 @@
     style="
       max-width: {panelWidth};
       width: 90%;
-      max-height: 80vh;
-      overflow-y: auto;
+      {scrollable ? 'max-height: 80vh; overflow-y: auto;' : ''}
       background: linear-gradient(180deg, #f5e6c8, #ede0c8, #f5e6c8);
       border: 2px solid #8b7355;
       color: #3a2a1a;

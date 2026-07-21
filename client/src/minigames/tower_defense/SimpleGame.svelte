@@ -5,8 +5,15 @@
    */
   import { onMount, onDestroy } from 'svelte';
   import { tdRound } from '../../lib/game_state';
-  import type { TDRoundKickoffResponse, TDRoundCompleteResponse, SpawnScheduleEntry, EndMiniGameResponse } from '../../lib/api';
-  import { setConfig, getConfig } from '../../lib/storage';
+  import type { TDRoundKickoffResponse, TDRoundCompleteResponse, SpawnScheduleEntry, EndMiniGameResponse, NewUnlocks } from '../../lib/api';
+  import { setConfig, getConfig, deleteConfig } from '../../lib/storage';
+  import type {
+    EnemyVar, ProjectileVar, PoolObjVar, DragObjVar,
+    MobConfig, ProjectileConfig, PieceConfig, AreaEffectConfig,
+    KickoffResponse, AdvanceResponse
+  } from '../../lib/tower_defense_types';
+  import { loadMap } from '../../lib/tower_defense_map';
+  import type { BoardMapData, BoardMapExclusionZone } from '../../lib/tower_defense_map';
 
   import {
     initEngine, setCameraFollowsPlayer, setBoardSize, setButtonDebugLevel,
@@ -51,6 +58,7 @@
     session_id: number;
     character_id: number;
     level_id: number;
+    gold?: number;
     placements: SavedPlacement[];
   }
 
@@ -66,8 +74,27 @@
   let towerGameClassMap = new Map<string, GameObjectClass>();
   let projectileClasses: Record<string, ProjectileClass> = {};
 
+  // Typed config lookups (replaces (cls as any).pieceConfig etc.)
+  let pieceConfigs = new Map<string, PieceConfig>();
+  let mobConfigs = new Map<string, MobConfig>();
+  let projectileConfigs = new Map<string, ProjectileConfig>();
+
   // Runtime state
-  let activeTowers: { obj: GameObject; configId: string; level: number; piece: any; targeting: string; flaskId?: string }[] = [];
+  interface PlayerCombatant {
+    obj: GameObject;
+    configId: string;
+    level: number;
+    piece: any;
+    targeting: string;
+    flaskId?: string;
+    atkTimer?: number;
+    attackPeriod: number;
+    /** Cached path segments within range: { seg, dist (to nearest point), t0/t1 (in-range param range) } */
+    _pathSegCache?: { seg: { ax: number; ay: number; bx: number; by: number }; dist: number; t0: number; t1: number }[];
+    selectableTarget?: { x: number; y: number };
+  }
+
+  let activeCombatants: PlayerCombatant[] = [];
   let spawnQueue: { enemyId: string; remaining: number; intervalMs: number; initialDelayMs: number; spawnTimer: number; initialDone: boolean; spawnPointId?: string }[] = [];
   let allSpawned = false;
   let roundStarted = false;
@@ -91,12 +118,10 @@
   let unitButtons = new Map<string, Button>();
   let pathMap = new Map<string, any>();
   let intersectionMap = new Map<string, any>();
-  let exclusionZones: any[] = [];
+  let exclusionZones: BoardMapExclusionZone[] = [];
   let pathBuffers: { cx: number; cy: number; r: number }[] = [];
-  let bw = 1200;
-  let bh = 800;
-  let sidebarW = 200;
-  let mapMetadata: any = null;
+  let mapMetadata: BoardMapData | null = null;
+  let roundSidebarVisible = false;
 
   // UI objects
   let resourceText: Text | null = null;
@@ -121,19 +146,29 @@
   let showingFlaskPicker = false;
 
   // Sidebar column for hide/show on drag/place
-  let sidebarColumn: Column | null = null;
+  let towerColumn: Column | null = null;
+  let unitColumn: Column | null = null;
 
   // OPFS persistence for unit placements
   let pendingRestore: SavedPlacement[] | null = null;
+  let pendingGold: number | null = null;
   let dirty = false;
   let saveInterval: ReturnType<typeof setInterval> | null = null;
 
   // ============================================================
-  // Helpers
+  // Constants
   // ============================================================
 
-  function nx(v: number): number { return v * (bw + sidebarW); }
-  function ny(v: number): number { return v * bh; }
+  /** Board width in board units */
+  const BW = 1400;
+  /** Board height in board units */
+  const BH = 780;
+  /** Sidebar overlay width in board units. Sidebar overlays the right edge of the board at x ∈ [BW - SIDEBAR_W, BW]. */
+  const SIDEBAR_W = 420;
+
+  // ============================================================
+  // Helpers
+  // ============================================================
 
   function pointInCircle(px: number, py: number, cx: number, cy: number, r: number): boolean {
     const dx = px - cx, dy = py - cy;
@@ -149,19 +184,19 @@
     return inside;
   }
 
-  function generatePathBuffers(path: any, bufferPx: number): { cx: number; cy: number; r: number }[] {
+  function generatePathBuffers(path: any, bufferR: number): { cx: number; cy: number; r: number }[] {
     const zones: { cx: number; cy: number; r: number }[] = [];
     const wps = path.waypoints || [];
     for (let i = 0; i < wps.length; i++) {
-      zones.push({ cx: nx(wps[i].x), cy: ny(wps[i].y), r: bufferPx });
+      zones.push({ cx: wps[i].x, cy: wps[i].y, r: bufferR });
       if (i > 0) {
-        const px = nx(wps[i - 1].x), py = ny(wps[i - 1].y);
-        const cx = nx(wps[i].x), cy = ny(wps[i].y);
+        const px = wps[i - 1].x, py = wps[i - 1].y;
+        const cx = wps[i].x, cy = wps[i].y;
         const segLen = Math.hypot(cx - px, cy - py);
-        const steps = Math.ceil(segLen / (bufferPx * 0.6));
+        const steps = Math.ceil(segLen / (bufferR * 0.6));
         for (let s = 1; s < steps; s++) {
           const t = s / steps;
-          zones.push({ cx: px + (cx - px) * t, cy: py + (cy - py) * t, r: bufferPx });
+          zones.push({ cx: px + (cx - px) * t, cy: py + (cy - py) * t, r: bufferR });
         }
       }
     }
@@ -170,22 +205,20 @@
 
   function isBlocked(x: number, y: number, unitTypeId: string, movingObj?: GameObject): boolean {
     for (const z of exclusionZones) {
-      if (z.type === 'circle' && pointInCircle(x, y, nx(z.center_x), ny(z.center_y), z.radius * bw)) return true;
+      if (z.type === 'circle' && pointInCircle(x, y, z.centerX, z.centerY, z.radius)) return true;
       if (z.type === 'polygon' && z.vertices) {
-        const verts = z.vertices.map((v: any) => ({ x: nx(v.x), y: ny(v.y) }));
-        if (pointInPolygon(x, y, verts)) return true;
+        if (pointInPolygon(x, y, z.vertices as Position2D[])) return true;
       }
     }
     for (const pb of pathBuffers) {
       if (pointInCircle(x, y, pb.cx, pb.cy, pb.r)) return true;
     }
-    const cls = towerGameClassMap.get(unitTypeId);
-    const placingR = (cls as any)?.pieceConfig?.exclusion_radius || 0;
-    for (const t of activeTowers) {
+    const placingR = pieceConfigs.get(unitTypeId)?.exclusion_radius || 0;
+    for (const t of activeCombatants) {
       if (t.obj === movingObj) continue;
       const tR = t.piece.exclusion_radius || 0;
       const r = Math.max(tR, placingR);
-      if (r > 0 && Math.hypot(t.obj.x - x, t.obj.y - y) < r * bw) return true;
+      if (r > 0 && Math.hypot(t.obj.x - x, t.obj.y - y) < r) return true;
     }
     return false;
   }
@@ -225,13 +258,84 @@
     return best;
   }
 
-  function recachePathTarget(t: { obj: { x: number; y: number }; piece: any }) {
-    const info = findNearestPathSegInfo(t.obj.x, t.obj.y);
-    if (info) (t as any)._pathTarget = info.point;
+  /**
+   * Returns the [t0, t1] parameter range of a segment that falls within
+   * a circle of given radius centered at (cx, cy). t ∈ [0,1] along the
+   * segment. Returns null if no portion is inside the circle.
+   */
+  function segmentCircleRange(
+    ax: number, ay: number, bx: number, by: number,
+    cx: number, cy: number, radius: number
+  ): [number, number] | null {
+    const vx = bx - ax, vy = by - ay;
+    const wx = ax - cx, wy = ay - cy;
+    const a = vx * vx + vy * vy;
+    const b = 2 * (wx * vx + wy * vy);
+    const c = wx * wx + wy * wy - radius * radius;
+    if (a === 0) {
+      // Degenerate segment (point)
+      return c <= 0 ? [0, 1] : null;
+    }
+    const disc = b * b - 4 * a * c;
+    if (disc < 0) return null;
+    const sqrtDisc = Math.sqrt(disc);
+    let t0 = (-b - sqrtDisc) / (2 * a);
+    let t1 = (-b + sqrtDisc) / (2 * a);
+    t0 = Math.max(0, t0);
+    t1 = Math.min(1, t1);
+    return t0 <= t1 ? [t0, t1] : null;
   }
 
-  function spawnGroundPool(x: number, y: number, aeConfig: any, targetX: number, targetY: number) {
-    const radiusPx = aeConfig.radius * bw;
+  function cachePathSegTargets(t: PlayerCombatant, range: number) {
+    const cache: { seg: { ax: number; ay: number; bx: number; by: number }; dist: number; t0: number; t1: number }[] = [];
+    const cx = t.obj.x, cy = t.obj.y;
+    for (const seg of pathSegments) {
+      const tr = segmentCircleRange(seg.ax, seg.ay, seg.bx, seg.by, cx, cy, range);
+      if (!tr) continue;
+      const pt = closestPointOnSegment(cx, cy, seg.ax, seg.ay, seg.bx, seg.by);
+      const dist = Math.hypot(pt.x - cx, pt.y - cy);
+      cache.push({ seg, dist, t0: tr[0], t1: tr[1] });
+    }
+    t._pathSegCache = cache;
+  }
+
+  function getWeightedPathTarget(t: PlayerCombatant): { x: number; y: number } | null {
+    const cache = t._pathSegCache;
+    if (!cache || cache.length === 0) {
+      // Fallback: nearest point on any path
+      const info = findNearestPathSegInfo(t.obj.x, t.obj.y);
+      return info ? info.point : null;
+    }
+    let totalWeight = 0;
+    const weights: number[] = [];
+    for (const entry of cache) {
+      const w = 1 / (entry.dist + 1);
+      weights.push(w);
+      totalWeight += w;
+    }
+    let r = Math.random() * totalWeight;
+    for (let i = 0; i < cache.length; i++) {
+      r -= weights[i];
+      if (r <= 0) {
+        const entry = cache[i];
+        const tParam = entry.t0 + Math.random() * (entry.t1 - entry.t0);
+        return {
+          x: entry.seg.ax + tParam * (entry.seg.bx - entry.seg.ax),
+          y: entry.seg.ay + tParam * (entry.seg.by - entry.seg.ay)
+        };
+      }
+    }
+    // Fallback (shouldn't reach here)
+    const last = cache[cache.length - 1];
+    const tParam = last.t0 + Math.random() * (last.t1 - last.t0);
+    return {
+      x: last.seg.ax + tParam * (last.seg.bx - last.seg.ax),
+      y: last.seg.ay + tParam * (last.seg.by - last.seg.ay)
+    };
+  }
+
+  function spawnGroundPool(x: number, y: number, aeConfig: AreaEffectConfig, _targetX: number, _targetY: number) {
+    const radiusPx = aeConfig.radius;  // area_effect.radius in board units
     const clsName = `pool_${aeConfig.id}`;
     let cls = poolClasses[clsName];
     if (!cls) {
@@ -239,23 +343,6 @@
       cls.defaultWidth = radiusPx * 2;
       cls.defaultHeight = radiusPx * 2;
       cls.setBoundingBox(cls.defaultWidth, cls.defaultHeight);
-      cls.onCollisionWith(EnemyClass.rootEnemyClass, (poolObj: GameObject, enemy: GameObject) => {
-        const pd = (poolObj as any).poolData;
-        if (pd.slowFactor > (enemy as any).slowFactor) {
-          (enemy as any).slowFactor = pd.slowFactor;
-        }
-        if (pd.damagePerSecond > 0) {
-          const map = (poolObj as any).damageMap as Map<GameObject, number>;
-          const now = (poolObj as any).timeExistedMillis || 0;
-          const lastTime = map.get(enemy) || now;
-          const elapsed = now - lastTime;
-          if (elapsed >= 50) {
-            const dmg = pd.damagePerSecond * (elapsed / 1000);
-            hitEnemy(enemy, dmg);
-            map.set(enemy, now);
-          }
-        }
-      });
       poolClasses[clsName] = cls;
     }
     const seg = findNearestPathSegInfo(x, y);
@@ -265,13 +352,32 @@
     }
     const obj = new GameObject(cls, x, y);
     obj.setOrientation(angle);
-    (obj as any).alpha = aeConfig.opacity || 1.0;
-    (obj as any).poolData = {
+    obj.opacity = aeConfig.opacity || 1.0;
+    (obj.var as PoolObjVar).poolData = {
       id: aeConfig.id,
       slowFactor: aeConfig.slow_factor || 0,
       damagePerSecond: aeConfig.damage_per_second || 0,
     };
-    (obj as any).damageMap = new Map();
+    (obj.var as PoolObjVar).damageMap = new Map();
+    // Instance-level collision — fires each frame an enemy overlaps the pool's hitbox
+    obj.onCollisionWith(EnemyClass.rootEnemyClass, (_enemy: GameObject) => {
+      const pd = (obj.var as PoolObjVar).poolData;
+      const ev = _enemy.var as EnemyVar;
+      if (pd.slowFactor > ev.slowFactor) {
+        ev.slowFactor = pd.slowFactor;
+      }
+      if (pd.damagePerSecond > 0) {
+        const map = (obj.var as PoolObjVar).damageMap;
+        const now = obj.timeExistedMillis;
+        const lastTime = map.get(_enemy) || now;
+        const elapsed = now - lastTime;
+        if (elapsed >= 50) {
+          const dmg = pd.damagePerSecond * (elapsed / 1000);
+          hitEnemy(_enemy, dmg);
+          map.set(_enemy, now);
+        }
+      }
+    });
     gameObjects.add(obj);
     cls.gameObjects.add(obj);
     groundPools.push({
@@ -295,15 +401,16 @@
         continue;
       }
       if (pool.timer < 500) {
-        (pool.obj as any).alpha = (pool.timer / 500) * pool.opacity;
+        pool.obj.opacity = (pool.timer / 500) * pool.opacity;
       }
     }
     for (const e of enemies) {
-      const sf = (e as any).slowFactor || 0;
-      if (sf > 0 && (e as any).baseSpeed) {
-        e.velocity = (e as any).baseSpeed * (1 - sf);
+      const ev = e.var as EnemyVar;
+      const sf = ev.slowFactor || 0;
+      if (ev.baseVelocity != null) {
+        e.velocity = sf > 0 ? ev.baseVelocity * (1 - sf) : ev.baseVelocity;
       }
-      (e as any).slowFactor = 0;
+      ev.slowFactor = 0;
     }
   }
 
@@ -316,10 +423,11 @@
     dirty = false;
     try {
       const data: SavedTDState = {
-        session_id: (tdData as any).session_id as number,
+        session_id: (tdData as unknown as KickoffResponse).session_id,
         character_id: characterId,
         level_id: levelId,
-        placements: activeTowers.map(t => ({
+        gold: currentGold,
+        placements: activeCombatants.map(t => ({
           configId: t.configId,
           x: t.obj.x,
           y: t.obj.y,
@@ -342,31 +450,33 @@
     obj.direction_y = 0;
     gameObjects.add(obj);
     cls.gameObjects.add(obj);
-    const piece = (cls as any).pieceConfig;
+    const piece = pieceConfigs.get(p.configId);
+    if (!piece) return;
     const targeting = p.targeting || piece.default_targeting || 'first';
     const flaskId = p.flaskId || (piece.projectile_ids?.includes('naptha_flask') ? 'naptha_flask' : piece.projectile_ids?.[0]);
-    activeTowers.push({
+    activeCombatants.push({
       obj,
       configId: p.configId,
       level: p.level,
       piece,
       targeting,
-      flaskId
+      flaskId,
+      attackPeriod: 1.0 / (piece.attack_rate || 1.0)
     });
     if (soldierIds.has(p.configId)) {
-      const towerEntry = activeTowers[activeTowers.length - 1];
+      const towerEntry = activeCombatants[activeCombatants.length - 1];
       obj.draggable = true;
       obj.dragFollowsCursor = true;
       obj.onDragStart(0, () => {
-        (obj as any)._dragOrigX = obj.x;
-        (obj as any)._dragOrigY = obj.y;
+        (obj.var as DragObjVar)._dragOrigX = obj.x;
+        (obj.var as DragObjVar)._dragOrigY = obj.y;
       });
       obj.onDragEnd(0, () => {
         if (isBlocked(obj.x, obj.y, p.configId, obj)) {
-          obj.x = (obj as any)._dragOrigX;
-          obj.y = (obj as any)._dragOrigY;
+          obj.x = (obj.var as DragObjVar)._dragOrigX;
+          obj.y = (obj.var as DragObjVar)._dragOrigY;
         }
-        recachePathTarget(towerEntry);
+        cachePathSegTargets(towerEntry, towerEntry.piece.range || 0.2);
       });
     }
   }
@@ -380,45 +490,43 @@
       onError('Failed to load game session data');
       return;
     }
-    const data = tdData;
+    const data = tdData as unknown as KickoffResponse;
     setCameraFollowsPlayer(false);
 
     currentGold = data.gold;
     initialLives = data.lives;
     currentLives = data.lives;
-    currentRound = (data as any).round_number || 1;
-    totalRounds = (data as any).total_rounds || 1;
-    mapMetadata = (data as any).map_metadata || undefined;
-    exclusionZones = mapMetadata?.exclusion_zones || [];
+    currentRound = data.round_number || 1;
+    totalRounds = data.total_rounds || 1;
+    mapMetadata = loadMap(data.map_metadata, BW, BH);
+    exclusionZones = mapMetadata.exclusionZones;
 
-    // Path buffers
+    // Path buffers — buffer radius as fraction of board width
     pathBuffers = [];
-    if (mapMetadata?.paths) {
-      const bPx = bw * 0.035;
+    if (mapMetadata.paths.length > 0) {
+      const bufferR = BW * 0.035;  // path collision buffer in board units
       for (const p of mapMetadata.paths) {
-        pathBuffers.push(...generatePathBuffers(p, bPx));
+        pathBuffers.push(...generatePathBuffers(p, bufferR));
       }
     }
     pathMap = new Map();
     intersectionMap = new Map();
-    if (mapMetadata?.paths) for (const p of mapMetadata.paths) pathMap.set(p.id, p);
-    if (mapMetadata?.intersections) for (const i of mapMetadata.intersections) intersectionMap.set(i.id, i);
+    for (const p of mapMetadata.paths) pathMap.set(p.id, p);
+    for (const i of mapMetadata.intersections) intersectionMap.set(i.id, i);
     pathSegments = [];
-    if (mapMetadata?.paths) {
-      for (const p of mapMetadata.paths) {
-        const wps = p.waypoints || [];
-        for (let i = 0; i < wps.length - 1; i++) {
-          pathSegments.push({
-            ax: nx(wps[i].x), ay: ny(wps[i].y),
-            bx: nx(wps[i + 1].x), by: ny(wps[i + 1].y),
-          });
-        }
+    for (const p of mapMetadata.paths) {
+      const wps = p.waypoints || [];
+      for (let i = 0; i < wps.length - 1; i++) {
+        pathSegments.push({
+          ax: wps[i].x, ay: wps[i].y,
+          bx: wps[i + 1].x, by: wps[i + 1].y,
+        });
       }
     }
 
-    // Background - map image stretched to fill canvas
-    const mapUrl = mapMetadata?.image_filename
-      ? `/images/tower_defense/maps/${mapMetadata.image_filename}`
+    // Background - map image stretched to fill board
+    const mapUrl = mapMetadata.imageFilename
+      ? `/images/tower_defense/maps/${mapMetadata.imageFilename}`
       : null;
     if (mapUrl) {
       setBackground([mapUrl]);
@@ -426,7 +534,7 @@
     }
 
     // Enemy classes
-    const mobs = (data as any).mobs?.mobs || {};
+    const mobs = data.mobs?.mobs || {};
     for (const id of Object.keys(mobs)) {
       const m = mobs[id];
       const cls = new EnemyClass(`m_${id}`, m.image_url || null, m.hp || 20);
@@ -435,14 +543,13 @@
       cls.defaultHeight = m.height || 48;
       cls.setBoundingBox(cls.defaultWidth, cls.defaultHeight);
       cls.defaultSpriteForwardVector = m.forward_vector || [1, 0];
-      (cls as any).mobConfig = m;
-      (cls as any).mobId = id;
+      mobConfigs.set(id, m);
       mobEnemyClassMap.set(id, cls);
     }
 
     // Projectile classes from config
     projectileClasses = {};
-    const projConfig = (data as any).projectiles?.projectiles || {};
+    const projConfig = data.projectiles?.projectiles || {};
     for (const [id, cfg] of Object.entries(projConfig)) {
       const entry = cfg as any;
       const cls = new ProjectileClass(`proj_${id}`, `/images/tower_defense/projectiles/${entry.image_file}`);
@@ -451,27 +558,27 @@
       cls.setBoundingBox(cls.defaultWidth, cls.defaultHeight);
       cls.defaultSingleCollisionOnly = true;
       cls.defaultSpriteForwardVector = entry.forward_vector || [1, 0];
-      (cls as any).config = entry;
+      projectileConfigs.set(id, entry);
       projectileClasses[id] = cls;
     }
 
     // Tower/Unit classes
-    const allPieces = { ...((data as any).towers?.towers || {}), ...((data as any).units?.units || {}) };
+    const allPieces = { ...(data.towers?.towers || {}), ...(data.units?.units || {}) };
     for (const id of Object.keys(allPieces)) {
       const p = allPieces[id];
       const cls = new GameObjectClass(`p_${id}`, p.image_url || null, null);
-      (cls as any).pieceConfig = p;
+      pieceConfigs.set(id, p);
       cls.defaultWidth = p.width || 48;
       cls.defaultHeight = p.height || 48;
       cls.setBoundingBox(cls.defaultWidth, cls.defaultHeight);
       towerGameClassMap.set(id, cls);
     }
     // Track which config IDs are soldiers (from units, not towers)
-    for (const id of Object.keys((data as any).units?.units || {})) soldierIds.add(id);
+    for (const id of Object.keys(data.units?.units || {})) soldierIds.add(id);
 
-    // Sidebar UI (fixed-width sidebar)
-    const sX = bw;
-    const sW = sidebarW;
+    // Sidebar UI (overlays right edge of board)
+    const sX = BW - SIDEBAR_W;
+    const sW = SIDEBAR_W;
     const cX = sX + sW / 2;
 
     const copperImages: InlineImageMap = {
@@ -495,25 +602,33 @@
     }
 
     let bY = 100;
-    const sbBtnH = 100;
-    const sbBtnW = sW - 20;
+    const sbBtnH = 130;
+    const sbBtnW = 180;
+    const cX_tower = sX + 300;
+    const cX_unit = sX + 100;
+
+    const tcol = new Column(sX + 300, 0);
+    tcol.setGutter(10);
+    const ucol = new Column(sX + 100, 0);
+    ucol.setGutter(10);
+
     for (const id of Object.keys(allPieces)) {
       const p = allPieces[id];
+      const isUnit = soldierIds.has(id);
+      const cX = isUnit ? cX_unit : cX_tower;
       const cost = p.cost?.[0]?.gold || 0;
       const label = `${p.name || id} (${cost}g)`;
-      const cfgW = p.width || 64;
-      const cfgH = p.height || 64;
-      const targetArea = 4096;
-      const aspect = cfgH / cfgW;
-      const iconW = Math.round(Math.sqrt(targetArea / aspect));
-      const iconH = Math.round(Math.sqrt(targetArea * aspect));
+      const iconH = Math.round(sbBtnH * 0.6);
+      const iconW = Math.round(iconH * (p.width || 64) / (p.height || 64));
       const bc = new ButtonClass(`sb_${id}`);
-      const btn = bc.spawn(cX, bY, label, p.image_url, {
+      const btn = bc.spawn(cX, 0, label, p.image_url, {
         width: sbBtnW, height: sbBtnH, color: '#4A4A6A',
         iconWidth: iconW, iconHeight: iconH,
         iconPadding: 10, iconLayout: "above",
         backgroundOpacity: 0.8
       });
+      const col = isUnit ? ucol : tcol;
+      col.addChild(btn);
       unitButtons.set(id, btn);
       btn.hoverColor = '#5A5A7A';
       btn.clickColor = '#3A3A5A';
@@ -536,42 +651,38 @@
         btn.color = '#4A4A6A';
         const pos = getMousePosition();
         setSelectedTower(null);
-        console.log('dragEnd:', id, 'released at', pos.x, pos.y, 'on board?', pos.x < bw);
-        if (pos.x < bw && pos.y >= 0 && pos.y < bh && !isBlocked(pos.x, pos.y, id)) {
+        console.log('dragEnd:', id, 'released at', pos.x, pos.y, 'on board?', pos.x < BW);
+        if (pos.x < BW && pos.y >= 0 && pos.y < BH && !isBlocked(pos.x, pos.y, id)) {
           const cfg = allPieces[id];
           const pcost = cfg?.cost?.[0]?.gold || 0;
           if (currentGold >= pcost) tryPlace(pos.x, pos.y, id);
         }
         dragUnitId = null;
       });
-      bY += sbBtnH + 10;
     }
     refreshButtonStates();
 
     const sbc = new ButtonClass('sb_start');
-    startButton = sbc.spawn(cX, bY, `Round ${currentRound}/${totalRounds}`, null, { width: sbBtnW, height: 42, color: '#2D7A2D', backgroundOpacity: 0.8 });
+    startButton = sbc.spawn(cX, 0, `Round ${currentRound}/${totalRounds}`, null, { width: sbBtnW, height: 42, color: '#2D7A2D', backgroundOpacity: 0.8 });
     startButton.setOnClick(() => { setSelectedTower(null); startRound(); });
-    bY += 50;
 
     {
       const pauseCls = new ButtonClass('sb_pause');
-      pauseButton = pauseCls.spawn(cX, bY, 'Pause', null, { width: sbBtnW, height: 30, color: '#555555', backgroundOpacity: 0.8 });
+      pauseButton = pauseCls.spawn(cX, 0, 'Pause', null, { width: sbBtnW, height: 30, color: '#555555', backgroundOpacity: 0.8 });
       pauseButton.setOnClick(() => {
         setSelectedTower(null);
         if (roundStarted && gameState !== 'won' && gameState !== 'lost') togglePause();
       });
-      bY += 42;
     }
 
     const fbc = new ButtonClass('sb_forfeit');
-    const fbtn = fbc.spawn(cX, bY, 'Try Again Later', null, { width: sbBtnW, height: 42, color: '#7A2D2D', backgroundOpacity: 0.8 });
+    const fbtn = fbc.spawn(cX, 0, 'Try Again Later', null, { width: sbBtnW, height: 42, color: '#7A2D2D', backgroundOpacity: 0.8 });
     fbtn.setOnClick(() => forfeitGame());
-    bY += 50;
 
     let autoBtn: Button;
     {
       const aaCls = new ButtonClass('sb_auto');
-      autoBtn = aaCls.spawn(cX, bY, 'Auto: OFF', null, { width: sbBtnW, height: 30, color: '#555555', backgroundOpacity: 0.8 });
+      autoBtn = aaCls.spawn(cX, 0, 'Auto: OFF', null, { width: sbBtnW, height: 30, color: '#555555', backgroundOpacity: 0.8 });
       autoBtn.setOnClick(() => {
         setSelectedTower(null);
         autoAdvance = !autoAdvance;
@@ -580,21 +691,28 @@
       });
     }
 
-    // Group sidebar buttons in a Column for visibility toggling
-    {
-      const col = new Column(0, 0);
-      for (const [, btn] of unitButtons) col.addChild(btn);
-      col.addChild(startButton!);
-      col.addChild(pauseButton!);
-      col.addChild(fbtn);
-      col.addChild(autoBtn);
-      sidebarColumn = col;
+    // Layout columns and adjust so first child top is at Y=100
+    tcol.addChild(startButton!);
+    tcol.addChild(pauseButton!);
+    tcol.addChild(fbtn);
+    tcol.addChild(autoBtn);
+    tcol.layout();
+    ucol.layout();
+    tcol.y = 100 + tcol.height / 2;
+    ucol.y = 100 + ucol.height / 2;
+    tcol.layout();
+    ucol.layout();
+    towerColumn = tcol;
+    unitColumn = ucol;
+    function setSidebarVisible(visible: boolean) {
+      if (towerColumn) towerColumn.setVisible(visible);
+      if (unitColumn) unitColumn.setVisible(visible);
     }
 
-    createText('───', { x: cX, y: bh - 15 }).foreground = '#444';
+    createText('───', { x: cX, y: BH - 15 }).foreground = '#444';
 
     // Spawn queue
-    const schedule: SpawnScheduleEntry[] = (data as any).spawn_schedule || [];
+    const schedule = data.spawn_schedule || [];
     for (const e of schedule) {
       spawnQueue.push({
         enemyId: e.enemy_id, remaining: e.count,
@@ -612,9 +730,10 @@
       poolTick(dt);
       // Proximity fallback for flask projectiles that miss enemies
       for (const p of projectiles) {
-        const tX = (p as any).targetX as number | undefined;
-        const tY = (p as any).targetY as number | undefined;
-        const aeCfg = (p as any).aeCfg as any | undefined;
+        const pv = p.var as ProjectileVar;
+        const tX = pv.targetX;
+        const tY = pv.targetY;
+        const aeCfg = pv.aeCfg;
         if (tX != null && tY != null && aeCfg) {
           if (Math.hypot(p.x - tX, p.y - tY) < 15) {
             spawnGroundPool(p.x, p.y, aeCfg, tX, tY);
@@ -631,7 +750,7 @@
 
     // Click handler — placement (click-to-place) + tower selection + selectable targeting + ring buttons
     onMouseClick(0, (_e, x, y) => {
-      if (x >= bw) { console.log('click in sidebar'); return; }
+      if (x >= BW) { console.log('click in sidebar'); return; }
       if (placementMode) {
         console.log('board click with placementMode:', placementMode, 'at', x, y);
         tryPlace(x, y, placementMode);
@@ -640,18 +759,18 @@
       }
       // Selectable targeting — if a tower with selectable mode is selected, set its target
       if (selectedTower) {
-        const twr = activeTowers.find(t => t.obj === selectedTower!.obj);
+        const twr = activeCombatants.find(t => t.obj === selectedTower!.obj);
         if (twr && twr.targeting === 'selectable') {
-          const range = (twr.piece.range || 0.2) * bw;
+          const range = twr.piece.range || 0.2;  // range in board units
           if (Math.hypot(x - twr.obj.x, y - twr.obj.y) <= range) {
-            (twr as any).selectableTarget = { x, y };
+            twr.selectableTarget = { x, y };
             setSelectedTower(null);
             return;
           }
         }
       }
       // Ring button clicks are handled by ButtonClass natively
-      for (const t of activeTowers) {
+      for (const t of activeCombatants) {
         if (Math.hypot(t.obj.x - x, t.obj.y - y) < 28) { setSelectedTower({ obj: t.obj, configId: t.configId }); return; }
       }
       setSelectedTower(null);
@@ -659,13 +778,10 @@
 
     // Ghost + ring + range rendering
     afterDraw((ctx, _offsetX, _offsetY) => {
-      // Toggle sidebar visibility when dragging/placing units
-      if (sidebarColumn) {
-        const shouldHide = !!(placementMode || dragUnitId);
-        if (shouldHide !== !sidebarColumn.visible) {
-          sidebarColumn.setVisible(!shouldHide);
-        }
-      }
+      // Toggle sidebar visibility when dragging/placing units or during round
+      const shouldHide = !!(placementMode || dragUnitId) || (roundStarted && !roundSidebarVisible);
+      if (towerColumn && towerColumn.visible !== !shouldHide) towerColumn.setVisible(!shouldHide);
+      if (unitColumn && unitColumn.visible !== !shouldHide) unitColumn.setVisible(!shouldHide);
       const unitId = placementMode ?? dragUnitId;
       if (unitId) {
         const cls = towerGameClassMap.get(unitId);
@@ -679,21 +795,21 @@
           ctx.restore();
         }
         // Validity check for range circle
-        const cfg = (cls as any).pieceConfig;
+        const cfg = pieceConfigs.get(unitId);
         const cost = cfg?.cost?.[0]?.gold || 0;
         const canPlace = !isBlocked(pos.x, pos.y, unitId) && currentGold >= cost;
         // Range circle — blue when valid, red when invalid
         if (cfg) {
-          const range = (cfg.range || 0.2) * bw;
+          const range = cfg.range || 0.2;  // range in board units
           ctx.save();
           ctx.beginPath();
           ctx.arc(pos.x, pos.y, range, 0, Math.PI * 2);
           if (canPlace) {
-            ctx.fillStyle = 'rgba(0, 100, 255, 0.08)';
-            ctx.strokeStyle = 'rgba(0, 100, 255, 0.5)';
+            ctx.fillStyle = 'rgba(0, 100, 255, 0.16)';
+            ctx.strokeStyle = 'rgba(0, 100, 255, 1.0)';
           } else {
-            ctx.fillStyle = 'rgba(255, 0, 0, 0.08)';
-            ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
+            ctx.fillStyle = 'rgba(255, 0, 0, 0.16)';
+            ctx.strokeStyle = 'rgba(255, 0, 0, 1.0)';
           }
           ctx.fill();
           ctx.lineWidth = 1.5;
@@ -702,9 +818,9 @@
         }
       }
       // Selectable target crosshair for units in selectable mode
-      for (const t of activeTowers) {
-        if (t.targeting === 'selectable' && (t as any).selectableTarget) {
-          const st = (t as any).selectableTarget as { x: number; y: number };
+      for (const t of activeCombatants) {
+        if (t.targeting === 'selectable' && t.selectableTarget) {
+          const st = t.selectableTarget;
           ctx.save();
           ctx.strokeStyle = 'rgba(255, 200, 0, 0.6)';
           ctx.lineWidth = 2;
@@ -721,9 +837,9 @@
       }
       // Ring buttons handled by ButtonClass via updateRingButtons()
       // Range circle for dragged placed units
-      for (const t of activeTowers) {
+      for (const t of activeCombatants) {
         if (t.obj.isDragging && t.obj.draggable) {
-          const range = (t.piece.range || 0.2) * bw;
+      const range = t.piece.range || 0.2;  // range in board units
           const canPlace = !isBlocked(t.obj.x, t.obj.y, t.configId, t.obj);
           ctx.save();
           ctx.beginPath();
@@ -742,6 +858,17 @@
     if (pendingRestore) {
       for (const p of pendingRestore) restorePlacement(p);
       pendingRestore = null;
+      refreshButtonStates();
+    }
+    if (pendingGold !== null) {
+      currentGold = pendingGold;
+      pendingGold = null;
+      if (resourceText) {
+        resourceText.text = `{img:copper} ${currentGold}   Round ${currentRound}/${totalRounds}`;
+        resourceText.setInlineImages({
+          copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
+        });
+      }
       refreshButtonStates();
     }
 
@@ -764,7 +891,7 @@
     for (const b of ringButtons) b.destroy();
     ringButtons = [];
     if (!selectedTower) return;
-    const twr = activeTowers.find(t => t.obj === selectedTower!.obj);
+    const twr = activeCombatants.find(t => t.obj === selectedTower!.obj);
     if (!twr) return;
 
     const btnW = 90, btnH = 42, gap = 8;
@@ -787,7 +914,7 @@
     } else if (showingFlaskPicker && twr.piece.projectile_ids) {
       const flaskIds: string[] = twr.piece.projectile_ids;
       specs = flaskIds.map((fid: string) => {
-        const cfg = projectileClasses[fid] ? (projectileClasses[fid] as any).config : null;
+        const cfg = projectileConfigs.get(fid);
         const label = cfg?.name || fid.charAt(0).toUpperCase() + fid.slice(1);
         return {
           text: label,
@@ -803,7 +930,7 @@
       ];
       if (twr.piece.projectile_ids) {
         const fCfg = twr.flaskId ? projectileClasses[twr.flaskId] : null;
-        const fLabel = fCfg ? (fCfg as any).config?.name || twr.flaskId : 'Flask';
+        const fLabel = twr.flaskId ? (projectileConfigs.get(twr.flaskId)?.name || twr.flaskId) : 'Flask';
         specs.push({
           text: 'Flask: ' + fLabel, color: '#5A3A8B',
           disabled: false,
@@ -835,9 +962,7 @@
 
   function refreshButtonStates() {
     for (const [id, btn] of unitButtons) {
-      const cls = towerGameClassMap.get(id);
-      if (!cls) continue;
-      const cfg = (cls as any).pieceConfig;
+      const cfg = pieceConfigs.get(id);
       const cost = cfg?.cost?.[0]?.gold || 0;
       btn.setDisabled(currentGold < cost);
     }
@@ -851,7 +976,8 @@
     console.log('tryPlace:', unitId, 'at', x, y);
     const cls = towerGameClassMap.get(unitId);
     if (!cls) { console.log('tryPlace: no class for', unitId); return; }
-    const cfg = (cls as any).pieceConfig;
+    const cfg = pieceConfigs.get(unitId);
+    if (!cfg) { console.log('tryPlace: no config for', unitId); return; }
     const cost = cfg?.cost?.[0]?.gold || 0;
     if (currentGold < cost) { debug('Not enough gold!'); console.log('tryPlace: not enough gold, have', currentGold, 'need', cost); return; }
     if (isBlocked(x, y, unitId)) { debug('Cannot place here!'); console.log('tryPlace: blocked at', x, y); return; }
@@ -865,27 +991,27 @@
     const flaskId = projIds?.includes('naptha_flask')
       ? 'naptha_flask'
       : (projIds?.[0]) || undefined;
-    const towerEntry = { obj, configId: unitId, level: 0, piece: cfg, targeting, flaskId };
-    activeTowers.push(towerEntry);
+    const towerEntry: PlayerCombatant = { obj, configId: unitId, level: 0, piece: cfg, targeting, flaskId, attackPeriod: 1.0 / (cfg.attack_rate || 1.0) };
+    activeCombatants.push(towerEntry);
     if (targeting === 'nearest_path') {
-      recachePathTarget(towerEntry);
+      cachePathSegTargets(towerEntry, cfg.range || 0.2);
     } else if (targeting === 'selectable') {
       const info = findNearestPathSegInfo(x, y);
-      if (info) (towerEntry as any).selectableTarget = { x: info.point.x, y: info.point.y };
+      if (info) towerEntry.selectableTarget = { x: info.point.x, y: info.point.y };
     }
     if (soldierIds.has(unitId)) {
       obj.draggable = true;
       obj.dragFollowsCursor = true;
       obj.onDragStart(0, () => {
-        (obj as any)._dragOrigX = obj.x;
-        (obj as any)._dragOrigY = obj.y;
+        (obj.var as DragObjVar)._dragOrigX = obj.x;
+        (obj.var as DragObjVar)._dragOrigY = obj.y;
       });
       obj.onDragEnd(0, () => {
         if (isBlocked(obj.x, obj.y, unitId, obj)) {
-          obj.x = (obj as any)._dragOrigX;
-          obj.y = (obj as any)._dragOrigY;
+          obj.x = (obj.var as DragObjVar)._dragOrigX;
+          obj.y = (obj.var as DragObjVar)._dragOrigY;
         }
-        recachePathTarget(towerEntry);
+        cachePathSegTargets(towerEntry, towerEntry.piece.range || 0.2);
       });
     }
     currentGold -= cost;
@@ -902,7 +1028,7 @@
 
   function doUpgrade() {
     if (!selectedTower) { debug('No tower selected'); return; }
-    const tower = activeTowers.find(t => t.obj === selectedTower!.obj);
+    const tower = activeCombatants.find(t => t.obj === selectedTower!.obj);
     if (!tower) { setSelectedTower(null); return; }
     const piece = tower.piece;
     if (!piece.becomes) { debug('Max level'); return; }
@@ -928,19 +1054,21 @@
       newObj.draggable = true;
       newObj.dragFollowsCursor = true;
       newObj.onDragStart(0, () => {
-        (newObj as any)._dragOrigX = newObj.x;
-        (newObj as any)._dragOrigY = newObj.y;
+        (newObj.var as DragObjVar)._dragOrigX = newObj.x;
+        (newObj.var as DragObjVar)._dragOrigY = newObj.y;
       });
       newObj.onDragEnd(0, () => {
         if (isBlocked(newObj.x, newObj.y, piece.becomes, newObj)) {
-          newObj.x = (newObj as any)._dragOrigX;
-          newObj.y = (newObj as any)._dragOrigY;
+          newObj.x = (newObj.var as DragObjVar)._dragOrigX;
+          newObj.y = (newObj.var as DragObjVar)._dragOrigY;
         }
       });
     }
 
-    const newIdx = activeTowers.indexOf(tower);
-    activeTowers[newIdx] = { obj: newObj, configId: piece.becomes, level: tower.level + 1, piece: (newCls as any).pieceConfig, targeting: tower.targeting, flaskId: tower.flaskId };
+    const newIdx = activeCombatants.indexOf(tower);
+    const pieceCfg = pieceConfigs.get(piece.becomes);
+    if (!pieceCfg) { debug('Upgrade target config missing'); return; }
+    activeCombatants[newIdx] = { obj: newObj, configId: piece.becomes, level: tower.level + 1, piece: pieceCfg, targeting: tower.targeting, flaskId: tower.flaskId, attackPeriod: 1.0 / (pieceCfg.attack_rate || 1.0) };
     currentGold -= goldCost;
     if (resourceText) {
       resourceText.text = `{img:copper} ${currentGold}   Round ${currentRound}/${totalRounds}`;
@@ -956,9 +1084,9 @@
 
   function doSell() {
     if (!selectedTower) { debug('No tower selected'); return; }
-    const towerIdx = activeTowers.findIndex(t => t.obj === selectedTower!.obj);
+    const towerIdx = activeCombatants.findIndex(t => t.obj === selectedTower!.obj);
     if (towerIdx < 0) { setSelectedTower(null); return; }
-    const tower = activeTowers[towerIdx];
+    const tower = activeCombatants[towerIdx];
     const cost = tower.piece.cost?.[0]?.gold || 0;
     const refund = Math.floor(cost * 0.5);
     currentGold += refund;
@@ -970,7 +1098,7 @@
     }
     refreshButtonStates();
     tower.obj.destroy();
-    activeTowers.splice(towerIdx, 1);
+    activeCombatants.splice(towerIdx, 1);
     setSelectedTower(null);
     dirty = true;
     savePlacements();
@@ -983,6 +1111,7 @@
   function startRound() {
     if (roundStarted) return;
     roundStarted = true;
+    roundSidebarVisible = false;
     gameState = 'battle';
     if (startButton) startButton.text = 'In Progress...';
   }
@@ -1015,68 +1144,71 @@
 
   function doSpawn(enemyId: string, sq?: { spawnPointId?: string }) {
     const cls = mobEnemyClassMap.get(enemyId);
-    if (!cls || !mapMetadata?.spawn_points?.length) return;
+    if (!cls || !mapMetadata?.spawnPoints.length) return;
     const sp = sq?.spawnPointId
-      ? mapMetadata.spawn_points.find((s: any) => s.id === sq.spawnPointId)
+      ? mapMetadata.spawnPoints.find((s: any) => s.id === sq.spawnPointId)
       : null;
-    const spawn = sp ?? mapMetadata.spawn_points[0];
-    const e = cls.spawn(nx(spawn.x), ny(spawn.y));
-    (e as any).enemyId = enemyId;
-    (e as any).hp = cls.defaultHitpoints;
+    const spawn = sp ?? mapMetadata.spawnPoints[0];
+    const e = cls.spawn(spawn.x, spawn.y);
+    const ev = e.var as EnemyVar;
+    ev.enemyId = enemyId;
+    ev.hp = cls.defaultHitpoints;
 
-    const p = pathMap.get(spawn.target_path_id);
+    const p = pathMap.get(spawn.targetPathId);
     if (!p?.waypoints?.length) {
-      console.log(`[TD] doSpawn: no waypoints for path ${spawn.target_path_id}`);
+      console.log(`[TD] doSpawn: no waypoints for path ${spawn.targetPathId}`);
       return;
     }
-    const mobCfg = (cls as any).mobConfig as any;
+    const mobCfg = mobConfigs.get(enemyId);
     const spd = mobCfg?.speed || 1.0;
-    (e as any).baseSpeed = spd;
+    ev.baseSpeed = spd;
     const wps = p.waypoints;
     const startIdx = (wps.length > 1
       && Math.abs(wps[0].x - spawn.x) < 0.0001
       && Math.abs(wps[0].y - spawn.y) < 0.0001) ? 1 : 0;
-    (e as any).waypointIndex = startIdx;
-    (e as any).pathId = spawn.target_path_id;
+    ev.waypointIndex = startIdx;
+    ev.pathId = spawn.targetPathId;
     e.decelerationDistance = 0;
     // Enable sprite mirroring based on movement direction (spriteForwardVector inherited from class default)
     e.mirrorOnDirection = true;
 
     e.onArrival(() => {
-      const idx = (e as any).waypointIndex as number;
-      const pid = (e as any).pathId as string;
+      const ev2 = e.var as EnemyVar;
+      const idx = ev2.waypointIndex;
+      const pid = ev2.pathId;
       const wpList = pathMap.get(pid)?.waypoints;
       if (!wpList) return;
       const nextIdx = idx + 1;
-      (e as any).waypointIndex = nextIdx;
+      ev2.waypointIndex = nextIdx;
       if (nextIdx >= wpList.length) {
-        console.log(`[TD] onArrival: ${(e as any).enemyId} reached end of path, escaping`);
+        console.log(`[TD] onArrival: ${ev2.enemyId} reached end of path, escaping`);
         enemyEscaped(e);
         return;
       }
       const nw = wpList[nextIdx];
-      const mId = (e as any).enemyId as string;
-      const mCls = mId ? mobEnemyClassMap.get(mId) : null;
-      const s2 = mCls ? ((mCls as any).mobConfig?.speed || 1.0) : 1.0;
-      const dx = nx(nw.x) - e.x;
-      const dy = ny(nw.y) - e.y;
+      const s2 = mobConfigs.get(ev2.enemyId)?.speed || 1.0;
+      const dx = nw.x - e.x;
+      const dy = nw.y - e.y;
       const dist = Math.hypot(dx, dy);
-      e.moveTo({ x: nx(nw.x), y: ny(nw.y) }, dist / (s2 * 60));
+      e.moveTo({ x: nw.x, y: nw.y }, dist / (s2 * 60));
+      ev2.baseVelocity = e.velocity;
     });
 
     if (wps[startIdx]) {
-      const dx = nx(wps[startIdx].x) - e.x;
-      const dy = ny(wps[startIdx].y) - e.y;
+      const dx = wps[startIdx].x - e.x;
+      const dy = wps[startIdx].y - e.y;
       const dist = Math.hypot(dx, dy);
-      e.moveTo({ x: nx(wps[startIdx].x), y: ny(wps[startIdx].y) }, dist / (spd * 60));
+      e.moveTo({ x: wps[startIdx].x, y: wps[startIdx].y }, dist / (spd * 60));
+      ev.baseVelocity = e.velocity;
     }
-    console.log(`[TD] doSpawn: ${enemyId} at (${nx(spawn.x).toFixed(0)}, ${ny(spawn.y).toFixed(0)}) hp=${cls.defaultHitpoints} spd=${spd} waypoints=${wps.length} startIdx=${startIdx}`);
+    console.log(`[TD] doSpawn: ${enemyId} at (${spawn.x.toFixed(0)}, ${spawn.y.toFixed(0)}) hp=${cls.defaultHitpoints} spd=${spd} waypoints=${wps.length} startIdx=${startIdx}`);
     e.logMovement();
   }
 
   function enemyEscaped(e: Enemy) {
     currentLives--;
-    const eid = (e as any).enemyId as string;
+    const ev = e.var as EnemyVar;
+    const eid = ev.enemyId;
     if (eid) leakedEnemies[eid] = (leakedEnemies[eid] || 0) + 1;
     console.log(`[TD] enemyEscaped: ${eid} at (${e.x.toFixed(0)}, ${e.y.toFixed(0)}) lives=${currentLives}`);
     if (livesText) livesText.text = `Lives: ${currentLives}`;
@@ -1109,30 +1241,24 @@
   }
 
   function combatTick(dt: number) {
-    for (const t of activeTowers) {
-      const range = (t.piece.range || 0.2) * bw;
-      const rate = t.piece.attack_rate || 1.0;
+    for (const t of activeCombatants) {
+      const range = t.piece.range || 0.2;  // range in board units
       const tdmg = t.piece.damage?.[Math.min(t.level, (t.piece.damage?.length || 1) - 1)] || 10;
-      const targeting = (t as any).targeting || 'closest';
+      const targeting = t.targeting;
+
+      t.atkTimer = (t.atkTimer === undefined ? t.attackPeriod : t.atkTimer) + dt;
+      if (t.atkTimer < t.attackPeriod) continue;
+
       let fireX: number | null = null;
       let fireY: number | null = null;
       let reasonEnemy: Enemy | null = null;
 
       if (targeting === 'nearest_path') {
-        const pt = (t as any)._pathTarget as { x: number; y: number } | undefined;
+        const pt = getWeightedPathTarget(t);
         if (pt) { fireX = pt.x; fireY = pt.y; }
       } else if (targeting === 'selectable') {
-        const st = (t as any).selectableTarget as { x: number; y: number } | undefined;
-        if (st) {
-          const poolRadius = (t.piece.area_of_effect?.radius || 0) * bw;
-          const triggerR = poolRadius > 0 ? poolRadius : range * 0.3;
-          for (const e of enemies) {
-            if (Math.hypot(e.x - st.x, e.y - st.y) <= triggerR) {
-              fireX = st.x; fireY = st.y;
-              break;
-            }
-          }
-        }
+        const st = t.selectableTarget;
+        if (st) { fireX = st.x; fireY = st.y; }
       } else {
         let target: Enemy | null = null;
         if (targeting === 'closest' || targeting === 'first') {
@@ -1143,7 +1269,7 @@
             if (targeting === 'closest') {
               if (d < best) { best = d; target = e; }
             } else {
-              if ((e as any).timeExistedMillis > best) { best = (e as any).timeExistedMillis; target = e; }
+              if (e.timeExistedMillis > best) { best = e.timeExistedMillis; target = e; }
             }
           }
         } else {
@@ -1151,7 +1277,7 @@
           for (const e of enemies) {
             const d = Math.hypot(e.x - t.obj.x, e.y - t.obj.y);
             if (d > range) continue;
-            const hp = (e as any).hp || 0;
+            const hp = (e.var as EnemyVar).hp || 0;
             if (targeting === 'strongest' ? hp > bestVal : hp < bestVal) { bestVal = hp; target = e; }
           }
         }
@@ -1165,91 +1291,87 @@
       const fx = fireX;
       const fy = fireY!;
 
-      (t as any).atkTimer = ((t as any).atkTimer || 0) + dt;
-      if ((t as any).atkTimer >= 1.0 / rate) {
-        (t as any).atkTimer = 0;
-        const projType = getProjectileType(t);
-        if (!projType) continue;
-        const pClass = projectileClasses[projType];
-        if (!pClass) continue;
-        const p = pClass.spawn(t.obj.x, t.obj.y);
-        const cfg = (pClass as any).config as any;
+      t.atkTimer = 0;
+      const projType = getProjectileType(t);
+      if (!projType) continue;
+      const pClass = projectileClasses[projType];
+      if (!pClass) continue;
+      const p = pClass.spawn(t.obj.x, t.obj.y);
+      const cfg = projectileConfigs.get(projType)!;
+      const pv = p.var as ProjectileVar;
 
-        if (cfg.orbit_radius) {
-          (p as any).isOrbital = true;
-          p.singleCollisionOnly = false;
-          (p as any).hitEnemies = new Set();
-          p.alignToTravel = false;
-          const angleDeg = Math.atan2(fy - t.obj.y, fx - t.obj.x) * (180 / Math.PI);
-          const arcDeg = cfg.arc_degrees || 90;
-          p.circleAround({
-            center: t.obj,
-            radius: cfg.orbit_radius,
-            velocity: cfg.speed || 800,
-            startAngleDeg: angleDeg - arcDeg / 2,
-            arcDeg: arcDeg,
-            facing: { x: 0, y: 1 },
-            fadeInTime: (cfg.fade_in_ms || 15) / 1000,
-            fadeOutTime: (cfg.fade_out_ms || 15) / 1000,
-            onComplete: () => p.destroy(),
-          });
-          p.onCollisionWithEnemy((enemy: Enemy) => {
-            const hitSet = (p as any).hitEnemies as Set<Enemy>;
-            if (hitSet.has(enemy)) return;
-            hitSet.add(enemy);
-            hitEnemy(enemy, tdmg);
-          });
-          continue;
-        }
+      if (cfg.orbit_radius) {
+        pv.isOrbital = true;
+        p.singleCollisionOnly = false;
+        pv.hitEnemies = new Set();
+        p.alignToTravel = false;
+        const angleDeg = Math.atan2(fy - t.obj.y, fx - t.obj.x) * (180 / Math.PI);
+        const arcDeg = cfg.arc_degrees || 90;
+        p.circleAround({
+          center: t.obj,
+          radius: cfg.orbit_radius,
+          velocity: cfg.speed || 800,
+          startAngleDeg: angleDeg - arcDeg / 2,
+          arcDeg: arcDeg,
+          facing: { x: 0, y: 1 },
+          fadeInTime: (cfg.fade_in_ms || 15) / 1000,
+          fadeOutTime: (cfg.fade_out_ms || 15) / 1000,
+          onComplete: () => p.destroy(),
+        });
+        p.onCollisionWithEnemy((enemy: Enemy) => {
+          const hitSet = pv.hitEnemies;
+          if (hitSet.has(enemy)) return;
+          hitSet.add(enemy);
+          hitEnemy(enemy, tdmg);
+        });
+        continue;
+      }
 
-        const aeCfg = cfg.area_effect;
-        if (aeCfg) {
-          // Flask projectile — no direct damage, spawns pool on impact
-          p.setSpeed(cfg.speed || 400);
-          p.mirrorOnDirection = true;
-          p.setOrientationTowards({ x: fx, y: fy });
-          (p as any).targetX = fx;
-          (p as any).targetY = fy;
-          p.onCollisionWithEnemy((enemy: Enemy) => {
-            spawnGroundPool(enemy.x, enemy.y, aeCfg, fx, fy);
-            p.destroy();
-          });
+      const aeCfg = cfg.area_effect;
+      if (aeCfg) {
+        // Flask projectile — no direct damage, spawns pool on impact
+        p.setSpeed(cfg.speed || 400);
+        p.mirrorOnDirection = true;
+        p.setOrientationTowards({ x: fx, y: fy });
+        pv.targetX = fx;
+        pv.targetY = fy;
+        pv.aeCfg = aeCfg;
+      } else {
+        // Standard homing projectile (arrows)
+        pv.dmg = tdmg;
+        pv.aoe = (t.piece.area_of_effect?.radius || 0);  // AoE radius in board units
+        p.setSpeed(cfg.speed || 1600);
+        p.mirrorOnDirection = true;
+        if (reasonEnemy) {
+          p.setOrientationTowards(predictIntercept(t.obj, reasonEnemy, cfg.speed || 1600));
         } else {
-          // Standard homing projectile (arrows)
-          (p as any).dmg = tdmg;
-          (p as any).aoe = (t.piece.area_of_effect?.radius || 0) * bw;
-          p.setSpeed(cfg.speed || 1600);
-          p.mirrorOnDirection = true;
-          if (reasonEnemy) {
-            p.setOrientationTowards(predictIntercept(t.obj, reasonEnemy, cfg.speed || 1600));
-          } else {
-            p.setOrientationTowards({ x: fx, y: fy });
-          }
-          p.onCollisionWithEnemy((enemy: Enemy) => {
-            const hitDmg = (p as any).dmg as number || 10;
-            const hitAoe = (p as any).aoe as number || 0;
-            console.log(`[TD] projHit: ${t.configId} → ${(enemy as any).enemyId} dmg=${hitDmg} dist=${Math.hypot(enemy.x - p.x, enemy.y - p.y).toFixed(1)}`);
-            if (hitAoe > 0) {
-              for (const e of enemies) {
-                if (Math.hypot(e.x - enemy.x, e.y - enemy.y) <= hitAoe) hitEnemy(e, hitDmg);
-              }
-            } else {
-              hitEnemy(enemy, hitDmg);
-            }
-            p.destroy();
-          });
+          p.setOrientationTowards({ x: fx, y: fy });
         }
+        p.onCollisionWithEnemy((enemy: Enemy) => {
+          const hitDmg = pv.dmg || 10;
+          const hitAoe = pv.aoe || 0;
+          console.log(`[TD] projHit: ${t.configId} → ${(enemy.var as EnemyVar).enemyId} dmg=${hitDmg} dist=${Math.hypot(enemy.x - p.x, enemy.y - p.y).toFixed(1)}`);
+          if (hitAoe > 0) {
+            for (const e of enemies) {
+              if (Math.hypot(e.x - enemy.x, e.y - enemy.y) <= hitAoe) hitEnemy(e, hitDmg);
+            }
+          } else {
+            hitEnemy(enemy, hitDmg);
+          }
+          p.destroy();
+        });
       }
     }
   }
 
   function hitEnemy(e: Enemy, dmg: number) {
-    const before = (e as any).hp;
-    (e as any).hp = ((e as any).hp || 0) - dmg;
-    console.log(`[TD] hitEnemy: ${(e as any).enemyId} ${before} -> ${(e as any).hp} dmg=${dmg}`);
-    if ((e as any).hp <= 0) {
-      const mobId = (e as any).enemyId;
-      const mc = mobId ? (mobEnemyClassMap.get(mobId) as any)?.mobConfig : null;
+    const ev = e.var as EnemyVar;
+    const before = ev.hp;
+    ev.hp = (ev.hp || 0) - dmg;
+    console.log(`[TD] hitEnemy: ${ev.enemyId} ${before} -> ${ev.hp} dmg=${dmg}`);
+    if (ev.hp <= 0) {
+      const mobId = ev.enemyId;
+      const mc = mobConfigs.get(mobId);
       currentGold += mc?.reward_gold || 1;
       if (resourceText) {
         resourceText.text = `{img:copper} ${currentGold}   Round ${currentRound}/${totalRounds}`;
@@ -1281,11 +1403,11 @@
     gameState = 'idle';
     try {
       const result = await tdRound(characterId, {
-        session_id: (tdData as any).session_id as number,
+        session_id: (tdData as unknown as KickoffResponse).session_id,
         lives_lost: Math.max(0, initialLives - currentLives),
         leaked_enemies: leakedEnemies
       });
-      const ar = result as any;
+      const ar = result as unknown as AdvanceResponse;
       console.log('[TD] advanceRound response:', ar);
       if (ar.next_round) {
         currentRound = ar.round_number;
@@ -1295,7 +1417,7 @@
         for (const p of projectiles) { p.destroy(); }
         // Reset spawn queue with new schedule
         spawnQueue = [];
-        const schedule: SpawnScheduleEntry[] = ar.spawn_schedule || [];
+        const schedule = ar.spawn_schedule || [];
         for (const e of schedule) {
           spawnQueue.push({
             enemyId: e.enemy_id, remaining: e.count,
@@ -1338,7 +1460,7 @@
         onComplete({
           completed: ar.completed || false,
           score: ar.score || 0,
-          new_best_score: ar.new_best_score || false,
+          new_best_score: ar.new_best_score || 0,
           times_played: ar.times_played || 0,
           all_levels_done: ar.all_levels_done || false,
           base_unlocked: ar.base_unlocked || false,
@@ -1347,7 +1469,7 @@
           rewards: ar.rewards || {},
           land_patent_earned: ar.land_patent_earned || false,
           duke_right_earned: ar.duke_right_earned || false,
-          new_unlocks: ar.new_unlocks
+          new_unlocks: ar.new_unlocks as NewUnlocks | undefined
         });
       }
     } catch (e) {
@@ -1366,7 +1488,7 @@
 
     try {
       const result = await tdRound(characterId, {
-        session_id: (tdData as any).session_id as number,
+        session_id: (tdData as unknown as KickoffResponse).session_id,
         lives_lost: forceLoss ? 100 : Math.max(0, initialLives - currentLives),
         leaked_enemies: leakedEnemies
       });
@@ -1392,6 +1514,7 @@
 
   function forfeitGame() {
     if (gameState === 'won' || gameState === 'lost') return;
+    deleteConfig("td_placements").catch(e => console.log('[TD] Failed to clear saved state:', e));
     if (!roundStarted && currentRound === 1) {
       gameState = 'lost';
       placementMode = null;
@@ -1414,66 +1537,54 @@
       const result = await tdRound(characterId, { mini_game: miniGame, level_id: levelId });
       tdData = result as TDRoundKickoffResponse;
 
+      const kd = tdData as unknown as KickoffResponse;
+
       // Load saved placements from OPFS on resume
-      if ((tdData as any).resumed) {
+      if (kd.resumed) {
         try {
           const saved = await getConfig<SavedTDState>("td_placements");
-          if (saved && saved.session_id === (tdData as any).session_id && saved.character_id === characterId) {
+          if (saved && saved.session_id === kd.session_id && saved.character_id === characterId) {
             pendingRestore = saved.placements;
+            pendingGold = saved.gold ?? null;
           }
         } catch (e) {
           console.log('[TD] Failed to load saved placements:', e);
         }
       }
 
-      // Load map image to determine its aspect ratio
-      let mapAspect = 16 / 9;
-      const mapFilename = (tdData as any).map_metadata?.image_filename as string | undefined;
-      if (mapFilename) {
-        const img = new Image();
-        img.src = `/images/tower_defense/maps/${mapFilename}`;
-        await img.decode();
-        mapAspect = img.naturalWidth / img.naturalHeight;
-      }
-
-      // Size board to viewport, preserving map aspect ratio
-      let boardW = window.innerHeight * mapAspect;
-      let boardH = window.innerHeight;
-      if (boardW + sidebarW > window.innerWidth) {
-        boardW = window.innerWidth - sidebarW;
-        boardH = boardW / mapAspect;
-      }
-      bw = Math.floor(boardW);
-      bh = Math.floor(boardH);
-      canvasEl.width = bw + sidebarW;
-      canvasEl.height = bh;
-      canvasEl.style.width = `${canvasEl.width}px`;
-      canvasEl.style.height = `${canvasEl.height}px`;
-      setBoardSize(bw + sidebarW, bh);
+      // Canvas sized to board dimensions (sidebar is an overlay)
+      canvasEl.width = BW;
+      canvasEl.height = BH;
+      canvasEl.style.width = `${BW}px`;
+      canvasEl.style.height = `${BH}px`;
+      setBoardSize(BW, BH);
       initEngine(canvasEl, debugEl, false, setupGame);
 
       // Native listeners for board click-and-drag placement
       const onMouseDown = (e: MouseEvent) => {
         if (placementMode && e.button === 0) {
-          const bx = (bw + sidebarW) * (e.clientX / canvasEl.clientWidth);
-          console.log('native mousedown: placementMode=', placementMode, 'bx=', bx, 'bw=', bw);
-          if (bx < bw) boardDragActive = true;
+          // Mouse position in board units: canvas pixel × (BW / canvasWidth) = clientX since canvas = BW px
+          const bx = BW * (e.clientX / canvasEl.clientWidth);
+          console.log('native mousedown: placementMode=', placementMode, 'bx=', bx, 'bw=', BW);
+          if (bx < BW) boardDragActive = true;
         }
       };
       const onMouseUp = (e: MouseEvent) => {
         if (e.button !== 0) return;
         boardDragActive = false;
         if (placementMode) {
-          const bx = (bw + sidebarW) * (e.clientX / canvasEl.clientWidth);
-          const by = bh * (e.clientY / canvasEl.clientHeight);
+          const bx = BW * (e.clientX / canvasEl.clientWidth);
+          const by = BH * (e.clientY / canvasEl.clientHeight);
           console.log('native mouseup: placing', placementMode, 'at', bx, by);
-          if (bx < bw && by >= 0 && by < bh && !isBlocked(bx, by, placementMode!)) {
-            const cls = towerGameClassMap.get(placementMode);
-            const cfg = cls ? (cls as any).pieceConfig : null;
+          if (bx < BW && by >= 0 && by < BH && !isBlocked(bx, by, placementMode!)) {
+            const cfg = pieceConfigs.get(placementMode!);
             const pcost = cfg?.cost?.[0]?.gold || 0;
           if (currentGold >= pcost) tryPlace(bx, by, placementMode);
         }
         placementMode = null;
+      } else if (roundStarted && !roundSidebarVisible) {
+        const bx = BW * (e.clientX / canvasEl.clientWidth);
+        if (bx >= BW - SIDEBAR_W) roundSidebarVisible = true;
       }
       };
       canvasEl.addEventListener('mousedown', onMouseDown);

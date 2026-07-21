@@ -171,16 +171,18 @@
     if (!item) return '';
     const itemText = itemTexts[item.id] || '';
 
-    // Replace {unit_name} in the king's message with the item's display name (first line of item text)
-    const firstLine = itemText.split('\n')[0].replace(/^\*\*|\*\*$/g, '').trim();
-    let msg = kingsMsgTemplate.replace(/\{unit_name\}/g, firstLine);
+    const unitName = itemText.split('\n')[0].split('**')[1] || itemText.split('\n')[0];
 
-    // Replace {character_name} if present
+    let msg = kingsMsgTemplate
+        .replace(/\{unit_name\}/g, unitName)
+        .replace(/\<unit\>/g, `\n\n![](${item.imageUrl})\n\n${itemText}`)
+        .replace(/\<seal\>/g, `\n\n<img src="/images/ui/kings_seal.png" style="width: 10em; height: auto;" alt="King's Seal" />`);
+
     if ($currentCharacter) {
       msg = msg.replace(/\{character_name\}/g, $currentCharacter.display_name);
     }
 
-    return `${msg}\n\n![](${item.imageUrl})\n\n${itemText}`;
+    return msg;
   }
 
   /**
