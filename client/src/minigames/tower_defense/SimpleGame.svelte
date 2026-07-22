@@ -89,7 +89,10 @@
     flaskId?: string;
     atkTimer?: number;
     attackPeriod: number;
-    /** Cached path segments within range: { seg, dist (to nearest point), t0/t1 (in-range param range) } */
+    /** Offset from visual center to logical position (bottom-center = height/2) */
+    originY: number;
+    /** Projectile spawn offset from visual center (from config) */
+    projOrigin: { x: number; y: number };
     _pathSegCache?: { seg: { ax: number; ay: number; bx: number; by: number }; dist: number; t0: number; t1: number }[];
     selectableTarget?: { x: number; y: number };
   }
@@ -121,16 +124,15 @@
   let exclusionZones: BoardMapExclusionZone[] = [];
   let pathBuffers: { cx: number; cy: number; r: number }[] = [];
   let mapMetadata: BoardMapData | null = null;
-  let roundSidebarVisible = false;
 
   // UI objects
   let resourceText: Text | null = null;
   let livesText: Text | null = null;
-  let startButton: Button | null = null;
-  let pauseButton: Button | null = null;
-  let autoAdvance = false;
+  let rpButton: Button | null = null;
   let ringButtons: Button[] = [];
   let showingTargetingPicker = false;
+
+  let resizeHandler: (() => void) | null = null;
 
   // Ground effect pools
   let groundPools: {
@@ -218,7 +220,7 @@
       if (t.obj === movingObj) continue;
       const tR = t.piece.exclusion_radius || 0;
       const r = Math.max(tR, placingR);
-      if (r > 0 && Math.hypot(t.obj.x - x, t.obj.y - y) < r) return true;
+      if (r > 0 && Math.hypot(t.obj.x - x, t.obj.y + t.originY - y) < r) return true;
     }
     return false;
   }
@@ -286,9 +288,26 @@
     return t0 <= t1 ? [t0, t1] : null;
   }
 
+  function pick_weighted_branch(branches: { pathId: string; weight: number }[]): { pathId: string; weight: number } {
+    const total = branches.reduce((s, b) => s + b.weight, 0);
+    let roll = Math.random() * total;
+    for (const b of branches) {
+      roll -= b.weight;
+      if (roll <= 0) return b;
+    }
+    return branches[branches.length - 1];
+  }
+
+  function find_next_waypoint(wps: { x: number; y: number }[], startIdx: number, cx: number, cy: number, delta: number = 5): number {
+    for (let i = startIdx; i < wps.length; i++) {
+      if (Math.hypot(wps[i].x - cx, wps[i].y - cy) > delta) return i;
+    }
+    return wps.length;
+  }
+
   function cachePathSegTargets(t: PlayerCombatant, range: number) {
     const cache: { seg: { ax: number; ay: number; bx: number; by: number }; dist: number; t0: number; t1: number }[] = [];
-    const cx = t.obj.x, cy = t.obj.y;
+    const cx = t.obj.x, cy = t.obj.y + t.originY;
     for (const seg of pathSegments) {
       const tr = segmentCircleRange(seg.ax, seg.ay, seg.bx, seg.by, cx, cy, range);
       if (!tr) continue;
@@ -303,7 +322,7 @@
     const cache = t._pathSegCache;
     if (!cache || cache.length === 0) {
       // Fallback: nearest point on any path
-      const info = findNearestPathSegInfo(t.obj.x, t.obj.y);
+      const info = findNearestPathSegInfo(t.obj.x, t.obj.y + t.originY);
       return info ? info.point : null;
     }
     let totalWeight = 0;
@@ -353,6 +372,7 @@
     const obj = new GameObject(cls, x, y);
     obj.setOrientation(angle);
     obj.opacity = aeConfig.opacity || 1.0;
+    if (aeConfig.z_index != null) obj.zIndex = aeConfig.z_index;
     (obj.var as PoolObjVar).poolData = {
       id: aeConfig.id,
       slowFactor: aeConfig.slow_factor || 0,
@@ -454,6 +474,8 @@
     if (!piece) return;
     const targeting = p.targeting || piece.default_targeting || 'first';
     const flaskId = p.flaskId || (piece.projectile_ids?.includes('naptha_flask') ? 'naptha_flask' : piece.projectile_ids?.[0]);
+    const originY = (piece.height || 48) / 2;
+    const projOrigin: { x: number; y: number } = (piece as any).projectile_origin || { x: 0, y: 0 };
     activeCombatants.push({
       obj,
       configId: p.configId,
@@ -461,6 +483,8 @@
       piece,
       targeting,
       flaskId,
+      originY,
+      projOrigin,
       attackPeriod: 1.0 / (piece.attack_rate || 1.0)
     });
     if (soldierIds.has(p.configId)) {
@@ -472,7 +496,7 @@
         (obj.var as DragObjVar)._dragOrigY = obj.y;
       });
       obj.onDragEnd(0, () => {
-        if (isBlocked(obj.x, obj.y, p.configId, obj)) {
+        if (isBlocked(obj.x, obj.y + towerEntry.originY, p.configId, obj)) {
           obj.x = (obj.var as DragObjVar)._dragOrigX;
           obj.y = (obj.var as DragObjVar)._dragOrigY;
         }
@@ -585,8 +609,8 @@
       copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
     };
     resourceText = createText(
-      `{img:copper} ${currentGold}   Round ${currentRound}/${totalRounds}`,
-      { x: cX, y: 35 },
+      `{img:copper} ${currentGold}`,
+      { x: sX + 100, y: 35 },
       copperImages
     );
     resourceText.size = 22;
@@ -595,7 +619,7 @@
     resourceText.setShadow('#000000', 4, 2, 2);
 
     if (currentLives > 1) {
-      livesText = createText(`Lives: ${currentLives}`, { x: cX, y: 65 });
+      livesText = createText(`Lives: ${currentLives}`, { x: sX + 100, y: 65 });
       livesText.size = 20;
       livesText.foreground = '#FF6666';
       livesText.setShadow('#000000', 4, 2, 2);
@@ -634,6 +658,7 @@
       btn.clickColor = '#3A3A5A';
       btn.draggable = true;
       btn.dragFollowsCursor = false;
+      btn.zIndex = 100;
       btn.setOnClick(() => {
         setSelectedTower(null);
         console.log('sidebar click:', id);
@@ -662,40 +687,26 @@
     }
     refreshButtonStates();
 
-    const sbc = new ButtonClass('sb_start');
-    startButton = sbc.spawn(cX, 0, `Round ${currentRound}/${totalRounds}`, null, { width: sbBtnW, height: 42, color: '#2D7A2D', backgroundOpacity: 0.8 });
-    startButton.setOnClick(() => { setSelectedTower(null); startRound(); });
-
-    {
-      const pauseCls = new ButtonClass('sb_pause');
-      pauseButton = pauseCls.spawn(cX, 0, 'Pause', null, { width: sbBtnW, height: 30, color: '#555555', backgroundOpacity: 0.8 });
-      pauseButton.setOnClick(() => {
-        setSelectedTower(null);
-        if (roundStarted && gameState !== 'won' && gameState !== 'lost') togglePause();
-      });
-    }
+    // Combined round/pause button — standalone, not in any column
+    const rpCls = new ButtonClass('sb_round');
+    rpButton = rpCls.spawn(sX + 320, 35, `Round ${currentRound}/${totalRounds}`, null, { width: sbBtnW, height: 38, color: '#2D7A2D', backgroundOpacity: 0.8 });
+    rpButton.zIndex = 100;
+    rpButton.setOnClick(() => {
+      setSelectedTower(null);
+      if (roundStarted && gameState !== 'won' && gameState !== 'lost') {
+        togglePause();
+      } else if (!roundStarted) {
+        startRound();
+      }
+    });
 
     const fbc = new ButtonClass('sb_forfeit');
     const fbtn = fbc.spawn(cX, 0, 'Try Again Later', null, { width: sbBtnW, height: 42, color: '#7A2D2D', backgroundOpacity: 0.8 });
+    fbtn.zIndex = 100;
     fbtn.setOnClick(() => forfeitGame());
 
-    let autoBtn: Button;
-    {
-      const aaCls = new ButtonClass('sb_auto');
-      autoBtn = aaCls.spawn(cX, 0, 'Auto: OFF', null, { width: sbBtnW, height: 30, color: '#555555', backgroundOpacity: 0.8 });
-      autoBtn.setOnClick(() => {
-        setSelectedTower(null);
-        autoAdvance = !autoAdvance;
-        autoBtn.text = autoAdvance ? 'Auto: ON' : 'Auto: OFF';
-        autoBtn.color = autoAdvance ? '#2D5A2D' : '#555555';
-      });
-    }
-
     // Layout columns and adjust so first child top is at Y=100
-    tcol.addChild(startButton!);
-    tcol.addChild(pauseButton!);
     tcol.addChild(fbtn);
-    tcol.addChild(autoBtn);
     tcol.layout();
     ucol.layout();
     tcol.y = 100 + tcol.height / 2;
@@ -745,8 +756,8 @@
     });
 
     // Pause lifecycle callbacks
-    onPause(() => { if (pauseButton) pauseButton.text = 'Resume'; });
-    onResume(() => { if (pauseButton) pauseButton.text = 'Pause'; });
+    onPause(() => { if (rpButton) { rpButton.text = 'Resume'; rpButton.color = '#7A7A2D'; } });
+    onResume(() => { if (rpButton) { rpButton.text = 'Pause'; rpButton.color = '#555555'; } });
 
     // Click handler — placement (click-to-place) + tower selection + selectable targeting + ring buttons
     onMouseClick(0, (_e, x, y) => {
@@ -762,7 +773,7 @@
         const twr = activeCombatants.find(t => t.obj === selectedTower!.obj);
         if (twr && twr.targeting === 'selectable') {
           const range = twr.piece.range || 0.2;  // range in board units
-          if (Math.hypot(x - twr.obj.x, y - twr.obj.y) <= range) {
+          if (Math.hypot(x - twr.obj.x, y - (twr.obj.y + twr.originY)) <= range) {
             twr.selectableTarget = { x, y };
             setSelectedTower(null);
             return;
@@ -779,7 +790,7 @@
     // Ghost + ring + range rendering
     afterDraw((ctx, _offsetX, _offsetY) => {
       // Toggle sidebar visibility when dragging/placing units or during round
-      const shouldHide = !!(placementMode || dragUnitId) || (roundStarted && !roundSidebarVisible);
+      const shouldHide = !!(placementMode || dragUnitId) || roundStarted;
       if (towerColumn && towerColumn.visible !== !shouldHide) towerColumn.setVisible(!shouldHide);
       if (unitColumn && unitColumn.visible !== !shouldHide) unitColumn.setVisible(!shouldHide);
       const unitId = placementMode ?? dragUnitId;
@@ -790,7 +801,7 @@
         if (cls?.image?.complete && cls.image.naturalWidth > 0) {
           ctx.save();
           ctx.globalAlpha = 0.5;
-          ctx.drawImage(cls.image, pos.x - cls.defaultWidth / 2, pos.y - cls.defaultHeight / 2,
+          ctx.drawImage(cls.image, pos.x - cls.defaultWidth / 2, pos.y - cls.defaultHeight,
             cls.defaultWidth, cls.defaultHeight);
           ctx.restore();
         }
@@ -840,10 +851,11 @@
       for (const t of activeCombatants) {
         if (t.obj.isDragging && t.obj.draggable) {
       const range = t.piece.range || 0.2;  // range in board units
-          const canPlace = !isBlocked(t.obj.x, t.obj.y, t.configId, t.obj);
+      const ly = t.obj.y + t.originY;
+          const canPlace = !isBlocked(t.obj.x, ly, t.configId, t.obj);
           ctx.save();
           ctx.beginPath();
-          ctx.arc(t.obj.x, t.obj.y, range, 0, Math.PI * 2);
+          ctx.arc(t.obj.x, ly, range, 0, Math.PI * 2);
           ctx.fillStyle = canPlace ? 'rgba(0, 100, 255, 0.08)' : 'rgba(255, 0, 0, 0.08)';
           ctx.strokeStyle = canPlace ? 'rgba(0, 100, 255, 0.5)' : 'rgba(255, 0, 0, 0.5)';
           ctx.fill();
@@ -864,7 +876,7 @@
       currentGold = pendingGold;
       pendingGold = null;
       if (resourceText) {
-        resourceText.text = `{img:copper} ${currentGold}   Round ${currentRound}/${totalRounds}`;
+        resourceText.text = `{img:copper} ${currentGold}`;
         resourceText.setInlineImages({
           copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
         });
@@ -981,7 +993,8 @@
     const cost = cfg?.cost?.[0]?.gold || 0;
     if (currentGold < cost) { debug('Not enough gold!'); console.log('tryPlace: not enough gold, have', currentGold, 'need', cost); return; }
     if (isBlocked(x, y, unitId)) { debug('Cannot place here!'); console.log('tryPlace: blocked at', x, y); return; }
-    const obj = new GameObject(cls, x, y);
+    const originY = (cfg.height || 48) / 2;
+    const obj = new GameObject(cls, x, y - originY);
     obj.direction_x = 0;
     obj.direction_y = 0;
     gameObjects.add(obj);
@@ -991,7 +1004,8 @@
     const flaskId = projIds?.includes('naptha_flask')
       ? 'naptha_flask'
       : (projIds?.[0]) || undefined;
-    const towerEntry: PlayerCombatant = { obj, configId: unitId, level: 0, piece: cfg, targeting, flaskId, attackPeriod: 1.0 / (cfg.attack_rate || 1.0) };
+    const projOrigin: { x: number; y: number } = (cfg as any).projectile_origin || { x: 0, y: 0 };
+    const towerEntry: PlayerCombatant = { obj, configId: unitId, level: 0, piece: cfg, targeting, flaskId, originY, projOrigin, attackPeriod: 1.0 / (cfg.attack_rate || 1.0) };
     activeCombatants.push(towerEntry);
     if (targeting === 'nearest_path') {
       cachePathSegTargets(towerEntry, cfg.range || 0.2);
@@ -1007,7 +1021,7 @@
         (obj.var as DragObjVar)._dragOrigY = obj.y;
       });
       obj.onDragEnd(0, () => {
-        if (isBlocked(obj.x, obj.y, unitId, obj)) {
+        if (isBlocked(obj.x, obj.y + towerEntry.originY, unitId, obj)) {
           obj.x = (obj.var as DragObjVar)._dragOrigX;
           obj.y = (obj.var as DragObjVar)._dragOrigY;
         }
@@ -1016,7 +1030,7 @@
     }
     currentGold -= cost;
     if (resourceText) {
-      resourceText.text = `{img:copper} ${currentGold}   Round ${currentRound}/${totalRounds}`;
+      resourceText.text = `{img:copper} ${currentGold}`;
       resourceText.setInlineImages({
         copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
       });
@@ -1068,10 +1082,12 @@
     const newIdx = activeCombatants.indexOf(tower);
     const pieceCfg = pieceConfigs.get(piece.becomes);
     if (!pieceCfg) { debug('Upgrade target config missing'); return; }
-    activeCombatants[newIdx] = { obj: newObj, configId: piece.becomes, level: tower.level + 1, piece: pieceCfg, targeting: tower.targeting, flaskId: tower.flaskId, attackPeriod: 1.0 / (pieceCfg.attack_rate || 1.0) };
+    const newOriginY = (pieceCfg.height || 48) / 2;
+    const newProjOrigin: { x: number; y: number } = (pieceCfg as any).projectile_origin || { x: 0, y: 0 };
+    activeCombatants[newIdx] = { obj: newObj, configId: piece.becomes, level: tower.level + 1, piece: pieceCfg, targeting: tower.targeting, flaskId: tower.flaskId, originY: newOriginY, projOrigin: newProjOrigin, attackPeriod: 1.0 / (pieceCfg.attack_rate || 1.0) };
     currentGold -= goldCost;
     if (resourceText) {
-      resourceText.text = `{img:copper} ${currentGold}   Round ${currentRound}/${totalRounds}`;
+      resourceText.text = `{img:copper} ${currentGold}`;
       resourceText.setInlineImages({
         copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
       });
@@ -1091,7 +1107,7 @@
     const refund = Math.floor(cost * 0.5);
     currentGold += refund;
     if (resourceText) {
-      resourceText.text = `{img:copper} ${currentGold}   Round ${currentRound}/${totalRounds}`;
+      resourceText.text = `{img:copper} ${currentGold}`;
       resourceText.setInlineImages({
         copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
       });
@@ -1111,9 +1127,8 @@
   function startRound() {
     if (roundStarted) return;
     roundStarted = true;
-    roundSidebarVisible = false;
     gameState = 'battle';
-    if (startButton) startButton.text = 'In Progress...';
+    if (rpButton) { rpButton.text = 'Pause'; rpButton.color = '#555555'; }
   }
 
   function spawnTick(dt: number) {
@@ -1163,9 +1178,11 @@
     const spd = mobCfg?.speed || 1.0;
     ev.baseSpeed = spd;
     const wps = p.waypoints;
-    const startIdx = (wps.length > 1
-      && Math.abs(wps[0].x - spawn.x) < 0.0001
-      && Math.abs(wps[0].y - spawn.y) < 0.0001) ? 1 : 0;
+    const startIdx = find_next_waypoint(wps, 0, spawn.x, spawn.y);
+    if (startIdx >= wps.length) {
+      console.log(`[TD] doSpawn: ${enemyId} all waypoints at spawn, stuck`);
+      return;
+    }
     ev.waypointIndex = startIdx;
     ev.pathId = spawn.targetPathId;
     e.decelerationDistance = 0;
@@ -1178,20 +1195,57 @@
       const pid = ev2.pathId;
       const wpList = pathMap.get(pid)?.waypoints;
       if (!wpList) return;
-      const nextIdx = idx + 1;
+      const nextIdx = find_next_waypoint(wpList, idx + 1, e.x, e.y);
       ev2.waypointIndex = nextIdx;
-      if (nextIdx >= wpList.length) {
-        console.log(`[TD] onArrival: ${ev2.enemyId} reached end of path, escaping`);
+      // Still waypoints left on current path → normal move
+      if (nextIdx < wpList.length) {
+        const nw = wpList[nextIdx];
+        const s2 = mobConfigs.get(ev2.enemyId)?.speed || 1.0;
+        const dx = nw.x - e.x;
+        const dy = nw.y - e.y;
+        const dist = Math.hypot(dx, dy);
+        e.moveTo({ x: nw.x, y: nw.y }, dist / (s2 * 60));
+        ev2.baseVelocity = e.velocity;
+        return;
+      }
+      // Path waypoints exhausted — check endpoint
+      const currentPath = pathMap.get(pid);
+      if (!currentPath) return;
+      // End point → terminal, enemy escapes
+      if (currentPath.endAtEndPointId) {
         enemyEscaped(e);
         return;
       }
-      const nw = wpList[nextIdx];
-      const s2 = mobConfigs.get(ev2.enemyId)?.speed || 1.0;
-      const dx = nw.x - e.x;
-      const dy = nw.y - e.y;
-      const dist = Math.hypot(dx, dy);
-      e.moveTo({ x: nw.x, y: nw.y }, dist / (s2 * 60));
-      ev2.baseVelocity = e.velocity;
+      // Intersection → follow a branch to the next path
+      if (currentPath.endAtIntersectionId) {
+        const intersection = intersectionMap.get(currentPath.endAtIntersectionId);
+        if (intersection?.branches?.length) {
+          const chosen = intersection.branches.length === 1
+            ? intersection.branches[0]
+            : pick_weighted_branch(intersection.branches);
+          ev2.pathId = chosen.pathId;
+          const nextPath = pathMap.get(chosen.pathId);
+          if (nextPath?.waypoints?.length) {
+            // Enemy is already standing at wps[0] of the new path (the intersection)
+            const firstIdx = find_next_waypoint(nextPath.waypoints, 1, e.x, e.y);
+            if (firstIdx >= nextPath.waypoints.length) {
+              console.log(`[TD] onArrival: ${ev2.enemyId} new path ${chosen.pathId} all waypoints at intersection`);
+              return;
+            }
+            ev2.waypointIndex = firstIdx;
+            const firstWp = nextPath.waypoints[firstIdx];
+            const s2 = mobConfigs.get(ev2.enemyId)?.speed || 1.0;
+            const dx = firstWp.x - e.x;
+            const dy = firstWp.y - e.y;
+            e.moveTo({ x: firstWp.x, y: firstWp.y }, Math.hypot(dx, dy) / (s2 * 60));
+            ev2.baseVelocity = e.velocity;
+            return;
+          }
+        }
+        console.log(`[TD] onArrival: ${ev2.enemyId} stuck at intersection ${currentPath.endAtIntersectionId}`);
+        return;
+      }
+      console.log(`[TD] onArrival: ${ev2.enemyId} path ${pid} has no end point or intersection, stopped`);
     });
 
     if (wps[startIdx]) {
@@ -1210,7 +1264,8 @@
     const ev = e.var as EnemyVar;
     const eid = ev.enemyId;
     if (eid) leakedEnemies[eid] = (leakedEnemies[eid] || 0) + 1;
-    console.log(`[TD] enemyEscaped: ${eid} at (${e.x.toFixed(0)}, ${e.y.toFixed(0)}) lives=${currentLives}`);
+    const wp = pathMap.get(ev.pathId);
+    console.log(`[TD] enemyEscaped: ${eid} path=${ev.pathId} wpIdx=${ev.waypointIndex}/${wp?.waypoints?.length} at (${e.x.toFixed(0)}, ${e.y.toFixed(0)}) lives=${currentLives}`);
     if (livesText) livesText.text = `Lives: ${currentLives}`;
     enemies.delete(e);
     e.destroy();
@@ -1261,10 +1316,11 @@
         if (st) { fireX = st.x; fireY = st.y; }
       } else {
         let target: Enemy | null = null;
+        const tLy = t.obj.y + t.originY;
         if (targeting === 'closest' || targeting === 'first') {
           let best = targeting === 'closest' ? range : -1;
           for (const e of enemies) {
-            const d = Math.hypot(e.x - t.obj.x, e.y - t.obj.y);
+            const d = Math.hypot(e.x - t.obj.x, e.y - tLy);
             if (d > range) continue;
             if (targeting === 'closest') {
               if (d < best) { best = d; target = e; }
@@ -1275,7 +1331,7 @@
         } else {
           let bestVal = targeting === 'strongest' ? -1 : Infinity;
           for (const e of enemies) {
-            const d = Math.hypot(e.x - t.obj.x, e.y - t.obj.y);
+            const d = Math.hypot(e.x - t.obj.x, e.y - tLy);
             if (d > range) continue;
             const hp = (e.var as EnemyVar).hp || 0;
             if (targeting === 'strongest' ? hp > bestVal : hp < bestVal) { bestVal = hp; target = e; }
@@ -1296,7 +1352,7 @@
       if (!projType) continue;
       const pClass = projectileClasses[projType];
       if (!pClass) continue;
-      const p = pClass.spawn(t.obj.x, t.obj.y);
+      const p = pClass.spawn(t.obj.x + t.projOrigin.x, t.obj.y + t.projOrigin.y);
       const cfg = projectileConfigs.get(projType)!;
       const pv = p.var as ProjectileVar;
 
@@ -1374,7 +1430,7 @@
       const mc = mobConfigs.get(mobId);
       currentGold += mc?.reward_gold || 1;
       if (resourceText) {
-        resourceText.text = `{img:copper} ${currentGold}   Round ${currentRound}/${totalRounds}`;
+        resourceText.text = `{img:copper} ${currentGold}`;
         resourceText.setInlineImages({
           copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
         });
@@ -1434,20 +1490,15 @@
         refreshButtonStates();
         // Update UI
         if (resourceText) {
-          resourceText.text = `{img:copper} ${currentGold}   Round ${currentRound}/${totalRounds}`;
+          resourceText.text = `{img:copper} ${currentGold}`;
           resourceText.setInlineImages({
             copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
           });
         }
         if (livesText) livesText.text = `Lives: ${currentLives}`;
-        if (startButton) {
-          if (autoAdvance) {
-            startButton.text = 'Auto...';
-            setTimeout(() => startRound(), 2000);
-          } else {
-            startButton.text = `Round ${currentRound}/${totalRounds}`;
-            startButton.color = '#2D5A2D';
-          }
+        if (rpButton) {
+          rpButton.text = `Round ${currentRound}/${totalRounds}`;
+          rpButton.color = '#2D7A2D';
         }
       } else {
         // No next_round — server already ended the game
@@ -1555,10 +1606,21 @@
       // Canvas sized to board dimensions (sidebar is an overlay)
       canvasEl.width = BW;
       canvasEl.height = BH;
-      canvasEl.style.width = `${BW}px`;
-      canvasEl.style.height = `${BH}px`;
       setBoardSize(BW, BH);
       initEngine(canvasEl, debugEl, false, setupGame);
+
+      function resizeCanvas() {
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        const aspect = BW / BH;
+        let w = vw, h = vw / aspect;
+        if (h > vh) { h = vh; w = h * aspect; }
+        canvasEl.style.width = `${w}px`;
+        canvasEl.style.height = `${h}px`;
+      }
+      resizeCanvas();
+      resizeHandler = resizeCanvas;
+      window.addEventListener('resize', resizeCanvas);
 
       // Native listeners for board click-and-drag placement
       const onMouseDown = (e: MouseEvent) => {
@@ -1582,9 +1644,6 @@
           if (currentGold >= pcost) tryPlace(bx, by, placementMode);
         }
         placementMode = null;
-      } else if (roundStarted && !roundSidebarVisible) {
-        const bx = BW * (e.clientX / canvasEl.clientWidth);
-        if (bx >= BW - SIDEBAR_W) roundSidebarVisible = true;
       }
       };
       canvasEl.addEventListener('mousedown', onMouseDown);
@@ -1600,6 +1659,7 @@
 
   onDestroy(() => {
     if (saveInterval) clearInterval(saveInterval);
+    if (resizeHandler) window.removeEventListener('resize', resizeHandler);
     savePlacements();
     try { removeEventListeners(); clear(); } catch (_e) { /* ignore */ }
   });

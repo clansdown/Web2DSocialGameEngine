@@ -8,6 +8,7 @@
   import SimpleGame from './tower_defense/SimpleGame.svelte';
   import WeedingGame from './weeding/WeedingGame.svelte';
   import DialogOverlay from '../components/DialogOverlay.svelte';
+  import GameText from '../components/GameText.svelte';
   import StoryText from '../components/StoryText.svelte';
   import { startMiniGame, endMiniGame } from '../lib/game_state';
   import { currentCharacter, playerGameState, language } from '../lib/stores';
@@ -37,6 +38,8 @@
   let gameFinished = $state(false);
   let gameResults: EndMiniGameResponse | null = $state(null);
   let showResults = $state(false);
+  let winMessage = $state('');
+  let loseMessage = $state('');
 
   // For tower defense with new SimpleGame
   let tdStarted = $state(false);
@@ -116,6 +119,15 @@
     if (forfeited) {
       onComplete(results);
       return;
+    }
+
+    // Fetch win/lose message text
+    const msgKey = results.completed ? 'td_victory_message' : 'td_defeat_message';
+    const texts = await getTextsRequest($language, [msgKey], $currentCharacter?.sex || 'male');
+    if (results.completed) {
+      winMessage = texts['td_victory_message'] || '';
+    } else {
+      loseMessage = texts['td_defeat_message'] || '';
     }
 
     const unlocks = results.new_unlocks;
@@ -226,9 +238,15 @@
     <div class="container py-5">
       <div class="card">
         <div class="card-body text-center p-5">
-          <h3 class="mb-3">
-            {gameResults.completed ? 'Victory!' : 'Defeat'}
-          </h3>
+          {#if gameResults.completed}
+            <div class="mb-4">
+              <GameText text={winMessage} class="mb-0" />
+            </div>
+          {:else}
+            <div class="mb-4">
+              <GameText text={loseMessage} class="mb-0" />
+            </div>
+          {/if}
           <p class="lead mb-2">Score: {gameResults.score}</p>
           {#if gameResults.new_best_score === gameResults.score && gameResults.score > 0}
             <p class="text-success">New Best Score!</p>

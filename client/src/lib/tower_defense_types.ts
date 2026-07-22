@@ -87,6 +87,7 @@ export interface AreaEffectConfig {
   damage_per_second: number;
   damage_type: string | null;
   radius: number;
+  z_index?: number;
   [key: string]: unknown;
 }
 
