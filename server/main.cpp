@@ -1331,7 +1331,14 @@ static json load_spawn_schedule_for_round(
             out_display_name_key = data.value("display_name_key", std::string());
 
             if (round_index >= 0 && round_index < total) {
-                return level["rounds"][round_index];
+                json round = level["rounds"][round_index];
+                for (auto& entry : round) {
+                    json sp = pick_spawn_point(spawn_points);
+                    if (sp.contains("id")) {
+                        entry["spawn_point_id"] = sp["id"];
+                    }
+                }
+                return round;
             }
         }
     }

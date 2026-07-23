@@ -121,6 +121,7 @@
   let unitButtons = new Map<string, Button>();
   let pathMap = new Map<string, any>();
   let intersectionMap = new Map<string, any>();
+  let pathDepthCache: Map<string, number> = new Map();
   let exclusionZones: BoardMapExclusionZone[] = [];
   let pathBuffers: { cx: number; cy: number; r: number }[] = [];
   let mapMetadata: BoardMapData | null = null;
@@ -212,10 +213,11 @@
         if (pointInPolygon(x, y, z.vertices as Position2D[])) return true;
       }
     }
-    for (const pb of pathBuffers) {
-      if (pointInCircle(x, y, pb.cx, pb.cy, pb.r)) return true;
-    }
     const placingR = pieceConfigs.get(unitTypeId)?.exclusion_radius || 0;
+    for (const pb of pathBuffers) {
+      const effectiveR = Math.max(pb.r, placingR / 2);
+      if (pointInCircle(x, y, pb.cx, pb.cy, effectiveR)) return true;
+    }
     for (const t of activeCombatants) {
       if (t.obj === movingObj) continue;
       const tR = t.piece.exclusion_radius || 0;
@@ -389,7 +391,7 @@
       if (pd.damagePerSecond > 0) {
         const map = (obj.var as PoolObjVar).damageMap;
         const now = obj.timeExistedMillis;
-        const lastTime = map.get(_enemy) || now;
+        const lastTime = map.get(_enemy) ?? (now - 50);
         const elapsed = now - lastTime;
         if (elapsed >= 50) {
           const dmg = pd.damagePerSecond * (elapsed / 1000);
@@ -528,7 +530,7 @@
     // Path buffers — buffer radius as fraction of board width
     pathBuffers = [];
     if (mapMetadata.paths.length > 0) {
-      const bufferR = BW * 0.035;  // path collision buffer in board units
+      const bufferR = 40;  // path collision buffer in board units
       for (const p of mapMetadata.paths) {
         pathBuffers.push(...generatePathBuffers(p, bufferR));
       }
@@ -546,6 +548,56 @@
           bx: wps[i + 1].x, by: wps[i + 1].y,
         });
       }
+    }
+
+    // Build path depth cache (BFS backward from endpoint paths)
+    // Higher depth = closer to the map exit
+    {
+      const reverseAdj = new Map<string, string[]>();
+      for (const p of mapMetadata.paths) {
+        if (!p.endAtIntersectionId) continue;
+        const ix = intersectionMap.get(p.endAtIntersectionId);
+        if (!ix) continue;
+        for (const br of ix.branches) {
+          const list = reverseAdj.get(br.pathId);
+          if (list) { list.push(p.id); }
+          else { reverseAdj.set(br.pathId, [p.id]); }
+        }
+      }
+      const depths = new Map<string, number>();
+      const childCount = new Map<string, number>();
+      const maxChildDepth = new Map<string, number>();
+      const queue: string[] = [];
+      for (const p of mapMetadata.paths) {
+        if (p.endAtEndPointId) {
+          depths.set(p.id, 0);
+          queue.push(p.id);
+        }
+      }
+      for (const p of mapMetadata.paths) {
+        if (!p.endAtIntersectionId) continue;
+        const ix = intersectionMap.get(p.endAtIntersectionId);
+        childCount.set(p.id, ix?.branches.length || 0);
+        maxChildDepth.set(p.id, -1);
+      }
+      while (queue.length > 0) {
+        const childPid = queue.shift()!;
+        const childDepth = depths.get(childPid)!;
+        const parents = reverseAdj.get(childPid);
+        if (!parents) continue;
+        for (const parentPid of parents) {
+          const curMax = maxChildDepth.get(parentPid) ?? -1;
+          if (childDepth > curMax) maxChildDepth.set(parentPid, childDepth);
+          const remaining = (childCount.get(parentPid) ?? 1) - 1;
+          childCount.set(parentPid, remaining);
+          if (remaining === 0) {
+            const parentDepth = maxChildDepth.get(parentPid)! + 1;
+            depths.set(parentPid, parentDepth);
+            queue.push(parentPid);
+          }
+        }
+      }
+      pathDepthCache = depths;
     }
 
     // Background - map image stretched to fill board
@@ -1317,15 +1369,26 @@
       } else {
         let target: Enemy | null = null;
         const tLy = t.obj.y + t.originY;
-        if (targeting === 'closest' || targeting === 'first') {
-          let best = targeting === 'closest' ? range : -1;
+        if (targeting === 'closest') {
+          let best = range;
           for (const e of enemies) {
             const d = Math.hypot(e.x - t.obj.x, e.y - tLy);
             if (d > range) continue;
-            if (targeting === 'closest') {
-              if (d < best) { best = d; target = e; }
-            } else {
-              if (e.timeExistedMillis > best) { best = e.timeExistedMillis; target = e; }
+            if (d < best) { best = d; target = e; }
+          }
+        } else if (targeting === 'first') {
+          let bestDepth = Infinity;
+          let bestWpIdx = -1;
+          for (const e of enemies) {
+            const d = Math.hypot(e.x - t.obj.x, e.y - tLy);
+            if (d > range) continue;
+            const ev = e.var as EnemyVar;
+            const depth = pathDepthCache.get(ev.pathId) ?? Infinity;
+            const wpIdx = ev.waypointIndex;
+            if (depth < bestDepth || (depth === bestDepth && wpIdx > bestWpIdx)) {
+              bestDepth = depth;
+              bestWpIdx = wpIdx;
+              target = e;
             }
           }
         } else {
