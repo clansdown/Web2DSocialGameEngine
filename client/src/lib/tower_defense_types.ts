@@ -13,6 +13,7 @@ import type { Enemy, GameObject } from '../../SimpleGame/ui/src/lib/gameclasses'
 
 export interface EnemyVar {
   hp: number;
+  maxHp: number;
   enemyId: string;
   slowFactor: number;
   baseSpeed: number;

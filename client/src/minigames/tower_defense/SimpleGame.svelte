@@ -130,6 +130,7 @@
   let resourceText: Text | null = null;
   let livesText: Text | null = null;
   let rpButton: Button | null = null;
+  let fbtn: any = null;
   let ringButtons: Button[] = [];
   let showingTargetingPicker = false;
 
@@ -151,6 +152,12 @@
   // Sidebar column for hide/show on drag/place
   let towerColumn: Column | null = null;
   let unitColumn: Column | null = null;
+
+  function setSidebarVisible(visible: boolean) {
+    if (towerColumn) towerColumn.setVisible(visible);
+    if (unitColumn) unitColumn.setVisible(visible);
+    if (fbtn) fbtn.visible = visible;
+  }
 
   // OPFS persistence for unit placements
   let pendingRestore: SavedPlacement[] | null = null;
@@ -530,7 +537,7 @@
     // Path buffers — buffer radius as fraction of board width
     pathBuffers = [];
     if (mapMetadata.paths.length > 0) {
-      const bufferR = 40;  // path collision buffer in board units
+      const bufferR = 30;  // path collision buffer in board units
       for (const p of mapMetadata.paths) {
         pathBuffers.push(...generatePathBuffers(p, bufferR));
       }
@@ -714,10 +721,12 @@
       btn.setOnClick(() => {
         setSelectedTower(null);
         console.log('sidebar click:', id);
+        setSidebarVisible(false);
         setTimeout(() => { placementMode = id; }, 1);
       });
       btn.onDragStart(0, () => {
         console.log('dragStart:', id, 'at', btn.x, btn.y);
+        setSidebarVisible(false);
         dragUnitId = id;
         btnOrigin.set(id, { x: btn.x, y: btn.y });
         btn.color = '#3A3A5A';
@@ -735,13 +744,14 @@
           if (currentGold >= pcost) tryPlace(pos.x, pos.y, id);
         }
         dragUnitId = null;
+        if (!placementMode && !roundStarted) setSidebarVisible(true);
       });
     }
     refreshButtonStates();
 
     // Combined round/pause button — standalone, not in any column
     const rpCls = new ButtonClass('sb_round');
-    rpButton = rpCls.spawn(sX + 320, 35, `Round ${currentRound}/${totalRounds}`, null, { width: sbBtnW, height: 38, color: '#2D7A2D', backgroundOpacity: 0.8 });
+    rpButton = rpCls.spawn(sX + 320, 35, `Round ${currentRound}/${totalRounds}`, null, { width: 140, height: 38, color: '#2D7A2D', backgroundOpacity: 0.8 });
     rpButton.zIndex = 100;
     rpButton.setOnClick(() => {
       setSelectedTower(null);
@@ -753,12 +763,17 @@
     });
 
     const fbc = new ButtonClass('sb_forfeit');
-    const fbtn = fbc.spawn(cX, 0, 'Try Again Later', null, { width: sbBtnW, height: 42, color: '#7A2D2D', backgroundOpacity: 0.8 });
+    fbtn = fbc.spawn(BW - sbBtnW / 2 - 10, BH - 21 - 10, 'Try Again Later', null, { width: sbBtnW, height: 42, color: '#7A2D2D', backgroundOpacity: 0.8 });
     fbtn.zIndex = 100;
     fbtn.setOnClick(() => forfeitGame());
 
+    // Menu toggle button — standalone, next to rpButton
+    const menuBtnCls = new ButtonClass('sb_menutoggle');
+    const menuBtn = menuBtnCls.spawn(sX + 200, 35, '☰', null, { width: 30, height: 38, color: '#4A4A6A', backgroundOpacity: 0.8 });
+    menuBtn.zIndex = 100;
+    menuBtn.setOnClick(() => setSidebarVisible(!towerColumn?.visible));
+
     // Layout columns and adjust so first child top is at Y=100
-    tcol.addChild(fbtn);
     tcol.layout();
     ucol.layout();
     tcol.y = 100 + tcol.height / 2;
@@ -767,10 +782,6 @@
     ucol.layout();
     towerColumn = tcol;
     unitColumn = ucol;
-    function setSidebarVisible(visible: boolean) {
-      if (towerColumn) towerColumn.setVisible(visible);
-      if (unitColumn) unitColumn.setVisible(visible);
-    }
 
     createText('───', { x: cX, y: BH - 15 }).foreground = '#444';
 
@@ -818,6 +829,7 @@
         console.log('board click with placementMode:', placementMode, 'at', x, y);
         tryPlace(x, y, placementMode);
         placementMode = null;
+        setSidebarVisible(!roundStarted);
         return;
       }
       // Selectable targeting — if a tower with selectable mode is selected, set its target
@@ -841,10 +853,6 @@
 
     // Ghost + ring + range rendering
     afterDraw((ctx, _offsetX, _offsetY) => {
-      // Toggle sidebar visibility when dragging/placing units or during round
-      const shouldHide = !!(placementMode || dragUnitId) || roundStarted;
-      if (towerColumn && towerColumn.visible !== !shouldHide) towerColumn.setVisible(!shouldHide);
-      if (unitColumn && unitColumn.visible !== !shouldHide) unitColumn.setVisible(!shouldHide);
       const unitId = placementMode ?? dragUnitId;
       if (unitId) {
         const cls = towerGameClassMap.get(unitId);
@@ -1180,6 +1188,7 @@
     if (roundStarted) return;
     roundStarted = true;
     gameState = 'battle';
+    setSidebarVisible(false);
     if (rpButton) { rpButton.text = 'Pause'; rpButton.color = '#555555'; }
   }
 
@@ -1220,6 +1229,7 @@
     const ev = e.var as EnemyVar;
     ev.enemyId = enemyId;
     ev.hp = cls.defaultHitpoints;
+    ev.maxHp = cls.defaultHitpoints;
 
     const p = pathMap.get(spawn.targetPathId);
     if (!p?.waypoints?.length) {
@@ -1396,8 +1406,9 @@
           for (const e of enemies) {
             const d = Math.hypot(e.x - t.obj.x, e.y - tLy);
             if (d > range) continue;
-            const hp = (e.var as EnemyVar).hp || 0;
-            if (targeting === 'strongest' ? hp > bestVal : hp < bestVal) { bestVal = hp; target = e; }
+            const ev = e.var as EnemyVar;
+            const val = targeting === 'strongest' ? (ev.maxHp || 0) : (ev.hp || 0);
+            if (targeting === 'strongest' ? val > bestVal : val < bestVal) { bestVal = val; target = e; }
           }
         }
         if (target) {
@@ -1547,6 +1558,7 @@
         }
         allSpawned = false;
         roundStarted = false;
+        setSidebarVisible(true);
         // Update lives from server response
         if (ar.lives != null) currentLives = ar.lives;
         leakedEnemies = {};
@@ -1598,6 +1610,7 @@
     boardDragActive = false;
     dragUnitId = null;
     selectedTower = null;
+    setSidebarVisible(true);
     const score = currentGold + currentLives * 10;
 
     try {

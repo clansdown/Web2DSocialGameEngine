@@ -1333,9 +1333,11 @@ static json load_spawn_schedule_for_round(
             if (round_index >= 0 && round_index < total) {
                 json round = level["rounds"][round_index];
                 for (auto& entry : round) {
-                    json sp = pick_spawn_point(spawn_points);
-                    if (sp.contains("id")) {
-                        entry["spawn_point_id"] = sp["id"];
+                    if (!entry.contains("spawn_point_id")) {
+                        json sp = pick_spawn_point(spawn_points);
+                        if (sp.contains("id")) {
+                            entry["spawn_point_id"] = sp["id"];
+                        }
                     }
                 }
                 return round;
