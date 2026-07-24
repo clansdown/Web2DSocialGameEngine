@@ -33,8 +33,8 @@
     { image: '/images/tower_defense/mobs/great_wolf.png', textId: 'td_book_enemy_great_wolf' },
     { image: '/images/tower_defense/mobs/matted_wolf.png', textId: 'td_book_enemy_matted_wolf' },
     { image: '/images/tower_defense/mobs/wild_boar.png', textId: 'td_book_enemy_boar' },
-    { image: '/images/tower_defense/mobs/dire_wolf.png', textId: 'td_book_enemy_dire_wolf' },
     { image: '/images/tower_defense/mobs/tri_boar.png', textId: 'td_book_enemy_triboar' },
+    { image: '/images/tower_defense/mobs/dire_wolf.png', textId: 'td_book_enemy_dire_wolf' },
     { image: '/images/tower_defense/units/shortbow_archer.png', textId: 'td_book_unit_shortbow_archer' },
     { image: '/images/tower_defense/units/longbow_archer.png', textId: 'td_book_unit_longbow_archer' },
     { image: '/images/tower_defense/units/swordsman.png', textId: 'td_book_unit_swordsman' },
@@ -140,7 +140,7 @@
       <small class="text-muted">Campaign Progress</small>
     </div>
     <div class="ms-auto">
-      <Book pages={bookPages} toolText="Bestiary" width={48} height={48} />
+      <Book pages={bookPages} toolText="Bestiary" width={110} />
     </div>
   </div>
 

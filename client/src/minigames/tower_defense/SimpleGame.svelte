@@ -1166,7 +1166,7 @@
     if (towerIdx < 0) { setSelectedTower(null); return; }
     const tower = activeCombatants[towerIdx];
     const cost = tower.piece.cost?.[0]?.gold || 0;
-    const refund = Math.floor(cost * 0.5);
+    const refund = Math.floor(cost * 0.8);
     currentGold += refund;
     if (resourceText) {
       resourceText.text = `{img:copper} ${currentGold}`;

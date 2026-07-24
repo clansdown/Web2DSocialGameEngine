@@ -39,9 +39,9 @@
   let fading = $state(false);
 
   let triggerStyle = $derived(
-    width && height
-      ? `width: ${width}px; height: ${height}px;`
-      : 'width: 100%; aspect-ratio: 757 / 914;'
+    width
+      ? `width: ${width}px; aspect-ratio: 1264 / 848;`
+      : 'width: 100%; aspect-ratio: 1264 / 848;'
   );
 
   let hasPrev = $derived(currentPage >= 2);
@@ -129,7 +129,7 @@
   onkeydown={(e) => { if (e.key === 'Enter') open(); }}
 >
   <img
-    src="/images/ui/book.png"
+    src="/images/ui/book_on_podium.png"
     alt="Open book"
     style="width: 100%; height: 100%; object-fit: contain; pointer-events: none; display: block;"
   />
@@ -203,12 +203,13 @@
   .book-trigger {
     display: inline-block;
     cursor: pointer;
-    border-radius: 4px;
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.06);
     transition: background 0.2s;
   }
 
   .book-trigger:hover {
-    background: rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.15);
   }
 
   .book-panel {

@@ -15,6 +15,7 @@
   import { getTextsRequest } from '../lib/api';
   import type { StartMiniGameResponse, EndMiniGameResponse, UnlockItem } from '../lib/api';
   import { marked } from 'marked';
+  import * as storage from '../lib/storage';
 
   interface QueueItem {
     id: string;
@@ -44,6 +45,10 @@
   // For tower defense with new SimpleGame
   let tdStarted = $state(false);
 
+  // TD intro overlay state
+  let showTDIntro = $state(false);
+  let tdIntroText = $state('');
+
   // King's message overlay state
   let showKingsMessage = $state(false);
   let unlockQueue: QueueItem[] = $state([]);
@@ -56,6 +61,16 @@
    */
   async function initializeGame() {
     if (miniGame === 'tower_defense') {
+      const introSeen = await storage.getConfigBoolean('td_intro_seen', false);
+      if (!introSeen && levelId === 1) {
+        const texts = await getTextsRequest($language, ['td_intro'], $currentCharacter?.sex || 'male');
+        tdIntroText = texts['td_intro'] || '';
+        if (tdIntroText) {
+          showTDIntro = true;
+          loading = false;
+          return;
+        }
+      }
       tdStarted = true;
       loading = false;
       return;
@@ -78,6 +93,15 @@
     } finally {
       loading = false;
     }
+  }
+
+  /**
+   * Dismisses the TD intro overlay and starts the game.
+   */
+  function dismissTDIntro() {
+    showTDIntro = false;
+    tdStarted = true;
+    storage.setConfig('td_intro_seen', true);
   }
 
   /**
@@ -284,6 +308,10 @@
         </div>
       </div>
     </div>
+  {:else if showTDIntro}
+    <DialogOverlay title="" size="xlg" noPadding onDismiss={dismissTDIntro}>
+      <GameText text={tdIntroText} />
+    </DialogOverlay>
   {:else if tdStarted && !gameFinished && $currentCharacter}
     <SimpleGame
       characterId={$currentCharacter.id}
