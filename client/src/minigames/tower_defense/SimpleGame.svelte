@@ -53,6 +53,7 @@
     level: number;
     targeting: string;
     flaskId?: string;
+    placementId?: string;
   }
   interface SavedTDState {
     session_id: number;
@@ -95,14 +96,17 @@
     projOrigin: { x: number; y: number };
     _pathSegCache?: { seg: { ax: number; ay: number; bx: number; by: number }; dist: number; t0: number; t1: number }[];
     selectableTarget?: { x: number; y: number };
+    placementId: string;
   }
 
+  let nextPlacementId = 0;
   let activeCombatants: PlayerCombatant[] = [];
   let spawnQueue: { enemyId: string; remaining: number; intervalMs: number; initialDelayMs: number; spawnTimer: number; initialDone: boolean; spawnPointId?: string }[] = [];
   let allSpawned = false;
   let roundStarted = false;
   let gameState: 'idle' | 'battle' | 'won' | 'lost' = 'idle';
   let currentGold = 100;
+  let roundStartGold = 0;
   let currentLives = 1;
   let initialLives = 1;
   let currentRound = 1;
@@ -462,7 +466,8 @@
           y: t.obj.y,
           level: t.level,
           targeting: t.targeting,
-          flaskId: t.flaskId
+          flaskId: t.flaskId,
+          placementId: t.placementId
         }))
       };
       await setConfig("td_placements", data);
@@ -485,6 +490,7 @@
     const flaskId = p.flaskId || (piece.projectile_ids?.includes('naptha_flask') ? 'naptha_flask' : piece.projectile_ids?.[0]);
     const originY = (piece.height || 48) / 2;
     const projOrigin: { x: number; y: number } = (piece as any).projectile_origin || { x: 0, y: 0 };
+    const pid = p.placementId || `p_${++nextPlacementId}`;
     activeCombatants.push({
       obj,
       configId: p.configId,
@@ -494,12 +500,14 @@
       flaskId,
       originY,
       projOrigin,
-      attackPeriod: 1.0 / (piece.attack_rate || 1.0)
+      attackPeriod: 1.0 / (piece.attack_rate || 1.0),
+      placementId: pid
     });
     if (soldierIds.has(p.configId)) {
       const towerEntry = activeCombatants[activeCombatants.length - 1];
       obj.draggable = true;
       obj.dragFollowsCursor = true;
+      obj.canDrag = () => !roundStarted;
       obj.onDragStart(0, () => {
         (obj.var as DragObjVar)._dragOrigX = obj.x;
         (obj.var as DragObjVar)._dragOrigY = obj.y;
@@ -527,6 +535,7 @@
     setCameraFollowsPlayer(false);
 
     currentGold = data.gold;
+    roundStartGold = data.gold;
     initialLives = data.lives;
     currentLives = data.lives;
     currentRound = data.round_number || 1;
@@ -932,17 +941,7 @@
       pendingRestore = null;
       refreshButtonStates();
     }
-    if (pendingGold !== null) {
-      currentGold = pendingGold;
-      pendingGold = null;
-      if (resourceText) {
-        resourceText.text = `{img:copper} ${currentGold}`;
-        resourceText.setInlineImages({
-          copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
-        });
-      }
-      refreshButtonStates();
-    }
+    pendingGold = null;
 
     // Periodic save interval
     saveInterval = setInterval(() => savePlacements(), 10000);
@@ -1065,7 +1064,8 @@
       ? 'naptha_flask'
       : (projIds?.[0]) || undefined;
     const projOrigin: { x: number; y: number } = (cfg as any).projectile_origin || { x: 0, y: 0 };
-    const towerEntry: PlayerCombatant = { obj, configId: unitId, level: 0, piece: cfg, targeting, flaskId, originY, projOrigin, attackPeriod: 1.0 / (cfg.attack_rate || 1.0) };
+    const pid = `p_${++nextPlacementId}`;
+    const towerEntry: PlayerCombatant = { obj, configId: unitId, level: 0, piece: cfg, targeting, flaskId, originY, projOrigin, attackPeriod: 1.0 / (cfg.attack_rate || 1.0), placementId: pid };
     activeCombatants.push(towerEntry);
     if (targeting === 'nearest_path') {
       cachePathSegTargets(towerEntry, cfg.range || 0.2);
@@ -1076,6 +1076,7 @@
     if (soldierIds.has(unitId)) {
       obj.draggable = true;
       obj.dragFollowsCursor = true;
+      obj.canDrag = () => !roundStarted;
       obj.onDragStart(0, () => {
         (obj.var as DragObjVar)._dragOrigX = obj.x;
         (obj.var as DragObjVar)._dragOrigY = obj.y;
@@ -1127,6 +1128,7 @@
     if (soldierIds.has(piece.becomes)) {
       newObj.draggable = true;
       newObj.dragFollowsCursor = true;
+      newObj.canDrag = () => !roundStarted;
       newObj.onDragStart(0, () => {
         (newObj.var as DragObjVar)._dragOrigX = newObj.x;
         (newObj.var as DragObjVar)._dragOrigY = newObj.y;
@@ -1144,7 +1146,7 @@
     if (!pieceCfg) { debug('Upgrade target config missing'); return; }
     const newOriginY = (pieceCfg.height || 48) / 2;
     const newProjOrigin: { x: number; y: number } = (pieceCfg as any).projectile_origin || { x: 0, y: 0 };
-    activeCombatants[newIdx] = { obj: newObj, configId: piece.becomes, level: tower.level + 1, piece: pieceCfg, targeting: tower.targeting, flaskId: tower.flaskId, originY: newOriginY, projOrigin: newProjOrigin, attackPeriod: 1.0 / (pieceCfg.attack_rate || 1.0) };
+    activeCombatants[newIdx] = { obj: newObj, configId: piece.becomes, level: tower.level + 1, piece: pieceCfg, targeting: tower.targeting, flaskId: tower.flaskId, originY: newOriginY, projOrigin: newProjOrigin, attackPeriod: 1.0 / (pieceCfg.attack_rate || 1.0), placementId: tower.placementId };
     currentGold -= goldCost;
     if (resourceText) {
       resourceText.text = `{img:copper} ${currentGold}`;
@@ -1203,7 +1205,7 @@
         if (sq.spawnTimer >= sq.initialDelayMs) {
           sq.initialDone = true;
           sq.spawnTimer = 0;
-          doSpawn(sq.enemyId, sq);
+          doSpawn(sq.enemyId, undefined, undefined, sq.spawnPointId);
           sq.remaining--;
         }
         continue;
@@ -1211,42 +1213,56 @@
       sq.spawnTimer += dt * 1000;
       if (sq.spawnTimer >= sq.intervalMs) {
         sq.spawnTimer = 0;
-        doSpawn(sq.enemyId, sq);
+        doSpawn(sq.enemyId, undefined, undefined, sq.spawnPointId);
         sq.remaining--;
       }
     }
     if (!anyLeft) allSpawned = true;
   }
 
-  function doSpawn(enemyId: string, sq?: { spawnPointId?: string }) {
+  function doSpawn(enemyId: string,
+                   deathX?: number, deathY?: number,
+                   inheritPathId?: string, inheritWp?: number) {
     const cls = mobEnemyClassMap.get(enemyId);
     if (!cls || !mapMetadata?.spawnPoints.length) return;
-    const sp = sq?.spawnPointId
-      ? mapMetadata.spawnPoints.find((s: any) => s.id === sq.spawnPointId)
-      : null;
-    const spawn = sp ?? mapMetadata.spawnPoints[0];
-    const e = cls.spawn(spawn.x, spawn.y);
+    let targetPathId: string;
+    let spawnX: number;
+    let spawnY: number;
+    if (deathX != null && deathY != null) {
+      spawnX = deathX;
+      spawnY = deathY;
+      targetPathId = inheritPathId || mapMetadata.spawnPoints[0].targetPathId;
+    } else {
+      const sp = mapMetadata.spawnPoints.find((s: any) => s.id === inheritPathId) || mapMetadata.spawnPoints[0];
+      spawnX = sp.x;
+      spawnY = sp.y;
+      targetPathId = sp.targetPathId;
+    }
+    const e = cls.spawn(spawnX, spawnY);
     const ev = e.var as EnemyVar;
     ev.enemyId = enemyId;
     ev.hp = cls.defaultHitpoints;
     ev.maxHp = cls.defaultHitpoints;
+    e.zIndex = ev.hp;
 
-    const p = pathMap.get(spawn.targetPathId);
+    const p = pathMap.get(targetPathId);
     if (!p?.waypoints?.length) {
-      console.log(`[TD] doSpawn: no waypoints for path ${spawn.targetPathId}`);
+      console.log(`[TD] doSpawn: no waypoints for path ${targetPathId}`);
       return;
     }
     const mobCfg = mobConfigs.get(enemyId);
     const spd = mobCfg?.speed || 1.0;
     ev.baseSpeed = spd;
     const wps = p.waypoints;
-    const startIdx = find_next_waypoint(wps, 0, spawn.x, spawn.y);
+    const startIdx = deathX != null && inheritWp != null
+      ? find_next_waypoint(wps, inheritWp!, deathX!, deathY!)
+      : find_next_waypoint(wps, 0, spawnX, spawnY);
     if (startIdx >= wps.length) {
       console.log(`[TD] doSpawn: ${enemyId} all waypoints at spawn, stuck`);
       return;
     }
     ev.waypointIndex = startIdx;
-    ev.pathId = spawn.targetPathId;
+    ev.pathId = targetPathId;
     e.decelerationDistance = 0;
     // Enable sprite mirroring based on movement direction (spriteForwardVector inherited from class default)
     e.mirrorOnDirection = true;
@@ -1317,7 +1333,7 @@
       e.moveTo({ x: wps[startIdx].x, y: wps[startIdx].y }, dist / (spd * 60));
       ev.baseVelocity = e.velocity;
     }
-    console.log(`[TD] doSpawn: ${enemyId} at (${spawn.x.toFixed(0)}, ${spawn.y.toFixed(0)}) hp=${cls.defaultHitpoints} spd=${spd} waypoints=${wps.length} startIdx=${startIdx}`);
+    console.log(`[TD] doSpawn: ${enemyId} at (${spawnX.toFixed(0)}, ${spawnY.toFixed(0)}) hp=${cls.defaultHitpoints} spd=${spd} waypoints=${wps.length} startIdx=${startIdx}`);
     e.logMovement();
   }
 
@@ -1502,7 +1518,7 @@
     if (ev.hp <= 0) {
       const mobId = ev.enemyId;
       const mc = mobConfigs.get(mobId);
-      currentGold += mc?.reward_gold || 1;
+      currentGold = Math.min(currentGold + (mc?.reward_gold || 1), roundStartGold + 1000);
       if (resourceText) {
         resourceText.text = `{img:copper} ${currentGold}`;
         resourceText.setInlineImages({
@@ -1511,7 +1527,7 @@
       }
       refreshButtonStates();
       console.log(`[TD] hitEnemy: ${mobId} killed, reward=${mc?.reward_gold || 1}`);
-      for (const spawnId of (mc?.spawn_on_death || [])) doSpawn(spawnId);
+      for (const spawnId of (mc?.spawn_on_death || [])) doSpawn(spawnId, e.x, e.y, ev.pathId, ev.waypointIndex);
       enemies.delete(e);
       e.destroy();
     }
@@ -1535,7 +1551,13 @@
       const result = await tdRound(characterId, {
         session_id: (tdData as unknown as KickoffResponse).session_id,
         lives_lost: Math.max(0, initialLives - currentLives),
-        leaked_enemies: leakedEnemies
+        leaked_enemies: leakedEnemies,
+        placements: activeCombatants.map(t => ({
+          id: t.placementId,
+          config_id: t.configId,
+          x: t.obj.x,
+          y: t.obj.y
+        }))
       });
       const ar = result as unknown as AdvanceResponse;
       console.log('[TD] advanceRound response:', ar);
@@ -1559,8 +1581,12 @@
         allSpawned = false;
         roundStarted = false;
         setSidebarVisible(true);
-        // Update lives from server response
+        // Update lives and gold from server response
         if (ar.lives != null) currentLives = ar.lives;
+        if (ar.gold != null) {
+          currentGold = ar.gold;
+          roundStartGold = ar.gold;
+        }
         leakedEnemies = {};
         refreshButtonStates();
         // Update UI
@@ -1617,7 +1643,13 @@
       const result = await tdRound(characterId, {
         session_id: (tdData as unknown as KickoffResponse).session_id,
         lives_lost: forceLoss ? 100 : Math.max(0, initialLives - currentLives),
-        leaked_enemies: leakedEnemies
+        leaked_enemies: leakedEnemies,
+        placements: activeCombatants.map(t => ({
+          id: t.placementId,
+          config_id: t.configId,
+          x: t.obj.x,
+          y: t.obj.y
+        }))
       });
       const cr = result as TDRoundCompleteResponse;
       onComplete({

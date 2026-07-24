@@ -36,6 +36,8 @@
 #include "TextManager.hpp"
 #include "ImageReader.hpp"
 #include "UnitUnlockCalculator.hpp"
+#include "TDPlacementValidator.hpp"
+#include "TDGoldCalculator.hpp"
 #include <sqlite_modern_cpp/errors.h>
 
 using json = nlohmann::json;
@@ -1419,12 +1421,39 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
                 }
             }
 
+            if (gold_earned > 1000) gold_earned = 1000;
+
             std::cerr << "[tdRound] Completion body: lives_lost=" << lives_lost
                       << " gold_earned=" << gold_earned
                       << std::endl;
 
+            // Read client placements and calculate gold with placement costs/refunds
+            json client_placements = body.value("placements", json::array());
+            json old_placements_json = json::parse(session->placements);
+
+            json map_meta_for_gold;
+            {
+                const auto& mini_games_config = config_cache.getMiniGames();
+                if (mini_games_config.contains(session->mini_game)) {
+                    map_meta_for_gold = load_map_for_level(mini_games_config[session->mini_game], session->level_id);
+                }
+            }
+
+            GoldCalculationResult gc = calculateGoldForRound(
+                session->gold, gold_earned,
+                old_placements_json,
+                client_placements,
+                config_cache.getTowerDefenseTowers(),
+                config_cache.getTowerDefenseUnits(),
+                map_meta_for_gold);
+
+            if (!gc.error.empty()) {
+                response.error = gc.error;
+                return response;
+            }
+
             int new_lives = session->lives - lives_lost;
-            int new_gold = session->gold + gold_earned;
+            int new_gold = gc.new_gold;
 
             if (new_lives < 0) new_lives = 0;
             if (new_gold < 0) new_gold = 0;
@@ -1445,7 +1474,7 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
 
             if (won && old_round + 1 < total) {
                 // More rounds remain — advance to next round (don't end game)
-                player_state_db::update_game_session(db, session_id, new_lives, new_gold, "active", now);
+                player_state_db::update_game_session(db, session_id, new_lives, new_gold, "active", now, client_placements.dump());
 
                 int advance_completed = query_td_completed_count(db, character_id);
                 json advance_spawn_points = json::array();
@@ -1484,7 +1513,7 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
             } else {
                 // Game over: won last round or lost — end session normally
                 std::string new_state = won ? "won" : "lost";
-                player_state_db::update_game_session(db, session_id, new_lives, new_gold, new_state, now);
+                player_state_db::update_game_session(db, session_id, new_lives, new_gold, new_state, now, client_placements.dump());
 
                 std::cerr << "[tdRound] Game over: state=" << new_state
                           << " score=" << (new_gold + new_lives * 10)

@@ -29,6 +29,7 @@ nlohmann::json GameSessionRow::toJson() const {
     j["lives"] = lives;
     j["gold"] = gold;
     j["state"] = state;
+    j["placements"] = placements;
     return j;
 }
 
@@ -269,11 +270,12 @@ void earn_duke_right(sqlite::database& db, int character_id, int64_t timestamp) 
         row.current_round = 0;
         row.started_at = timestamp;
         row.last_activity = timestamp;
+        row.placements = "[]";
 
         db << "INSERT INTO game_sessions "
               "(character_id, mini_game, level_id, started_at, last_activity, "
-              "total_rounds, current_round, difficulty, lives, gold, state) "
-              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active');"
+              "total_rounds, current_round, difficulty, lives, gold, state, placements) "
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', '[]');"
            << character_id << mini_game << level_id
            << timestamp << timestamp
            << row.total_rounds << row.current_round
@@ -288,13 +290,13 @@ void earn_duke_right(sqlite::database& db, int character_id, int64_t timestamp) 
         bool found = false;
 
         db << "SELECT id, character_id, mini_game, level_id, started_at, last_activity, "
-              "total_rounds, current_round, difficulty, lives, gold, state "
+              "total_rounds, current_round, difficulty, lives, gold, state, placements "
               "FROM game_sessions WHERE id = ? AND state = 'active';"
            << session_id
            >> [&](int id, int cid, std::string mini_game, int level_id,
                   int64_t started_at, int64_t last_activity,
                   int total_rounds, int current_round, int difficulty,
-                  int lives, int gold, std::string state) {
+                  int lives, int gold, std::string state, std::string placements) {
                 row.id = id;
                 row.character_id = cid;
                 row.mini_game = mini_game;
@@ -307,6 +309,7 @@ void earn_duke_right(sqlite::database& db, int character_id, int64_t timestamp) 
                 row.lives = lives;
                 row.gold = gold;
                 row.state = state;
+                row.placements = placements;
                 found = true;
             };
 
@@ -319,7 +322,7 @@ void earn_duke_right(sqlite::database& db, int character_id, int64_t timestamp) 
         bool found = false;
 
         db << "SELECT id, character_id, mini_game, level_id, started_at, last_activity, "
-              "total_rounds, current_round, difficulty, lives, gold, state "
+              "total_rounds, current_round, difficulty, lives, gold, state, placements "
               "FROM game_sessions "
               "WHERE character_id = ? AND mini_game = ? AND state = 'active' "
               "ORDER BY id DESC LIMIT 1;"
@@ -327,7 +330,7 @@ void earn_duke_right(sqlite::database& db, int character_id, int64_t timestamp) 
            >> [&](int id, int cid, std::string mg, int level_id,
                   int64_t started_at, int64_t last_activity,
                   int total_rounds, int current_round, int difficulty,
-                  int lives, int gold, std::string st) {
+                  int lives, int gold, std::string st, std::string placements) {
                 row.id = id;
                 row.character_id = cid;
                 row.mini_game = mg;
@@ -340,6 +343,7 @@ void earn_duke_right(sqlite::database& db, int character_id, int64_t timestamp) 
                 row.lives = lives;
                 row.gold = gold;
                 row.state = st;
+                row.placements = placements;
                 found = true;
             };
 
@@ -347,12 +351,20 @@ void earn_duke_right(sqlite::database& db, int character_id, int64_t timestamp) 
         return row;
     }
 
-    bool update_game_session(sqlite::database& db, int session_id, int lives, int gold, const std::string& state, int64_t timestamp) {
+    bool update_game_session(sqlite::database& db, int session_id, int lives, int gold, const std::string& state, int64_t timestamp, const std::string& placements) {
         try {
-            db << "UPDATE game_sessions SET lives = ?, gold = ?, state = ?, "
-                  "last_activity = ?, current_round = current_round + 1 "
-                  "WHERE id = ?;"
-               << lives << gold << state << timestamp << session_id;
+            if (placements.empty()) {
+                db << "UPDATE game_sessions SET lives = ?, gold = ?, state = ?, "
+                      "last_activity = ?, current_round = current_round + 1 "
+                      "WHERE id = ?;"
+                   << lives << gold << state << timestamp << session_id;
+            } else {
+                db << "UPDATE game_sessions SET lives = ?, gold = ?, state = ?, "
+                      "last_activity = ?, current_round = current_round + 1, "
+                      "placements = ? "
+                      "WHERE id = ?;"
+                   << lives << gold << state << timestamp << placements << session_id;
+            }
             return true;
         } catch (const std::exception& e) {
             std::cerr << "[PlayerStateDB] Failed to update game session " << session_id << ": " << e.what() << std::endl;

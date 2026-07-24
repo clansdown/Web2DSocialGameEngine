@@ -45,6 +45,7 @@ struct GameSessionRow {
     int lives;
     int gold;
     std::string state;
+    std::string placements;
 
     nlohmann::json toJson() const;
 };
@@ -88,7 +89,7 @@ std::optional<GameSessionRow> get_game_session(sqlite::database& db, int session
 
 std::optional<GameSessionRow> get_active_session(sqlite::database& db, int character_id, const std::string& mini_game);
 
-    bool update_game_session(sqlite::database& db, int session_id, int lives, int gold, const std::string& state, int64_t timestamp);
+    bool update_game_session(sqlite::database& db, int session_id, int lives, int gold, const std::string& state, int64_t timestamp, const std::string& placements = "");
 
     void store_spawn_schedule(sqlite::database& db, int session_id, const nlohmann::json& schedule);
 

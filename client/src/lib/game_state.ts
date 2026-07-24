@@ -81,7 +81,7 @@ export async function endMiniGame(
 
 export async function tdRound(
   characterId: number,
-  options: { mini_game?: string; level_id?: number; session_id?: number; lives_lost?: number; leaked_enemies?: Record<string, number> }
+  options: { mini_game?: string; level_id?: number; session_id?: number; lives_lost?: number; leaked_enemies?: Record<string, number>; placements?: { id: string; config_id: string; x: number; y: number }[] }
 ): Promise<TDRoundResponse> {
   const body: Record<string, unknown> = { character_id: characterId };
 
@@ -89,6 +89,7 @@ export async function tdRound(
     body.session_id = options.session_id;
     body.lives_lost = options.lives_lost ?? 0;
     body.leaked_enemies = options.leaked_enemies ?? {};
+    body.placements = options.placements ?? [];
   } else {
     body.mini_game = options.mini_game;
     body.level_id = options.level_id;

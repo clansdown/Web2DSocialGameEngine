@@ -190,6 +190,7 @@ export interface AdvanceResponse {
     spawn_point_id?: string;
   }[];
   lives: number;
+  gold: number;
   won?: boolean;
   completed?: boolean;
   score?: number;

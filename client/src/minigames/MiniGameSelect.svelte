@@ -146,7 +146,7 @@
             tabindex={available ? 0 : -1}
             style="cursor: {available ? 'pointer' : 'not-allowed'}; position: relative; transition: background 0.2s; border-radius: 4px; margin: 2px; {!available ? 'background: rgba(0, 0, 0, 0.55);' : conquered ? '' : 'background: rgba(0, 0, 0, 0.35);'}"
             onmouseenter={(e) => { if (available) (e.currentTarget as HTMLElement).style.background = conquered ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.2)'; }}
-            onmouseleave={(e) => { (e.currentTarget as HTMLElement).style.background = conquered ? '' : 'rgba(0, 0, 0, 0.35)'; }}
+            onmouseleave={(e) => { if (available) (e.currentTarget as HTMLElement).style.background = conquered ? '' : 'rgba(0, 0, 0, 0.35)'; }}
             onclick={() => handleLevelClick(levelId)}
             onkeydown={(e) => { if (e.key === 'Enter') handleLevelClick(levelId); }}
           >
