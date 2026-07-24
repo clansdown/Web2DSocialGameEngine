@@ -4,6 +4,7 @@
   import { getTextsRequest } from '../lib/api';
   import type { MiniGameConfig } from '../lib/api';
   import GameText from '../components/GameText.svelte';
+  import Book from '../components/Book.svelte';
 
   interface Props {
     miniGame: string;
@@ -25,6 +26,23 @@
   let displayName = $derived(title ?? config?.display_name ?? miniGame);
   let configGridSize = $derived(config?.grid_size ?? 3);
   let gridSize = $derived(propGridSize ?? configGridSize);
+
+  const bookPages: { image: string; textId: string }[] = [
+    { image: '/images/tower_defense/mobs/dire_rat.png', textId: 'td_book_enemy_dire_rat' },
+    { image: '/images/tower_defense/mobs/wolf.png', textId: 'td_book_enemy_wolf' },
+    { image: '/images/tower_defense/mobs/great_wolf.png', textId: 'td_book_enemy_great_wolf' },
+    { image: '/images/tower_defense/mobs/matted_wolf.png', textId: 'td_book_enemy_matted_wolf' },
+    { image: '/images/tower_defense/mobs/wild_boar.png', textId: 'td_book_enemy_boar' },
+    { image: '/images/tower_defense/mobs/dire_wolf.png', textId: 'td_book_enemy_dire_wolf' },
+    { image: '/images/tower_defense/mobs/tri_boar.png', textId: 'td_book_enemy_triboar' },
+    { image: '/images/tower_defense/units/shortbow_archer.png', textId: 'td_book_unit_shortbow_archer' },
+    { image: '/images/tower_defense/units/longbow_archer.png', textId: 'td_book_unit_longbow_archer' },
+    { image: '/images/tower_defense/units/swordsman.png', textId: 'td_book_unit_swordsman' },
+    { image: '/images/tower_defense/units/alchemist.png', textId: 'td_book_unit_alchemist' },
+    { image: '/images/tower_defense/towers/single_archer_tower.png', textId: 'td_book_tower_single_archer_tower' },
+    { image: '/images/tower_defense/towers/three_archer_tower.png', textId: 'td_book_tower_three_archer_tower' },
+    { image: '/images/tower_defense/towers/ballista.png', textId: 'td_book_tower_ballista' },
+  ];
 
   /**
    * Loads the mini-game configuration to display the grid.
@@ -120,6 +138,9 @@
     <div>
       <h2 class="mb-0">{displayName}</h2>
       <small class="text-muted">Campaign Progress</small>
+    </div>
+    <div class="ms-auto">
+      <Book pages={bookPages} toolText="Bestiary" width={48} height={48} />
     </div>
   </div>
 

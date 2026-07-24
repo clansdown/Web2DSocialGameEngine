@@ -263,6 +263,7 @@ When testing or verifying the server, use the `agent_test_server.sh` script for 
 3. **Concurrent Access**: Two independent database connections allow simultaneous read/write operations
 4. **Error Handling**: All errors return JSON with format `{ "error": "description" }`
 5. **API Documentation**: Every endpoint has a corresponding `.md` file in `api/` directory with detailed request/response examples
+6. **Server working directory**: The server binary runs from the `game/` directory. Image paths like `images/ui/` resolve relative to `game/`, so assets at `game/images/ui/book.png` are served from `/images/ui/book.png`. The Vite dev proxy (`/images` → `localhost:2290`) follows the same path resolution.
 
 ### Coding Standards
 
