@@ -4,10 +4,10 @@
  * TODO: Implement actual weeding/ground-clearing game logic.
  */
 
-import type { WeedingLevelConfig } from './weeding_types';
+import type { MiniGameLevelConfig } from '../../lib/api';
 
 export interface WeedingEngineState {
-  config: WeedingLevelConfig;
+  config: MiniGameLevelConfig;
   width: number;
   height: number;
   finished: boolean;
@@ -16,7 +16,7 @@ export interface WeedingEngineState {
 }
 
 export function createWeedingEngine(
-  config: WeedingLevelConfig,
+  config: MiniGameLevelConfig,
   width: number,
   height: number
 ): WeedingEngineState {

@@ -6,6 +6,7 @@
 import { playerGameState } from './stores';
 import { authenticatedPost } from './api';
 import type { PlayerGameState, StartMiniGameResponse, EndMiniGameResponse, MiniGameConfig, TDRoundResponse } from './api';
+import type { WeedingSessionState, WeedingTurnRequest, WeedingTurnResponse } from '../minigames/weeding/weeding_types';
 
 /**
  * Fetches the current player state from the server and updates the store.
@@ -81,7 +82,7 @@ export async function endMiniGame(
 
 export async function tdRound(
   characterId: number,
-  options: { mini_game?: string; level_id?: number; session_id?: number; lives_lost?: number; leaked_enemies?: Record<string, number>; placements?: { id: string; config_id: string; x: number; y: number }[] }
+  options: { mini_game?: string; level_id?: number; session_id?: number; lives_lost?: number; leaked_enemies?: Record<string, number>; placements?: { id: string; config_id: string; x: number; y: number }[]; rounds?: number; difficulty?: number }
 ): Promise<TDRoundResponse> {
   const body: Record<string, unknown> = { character_id: characterId };
 
@@ -93,9 +94,56 @@ export async function tdRound(
   } else {
     body.mini_game = options.mini_game;
     body.level_id = options.level_id;
+    if (options.rounds !== undefined) body.rounds = options.rounds;
+    if (options.difficulty !== undefined) body.difficulty = options.difficulty;
   }
 
   return await authenticatedPost<TDRoundResponse>('tdRound', body);
+}
+
+/**
+ * Starts a new weeding session.
+ * @param characterId - The character ID
+ * @param levelId - The level ID to play
+ * @returns The initial weeding session state
+ */
+export async function startWeedingSession(
+  characterId: number,
+  levelId: number
+): Promise<WeedingSessionState> {
+  const body: Record<string, unknown> = {
+    character_id: characterId,
+    level_id: levelId
+  };
+  return await authenticatedPost<WeedingSessionState>('weedingStart', body);
+}
+
+/**
+ * Submits a turn action for the weeding minigame.
+ * @param action - The action to perform
+ * @returns The updated game state
+ */
+export async function submitWeedingTurn(
+  action: WeedingTurnRequest
+): Promise<WeedingTurnResponse> {
+  return await authenticatedPost<WeedingTurnResponse>('weedingTurn', action as unknown as Record<string, unknown>);
+}
+
+/**
+ * Finalizes a weeding session by calling endMiniGame for rewards/progression.
+ * @param characterId - The character ID
+ * @param levelId - The level ID
+ * @param won - Whether the player won
+ * @param score - The final score
+ * @returns The end mini-game response
+ */
+export async function finalizeWeedingSession(
+  characterId: number,
+  levelId: number,
+  won: boolean,
+  score: number
+): Promise<EndMiniGameResponse> {
+  return await endMiniGame(characterId, 'weeding', levelId, won, score);
 }
 
 export async function getMiniGameConfigs(miniGame?: string | null): Promise<Record<string, MiniGameConfig>> {

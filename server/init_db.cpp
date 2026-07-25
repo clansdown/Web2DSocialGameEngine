@@ -34,6 +34,7 @@ namespace {
     ensureIndex(db, "idx_dukedom_members_dukedom", "dukedom_members", "dukedom_id");
     ensureIndex(db, "idx_dukedom_members_character", "dukedom_members", "character_id");
     ensureIndex(db, "idx_game_sessions_character", "game_sessions", "character_id");
+    ensureIndex(db, "idx_weeding_sessions_character", "weeding_sessions", "character_id");
     }
 
     void ensureMessagesDBIndexes_private(sqlite::database& db) {
@@ -219,6 +220,17 @@ namespace {
             "state TEXT NOT NULL DEFAULT 'active',"
             "current_spawn_schedule TEXT DEFAULT NULL,"
             "placements TEXT NOT NULL DEFAULT '[]',"
+            "FOREIGN KEY(character_id) REFERENCES characters(id)"
+        );
+
+        createTable(db, "weeding_sessions",
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "character_id INTEGER NOT NULL,"
+            "level_id INTEGER NOT NULL,"
+            "started_at INTEGER NOT NULL,"
+            "last_activity INTEGER NOT NULL,"
+            "state TEXT NOT NULL DEFAULT 'active',"
+            "session_json TEXT NOT NULL,"
             "FOREIGN KEY(character_id) REFERENCES characters(id)"
         );
 

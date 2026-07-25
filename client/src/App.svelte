@@ -2,8 +2,7 @@
   import { onMount } from 'svelte';
   import AuthPage from './components/AuthPage.svelte';
   import CharacterSelect from './components/CharacterSelect.svelte';
-  import MissionSelect from './components/MissionSelect.svelte';
-  import TownView from './components/TownView.svelte';
+  import HubScreen from './components/HubScreen.svelte';
   import ErrorDisplay from './components/ErrorDisplay.svelte';
   import LanguageSelect from './components/LanguageSelect.svelte';
   import PathSelect from './components/PathSelect.svelte';
@@ -12,7 +11,7 @@
   import DukedomJoin from './components/DukedomJoin.svelte';
   import DukedomCreate from './components/DukedomCreate.svelte';
   import DialogOverlay from './components/DialogOverlay.svelte';
-  import MiniGameSelect from './minigames/MiniGameSelect.svelte';
+  // MiniGameSelect is used internally by HubScreen
   import MiniGameContainer from './minigames/MiniGameContainer.svelte';
   import * as auth from './lib/auth';
   import { user, characters, currentCharacter, authLoading, playerGameState, language, isAuthenticated } from './lib/stores';
@@ -23,7 +22,6 @@
 
   let needsAuth = $state(false);
   let initialized = $state(false);
-  let selectedMiniGame = $state<string | null>(null);
   let activeMiniGame = $state<string | null>(null);
   let selectedLevelId = $state<number>(0);
 
@@ -40,11 +38,6 @@
   let showDukedomList = $state(false);
   let showDukedomCreate = $state(false);
   let showDukedomGrid = $state(false);
-
-  const ARCHETYPE_TO_GAME: Record<string, string> = {
-    wolf_warden: 'tower_defense',
-    assarter: 'weeding',
-  };
 
   /**
    * Loads stored language preference on startup.
@@ -132,9 +125,6 @@
     if (!$currentCharacter) return;
 
     activeMiniGame = null;
-    selectedMiniGame = $currentCharacter.archetype
-      ? ARCHETYPE_TO_GAME[$currentCharacter.archetype] ?? null
-      : null;
 
     try {
       await fetchPlayerState($currentCharacter.id);
@@ -177,8 +167,6 @@
 
       introTitle = introTexts[textIds[0]] || '';
       introBody = introTexts[textIds[1]] || '';
-
-      selectedMiniGame = ARCHETYPE_TO_GAME[archetype] || null;
       showIntroOverlay = true;
 
     } catch (e) {
@@ -190,9 +178,8 @@
     showIntroOverlay = false;
   }
 
-  function handleStartLevel(levelId: number) {
-    if (!selectedMiniGame) return;
-    activeMiniGame = selectedMiniGame;
+  function handleStartLevel(gameId: string, levelId: number) {
+    activeMiniGame = gameId;
     selectedLevelId = levelId;
   }
 
@@ -252,19 +239,6 @@
     showDukedomCreate = false;
   }
 
-  function handleSelectMission(miniGame: string) {
-    selectedMiniGame = miniGame;
-  }
-
-  function handleBackToMissions() {
-    selectedMiniGame = null;
-  }
-
-  function handleReplayMiniGame(miniGame: string) {
-    selectedMiniGame = miniGame;
-    activeMiniGame = miniGame;
-  }
-
   $effect(() => {
     if (initialized && !auth.hasSession()) {
       handleNeedsAuth();
@@ -288,7 +262,7 @@
 
 <ErrorDisplay />
 
-{#if showIntroOverlay && selectedMiniGame}
+{#if showIntroOverlay && $currentCharacter?.archetype}
   <DialogOverlay
     title={introTitle}
     body={introBody}
@@ -342,30 +316,19 @@
     </div>
   </div>
 {:else if $playerGameState.game_phase === 'initial_mission'}
-  {#if selectedMiniGame === null}
-    <MissionSelect onSelect={handleSelectMission} />
-  {:else}
-    <MiniGameSelect
-      miniGame={selectedMiniGame}
-      gridSize={3}
-      mapImage={$currentCharacter?.archetype === 'wolf_warden' ? '/images/tower_defense/wolf_warden_map1.jpg' : undefined}
-      title={$currentCharacter?.archetype === 'wolf_warden' ? 'Wolf Warden' : undefined}
-      infoTextId={$currentCharacter?.archetype === 'wolf_warden' ? 'ui_campaign_intro_wolf_warden' : undefined}
-      onStartLevel={handleStartLevel}
-      onBack={handleBackToMissions}
-    />
-  {/if}
+  <HubScreen
+    activities={$playerGameState.available_activities}
+    onStartLevel={handleStartLevel}
+  />
 {:else if $playerGameState.game_phase === 'land_patent'}
   <PatentScreen
     onJoinDukedom={handleGoToJoinDukedom}
     onStartDukeTrack={handleDukeTrackStarted}
   />
 {:else if $playerGameState.game_phase === 'duke_track'}
-  <MiniGameSelect
-    miniGame={selectedMiniGame ?? ARCHETYPE_TO_GAME[$currentCharacter?.archetype ?? ''] ?? ''}
-    gridSize={4}
+  <HubScreen
+    activities={$playerGameState.available_activities}
     onStartLevel={handleStartLevel}
-    onBack={() => {}}
   />
 {:else if $playerGameState.game_phase === 'duke_right'}
   <DukedomCreate
@@ -373,5 +336,8 @@
     onBack={handleBackFromDukedomCreate}
   />
 {:else if $playerGameState.game_phase === 'sandbox'}
-  <TownView onPlayMiniGame={handleReplayMiniGame} />
+  <HubScreen
+    activities={$playerGameState.available_activities}
+    onStartLevel={handleStartLevel}
+  />
 {/if}

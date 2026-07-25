@@ -346,6 +346,7 @@ export interface PlayerGameState {
   entered_at: number;
   last_updated: number;
   progress: MiniGameProgress[];
+  available_activities: string[];
 }
 
 export interface MiniGameLevelConfig {
@@ -413,6 +414,8 @@ export interface MiniGameConfig {
     difficulty_scaling: Record<string, number>;
     reward_scaling: Record<string, number>;
   };
+  duke_grid_size?: number;
+  duke_levels?: MiniGameLevelConfig[];
 }
 
 

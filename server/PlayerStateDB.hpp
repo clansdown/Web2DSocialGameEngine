@@ -28,6 +28,7 @@ struct PlayerGameStateRow {
     int64_t entered_at;
     int64_t last_updated;
     std::vector<MiniGameProgressRow> progress;
+    std::vector<std::string> available_activities;
 
     nlohmann::json toJson() const;
 };
@@ -47,6 +48,17 @@ struct GameSessionRow {
     std::string state;
     std::string placements;
 
+    nlohmann::json toJson() const;
+};
+
+struct WeedingSessionRow {
+    int id;
+    int character_id;
+    int level_id;
+    int64_t started_at;
+    int64_t last_activity;
+    std::string state;
+    nlohmann::json session_json;
     nlohmann::json toJson() const;
 };
 
@@ -94,5 +106,10 @@ std::optional<GameSessionRow> get_active_session(sqlite::database& db, int chara
     void store_spawn_schedule(sqlite::database& db, int session_id, const nlohmann::json& schedule);
 
     nlohmann::json load_spawn_schedule(sqlite::database& db, int session_id);
+
+    WeedingSessionRow create_weeding_session(sqlite::database& db, int character_id, int level_id, int64_t timestamp, const nlohmann::json& session_json);
+    std::optional<WeedingSessionRow> get_weeding_session(sqlite::database& db, int session_id);
+    std::optional<WeedingSessionRow> get_active_weeding_session(sqlite::database& db, int character_id);
+    bool update_weeding_session(sqlite::database& db, int session_id, const nlohmann::json& session_json, const std::string& state, int64_t timestamp);
 
 } // namespace player_state_db

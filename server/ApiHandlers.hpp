@@ -156,7 +156,17 @@ ApiResponse handleSetCharacterSex(GameConfigCache& config_cache, const nlohmann:
 ApiResponse handleTDRound(GameConfigCache& config_cache, const nlohmann::json& body,
                            const std::optional<std::string>& username,
                            const ClientInfo& client,
-                           const std::optional<std::string>& new_token);
+                            const std::optional<std::string>& new_token);
+
+ApiResponse handleWeedingStart(GameConfigCache& config_cache, const nlohmann::json& body,
+                                const std::optional<std::string>& username,
+                                const ClientInfo& client,
+                                const std::optional<std::string>& new_token);
+
+ApiResponse handleWeedingTurn(GameConfigCache& config_cache, const nlohmann::json& body,
+                               const std::optional<std::string>& username,
+                               const ClientInfo& client,
+                               const std::optional<std::string>& new_token);
 
 ApiResponse handleGetUITextures(GameConfigCache& config_cache, const nlohmann::json& body,
                                  const std::optional<std::string>& username,
@@ -201,5 +211,7 @@ inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfi
     add("startDukeTrack",         [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleStartDukeTrack(c, b, u, cl, t); });
     add("setCharacterSex",        [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSetCharacterSex(c, b, u, cl, t); });
     add("tdRound",                [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleTDRound(c, b, u, cl, t); });
+    add("weedingStart",           [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleWeedingStart(c, b, u, cl, t); });
+    add("weedingTurn",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleWeedingTurn(c, b, u, cl, t); });
     return handlers;
 }

@@ -31,13 +31,13 @@
 #include "DigitalCredentialsVerifier.hpp"
 #include "game_logic.hpp"
 #include "PlayerStateDB.hpp"
-#include "mini_games/mini_game_registry.hpp"
 #include "TowerDefenseMapCache.hpp"
 #include "TextManager.hpp"
 #include "ImageReader.hpp"
 #include "UnitUnlockCalculator.hpp"
 #include "TDPlacementValidator.hpp"
 #include "TDGoldCalculator.hpp"
+#include "WeedingGameLogic.hpp"
 #include <sqlite_modern_cpp/errors.h>
 
 using json = nlohmann::json;
@@ -911,6 +911,21 @@ ApiResponse handleGetPlayerState(GameConfigCache& config_cache, const json& body
     try {
         auto& db = Database::getInstance().gameDB();
         auto state = player_state_db::get_player_game_state(db, character_id);
+
+        // Available activities — phase-based access control
+        // TODO: replace with config-driven logic for monthly pass etc.
+        auto get_available_activities = [](const std::string& phase) -> std::vector<std::string> {
+            if (phase == "initial_mission")
+                return {"tasks", "chat"};
+            if (phase == "land_patent" || phase == "duke_track")
+                return {"tasks", "manor", "chat"};
+            if (phase == "duke_right")
+                return {"tasks", "manor", "chat", "tournament"};
+            if (phase == "sandbox")
+                return {"tasks", "manor", "chat", "tournament", "adventure"};
+            return {"tasks", "chat"};  // fallback
+        };
+        state.available_activities = get_available_activities(state.game_phase);
 
         response.data = state.toJson();
 
@@ -1820,6 +1835,27 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
         json spawn_schedule;
         std::string campaign_display_name_key;
         const auto& mini_games_config = config_cache.getMiniGames();
+
+        // Custom game override: rounds and difficulty provided by client
+        if (body.contains("rounds") && body["rounds"].is_number_integer() &&
+            body.contains("difficulty") && body["difficulty"].is_number_integer()) {
+            level_id = 0;
+            difficulty = body["difficulty"].get<int>();
+            total_rounds = body["rounds"].get<int>();
+            is_random = true;
+            json empty_sp = json::array();
+            int kickoff_completed = 0;
+            if (character_id > 0) kickoff_completed = query_td_completed_count(db, character_id);
+            spawn_schedule = generate_td_spawn_schedule(config_cache, difficulty, 0, kickoff_completed, empty_sp);
+            // Load default map metadata for custom games
+            if (mini_games_config.contains(mini_game)) {
+                const auto& mg = mini_games_config[mini_game];
+                if (mg.contains("levels") && mg["levels"].is_array() && !mg["levels"].empty()) {
+                    int first_id = mg["levels"][0]["id"].get<int>();
+                    map_metadata = load_map_for_level(mg, first_id);
+                }
+            }
+        } else {
         if (mini_games_config.contains(mini_game)) {
             const auto& mg_config = mini_games_config[mini_game];
             auto find_field = [&](const json& levels, const std::string& field, int def) -> int {
@@ -1869,6 +1905,7 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
             int kickoff_completed = 0;
             if (character_id > 0) kickoff_completed = query_td_completed_count(db, character_id);
             spawn_schedule = generate_td_spawn_schedule(config_cache, difficulty, 0, kickoff_completed, empty_sp);
+        }
         }
 
         auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
@@ -1973,6 +2010,463 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
     } catch (const std::exception& e) {
         log_error("handleTDRound(kickoff)", e.what());
         response.error = std::string("Failed to start TD session: ") + e.what();
+    }
+
+    return response;
+}
+
+ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
+                                const std::optional<std::string>& username,
+                                const ClientInfo& client,
+                                const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+
+    if (!body.contains("character_id") || !body["character_id"].is_number_integer()) {
+        response.error = "character_id required";
+        return response;
+    }
+
+    int character_id = body["character_id"].get<int>();
+
+    try {
+        auto& db = Database::getInstance().gameDB();
+        auto state = player_state_db::get_player_game_state(db, character_id);
+
+        // Check not already in another mini-game
+        if (state.current_mini_game.has_value()) {
+            if (*state.current_mini_game == "weeding") {
+                // Try to resume active session
+                auto existing = player_state_db::get_active_weeding_session(db, character_id);
+                if (existing.has_value()) {
+                    auto& sess = *existing;
+                    auto& sj = sess.session_json;
+
+                    // Load fresh configs
+                    const auto& plants = config_cache.getWeedingPlants();
+                    const auto& tools = config_cache.getWeedingTools();
+                    const auto& specials = config_cache.getWeedingSpecials();
+
+                    // Reload map metadata
+                    std::string map_id = sj.value("map_id", std::string("map_1.json"));
+                    nlohmann::json map_meta;
+                    auto map_opt = config_cache.loadWeedingMap(map_id);
+                    if (map_opt.has_value()) {
+                        map_meta = *map_opt;
+                    } else {
+                        map_meta["id"] = "map_1";
+                        map_meta["image_file"] = "map_1.png";
+                        map_meta["grid_bounds"] = {{"x", 0.18}, {"y", 0.18}, {"width", 0.59}, {"height", 0.73}};
+                        map_meta["grid_size"] = 4;
+                        map_meta["out_of_bounds"] = json::array();
+                        map_meta["par"] = sj.value("par", 12);
+                    }
+
+                    // Convert configs to arrays
+                    json tools_arr = json::array();
+                    for (auto it = tools.begin(); it != tools.end(); ++it) {
+                        json entry = it.value();
+                        entry["id"] = it.key();
+                        tools_arr.push_back(entry);
+                    }
+                    json plants_arr = json::array();
+                    for (auto it = plants.begin(); it != plants.end(); ++it) {
+                        json entry = it.value();
+                        entry["id"] = it.key();
+                        plants_arr.push_back(entry);
+                    }
+                    json specials_arr = json::array();
+                    for (auto it = specials.begin(); it != specials.end(); ++it) {
+                        json entry = it.value();
+                        entry["id"] = it.key();
+                        specials_arr.push_back(entry);
+                    }
+
+                    // Build response from session state + fresh configs
+                    response.data["session_id"] = sess.id;
+                    response.data["character_id"] = character_id;
+                    response.data["level_id"] = sess.level_id;
+                    response.data["board"] = sj["board"];
+                    response.data["grid_size"] = sj["grid_size"];
+                    response.data["round"] = sj.value("round", 1);
+                    response.data["actions_remaining"] = sj.value("actions_remaining", 2);
+                    response.data["pending_switch"] = sj.value("pending_switch", false);
+                    response.data["equipped_tool"] = sj.value("equipped_tool", "sickle");
+                    response.data["par"] = sj.value("par", 12);
+                    response.data["won"] = sj.value("won", false);
+                    response.data["score"] = sj.value("score", 0);
+                    response.data["available_tools"] = tools_arr;
+                    response.data["available_plants"] = plants_arr;
+                    response.data["available_specials"] = specials_arr;
+                    response.data["map_metadata"] = map_meta;
+                    response.data["message"] = "Weeding session resumed";
+
+                    if (new_token) {
+                        response.data["token"] = *new_token;
+                    }
+                    return response;
+                }
+                // Stale current_mini_game — clear it and start fresh
+                auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                player_state_db::clear_current_mini_game(db, character_id, now);
+            } else {
+                response.error = "Already in a mini-game: " + *state.current_mini_game;
+                return response;
+            }
+        }
+
+        // Determine level_id based on game phase
+        int level_id = 0;
+        if (body.contains("level_id") && body["level_id"].is_number_integer() && body["level_id"].get<int>() > 0) {
+            level_id = body["level_id"].get<int>();
+        } else if (state.game_phase == "initial_mission") {
+            auto next = player_state_db::get_next_incomplete_level(db, character_id, "weeding", 9);
+            if (!next) {
+                response.error = "All weeding levels completed";
+                return response;
+            }
+            level_id = *next;
+            if (level_id > 1) {
+                bool prev = player_state_db::has_completed_previous_level(db, character_id, "weeding", level_id);
+                if (!prev) {
+                    response.error = "Previous level not completed";
+                    return response;
+                }
+            }
+        } else if (state.game_phase == "duke_track") {
+            auto next = player_state_db::get_next_incomplete_level(db, character_id, "weeding", 25);
+            if (!next) {
+                response.error = "All duke weeding levels completed";
+                return response;
+            }
+            level_id = *next;
+            if (level_id > 1) {
+                bool prev = player_state_db::has_completed_previous_level(db, character_id, "weeding", level_id);
+                if (!prev) {
+                    response.error = "Previous level not completed";
+                    return response;
+                }
+            }
+        } else {
+            level_id = 0;
+        }
+
+        auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+
+        // Set current_mini_game
+        player_state_db::start_mini_game(db, character_id, "weeding", level_id, now);
+
+        // Load weeding configs
+        const auto& plants = config_cache.getWeedingPlants();
+        const auto& tools = config_cache.getWeedingTools();
+        const auto& specials = config_cache.getWeedingSpecials();
+
+        // Determine difficulty and map
+        int difficulty = 1;
+        std::string map_filename = "map_1.json";
+        nlohmann::json map_meta;
+
+        if (level_id > 0) {
+            difficulty = 1 + (level_id - 1) / 2;
+            if (difficulty > 10) difficulty = 10;
+        } else {
+            // Sandbox: random map
+            difficulty = body.value("difficulty", 1);
+            map_filename = "map_1.json";
+        }
+
+        auto map_opt = config_cache.loadWeedingMap(map_filename);
+        if (map_opt.has_value()) {
+            map_meta = *map_opt;
+        } else {
+            // Fallback map metadata
+            map_meta["id"] = "map_1";
+            map_meta["image_file"] = "map_1.png";
+            map_meta["grid_bounds"] = {{"x", 0.18}, {"y", 0.18}, {"width", 0.59}, {"height", 0.73}};
+            map_meta["grid_size"] = 4;
+            map_meta["out_of_bounds"] = json::array();
+            map_meta["par"] = 12;
+        }
+
+        int grid_size = map_meta["grid_size"].get<int>();
+
+        // Parse out_of_bounds
+        std::vector<std::pair<int, int>> out_of_bounds;
+        if (map_meta.contains("out_of_bounds") && map_meta["out_of_bounds"].is_array()) {
+            for (const auto& oob : map_meta["out_of_bounds"]) {
+                if (oob.contains("x") && oob.contains("y")) {
+                    out_of_bounds.push_back({oob["x"].get<int>(), oob["y"].get<int>()});
+                }
+            }
+        }
+
+        // Initialize RNG
+        std::mt19937 rng(static_cast<unsigned>(now + character_id + level_id));
+
+        // Initialize board
+        nlohmann::json board = weeding_logic::initialize_board(config_cache, grid_size, out_of_bounds, difficulty, rng);
+
+        // Compute par
+        int par = map_meta.value("par", weeding_logic::compute_par(board, grid_size, plants));
+        if (par < 1) par = 1;
+
+        // Build initial session state JSON
+        json session_json;
+        session_json["board"] = board;
+        session_json["grid_size"] = grid_size;
+        session_json["round"] = 1;
+        session_json["actions_remaining"] = 2;
+        session_json["pending_switch"] = false;
+        session_json["equipped_tool"] = "sickle";
+        session_json["par"] = par;
+        session_json["won"] = false;
+        session_json["score"] = 0;
+        session_json["map_id"] = map_filename;
+
+        // Create weeding session in DB
+        auto session = player_state_db::create_weeding_session(db, character_id, level_id, now, session_json);
+
+        // Convert tools object to array
+        json tools_arr = json::array();
+        for (auto it = tools.begin(); it != tools.end(); ++it) {
+            json tool_entry = it.value();
+            tool_entry["id"] = it.key();
+            tools_arr.push_back(tool_entry);
+        }
+
+        // Convert plants object to array
+        json plants_arr = json::array();
+        for (auto it = plants.begin(); it != plants.end(); ++it) {
+            json plant_entry = it.value();
+            plant_entry["id"] = it.key();
+            plants_arr.push_back(plant_entry);
+        }
+
+        // Convert specials object to array
+        json specials_arr = json::array();
+        for (auto it = specials.begin(); it != specials.end(); ++it) {
+            json special_entry = it.value();
+            special_entry["id"] = it.key();
+            specials_arr.push_back(special_entry);
+        }
+
+        // Build response
+        response.data["session_id"] = session.id;
+        response.data["character_id"] = character_id;
+        response.data["level_id"] = level_id;
+        response.data["board"] = board;
+        response.data["grid_size"] = grid_size;
+        response.data["round"] = 1;
+        response.data["actions_remaining"] = 2;
+        response.data["pending_switch"] = false;
+        response.data["equipped_tool"] = "sickle";
+        response.data["par"] = par;
+        response.data["won"] = false;
+        response.data["score"] = 0;
+        response.data["available_tools"] = tools_arr;
+        response.data["available_plants"] = plants_arr;
+        response.data["available_specials"] = specials_arr;
+        response.data["map_metadata"] = map_meta;
+        response.data["message"] = "Weeding session started";
+
+        if (new_token) {
+            response.data["token"] = *new_token;
+        }
+    } catch (const std::exception& e) {
+        log_error("handleWeedingStart", e.what());
+        response.error = std::string("Failed to start weeding: ") + e.what();
+    }
+
+    return response;
+}
+
+ApiResponse handleWeedingTurn(GameConfigCache& config_cache, const json& body,
+                               const std::optional<std::string>& username,
+                               const ClientInfo& client,
+                               const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+
+    if (!body.contains("character_id") || !body["character_id"].is_number_integer()) {
+        response.error = "character_id required";
+        return response;
+    }
+
+    if (!body.contains("session_id") || !body["session_id"].is_number_integer()) {
+        response.error = "session_id required";
+        return response;
+    }
+
+    int character_id = body["character_id"].get<int>();
+    int session_id = body["session_id"].get<int>();
+
+    try {
+        auto& db = Database::getInstance().gameDB();
+
+        // Get session
+        auto session_opt = player_state_db::get_weeding_session(db, session_id);
+        if (!session_opt.has_value()) {
+            response.error = "Weeding session not found or already completed";
+            return response;
+        }
+
+        auto session = *session_opt;
+        if (session.character_id != character_id) {
+            response.error = "Session does not belong to this character";
+            return response;
+        }
+
+        if (session.state != "active") {
+            response.error = "Session is not active (state: " + session.state + ")";
+            return response;
+        }
+
+        if (!session.session_json.is_object() || session.session_json.empty()) {
+            response.error = "Session has invalid state data";
+            return response;
+        }
+
+        // Check forfeit separately
+        if (body.contains("action_type") && body["action_type"].is_string() && body["action_type"].get<std::string>() == "forfeit") {
+            auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+            player_state_db::update_weeding_session(db, session_id, session.session_json, "forfeited", now);
+            player_state_db::clear_current_mini_game(db, character_id, now);
+
+            // Process end_mini_game for forfeit
+            auto end_result = player_state_db::end_mini_game(db, character_id, "weeding", session.level_id, false, 0, now,
+                (session.level_id <= 9) ? 9 : 25);
+
+            response.data["won"] = false;
+            response.data["score"] = 0;
+            response.data["completed"] = false;
+            response.data["game_over"] = true;
+            response.data["new_best_score"] = end_result.new_best_score;
+            response.data["times_played"] = end_result.new_times_played;
+            response.data["message"] = "Forfeited";
+
+            auto updated_state = player_state_db::get_player_game_state(db, character_id);
+            response.data["game_phase"] = updated_state.game_phase;
+
+            if (new_token) {
+                response.data["token"] = *new_token;
+            }
+            return response;
+        }
+
+        // Build action request
+        WeedingActionRequest action_req;
+        action_req.action_type = body.value("action_type", std::string(""));
+        action_req.tool_id = body.value("tool_id", std::string(""));
+        action_req.target_x = body.value("target_x", -1);
+        action_req.target_y = body.value("target_y", -1);
+
+        if (action_req.action_type.empty()) {
+            response.error = "action_type required";
+            return response;
+        }
+
+        // Initialize RNG using session_id and round number
+        int current_round = session.session_json.value("round", 1);
+        std::mt19937 rng(static_cast<unsigned>(
+            std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()) +
+            session_id * 1000 +
+            current_round));
+
+        // Process the action
+        auto result = weeding_logic::process_action(config_cache, session.session_json, action_req, rng);
+
+        if (!result.valid) {
+            response.error = result.error;
+            return response;
+        }
+
+        auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+
+        // Session state was mutated in-place by process_action
+        player_state_db::update_weeding_session(db, session_id, session.session_json,
+            result.won ? "won" : "active", now);
+
+        response.data["round"] = result.round;
+        response.data["actions_remaining"] = result.actions_remaining;
+        response.data["pending_switch"] = result.pending_switch;
+        response.data["equipped_tool"] = result.equipped_tool;
+        response.data["board_changes"] = result.board_changes;
+        response.data["won"] = result.won;
+        response.data["score"] = result.score;
+        response.data["par"] = result.par;
+        response.data["message"] = result.message.empty() ? "Action processed" : result.message;
+
+        if (result.won) {
+            // Game over — finalize
+            player_state_db::clear_current_mini_game(db, character_id, now);
+
+            auto end_result = player_state_db::end_mini_game(db, character_id, "weeding", session.level_id, true, result.score, now,
+                (session.level_id <= 9) ? 9 : 25);
+
+            response.data["game_over"] = true;
+            response.data["completed"] = end_result.completed;
+            response.data["new_best_score"] = end_result.new_best_score;
+            response.data["times_played"] = end_result.new_times_played;
+            response.data["all_levels_done"] = end_result.all_levels_done;
+
+            // Phase transitions
+            if (end_result.all_levels_done) {
+                auto pstate = player_state_db::get_player_game_state(db, character_id);
+                if (pstate.game_phase == "land_patent") {
+                    response.data["land_patent_earned"] = true;
+                    // Award completion bonus
+                    const auto& mini_games_config = config_cache.getMiniGames();
+                    if (mini_games_config.contains("weeding") && mini_games_config["weeding"].contains("completion_bonus")) {
+                        const auto& bonus = mini_games_config["weeding"]["completion_bonus"];
+                        if (bonus.contains("resources")) {
+                            response.data["completion_bonus"] = bonus["resources"];
+                        }
+                    }
+                } else if (pstate.game_phase == "duke_right") {
+                    response.data["duke_right_earned"] = true;
+                }
+                response.data["game_phase"] = pstate.game_phase;
+            } else {
+                auto pstate = player_state_db::get_player_game_state(db, character_id);
+                response.data["game_phase"] = pstate.game_phase;
+            }
+
+            // Level rewards
+            json level_rewards = json::object();
+            const auto& mini_games_config = config_cache.getMiniGames();
+            if (mini_games_config.contains("weeding")) {
+                const auto& mg = mini_games_config["weeding"];
+                auto check = [&](const json& levels) {
+                    for (const auto& lvl : levels) {
+                        if (lvl["id"] == session.level_id && lvl.contains("reward")) {
+                            level_rewards = lvl["reward"];
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+                if (mg.contains("levels")) check(mg["levels"]);
+                if (level_rewards.empty() && mg.contains("duke_levels")) check(mg["duke_levels"]);
+            }
+            response.data["rewards"] = level_rewards;
+        }
+
+        if (new_token) {
+            response.data["token"] = *new_token;
+        }
+    } catch (const std::exception& e) {
+        log_error("handleWeedingTurn", e.what());
+        response.error = std::string("Failed to process weeding turn: ") + e.what();
     }
 
     return response;
@@ -3224,6 +3718,34 @@ int main(int argc, char* argv[]) {
         }
 
         std::string filepath = "images/tower_defense/" + relative;
+        std::ifstream file(filepath, std::ios::binary);
+        if (!file) {
+            res->writeStatus("404 Not Found")->end("Not found");
+            return;
+        }
+
+        std::string content((std::istreambuf_iterator<char>(file)),
+                            std::istreambuf_iterator<char>());
+
+        if (relative.size() >= 4) {
+            std::string ext = relative.substr(relative.size() - 4);
+            if (ext == ".png") res->writeHeader("Content-Type", "image/png");
+            else if (ext == ".jpg") res->writeHeader("Content-Type", "image/jpeg");
+        }
+
+        res->end(content);
+    });
+
+    app.get("/images/weeding/*", [](auto *res, auto *req) {
+        std::string url(req->getUrl());
+        std::string relative = url.substr(std::string("/images/weeding/").length());
+
+        if (relative.empty() || relative.find("..") != std::string::npos) {
+            res->writeStatus("404 Not Found")->end("Not found");
+            return;
+        }
+
+        std::string filepath = "images/weeding/" + relative;
         std::ifstream file(filepath, std::ios::binary);
         if (!file) {
             res->writeStatus("404 Not Found")->end("Not found");

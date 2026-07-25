@@ -33,6 +33,18 @@ nlohmann::json GameSessionRow::toJson() const {
     return j;
 }
 
+nlohmann::json WeedingSessionRow::toJson() const {
+    nlohmann::json j;
+    j["id"] = id;
+    j["character_id"] = character_id;
+    j["level_id"] = level_id;
+    j["started_at"] = started_at;
+    j["last_activity"] = last_activity;
+    j["state"] = state;
+    j["session_json"] = session_json;
+    return j;
+}
+
 nlohmann::json PlayerGameStateRow::toJson() const {
     nlohmann::json j;
     j["character_id"] = character_id;
@@ -48,6 +60,12 @@ nlohmann::json PlayerGameStateRow::toJson() const {
         progress_arr.push_back(p.toJson());
     }
     j["progress"] = progress_arr;
+
+    nlohmann::json activities_arr = nlohmann::json::array();
+    for (const auto& a : available_activities) {
+        activities_arr.push_back(a);
+    }
+    j["available_activities"] = activities_arr;
 
     return j;
 }
@@ -399,6 +417,94 @@ void earn_duke_right(sqlite::database& db, int character_id, int64_t timestamp) 
             std::cerr << "[PlayerStateDB] Failed to load spawn schedule for session "
                       << session_id << ": " << e.what() << std::endl;
             return nlohmann::json();
+        }
+    }
+
+    WeedingSessionRow create_weeding_session(sqlite::database& db, int character_id, int level_id, int64_t timestamp, const nlohmann::json& session_json) {
+        WeedingSessionRow row;
+        row.character_id = character_id;
+        row.level_id = level_id;
+        row.started_at = timestamp;
+        row.last_activity = timestamp;
+        row.state = "active";
+        row.session_json = session_json;
+
+        std::string serialized = session_json.dump();
+        db << "INSERT INTO weeding_sessions "
+              "(character_id, level_id, started_at, last_activity, state, session_json) "
+              "VALUES (?, ?, ?, ?, 'active', ?);"
+           << character_id << level_id << timestamp << timestamp << serialized;
+
+        row.id = db.last_insert_rowid();
+        return row;
+    }
+
+    std::optional<WeedingSessionRow> get_weeding_session(sqlite::database& db, int session_id) {
+        WeedingSessionRow row;
+        bool found = false;
+
+        db << "SELECT id, character_id, level_id, started_at, last_activity, state, session_json "
+              "FROM weeding_sessions WHERE id = ? AND state = 'active';"
+           << session_id
+           >> [&](int id, int cid, int level_id,
+                  int64_t started_at, int64_t last_activity,
+                  std::string state, std::string session_json_str) {
+                row.id = id;
+                row.character_id = cid;
+                row.level_id = level_id;
+                row.started_at = started_at;
+                row.last_activity = last_activity;
+                row.state = state;
+                try {
+                    row.session_json = nlohmann::json::parse(session_json_str);
+                } catch (...) {
+                    row.session_json = nlohmann::json::object();
+                }
+                found = true;
+            };
+
+        if (!found) return std::nullopt;
+        return row;
+    }
+
+    std::optional<WeedingSessionRow> get_active_weeding_session(sqlite::database& db, int character_id) {
+        WeedingSessionRow row;
+        bool found = false;
+
+        db << "SELECT id, character_id, level_id, started_at, last_activity, state, session_json "
+              "FROM weeding_sessions WHERE character_id = ? AND state = 'active' "
+              "ORDER BY id DESC LIMIT 1;"
+           << character_id
+           >> [&](int id, int cid, int level_id,
+                  int64_t started_at, int64_t last_activity,
+                  std::string state, std::string session_json_str) {
+                row.id = id;
+                row.character_id = cid;
+                row.level_id = level_id;
+                row.started_at = started_at;
+                row.last_activity = last_activity;
+                row.state = state;
+                try {
+                    row.session_json = nlohmann::json::parse(session_json_str);
+                } catch (...) {
+                    row.session_json = nlohmann::json::object();
+                }
+                found = true;
+            };
+
+        if (!found) return std::nullopt;
+        return row;
+    }
+
+    bool update_weeding_session(sqlite::database& db, int session_id, const nlohmann::json& session_json, const std::string& state, int64_t timestamp) {
+        try {
+            std::string serialized = session_json.dump();
+            db << "UPDATE weeding_sessions SET session_json = ?, state = ?, last_activity = ? WHERE id = ?;"
+               << serialized << state << timestamp << session_id;
+            return true;
+        } catch (const std::exception& e) {
+            std::cerr << "[PlayerStateDB] Failed to update weeding session " << session_id << ": " << e.what() << std::endl;
+            return false;
         }
     }
 

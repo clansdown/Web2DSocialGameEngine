@@ -555,7 +555,7 @@ Build the full game progression and content system with a working tower defense 
 
 ### Critical Context
 - **Server compiles** with `./compile_server.sh` (no arguments). Client `npm run check` passes with only pre-existing WeedingGame errors.
-- **SimpleGame is never modified** — all changes in our code (`SimpleGame.svelte`). Required changes documented in `docs/SimpleGame_changes.md`.
+- **SimpleGame is never modified** — all changes in our code (`TowerDefense.svelte`). Required changes documented in `docs/SimpleGame_changes.md`.
 - **Tower defense maps** live in `game/config/tower_defense/maps/` as JSON. Only `map_1.json` exists (level 1). Map metadata normalized server-side from camelCase to snake_case.
 - **`TowerDefenseMapCache`** uses POSIX `stat()` with `time_t` (not `std::filesystem::file_time_type` — broken on this Linux).
 - **`enemies.delete(e)` required manually** — SimpleGame's `EnemyClass.destroy()` doesn't remove from the global `enemies` set, only from `gameObjects`.
@@ -563,7 +563,7 @@ Build the full game progression and content system with a working tower defense 
 - **Projectile images** referenced at `/images/tower_defense/projectiles/hunting_arrow.png` and `war_arrow.png` — these files don't exist on disk yet.
 - **Login debug**: Conditional on `static const bool login_debug = false` in main.cpp (off by default).
 - **`rename_field` self-rename bug**: `rename_field(obj, "x", "x")` with `from == to` destroys the field. Fixed by removing these calls.
-- **Level ID** threaded through: `App.svelte → MiniGameContainer → SimpleGame` (not hardcoded 0).
+- **Level ID** threaded through: `App.svelte → MiniGameContainer → TowerDefense` (not hardcoded 0).
 
 ### Relevant Files
 - `game/config/tower_defense/projectiles.json` - Projectile config (width, height, speed, image_file, forward_vector)
@@ -575,5 +575,5 @@ Build the full game progression and content system with a working tower defense 
 - `server/GameConfigCache.hpp/.cpp` - Config loading, includes projectiles
 - `server/main.cpp` - All API handlers, TD kickoff sends projectiles config
 - `server/TowerDefenseMapCache.cpp` - Map loading/normalization (fixed self-rename bug)
-- `client/src/minigames/tower_defense/SimpleGame.svelte` - Main TD game: engine collision, homing, mirroring, projTick cleanup
+- `client/src/minigames/tower_defense/TowerDefense.svelte` - Main TD game: engine collision, homing, mirroring, projTick cleanup
 - `client/SimpleGame/Embedding.md` - SimpleGame API docs (pause, mirroring, collision, movement)

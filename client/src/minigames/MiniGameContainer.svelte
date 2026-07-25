@@ -1,11 +1,10 @@
       <script lang="ts">
   /**
    * Container component that orchestrates the mini-game lifecycle.
-   * For tower defense, uses the new SimpleGame component with tdRound API.
+   * For tower defense, uses the TowerDefense component with tdRound API.
    * For weeding, uses the existing startMiniGame/endMiniGame flow.
    */
-  import TowerDefenseGame from './tower_defense/TowerDefenseGame.svelte';
-  import SimpleGame from './tower_defense/SimpleGame.svelte';
+  import TowerDefense from './tower_defense/TowerDefense.svelte';
   import WeedingGame from './weeding/WeedingGame.svelte';
   import DialogOverlay from '../components/DialogOverlay.svelte';
   import GameText from '../components/GameText.svelte';
@@ -42,8 +41,11 @@
   let winMessage = $state('');
   let loseMessage = $state('');
 
-  // For tower defense with new SimpleGame
+  // For tower defense
   let tdStarted = $state(false);
+
+  // For weeding
+  let weedingStarted = $state(false);
 
   // TD intro overlay state
   let showTDIntro = $state(false);
@@ -57,7 +59,7 @@
   let itemTexts: Record<string, string> = $state({});
 
   /**
-   * Starts the mini-game session for non-TD games (weeding).
+   * Starts the mini-game session.
    */
   async function initializeGame() {
     if (miniGame === 'tower_defense') {
@@ -72,6 +74,12 @@
         }
       }
       tdStarted = true;
+      loading = false;
+      return;
+    }
+
+    if (miniGame === 'weeding') {
+      weedingStarted = true;
       loading = false;
       return;
     }
@@ -132,7 +140,17 @@
   }
 
   /**
-   * Called by SimpleGame when TD is complete.
+   * Called by WeedingGame when the weeding session completes.
+   */
+  async function handleWeedingComplete(results: EndMiniGameResponse) {
+    if (gameFinished) return;
+    gameFinished = true;
+    gameResults = results;
+    showResults = true;
+  }
+
+  /**
+   * Called by TowerDefense when TD is complete.
    * Checks for new unlocks and shows the king's message overlay before results.
    */
   async function handleTDComplete(results: EndMiniGameResponse, forfeited = false) {
@@ -313,28 +331,23 @@
       <GameText text={tdIntroText} />
     </DialogOverlay>
   {:else if tdStarted && !gameFinished && $currentCharacter}
-    <SimpleGame
+    <TowerDefense
       characterId={$currentCharacter.id}
       {miniGame}
       {levelId}
       onComplete={handleTDComplete}
       onError={onError}
     />
+  {:else if weedingStarted && !gameFinished && $currentCharacter}
+    <WeedingGame
+      characterId={$currentCharacter.id}
+      {levelId}
+      onComplete={handleWeedingComplete}
+      onError={onError}
+    />
   {:else if levelConfig && gameStarted}
-    {#if miniGame === 'tower_defense'}
-      <TowerDefenseGame
-        {levelConfig}
-        onGameOver={handleGameOver}
-      />
-    {:else if miniGame === 'weeding'}
-      <WeedingGame
-        {levelConfig}
-        onGameOver={handleGameOver}
-      />
-    {:else}
-      <div class="container py-5">
-        <div class="alert alert-warning">Unknown mini-game: {miniGame}</div>
-      </div>
-    {/if}
+    <div class="container py-5">
+      <div class="alert alert-warning">Unknown mini-game: {miniGame}</div>
+    </div>
   {/if}
 </div>
