@@ -1,8 +1,10 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
   import { startWeedingSession, submitWeedingTurn } from '../../lib/game_state';
-  import type { WeedingSessionState, WeedingTurnRequest, WeedingTurnResponse, BoardChange, GridSquare, RawToolConfig, RawWeedingMapConfig, RawPlantConfig } from './weeding_types';
+  import type { WeedingSessionState, WeedingTurnRequest, WeedingTurnResponse, WeedingActionItem, BoardChange, GridSquare, RawToolConfig, RawWeedingMapConfig, RawPlantConfig } from './weeding_types';
   import type { EndMiniGameResponse } from '../../lib/api';
+  import { getTextsRequest } from '../../lib/api';
+  import { language } from '../../lib/stores';
 
   import {
     initEngine, setBoardSize, afterDraw, getMousePosition,
@@ -42,12 +44,16 @@
   let score = $state(0);
   let won = $state(false);
   let message = $state('');
+  let cannotUseText = $state('');
 
   let tools: RawToolConfig[] = $state([]);
   let plants: RawPlantConfig[] = $state([]);
   let mapMeta: RawWeedingMapConfig | null = $state(null);
 
   let lastTurnResponse: WeedingTurnResponse | null = $state(null);
+
+  let pendingActions: WeedingActionItem[] = [];
+  let localPendingSwitch = false;
 
   let weedingCells: WeedingCellObj[] = [];
   let toolButtons: Button[] = [];
@@ -139,6 +145,15 @@
     await Promise.all(loads);
   }
 
+  function isToolValidForCell(cell: WeedingCellObj): boolean {
+    if (!equippedToolId) return false;
+    if (cell.isBlocked) return false;
+    if (cell.isSmotherCrop) return false;
+    if (cell.plantType === null) return findTool(equippedToolId)?.can_plant === true;
+    const plantCfg = plants.find((p) => p.id === cell.plantType);
+    return !!plantCfg?.tools[equippedToolId];
+  }
+
   function drawWeedingOverlay(ctx: CanvasRenderingContext2D, ox: number, oy: number): void {
     if (equippedToolId) {
       const mouse = getMousePosition();
@@ -148,7 +163,24 @@
         const scale = cursorSize / Math.max(img.naturalWidth, img.naturalHeight);
         const sw = img.naturalWidth * scale;
         const sh = img.naturalHeight * scale;
-        ctx.drawImage(img, mouse.x - ox - sw / 2, mouse.y - oy - sh / 2, sw, sh);
+        const drawX = mouse.x - ox - sw / 2;
+        const drawY = mouse.y - oy - sh / 2;
+        ctx.drawImage(img, drawX, drawY, sw, sh);
+
+        // Check tool validity on hovered cell
+        const hoveredCell = weedingCells.find((c) => {
+          const hw = c.hitboxWidth / 2;
+          const hh = c.hitboxHeight / 2;
+          return mouse.x >= c.x - hw && mouse.x <= c.x + hw && mouse.y >= c.y - hh && mouse.y <= c.y + hh;
+        });
+        const valid = !hoveredCell || isToolValidForCell(hoveredCell);
+        if (!valid) {
+          ctx.fillStyle = 'rgba(255,0,0,0.35)';
+          ctx.fillRect(drawX, drawY, sw, sh);
+          if (messageText) messageText.text = cannotUseText;
+        } else if (hoveredCell && messageText && messageText.text === cannotUseText) {
+          messageText.text = '';
+        }
       }
     }
 
@@ -247,10 +279,6 @@
         const cell = new WeedingCellObj(cellClass, cx, cy, x, y, boardData[y][x]);
         gameObjects.add(cell);
         weedingCells.push(cell);
-        cell.onClick(0, () => {
-          if (turnPending || won) return;
-          handleCellClick(cell);
-        });
 
         const plantType = boardData[y][x].plant_type;
         if (plantType) {
@@ -259,15 +287,26 @@
           const plantObj = new GameObject(cls, cx, cy);
           plantObj.width = psize.w;
           plantObj.height = psize.h;
-          plantObj.hitboxWidth = 0;
-          plantObj.hitboxHeight = 0;
+          plantObj.hitboxWidth = cellSize;
+          plantObj.hitboxHeight = cellSize;
           plantObj.zIndex = 20 + y;
           plantObj.direction_x = 0;
           plantObj.direction_y = -1;
           plantObj.velocity = 0;
           plantObj.standardMovement = false;
+          plantObj.onClick(0, () => {
+            console.log(`[Weeding] plant click (createGrid)`, { gx: cell.gridX, gy: cell.gridY, turnPending, won, accessible: cell.isAccessible, tool: equippedToolId });
+            if (turnPending || won) return;
+            handleCellClick(cell);
+          });
           gameObjects.add(plantObj);
           cell.plantObj = plantObj;
+        } else {
+          cell.onClick(0, () => {
+            console.log(`[Weeding] empty cell click (createGrid)`, { gx: cell.gridX, gy: cell.gridY, turnPending, won, tool: equippedToolId });
+            if (turnPending || won) return;
+            handleCellClick(cell);
+          });
         }
       }
     }
@@ -321,8 +360,13 @@
       btn.var = { toolId: tool.id, buttonType: 'tool' };
       btn.setOnClick(() => {
         if (turnPending || won) return;
+        if (tool.id === equippedToolId) return;
         selectedCrop = null;
-        doTurn('switch_tool', tool.id, -1, -1);
+        pendingActions.push({ action_type: 'switch_tool', tool_id: tool.id });
+        equippedToolId = tool.id;
+        localPendingSwitch = true;
+        updateButtonHighlights();
+        updateHUD();
       });
       col.addChild(btn);
       toolButtons.push(btn);
@@ -351,8 +395,13 @@
       btn.var = { toolId: 'seed_bag', cropId: plant.id, buttonType: 'crop' };
       btn.setOnClick(() => {
         if (turnPending || won) return;
+        if ('seed_bag' === equippedToolId && selectedCrop === plant.id) return;
         selectedCrop = plant.id;
-        doTurn('switch_tool', 'seed_bag', -1, -1);
+        pendingActions.push({ action_type: 'switch_tool', tool_id: 'seed_bag' });
+        equippedToolId = 'seed_bag';
+        localPendingSwitch = true;
+        updateButtonHighlights();
+        updateHUD();
       });
       col.addChild(btn);
       toolButtons.push(btn);
@@ -404,7 +453,7 @@
     forfeitButton.zIndex = 100;
     forfeitButton.setOnClick(() => {
       if (turnPending || won) return;
-      doTurn('forfeit', '', -1, -1);
+      handleForfeit();
     });
   }
 
@@ -434,22 +483,34 @@
           cell.plantObj.destroy();
           cell.plantObj = null;
         }
-        // Create new plant object if needed
+        cell.onClick(0, () => {});
+
         if (change.plant_type) {
           const cls = plantClasses.get(change.plant_type) || emptyCellClass;
           const psize = computePlantSize(change.plant_type);
           const plantObj = new GameObject(cls, cell.x, cell.y);
           plantObj.width = psize.w;
           plantObj.height = psize.h;
-          plantObj.hitboxWidth = 0;
-          plantObj.hitboxHeight = 0;
+          plantObj.hitboxWidth = cellSize;
+          plantObj.hitboxHeight = cellSize;
           plantObj.zIndex = 20 + cell.gridY;
           plantObj.direction_x = 0;
           plantObj.direction_y = -1;
           plantObj.velocity = 0;
           plantObj.standardMovement = false;
+          plantObj.onClick(0, () => {
+            console.log(`[Weeding] plant click (updateCells)`, { gx: cell.gridX, gy: cell.gridY, turnPending, won, accessible: cell.isAccessible, tool: equippedToolId });
+            if (turnPending || won) return;
+            handleCellClick(cell);
+          });
           gameObjects.add(plantObj);
           cell.plantObj = plantObj;
+        } else {
+          cell.onClick(0, () => {
+            console.log(`[Weeding] empty cell click (updateCells)`, { gx: cell.gridX, gy: cell.gridY, turnPending, won, tool: equippedToolId });
+            if (turnPending || won) return;
+            handleCellClick(cell);
+          });
         }
       }
     }
@@ -464,66 +525,228 @@
     if (turnPending || won) return;
     if (!cell.isAccessible) return;
     if (cell.isBlocked) return;
-
+    const cost = 1 + (localPendingSwitch ? 1 : 0);
+    if (cost > actionsRemaining) return;
     if (cell.plantType === null && !cell.isSmotherCrop) {
       if (!equippedToolId) return;
       const toolObj = findTool(equippedToolId);
       if (toolObj && toolObj.can_plant) {
-        await doTurn('plant', equippedToolId, cell.gridX, cell.gridY);
+        cell.plantType = toolObj.plant_crop_id || 'rye';
+        cell.isSmotherCrop = true;
+        cell.progress = 0;
+        cell.actionsNeeded = 0;
+        applyPlantVisual(cell, cell.plantType);
+        pendingActions.push({ action_type: 'plant', tool_id: equippedToolId, target_x: cell.gridX, target_y: cell.gridY });
+        recomputeAccessibility();
+        applyActionCost(cost);
       }
       return;
     }
     if (cell.isSmotherCrop) return;
-
     if (!equippedToolId) return;
-    await doTurn('use_tool', equippedToolId, cell.gridX, cell.gridY);
+    const plantCfg = plants.find((p) => p.id === cell.plantType);
+    const toolEff = plantCfg?.tools[equippedToolId];
+    if (!toolEff) return;
+    cell.progress += 1;
+    if (cell.progress >= toolEff.actions_required) {
+      const plantType = cell.plantType;
+      const clearedCells: WeedingCellObj[] = [cell];
+
+      if (toolEff.affects_adjacent && toolEff.adjacent_mode === 'row_or_column') {
+        let rowLen = 1, rowStart = cell.gridX, rowEnd = cell.gridX;
+        for (let cx = cell.gridX - 1; cx >= 0; --cx) {
+          const c = weedingCells.find((wc) => wc.gridX === cx && wc.gridY === cell.gridY);
+          if (!c || c.isBlocked || c.isSmotherCrop || c.plantType !== plantType) break;
+          rowLen++; rowStart = cx;
+        }
+        for (let cx = cell.gridX + 1; cx < gridCols; ++cx) {
+          const c = weedingCells.find((wc) => wc.gridX === cx && wc.gridY === cell.gridY);
+          if (!c || c.isBlocked || c.isSmotherCrop || c.plantType !== plantType) break;
+          rowLen++; rowEnd = cx;
+        }
+        let colLen = 1, colStart = cell.gridY, colEnd = cell.gridY;
+        for (let cy = cell.gridY - 1; cy >= 0; --cy) {
+          const c = weedingCells.find((wc) => wc.gridX === cell.gridX && wc.gridY === cy);
+          if (!c || c.isBlocked || c.isSmotherCrop || c.plantType !== plantType) break;
+          colLen++; colStart = cy;
+        }
+        for (let cy = cell.gridY + 1; cy < gridRows; ++cy) {
+          const c = weedingCells.find((wc) => wc.gridX === cell.gridX && wc.gridY === cy);
+          if (!c || c.isBlocked || c.isSmotherCrop || c.plantType !== plantType) break;
+          colLen++; colEnd = cy;
+        }
+        if (rowLen >= colLen) {
+          for (let cx = rowStart; cx <= rowEnd; ++cx) {
+            const c = weedingCells.find((wc) => wc.gridX === cx && wc.gridY === cell.gridY);
+            if (c && c !== cell) clearedCells.push(c);
+          }
+        } else {
+          for (let cy = colStart; cy <= colEnd; ++cy) {
+            const c = weedingCells.find((wc) => wc.gridX === cell.gridX && wc.gridY === cy);
+            if (c && c !== cell) clearedCells.push(c);
+          }
+        }
+      }
+
+      for (const c of clearedCells) {
+        c.plantType = null;
+        c.isSmotherCrop = false;
+        c.progress = 0;
+        c.actionsNeeded = 0;
+        if (c.plantObj) { c.plantObj.destroy(); c.plantObj = null; }
+      }
+    }
+    pendingActions.push({ action_type: 'use_tool', tool_id: equippedToolId, target_x: cell.gridX, target_y: cell.gridY });
+    recomputeAccessibility();
+    applyActionCost(cost);
   }
 
-  async function doTurn(actionType: string, toolId: string, targetX: number, targetY: number): Promise<void> {
-    if (turnPending) return;
+  function recomputeAccessibility(): void {
+    const visited = new Set<string>();
+    const q: { x: number; y: number }[] = [];
+
+    for (let x = 0; x < gridCols; ++x) {
+      const y = gridRows - 1;
+      const cell = weedingCells.find((c) => c.gridX === x && c.gridY === y);
+      if (!cell || cell.isBlocked) continue;
+      const key = `${x},${y}`;
+      q.push({ x, y });
+      visited.add(key);
+    }
+
+    const dirs = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+    while (q.length > 0) {
+      const { x: cx, y: cy } = q.shift()!;
+      for (const [dx, dy] of dirs) {
+        const nx = cx + dx;
+        const ny = cy + dy;
+        if (nx < 0 || nx >= gridCols || ny < 0 || ny >= gridRows) continue;
+        const key = `${nx},${ny}`;
+        if (visited.has(key)) continue;
+        const cell = weedingCells.find((c) => c.gridX === nx && c.gridY === ny);
+        if (!cell || cell.isBlocked) continue;
+        if (cell.plantType === null || cell.isSmotherCrop) {
+          visited.add(key);
+          q.push({ x: nx, y: ny });
+        }
+      }
+    }
+
+    for (const cell of weedingCells) {
+      cell.isAccessible = false;
+      if (cell.isBlocked) continue;
+      if (cell.isSmotherCrop) { cell.isAccessible = true; continue; }
+      const ck = `${cell.gridX},${cell.gridY}`;
+      if (visited.has(ck)) { cell.isAccessible = true; continue; }
+      if (cell.plantType !== null) {
+        for (const [dx, dy] of dirs) {
+          const nk = `${cell.gridX + dx},${cell.gridY + dy}`;
+          if (visited.has(nk)) { cell.isAccessible = true; break; }
+        }
+      }
+    }
+  }
+
+  function applyPlantVisual(cell: WeedingCellObj, plantType: string): void {
+    const cls = plantClasses.get(plantType) || emptyCellClass;
+    const psize = computePlantSize(plantType);
+    if (cell.plantObj) {
+      cell.plantObj.gameclass = cls;
+      cell.plantObj.width = psize.w;
+      cell.plantObj.height = psize.h;
+    } else {
+      const p = new GameObject(cls, cell.x, cell.y);
+      p.width = psize.w;
+      p.height = psize.h;
+      p.hitboxWidth = cellSize;
+      p.hitboxHeight = cellSize;
+      p.zIndex = 20 + cell.gridY;
+      p.direction_x = 0;
+      p.direction_y = -1;
+      p.velocity = 0;
+      p.standardMovement = false;
+      p.fadeInMillis = 400;
+      p.onClick(0, () => { if (turnPending || won) return; handleCellClick(cell); });
+      gameObjects.add(p);
+      cell.plantObj = p;
+    }
+  }
+
+  function applyActionCost(cost: number): void {
+    actionsRemaining -= cost;
+    localPendingSwitch = false;
+    updateButtonHighlights();
+    updateHUD();
+    checkLocalWin();
+    if (actionsRemaining <= 0) submitBatch();
+  }
+
+  function checkLocalWin(): void {
+    if (won) return;
+    for (const cell of weedingCells) {
+      if (cell.isBlocked) continue;
+      if (cell.plantType !== null && !cell.isSmotherCrop) return;
+    }
+    // All non-blocked cells cleared — the local win is detected
+    // Server will confirm in the batch response
+  }
+
+  async function submitBatch(): Promise<void> {
+    if (pendingActions.length === 0) return;
     turnPending = true;
     if (forfeitButton) forfeitButton.setDisabled(true);
     for (const btn of toolButtons) btn.setDisabled(true);
-
     try {
-      if (actionType === 'forfeit') {
-        const resp = await submitWeedingTurn({
-          action_type: 'forfeit',
-          character_id: characterId,
-          session_id: sessionId,
-        });
-        handleTurnResponse(resp);
-        const results: EndMiniGameResponse = {
-          completed: false,
-          score: resp.score ?? 0,
-          new_best_score: resp.new_best_score ?? 0,
-          times_played: resp.times_played ?? 0,
-          all_levels_done: false,
-          base_unlocked: false,
-          rewards: {},
-          game_phase: resp.game_phase ?? 'initial_mission',
-          next_level_id: null,
-        };
-        onComplete(results);
-        return;
-      }
-
-      const turnBody: WeedingTurnRequest = {
-        action_type: actionType as 'use_tool' | 'switch_tool' | 'plant' | 'forfeit',
-        character_id: characterId,
-        session_id: sessionId,
-      };
-      if (actionType === 'switch_tool' || actionType === 'use_tool' || actionType === 'plant') {
-        turnBody.tool_id = toolId;
-      }
-      if (targetX >= 0) turnBody.target_x = targetX;
-      if (targetY >= 0) turnBody.target_y = targetY;
-
-      const resp = await submitWeedingTurn(turnBody);
-      handleTurnResponse(resp);
+      const resp = await submitWeedingTurn({ actions: pendingActions, character_id: characterId, session_id: sessionId } as WeedingTurnRequest);
+      handleBatchResponse(resp);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Turn failed';
-      onError(msg);
+      onError(e instanceof Error ? e.message : 'Turn failed');
+      try {
+        const state = await startWeedingSession(characterId, levelId);
+        round = state.round; actionsRemaining = state.actions_remaining;
+        equippedToolId = state.equipped_tool; won = state.won; score = state.score;
+        if (state.board && weedingCells.length > 0) {
+          for (let y = 0; y < state.board.length && y < gridRows; ++y) {
+            for (let x = 0; x < state.board[y].length && x < gridCols; ++x) {
+              const cell = weedingCells.find((c) => c.gridX === x && c.gridY === y);
+              if (!cell) continue;
+              const newCell = state.board[y][x];
+              const oldPlantType = cell.plantType;
+              cell.plantType = newCell.plant_type;
+              cell.progress = newCell.progress;
+              cell.actionsNeeded = newCell.actions_needed;
+              cell.isSmotherCrop = newCell.is_smother_crop;
+              cell.isAccessible = newCell.is_accessible;
+              if (newCell.plant_type !== oldPlantType) {
+                if (cell.plantObj) { cell.plantObj.destroy(); cell.plantObj = null; }
+                if (newCell.plant_type) applyPlantVisual(cell, newCell.plant_type);
+              }
+            }
+          }
+        }
+        updateHUD(); updateButtonHighlights();
+      } catch { /* refresh failed — user can forfeit */ }
+    } finally {
+      pendingActions = []; localPendingSwitch = false; turnPending = false;
+      if (forfeitButton) forfeitButton.setDisabled(false);
+      for (const btn of toolButtons) btn.setDisabled(false);
+    }
+  }
+
+  async function handleForfeit(): Promise<void> {
+    if (turnPending || won) return;
+    turnPending = true;
+    if (forfeitButton) forfeitButton.setDisabled(true);
+    for (const btn of toolButtons) btn.setDisabled(true);
+    try {
+      const resp = await submitWeedingTurn({ action_type: 'forfeit', character_id: characterId, session_id: sessionId });
+      pendingActions = []; localPendingSwitch = false;
+      round = resp.round; actionsRemaining = resp.actions_remaining; equippedToolId = resp.equipped_tool;
+      if (resp.message) message = resp.message;
+      updateHUD(); updateButtonHighlights();
+      onComplete({ completed: false, score: resp.score ?? 0, new_best_score: resp.new_best_score ?? 0, times_played: resp.times_played ?? 0, all_levels_done: false, base_unlocked: false, rewards: {}, game_phase: resp.game_phase ?? 'initial_mission', next_level_id: null });
+    } catch (e) {
+      onError(e instanceof Error ? e.message : 'Forfeit failed');
     } finally {
       turnPending = false;
       if (forfeitButton) forfeitButton.setDisabled(false);
@@ -531,30 +754,32 @@
     }
   }
 
-  function handleTurnResponse(resp: WeedingTurnResponse): void {
+  function handleBatchResponse(resp: WeedingTurnResponse): void {
     lastTurnResponse = resp;
-    round = resp.round;
-    actionsRemaining = resp.actions_remaining;
-    equippedToolId = resp.equipped_tool;
-
-    if (resp.equipped_tool !== 'seed_bag') {
-      selectedCrop = null;
-    }
-
-    if (resp.board_changes) {
-      updateCells(resp.board_changes);
-    }
-
-    if (resp.won) {
-      won = true;
-      score = resp.score;
-    }
+    round = resp.round; actionsRemaining = resp.actions_remaining; equippedToolId = resp.equipped_tool;
+    if (resp.equipped_tool !== 'seed_bag') selectedCrop = null;
+    if (resp.board_changes) syncBoard(resp.board_changes);
+    if (resp.won) { won = true; score = resp.score; }
     if (resp.message) message = resp.message;
-    updateHUD();
-    updateButtonHighlights();
+    updateHUD(); updateButtonHighlights();
+    if (resp.won) handleGameWon();
+  }
 
-    if (resp.won) {
-      handleGameWon();
+  function syncBoard(changes: BoardChange[]): void {
+    for (const change of changes) {
+      const cell = weedingCells.find((c) => c.gridX === change.x && c.gridY === change.y);
+      if (!cell) continue;
+      const oldPlantType = cell.plantType;
+      cell.plantType = change.plant_type;
+      cell.progress = change.progress;
+      cell.actionsNeeded = change.actions_needed;
+      cell.isSmotherCrop = change.is_smother_crop;
+      cell.isAccessible = change.is_accessible;
+      if (change.is_blocked !== undefined) cell.isBlocked = change.is_blocked;
+      if (change.plant_type !== oldPlantType) {
+        if (cell.plantObj) { cell.plantObj.destroy(); cell.plantObj = null; }
+        if (change.plant_type) applyPlantVisual(cell, change.plant_type);
+      }
     }
   }
 
@@ -621,6 +846,12 @@
       return;
     }
     selectedCrop = null;
+    try {
+      const texts = await getTextsRequest($language, ['wd_error_cannot_use']);
+      cannotUseText = texts['wd_error_cannot_use'] || 'This tool cannot be used here.';
+    } catch {
+      cannotUseText = 'This tool cannot be used here.';
+    }
     updateButtonHighlights();
     loading = false;
   }

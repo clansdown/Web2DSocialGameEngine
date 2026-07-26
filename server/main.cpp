@@ -2363,15 +2363,15 @@ ApiResponse handleWeedingTurn(GameConfigCache& config_cache, const json& body,
             return response;
         }
 
-        // Build action request
-        WeedingActionRequest action_req;
-        action_req.action_type = body.value("action_type", std::string(""));
-        action_req.tool_id = body.value("tool_id", std::string(""));
-        action_req.target_x = body.value("target_x", -1);
-        action_req.target_y = body.value("target_y", -1);
+        // Parse actions array
+        if (!body.contains("actions") || !body["actions"].is_array()) {
+            response.error = "actions array required";
+            return response;
+        }
 
-        if (action_req.action_type.empty()) {
-            response.error = "action_type required";
+        auto actions = body["actions"];
+        if (actions.empty()) {
+            response.error = "actions array cannot be empty";
             return response;
         }
 
@@ -2382,17 +2382,48 @@ ApiResponse handleWeedingTurn(GameConfigCache& config_cache, const json& body,
             session_id * 1000 +
             current_round));
 
-        // Process the action
-        auto result = weeding_logic::process_action(config_cache, session.session_json, action_req, rng);
+        // Save board before any actions for final diff
+        nlohmann::json old_board = session.session_json["board"];
 
-        if (!result.valid) {
-            response.error = result.error;
+        // Process all actions sequentially
+        std::optional<WeedingActionResult> last_result;
+        for (const auto& action_body : actions) {
+            WeedingActionRequest action_req;
+            action_req.action_type = action_body.value("action_type", std::string(""));
+            action_req.tool_id = action_body.value("tool_id", std::string(""));
+            action_req.target_x = action_body.value("target_x", -1);
+            action_req.target_y = action_body.value("target_y", -1);
+
+            if (action_req.action_type.empty()) {
+                response.error = "action_type required in action";
+                return response;
+            }
+
+            auto result = weeding_logic::process_action(config_cache, session.session_json, action_req, rng, false);
+
+            if (!result.valid) {
+                response.error = result.error;
+                return response;
+            }
+
+            last_result = result;
+            if (result.won) break;
+        }
+
+        if (!last_result.has_value()) {
+            response.error = "No actions processed";
             return response;
         }
 
+        auto& result = *last_result;
+
+        // Extract single diff from before all actions to after all actions
+        int gs = session.session_json["grid_size"].get<int>();
+        auto final_changes = weeding_logic::extract_board_changes(old_board, session.session_json["board"], gs);
+
         auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 
-        // Session state was mutated in-place by process_action
+        // One DB write
         player_state_db::update_weeding_session(db, session_id, session.session_json,
             result.won ? "won" : "active", now);
 
@@ -2400,11 +2431,11 @@ ApiResponse handleWeedingTurn(GameConfigCache& config_cache, const json& body,
         response.data["actions_remaining"] = result.actions_remaining;
         response.data["pending_switch"] = result.pending_switch;
         response.data["equipped_tool"] = result.equipped_tool;
-        response.data["board_changes"] = result.board_changes;
+        response.data["board_changes"] = final_changes;
         response.data["won"] = result.won;
         response.data["score"] = result.score;
         response.data["par"] = result.par;
-        response.data["message"] = result.message.empty() ? "Action processed" : result.message;
+        response.data["message"] = result.won ? result.message : "";
 
         if (result.won) {
             // Game over — finalize

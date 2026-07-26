@@ -28,10 +28,18 @@ export interface GridSquare {
   is_accessible: boolean;
 }
 
+export interface WeedingActionItem {
+  action_type: 'use_tool' | 'switch_tool' | 'plant';
+  tool_id?: string;
+  target_x?: number;
+  target_y?: number;
+}
+
 export interface WeedingTurnRequest {
-  action_type: 'use_tool' | 'switch_tool' | 'plant' | 'forfeit';
+  action_type?: 'forfeit';
   character_id?: number;
   session_id?: number;
+  actions?: WeedingActionItem[];
   tool_id?: string;
   target_x?: number;
   target_y?: number;

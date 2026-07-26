@@ -264,18 +264,18 @@ static std::string adjacent_mode(const nlohmann::json& plants_config, const std:
 
 WeedingActionResult process_action(
     GameConfigCache& config_cache,
-    const nlohmann::json& session_json,
+    nlohmann::json& session_json,
     const WeedingActionRequest& action,
-    std::mt19937& rng)
+    std::mt19937& rng,
+    bool track_changes)
 {
     WeedingActionResult result;
     result.valid = false;
 
-    // Deep copy the session state so we can modify
-    nlohmann::json state = session_json;
     const auto& plants = config_cache.getWeedingPlants();
     const auto& tools = config_cache.getWeedingTools();
-    int grid_size = state["grid_size"].get<int>();
+    int grid_size = session_json["grid_size"].get<int>();
+    auto& board = session_json["board"];
 
     // --- FORFEIT ---
     if (action.action_type == "forfeit") {
@@ -297,32 +297,28 @@ WeedingActionResult process_action(
             return result;
         }
 
-        std::string current_tool = state["equipped_tool"].get<std::string>();
+        std::string current_tool = session_json["equipped_tool"].get<std::string>();
         if (action.tool_id == current_tool) {
             // Same tool — no cost, no effect
             result.valid = true;
-            result.round = state["round"].get<int>();
-            result.actions_remaining = state["actions_remaining"].get<int>();
-            result.pending_switch = state["pending_switch"].get<bool>();
+            result.round = session_json["round"].get<int>();
+            result.actions_remaining = session_json["actions_remaining"].get<int>();
+            result.pending_switch = session_json["pending_switch"].get<bool>();
             result.equipped_tool = current_tool;
-            result.par = state["par"].get<int>();
+            result.par = session_json["par"].get<int>();
             result.won = false;
             return result;
         }
 
-        state["equipped_tool"] = action.tool_id;
-        state["pending_switch"] = true;
-
-        // Update the session state in-place
-        const_cast<nlohmann::json&>(session_json)["equipped_tool"] = action.tool_id;
-        const_cast<nlohmann::json&>(session_json)["pending_switch"] = true;
+        session_json["equipped_tool"] = action.tool_id;
+        session_json["pending_switch"] = true;
 
         result.valid = true;
-        result.round = state["round"].get<int>();
-        result.actions_remaining = state["actions_remaining"].get<int>();
+        result.round = session_json["round"].get<int>();
+        result.actions_remaining = session_json["actions_remaining"].get<int>();
         result.pending_switch = true;
         result.equipped_tool = action.tool_id;
-        result.par = state["par"].get<int>();
+        result.par = session_json["par"].get<int>();
         result.won = false;
         return result;
     }
@@ -340,7 +336,7 @@ WeedingActionResult process_action(
 
         int tx = action.target_x;
         int ty = action.target_y;
-        nlohmann::json& board = state["board"];
+        nlohmann::json& board = session_json["board"];
 
         // Bounds check
         if (tx >= grid_size || ty >= grid_size) {
@@ -380,17 +376,20 @@ WeedingActionResult process_action(
 
         // Check we have enough actions remaining
         int cost = 1;
-        if (state["pending_switch"].get<bool>()) {
+        if (session_json["pending_switch"].get<bool>()) {
             cost += 1;
         }
-        int remaining = state["actions_remaining"].get<int>();
+        int remaining = session_json["actions_remaining"].get<int>();
         if (cost > remaining) {
             result.error = "Not enough actions remaining";
             return result;
         }
 
         // Save old board state for diff
-        nlohmann::json old_board = board;
+        nlohmann::json old_board;
+        if (track_changes) {
+            old_board = board;
+        }
 
         // Apply the action
         int current_progress = board[ty][tx].contains("progress") ? board[ty][tx]["progress"].get<int>() : 0;
@@ -468,14 +467,14 @@ WeedingActionResult process_action(
 
         // Consume actions
         remaining -= cost;
-        state["actions_remaining"] = remaining;
-        state["pending_switch"] = false;
+        session_json["actions_remaining"] = remaining;
+        session_json["pending_switch"] = false;
 
         // If actions depleted, run plant spread
         if (remaining == 0) {
             run_plant_spread(board, grid_size, plants, rng);
-            state["round"] = state["round"].get<int>() + 1;
-            state["actions_remaining"] = 2;
+            session_json["round"] = session_json["round"].get<int>() + 1;
+            session_json["actions_remaining"] = 2;
         }
 
         // Recompute accessibility
@@ -483,26 +482,28 @@ WeedingActionResult process_action(
 
         // Check win
         bool won = check_win(board, grid_size);
-        state["won"] = won;
+        session_json["won"] = won;
 
         // Generate board changes
-        result.board_changes = extract_board_changes(old_board, board, grid_size);
+        if (track_changes) {
+            result.board_changes = extract_board_changes(old_board, board, grid_size);
+        }
         result.valid = true;
-        result.round = state["round"].get<int>();
-        result.actions_remaining = state["actions_remaining"].get<int>();
+        result.round = session_json["round"].get<int>();
+        result.actions_remaining = session_json["actions_remaining"].get<int>();
         result.pending_switch = false;
         result.equipped_tool = action.tool_id;
-        result.par = state["par"].get<int>();
+        result.par = session_json["par"].get<int>();
         result.won = won;
 
         if (won) {
-            int par = state["par"].get<int>();
-            int current_round = state["round"].get<int>();
+            int par = session_json["par"].get<int>();
+            int current_round = session_json["round"].get<int>();
             result.score = std::max(par - current_round + 10, 1);
             result.message = "All land cleared!";
 
-            // Update state for won
-            state["score"] = result.score;
+            // Update session_json for won
+            session_json["score"] = result.score;
         }
 
         return result;
@@ -521,7 +522,7 @@ WeedingActionResult process_action(
 
         int tx = action.target_x;
         int ty = action.target_y;
-        nlohmann::json& board = state["board"];
+        nlohmann::json& board = session_json["board"];
 
         // Bounds check
         if (tx >= grid_size || ty >= grid_size) {
@@ -566,17 +567,20 @@ WeedingActionResult process_action(
 
         // Check actions
         int cost = 1;
-        if (state["pending_switch"].get<bool>()) {
+        if (session_json["pending_switch"].get<bool>()) {
             cost += 1;
         }
-        int remaining = state["actions_remaining"].get<int>();
+        int remaining = session_json["actions_remaining"].get<int>();
         if (cost > remaining) {
             result.error = "Not enough actions remaining";
             return result;
         }
 
         // Save old board for diff
-        nlohmann::json old_board = board;
+        nlohmann::json old_board;
+        if (track_changes) {
+            old_board = board;
+        }
 
         // Plant the smother crop
         board[ty][tx]["plant_type"] = crop_id;
@@ -586,14 +590,14 @@ WeedingActionResult process_action(
 
         // Consume actions
         remaining -= cost;
-        state["actions_remaining"] = remaining;
-        state["pending_switch"] = false;
+        session_json["actions_remaining"] = remaining;
+        session_json["pending_switch"] = false;
 
         // If actions depleted, run plant spread
         if (remaining == 0) {
             run_plant_spread(board, grid_size, plants, rng);
-            state["round"] = state["round"].get<int>() + 1;
-            state["actions_remaining"] = 2;
+            session_json["round"] = session_json["round"].get<int>() + 1;
+            session_json["actions_remaining"] = 2;
         }
 
         // Recompute accessibility
@@ -601,24 +605,26 @@ WeedingActionResult process_action(
 
         // Check win
         bool won = check_win(board, grid_size);
-        state["won"] = won;
+        session_json["won"] = won;
 
         // Board changes
-        result.board_changes = extract_board_changes(old_board, board, grid_size);
+        if (track_changes) {
+            result.board_changes = extract_board_changes(old_board, board, grid_size);
+        }
         result.valid = true;
-        result.round = state["round"].get<int>();
-        result.actions_remaining = state["actions_remaining"].get<int>();
+        result.round = session_json["round"].get<int>();
+        result.actions_remaining = session_json["actions_remaining"].get<int>();
         result.pending_switch = false;
         result.equipped_tool = action.tool_id;
-        result.par = state["par"].get<int>();
+        result.par = session_json["par"].get<int>();
         result.won = won;
 
         if (won) {
-            int par = state["par"].get<int>();
-            int current_round = state["round"].get<int>();
+            int par = session_json["par"].get<int>();
+            int current_round = session_json["round"].get<int>();
             result.score = std::max(par - current_round + 10, 1);
             result.message = "All land cleared!";
-            state["score"] = result.score;
+            session_json["score"] = result.score;
         }
 
         return result;

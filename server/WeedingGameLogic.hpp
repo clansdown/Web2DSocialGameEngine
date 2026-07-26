@@ -58,9 +58,10 @@ bool is_accessible(const nlohmann::json& board, int grid_size, int x, int y);
 // Process a single action and return updated state
 WeedingActionResult process_action(
     GameConfigCache& config_cache,
-    const nlohmann::json& session_json,
+    nlohmann::json& session_json,
     const WeedingActionRequest& action,
-    std::mt19937& rng
+    std::mt19937& rng,
+    bool track_changes = true
 );
 
 // Run plant spread on an empty-squares
