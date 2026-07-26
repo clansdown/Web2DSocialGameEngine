@@ -2437,6 +2437,186 @@ class ConfigValidator:
 
         self.validated_files.append(wt_file)
 
+    def validate_weeding_plants(self, file: Path) -> None:
+        """Validate weeding/plants.json — hp, min_difficulty, damage in tool entries."""
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+
+        data: object = self._validate_json(content, file)
+        if data is None:
+            return
+
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with plant definitions", Severity.ERROR)
+            return
+
+        for plant_id, plant_data in data.items():
+            if not isinstance(plant_data, dict):
+                continue
+
+            is_smother: bool = plant_data.get("is_smother_crop", False)
+            if is_smother:
+                continue
+
+            if "min_difficulty" not in plant_data:
+                self._add_issue(file, 1, None, f"Weed '{plant_id}' is missing required field 'min_difficulty'", Severity.ERROR)
+            else:
+                md: object = plant_data["min_difficulty"]
+                if not isinstance(md, int):
+                    self._add_issue(file, 1, None, f"Weed '{plant_id}'.min_difficulty must be an integer, got {type(md).__name__}", Severity.ERROR)
+                elif md < 1 or md > 4:
+                    self._add_issue(file, 1, None, f"Weed '{plant_id}'.min_difficulty must be 1-4, got {md}", Severity.ERROR)
+
+            # Validate hp field
+            if "hp" not in plant_data:
+                self._add_issue(file, 1, None, f"Weed '{plant_id}' is missing required field 'hp'", Severity.ERROR)
+            else:
+                hp_val: object = plant_data["hp"]
+                if not isinstance(hp_val, int):
+                    self._add_issue(file, 1, None, f"Weed '{plant_id}'.hp must be an integer, got {type(hp_val).__name__}", Severity.ERROR)
+                elif hp_val < 1:
+                    self._add_issue(file, 1, None, f"Weed '{plant_id}'.hp must be positive, got {hp_val}", Severity.ERROR)
+
+            # Validate damage_sprites if present
+            ds: object = plant_data.get("damage_sprites")
+            if ds is not None:
+                if not isinstance(ds, list) or not all(isinstance(v, int) for v in ds):
+                    self._add_issue(file, 1, None, f"Weed '{plant_id}'.damage_sprites must be an array of integers", Severity.ERROR)
+
+            # Validate tool entries have damage field
+            tools: object = plant_data.get("tools")
+            if isinstance(tools, dict):
+                for tool_id, tool_entry in tools.items():
+                    if not isinstance(tool_entry, dict):
+                        continue
+                    if "damage" not in tool_entry:
+                        self._add_issue(file, 1, None, f"Weed '{plant_id}'.tools.{tool_id} is missing required field 'damage'", Severity.ERROR)
+                    else:
+                        dmg: object = tool_entry["damage"]
+                        if not isinstance(dmg, int):
+                            self._add_issue(file, 1, None, f"Weed '{plant_id}'.tools.{tool_id}.damage must be an integer, got {type(dmg).__name__}", Severity.ERROR)
+                        elif dmg < 1 or dmg > 100:
+                            self._add_issue(file, 1, None, f"Weed '{plant_id}'.tools.{tool_id}.damage must be 1-100, got {dmg}", Severity.ERROR)
+
+    def validate_mini_games_weeding_levels(self, file: Path) -> None:
+        """Validate mini_games.json weeding section — schedule_file and duke_schedule_file must exist."""
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+
+        data: object = self._validate_json(content, file)
+        if data is None:
+            return
+
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with mini game definitions", Severity.ERROR)
+            return
+
+        if "weeding" not in data:
+            return
+
+        weeding_config: object = data["weeding"]
+        if not isinstance(weeding_config, dict):
+            return
+
+        # Weeding levels must not have inline difficulty
+        for tier_name in ("levels", "duke_levels"):
+            levels_array: object = weeding_config.get(tier_name)
+            if not isinstance(levels_array, list):
+                continue
+            for level_entry in levels_array:
+                if not isinstance(level_entry, dict):
+                    continue
+                if "difficulty" in level_entry:
+                    level_id: object = level_entry.get("id")
+                    self._add_issue(file, 1, None, f"{tier_name} level {level_id}: 'difficulty' should be in the level config file, not inline", Severity.ERROR)
+
+    def validate_weeding_level_config(self, file: Path) -> None:
+        """Validate a weeding level config file (wildlands_marche.json / great_wildlands_marche.json)."""
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+
+        data: object = self._validate_json(content, file)
+        if data is None:
+            return
+
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with level definitions", Severity.ERROR)
+            return
+
+        if "levels" not in data or not isinstance(data["levels"], dict):
+            self._add_issue(file, 1, None, "Missing required key 'levels' (must be an object)", Severity.ERROR)
+            return
+
+        for level_key, level_data in data["levels"].items():
+            if not level_key.isdigit():
+                self._add_issue(file, 1, None, f"Level key '{level_key}' is not a numeric string", Severity.ERROR)
+                continue
+
+            if not isinstance(level_data, dict):
+                self._add_issue(file, 1, None, f"Level '{level_key}' must be an object", Severity.ERROR)
+                continue
+
+            if "map" not in level_data:
+                self._add_issue(file, 1, None, f"Level '{level_key}' missing required field 'map'", Severity.ERROR)
+            elif not isinstance(level_data["map"], str):
+                self._add_issue(file, 1, None, f"Level '{level_key}'.map must be a string", Severity.ERROR)
+
+            if "difficulty" not in level_data:
+                self._add_issue(file, 1, None, f"Level '{level_key}' missing required field 'difficulty'", Severity.ERROR)
+            else:
+                diff_val: object = level_data["difficulty"]
+                if not isinstance(diff_val, int):
+                    self._add_issue(file, 1, None, f"Level '{level_key}'.difficulty must be an integer", Severity.ERROR)
+                elif diff_val < 1 or diff_val > 10:
+                    self._add_issue(file, 1, None, f"Level '{level_key}'.difficulty must be 1-10, got {diff_val}", Severity.ERROR)
+
+    def validate_weeding_tools(self, file: Path) -> None:
+        """Validate weeding/tools.json — forward_vector required in sprite config."""
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+
+        data: object = self._validate_json(content, file)
+        if data is None:
+            return
+
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with tool definitions", Severity.ERROR)
+            return
+
+        for tool_id, tool_data in data.items():
+            if not isinstance(tool_data, dict):
+                continue
+
+            sprite: object = tool_data.get("sprite", {})
+            if not isinstance(sprite, dict):
+                self._add_issue(file, 1, None, f"Tool '{tool_id}'.sprite must be an object", Severity.ERROR)
+                continue
+
+            if "forward_vector" not in sprite:
+                self._add_issue(file, 1, None, f"Tool '{tool_id}'.sprite missing required field 'forward_vector'", Severity.ERROR)
+            else:
+                fv: object = sprite["forward_vector"]
+                if not isinstance(fv, list) or len(fv) != 2:
+                    self._add_issue(file, 1, None, f"Tool '{tool_id}'.sprite.forward_vector must be a 2-element array", Severity.ERROR)
+                else:
+                    for i, val in enumerate(fv):
+                        if not isinstance(val, int) or val < -1 or val > 1:
+                            self._add_issue(file, 1, None, f"Tool '{tool_id}'.sprite.forward_vector[{i}] must be -1, 0, or 1", Severity.ERROR)
+                    if fv[0] == 0 and fv[1] == 0:
+                        self._add_issue(file, 1, None, f"Tool '{tool_id}'.sprite.forward_vector cannot be [0, 0]", Severity.ERROR)
+
     def validate_all(
         self,
         config_dir: Path,
@@ -2530,6 +2710,45 @@ class ConfigValidator:
                 self.validate_wave_templates(game_config_dir)
 
         # Re-sort issues after image validation
+        errors = [issue for issue in self.issues if issue.severity == Severity.ERROR]
+        warnings = [issue for issue in self.issues if issue.severity == Severity.WARN]
+
+        # Validate weeding configs
+        if game_config_dir is not None and game_config_dir.exists():
+            weeding_plants_file: Path = game_config_dir / "weeding" / "plants.json"
+            if weeding_plants_file.exists():
+                self.validate_weeding_plants(weeding_plants_file)
+
+            weeding_tools_file: Path = game_config_dir / "weeding" / "tools.json"
+            if weeding_tools_file.exists():
+                self.validate_weeding_tools(weeding_tools_file)
+
+            mini_games_file: Path = game_config_dir / "mini_games.json"
+            if mini_games_file.exists():
+                self.validate_mini_games_weeding_levels(mini_games_file)
+
+            # Validate weeding level config files referenced in mini_games.json
+            if mini_games_file.exists():
+                try:
+                    mg_content: str = mini_games_file.read_text(encoding="utf-8")
+                    mg_data: object = self._validate_json(mg_content, mini_games_file)
+                    if isinstance(mg_data, dict) and "weeding" in mg_data:
+                        wc: object = mg_data["weeding"]
+                        if isinstance(wc, dict):
+                            for field in ("schedule_file", "duke_schedule_file"):
+                                sched_file: object = wc.get(field)
+                                if isinstance(sched_file, str):
+                                    sched_path: Path = game_config_dir / "weeding" / sched_file
+                                    if sched_path.exists():
+                                        self.validate_weeding_level_config(sched_path)
+                                    else:
+                                        self._add_issue(mini_games_file, 1, None, f"Referenced weeding level config not found: weeding/{sched_file}", Severity.ERROR)
+                                elif sched_file is not None:
+                                    self._add_issue(mini_games_file, 1, None, f"'{field}' must be a string", Severity.ERROR)
+                except Exception as e:
+                    self._add_issue(mini_games_file, 1, None, f"Failed to read or parse mini_games.json: {e}", Severity.ERROR)
+
+        # Re-sort after all validation
         errors = [issue for issue in self.issues if issue.severity == Severity.ERROR]
         warnings = [issue for issue in self.issues if issue.severity == Severity.WARN]
 

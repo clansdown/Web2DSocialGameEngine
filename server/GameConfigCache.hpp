@@ -33,6 +33,7 @@ public:
     nlohmann::json& getWeedingTools();
     nlohmann::json& getWeedingSpecials();
     std::optional<nlohmann::json> loadWeedingMap(const std::string& filename);
+    std::optional<nlohmann::json> loadWeedingLevelConfig(const std::string& filename);
 
     nlohmann::json getAllConfigs() const;
     bool isLoaded() const;

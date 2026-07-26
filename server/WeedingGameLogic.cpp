@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <queue>
 #include <cmath>
+#include <unordered_map>
 
 namespace weeding_logic {
 
@@ -51,32 +52,13 @@ nlohmann::json initialize_board(
         }
     }
 
-    // Categorize weeds by difficulty tier (z_index gives toughness)
-    std::vector<std::string> easy_weeds;    // z_index 1
-    std::vector<std::string> medium_weeds;  // z_index 2
-    std::vector<std::string> hard_weeds;    // z_index 3
-    std::vector<std::string> extreme_weeds; // z_index 4
-
+    // Select eligible weeds based on each plant's min_difficulty field
+    std::vector<std::string> eligible_weeds;
     for (const auto& wid : weed_ids) {
-        if (!plants[wid].contains("sprite")) { easy_weeds.push_back(wid); continue; }
-        auto& sprite = plants[wid]["sprite"];
-        int zi = sprite.contains("z_index") ? sprite["z_index"].get<int>() : 1;
-        if (zi <= 1) easy_weeds.push_back(wid);
-        else if (zi == 2) medium_weeds.push_back(wid);
-        else if (zi == 3) hard_weeds.push_back(wid);
-        else extreme_weeds.push_back(wid);
-    }
-
-    // Select eligible weeds based on difficulty
-    std::vector<std::string> eligible_weeds = easy_weeds;
-    if (difficulty >= 3) {
-        eligible_weeds.insert(eligible_weeds.end(), medium_weeds.begin(), medium_weeds.end());
-    }
-    if (difficulty >= 5) {
-        eligible_weeds.insert(eligible_weeds.end(), hard_weeds.begin(), hard_weeds.end());
-    }
-    if (difficulty >= 8) {
-        eligible_weeds.insert(eligible_weeds.end(), extreme_weeds.begin(), extreme_weeds.end());
+        int min_diff = plants[wid].value("min_difficulty", 1);
+        if (difficulty >= min_diff) {
+            eligible_weeds.push_back(wid);
+        }
     }
 
     // Build board
@@ -123,16 +105,8 @@ nlohmann::json initialize_board(
         std::string weed_id = eligible_weeds[weed_pick(rng)];
         board[cell.y][cell.x]["plant_type"] = weed_id;
 
-        // Determine actions_needed: look up the best tool's actions_required
-        int min_actions = 999;
-        if (plants[weed_id].contains("tools")) {
-            for (auto tit = plants[weed_id]["tools"].begin(); tit != plants[weed_id]["tools"].end(); ++tit) {
-                int req = tit.value()["actions_required"].get<int>();
-                if (req < min_actions) min_actions = req;
-            }
-        }
-        if (min_actions == 999) min_actions = 1;
-        board[cell.y][cell.x]["actions_needed"] = min_actions;
+        int plant_hp = plants[weed_id].value("hp", 100);
+        board[cell.y][cell.x]["actions_needed"] = plant_hp;
         board[cell.y][cell.x]["progress"] = 0;
     }
 
@@ -209,30 +183,100 @@ void compute_accessibility(nlohmann::json& board, int grid_size) {
             }
         }
     }
+
+    // Mark all visited cells (bottom row + reachable empty/smother) as accessible
+    for (const auto& pos : visited) {
+        int vx = pos.first;
+        int vy = pos.second;
+        board[vy][vx]["is_accessible"] = true;
+    }
+
+    // Smother crops propagate the flood and are themselves accessible
+    for (int y = 0; y < grid_size; ++y) {
+        for (int x = 0; x < grid_size; ++x) {
+            if (board[y][x].contains("is_blocked") && board[y][x]["is_blocked"].get<bool>()) continue;
+            if (board[y][x].contains("is_smother_crop") && board[y][x]["is_smother_crop"].get<bool>()) {
+                board[y][x]["is_accessible"] = true;
+            }
+        }
+    }
 }
 
-int compute_par(const nlohmann::json& board, int grid_size, const nlohmann::json& plants_config) {
-    int total_valid = 0;
-    int weed_actions = 0;
-    int smother_count = 0;
+int estimate_weed_clearing_rounds(const nlohmann::json& board, int grid_size, const nlohmann::json& plants_config, int difficulty) {
+    // Base actions: sum all weed clearing costs
+    int total_base_actions = 0;
+    std::unordered_map<std::string, int> weed_type_counts;
+    int total_weeds = 0;
 
     for (int y = 0; y < grid_size; ++y) {
         for (int x = 0; x < grid_size; ++x) {
             if (board[y][x].contains("is_blocked") && board[y][x]["is_blocked"].get<bool>()) continue;
-            total_valid++;
+            if (board[y][x]["plant_type"].is_null()) continue;
+            if (board[y][x].contains("is_smother_crop") && board[y][x]["is_smother_crop"].get<bool>()) continue;
 
-            if (board[y][x]["is_smother_crop"].get<bool>()) {
-                smother_count++;
-            } else if (!board[y][x]["plant_type"].is_null()) {
-                std::string plant = board[y][x]["plant_type"].get<std::string>();
-                int needed = board[y][x]["actions_needed"].get<int>();
-                weed_actions += needed;
+            std::string plant_type = board[y][x]["plant_type"].get<std::string>();
+
+            // Only count weeds eligible at this difficulty
+            if (plants_config.contains(plant_type) && plants_config[plant_type].contains("min_difficulty")) {
+                if (plants_config[plant_type]["min_difficulty"].get<int>() > difficulty) continue;
             }
+
+            // Compute actions needed from hp / best tool damage
+            int plant_hp = plants_config[plant_type].value("hp", 100);
+            int best_damage = 1;
+            if (plants_config[plant_type].contains("tools")) {
+                for (auto tit = plants_config[plant_type]["tools"].begin(); tit != plants_config[plant_type]["tools"].end(); ++tit) {
+                    int dmg = tit.value()["damage"].get<int>();
+                    if (dmg > best_damage) best_damage = dmg;
+                }
+            }
+            int actions_needed = static_cast<int>(std::ceil(static_cast<double>(plant_hp) / static_cast<double>(best_damage)));
+            weed_type_counts[plant_type]++;
+            total_weeds++;
         }
     }
 
-    int plant_actions = total_valid - smother_count;
-    return (int)std::ceil((weed_actions + plant_actions) / 2.0);
+    if (total_weeds == 0) return 1;
+
+    // Tool switch costs: +1 per unique weed type per row
+    int switch_costs = 0;
+    for (int y = 0; y < grid_size; ++y) {
+        std::set<std::string> row_types;
+        for (int x = 0; x < grid_size; ++x) {
+            if (board[y][x].contains("is_blocked") && board[y][x]["is_blocked"].get<bool>()) continue;
+            if (board[y][x]["plant_type"].is_null()) continue;
+            if (board[y][x].contains("is_smother_crop") && board[y][x]["is_smother_crop"].get<bool>()) continue;
+
+            std::string plant_type = board[y][x]["plant_type"].get<std::string>();
+            row_types.insert(plant_type);
+        }
+        switch_costs += static_cast<int>(row_types.size());
+    }
+
+    int base_actions = total_base_actions + switch_costs;
+
+    // Weighted spread probability
+    double weighted_spread = 0.0;
+    for (const auto& [type, count] : weed_type_counts) {
+        double prob = 0.0;
+        if (plants_config.contains(type) && plants_config[type].contains("spread_probability")) {
+            prob = plants_config[type]["spread_probability"].get<double>();
+        }
+        weighted_spread += prob * static_cast<double>(count);
+    }
+    weighted_spread /= static_cast<double>(total_weeds);
+
+    // Compounding spread penalty: (1 + weighted_spread)^2
+    double adjusted_actions = static_cast<double>(base_actions) * (1.0 + weighted_spread) * (1.0 + weighted_spread);
+
+    int par = std::max(1, static_cast<int>(std::ceil(adjusted_actions / 2.0)));
+    std::cerr << "[par] base_actions=" << base_actions
+              << " spread=" << weighted_spread
+              << " adjusted=" << adjusted_actions
+              << " par=" << par
+              << " total_weeds=" << total_weeds
+              << std::endl;
+    return par;
 }
 
 bool is_accessible(const nlohmann::json& board, int grid_size, int x, int y) {
@@ -240,11 +284,11 @@ bool is_accessible(const nlohmann::json& board, int grid_size, int x, int y) {
     return board[y][x].contains("is_accessible") && board[y][x]["is_accessible"].get<bool>();
 }
 
-static int get_actions_required_for_tool(const nlohmann::json& plants_config, const std::string& plant_type, const std::string& tool_id) {
+static int get_damage_for_tool(const nlohmann::json& plants_config, const std::string& plant_type, const std::string& tool_id) {
     if (!plants_config.contains(plant_type)) return 999;
     const auto& plant = plants_config[plant_type];
     if (!plant.contains("tools") || !plant["tools"].contains(tool_id)) return 999;
-    return plant["tools"][tool_id]["actions_required"].get<int>();
+    return plant["tools"][tool_id]["damage"].get<int>();
 }
 
 static bool tool_affects_adjacent(const nlohmann::json& plants_config, const std::string& plant_type, const std::string& tool_id) {
@@ -303,23 +347,44 @@ WeedingActionResult process_action(
             result.valid = true;
             result.round = session_json["round"].get<int>();
             result.actions_remaining = session_json["actions_remaining"].get<int>();
-            result.pending_switch = session_json["pending_switch"].get<bool>();
             result.equipped_tool = current_tool;
             result.par = session_json["par"].get<int>();
             result.won = false;
             return result;
         }
 
+        bool was_switch = session_json["last_action_was_switch"].get<bool>();
+        if (!was_switch) {
+            int remaining = session_json["actions_remaining"].get<int>();
+            if (remaining < 1) {
+                result.error = "Not enough actions remaining";
+                return result;
+            }
+            remaining -= 1;
+            session_json["actions_remaining"] = remaining;
+
+            if (remaining == 0) {
+                auto& board = session_json["board"];
+                int grid_size = session_json["grid_size"].get<int>();
+                run_plant_spread(board, grid_size, plants, rng);
+                session_json["round"] = session_json["round"].get<int>() + 1;
+                session_json["actions_remaining"] = 2;
+                compute_accessibility(board, grid_size);
+                bool won = check_win(board, grid_size);
+                session_json["won"] = won;
+                result.won = won;
+            }
+        }
+
         session_json["equipped_tool"] = action.tool_id;
-        session_json["pending_switch"] = true;
+        session_json["last_action_was_switch"] = true;
 
         result.valid = true;
         result.round = session_json["round"].get<int>();
         result.actions_remaining = session_json["actions_remaining"].get<int>();
-        result.pending_switch = true;
         result.equipped_tool = action.tool_id;
         result.par = session_json["par"].get<int>();
-        result.won = false;
+        result.won = session_json["won"].get<bool>();
         return result;
     }
 
@@ -368,17 +433,14 @@ WeedingActionResult process_action(
 
         // Check tool applies to this weed
         std::string plant_type = board[ty][tx]["plant_type"].get<std::string>();
-        int actions_needed = get_actions_required_for_tool(plants, plant_type, action.tool_id);
-        if (actions_needed >= 999) {
+        int damage = get_damage_for_tool(plants, plant_type, action.tool_id);
+        if (damage >= 999) {
             result.error = "This tool cannot clear " + plant_type;
             return result;
         }
 
         // Check we have enough actions remaining
         int cost = 1;
-        if (session_json["pending_switch"].get<bool>()) {
-            cost += 1;
-        }
         int remaining = session_json["actions_remaining"].get<int>();
         if (cost > remaining) {
             result.error = "Not enough actions remaining";
@@ -393,13 +455,13 @@ WeedingActionResult process_action(
 
         // Apply the action
         int current_progress = board[ty][tx].contains("progress") ? board[ty][tx]["progress"].get<int>() : 0;
-        current_progress++;
+        current_progress += damage;
         board[ty][tx]["progress"] = current_progress;
 
         bool multi_row_column = false;
         std::vector<std::pair<int, int>> cleared_cells;
 
-        if (current_progress >= actions_needed) {
+        if (current_progress >= 100) {
             // Weed is cleared! Check for adjacent clearing
             if (tool_affects_adjacent(plants, plant_type, action.tool_id) && adjacent_mode(plants, plant_type, action.tool_id) == "row_or_column") {
                 multi_row_column = true;
@@ -468,7 +530,7 @@ WeedingActionResult process_action(
         // Consume actions
         remaining -= cost;
         session_json["actions_remaining"] = remaining;
-        session_json["pending_switch"] = false;
+        session_json["last_action_was_switch"] = false;
 
         // If actions depleted, run plant spread
         if (remaining == 0) {
@@ -491,7 +553,6 @@ WeedingActionResult process_action(
         result.valid = true;
         result.round = session_json["round"].get<int>();
         result.actions_remaining = session_json["actions_remaining"].get<int>();
-        result.pending_switch = false;
         result.equipped_tool = action.tool_id;
         result.par = session_json["par"].get<int>();
         result.won = won;
@@ -558,8 +619,10 @@ WeedingActionResult process_action(
             return result;
         }
 
-        // Get plant crop id
-        std::string crop_id = tools[action.tool_id].value("plant_crop_id", "rye");
+        // Get plant crop id — use client-provided crop_id if given, otherwise fall back to tool config
+        std::string crop_id = action.crop_id.empty()
+            ? tools[action.tool_id].value("plant_crop_id", "rye")
+            : action.crop_id;
         if (!plants.contains(crop_id)) {
             result.error = "Unknown crop: " + crop_id;
             return result;
@@ -567,9 +630,6 @@ WeedingActionResult process_action(
 
         // Check actions
         int cost = 1;
-        if (session_json["pending_switch"].get<bool>()) {
-            cost += 1;
-        }
         int remaining = session_json["actions_remaining"].get<int>();
         if (cost > remaining) {
             result.error = "Not enough actions remaining";
@@ -591,7 +651,7 @@ WeedingActionResult process_action(
         // Consume actions
         remaining -= cost;
         session_json["actions_remaining"] = remaining;
-        session_json["pending_switch"] = false;
+        session_json["last_action_was_switch"] = false;
 
         // If actions depleted, run plant spread
         if (remaining == 0) {
@@ -614,7 +674,6 @@ WeedingActionResult process_action(
         result.valid = true;
         result.round = session_json["round"].get<int>();
         result.actions_remaining = session_json["actions_remaining"].get<int>();
-        result.pending_switch = false;
         result.equipped_tool = action.tool_id;
         result.par = session_json["par"].get<int>();
         result.won = won;
@@ -635,22 +694,21 @@ WeedingActionResult process_action(
 }
 
 void run_plant_spread(nlohmann::json& board, int grid_size, const nlohmann::json& plants_config, std::mt19937& rng) {
-    // Process top-to-bottom, left-to-right
     std::uniform_real_distribution<double> dist(0.0, 1.0);
 
-    // Direction offsets: up, right, down, left
     const int dx[] = {0, 1, 0, -1};
     const int dy[] = {-1, 0, 1, 0};
 
-    // Build a set of all empty squares that will be evaluated
-    // For each empty square, find adjacent weeds grouped by type
+    // Collect new weeds atomically to prevent cascading: a new weed at (0,1) should NOT
+    // be visible to cell (0,2) within the same turn's spread run.
+    std::map<std::pair<int,int>, std::string> new_weeds;
+
     for (int y = 0; y < grid_size; ++y) {
         for (int x = 0; x < grid_size; ++x) {
             if (board[y][x].contains("is_blocked") && board[y][x]["is_blocked"].get<bool>()) continue;
             if (!board[y][x]["plant_type"].is_null()) continue;
             if (board[y][x].contains("is_smother_crop") && board[y][x]["is_smother_crop"].get<bool>()) continue;
 
-            // Check 4 neighbors for weeds
             std::unordered_map<std::string, double> type_prob;
             for (int d = 0; d < 4; ++d) {
                 int nx = x + dx[d];
@@ -669,7 +727,6 @@ void run_plant_spread(nlohmann::json& board, int grid_size, const nlohmann::json
 
             if (type_prob.empty()) continue;
 
-            // Find the type with the highest combined probability
             std::string best_type;
             double best_prob = 0;
             for (const auto& [type, prob] : type_prob) {
@@ -679,23 +736,19 @@ void run_plant_spread(nlohmann::json& board, int grid_size, const nlohmann::json
                 }
             }
 
-            // Roll
             if (dist(rng) < best_prob) {
-                board[y][x]["plant_type"] = best_type;
-                board[y][x]["is_smother_crop"] = false;
-
-                // Determine actions_needed (using best tool)
-                int min_actions = 999;
-                if (plants_config[best_type].contains("tools")) {
-                    for (auto tit = plants_config[best_type]["tools"].begin(); tit != plants_config[best_type]["tools"].end(); ++tit) {
-                        int req = tit.value()["actions_required"].get<int>();
-                        if (req < min_actions) min_actions = req;
-                    }
-                }
-                board[y][x]["actions_needed"] = (min_actions == 999) ? 1 : min_actions;
-                board[y][x]["progress"] = 0;
+                new_weeds[{x, y}] = best_type;
             }
         }
+    }
+
+    // Apply all new weeds atomically
+    for (const auto& [pos, best_type] : new_weeds) {
+        int x = pos.first, y = pos.second;
+        board[y][x]["plant_type"] = best_type;
+        board[y][x]["is_smother_crop"] = false;
+        board[y][x]["actions_needed"] = plants_config[best_type].value("hp", 100);
+        board[y][x]["progress"] = 0;
     }
 }
 
@@ -703,9 +756,10 @@ bool check_win(const nlohmann::json& board, int grid_size) {
     for (int y = 0; y < grid_size; ++y) {
         for (int x = 0; x < grid_size; ++x) {
             if (board[y][x].contains("is_blocked") && board[y][x]["is_blocked"].get<bool>()) continue;
-            if (!board[y][x].contains("is_smother_crop") || !board[y][x]["is_smother_crop"].get<bool>()) {
-                return false;
-            }
+            bool is_empty = board[y][x]["plant_type"].is_null();
+            bool is_smother = board[y][x].contains("is_smother_crop") && board[y][x]["is_smother_crop"].get<bool>();
+            // If it's not empty and not a smother crop, a weed remains
+            if (!is_empty && !is_smother) return false;
         }
     }
     return true;

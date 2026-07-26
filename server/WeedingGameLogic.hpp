@@ -19,6 +19,7 @@ struct WeedingActionRequest {
     std::string tool_id;
     int target_x = -1;
     int target_y = -1;
+    std::string crop_id;
 };
 
 struct WeedingActionResult {
@@ -26,7 +27,6 @@ struct WeedingActionResult {
     std::string error;
     int round = 1;
     int actions_remaining = 2;
-    bool pending_switch = false;
     std::string equipped_tool;
     std::vector<nlohmann::json> board_changes;  // delta rows, not full board
     bool won = false;
@@ -49,8 +49,10 @@ nlohmann::json initialize_board(
 // Compute accessibility mask (flood-fill from bottom row through empty/smother squares)
 void compute_accessibility(nlohmann::json& board, int grid_size);
 
-// Compute par score
-int compute_par(const nlohmann::json& board, int grid_size, const nlohmann::json& plants_config);
+// Estimate how many rounds par should be to clear all weeds
+// Includes tool switch costs (+1 per unique weed type per row) and
+// compounding plant spread penalty: base * (1 + weighted_spread)^2
+int estimate_weed_clearing_rounds(const nlohmann::json& board, int grid_size, const nlohmann::json& plants_config, int difficulty);
 
 // Validate that a target square is accessible
 bool is_accessible(const nlohmann::json& board, int grid_size, int x, int y);
@@ -67,7 +69,7 @@ WeedingActionResult process_action(
 // Run plant spread on an empty-squares
 void run_plant_spread(nlohmann::json& board, int grid_size, const nlohmann::json& plants_config, std::mt19937& rng);
 
-// Check if all valid squares are smother crops
+// Check win: no non-blocked cell has a weed (empty or smother crop = win)
 bool check_win(const nlohmann::json& board, int grid_size);
 
 // Extract board_changes from a diff between old and new board states

@@ -2095,7 +2095,6 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
                     response.data["grid_size"] = sj["grid_size"];
                     response.data["round"] = sj.value("round", 1);
                     response.data["actions_remaining"] = sj.value("actions_remaining", 2);
-                    response.data["pending_switch"] = sj.value("pending_switch", false);
                     response.data["equipped_tool"] = sj.value("equipped_tool", "sickle");
                     response.data["par"] = sj.value("par", 12);
                     response.data["won"] = sj.value("won", false);
@@ -2172,8 +2171,25 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
         nlohmann::json map_meta;
 
         if (level_id > 0) {
-            difficulty = 1 + (level_id - 1) / 2;
-            if (difficulty > 10) difficulty = 10;
+            // Resolve level config file (wildlands_marche.json or great_wildlands_marche.json)
+            const auto& mini_games_config = config_cache.getMiniGames();
+            if (mini_games_config.contains("weeding")) {
+                const auto& weeding_config = mini_games_config["weeding"];
+                std::string sched_file = resolve_schedule_file(weeding_config, level_id);
+                if (!sched_file.empty()) {
+                    auto level_config_opt = config_cache.loadWeedingLevelConfig(sched_file);
+                    if (level_config_opt.has_value()) {
+                        const auto& level_config = *level_config_opt;
+                        std::string lid_str = std::to_string(level_id);
+                        if (level_config.contains("levels") && level_config["levels"].contains(lid_str)) {
+                            const auto& lvl = level_config["levels"][lid_str];
+                            map_filename = lvl.value("map", map_filename);
+                            difficulty = lvl.value("difficulty", 1);
+                        }
+                    }
+                }
+            }
+            if (difficulty < 1) difficulty = 1;
         } else {
             // Sandbox: random map
             difficulty = body.value("difficulty", 1);
@@ -2212,7 +2228,7 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
         nlohmann::json board = weeding_logic::initialize_board(config_cache, grid_size, out_of_bounds, difficulty, rng);
 
         // Compute par
-        int par = map_meta.value("par", weeding_logic::compute_par(board, grid_size, plants));
+        int par = weeding_logic::estimate_weed_clearing_rounds(board, grid_size, plants, difficulty);
         if (par < 1) par = 1;
 
         // Build initial session state JSON
@@ -2221,7 +2237,7 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
         session_json["grid_size"] = grid_size;
         session_json["round"] = 1;
         session_json["actions_remaining"] = 2;
-        session_json["pending_switch"] = false;
+        session_json["last_action_was_switch"] = false;
         session_json["equipped_tool"] = "sickle";
         session_json["par"] = par;
         session_json["won"] = false;
@@ -2263,7 +2279,6 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
         response.data["grid_size"] = grid_size;
         response.data["round"] = 1;
         response.data["actions_remaining"] = 2;
-        response.data["pending_switch"] = false;
         response.data["equipped_tool"] = "sickle";
         response.data["par"] = par;
         response.data["won"] = false;
@@ -2393,6 +2408,7 @@ ApiResponse handleWeedingTurn(GameConfigCache& config_cache, const json& body,
             action_req.tool_id = action_body.value("tool_id", std::string(""));
             action_req.target_x = action_body.value("target_x", -1);
             action_req.target_y = action_body.value("target_y", -1);
+            action_req.crop_id = action_body.value("crop_id", std::string(""));
 
             if (action_req.action_type.empty()) {
                 response.error = "action_type required in action";
@@ -2429,13 +2445,13 @@ ApiResponse handleWeedingTurn(GameConfigCache& config_cache, const json& body,
 
         response.data["round"] = result.round;
         response.data["actions_remaining"] = result.actions_remaining;
-        response.data["pending_switch"] = result.pending_switch;
         response.data["equipped_tool"] = result.equipped_tool;
         response.data["board_changes"] = final_changes;
         response.data["won"] = result.won;
         response.data["score"] = result.score;
         response.data["par"] = result.par;
         response.data["message"] = result.won ? result.message : "";
+        response.data["board"] = session.session_json["board"];
 
         if (result.won) {
             // Game over — finalize

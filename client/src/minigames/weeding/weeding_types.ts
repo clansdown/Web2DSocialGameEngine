@@ -33,6 +33,7 @@ export interface WeedingActionItem {
   tool_id?: string;
   target_x?: number;
   target_y?: number;
+  crop_id?: string;
 }
 
 export interface WeedingTurnRequest {
@@ -51,6 +52,7 @@ export interface WeedingTurnResponse {
   pending_switch: boolean;
   equipped_tool: string | null;
   board_changes: BoardChange[];
+  board: GridSquare[][];
   won: boolean;
   score: number;
   message: string;
@@ -85,6 +87,8 @@ export interface RawPlantConfig {
   display_name_key: string;
   is_smother_crop: boolean;
   spread_probability: number;
+  hp?: number;
+  damage_sprites?: number[];
   sprite: PlantSpriteConfig;
   tools: Record<string, ToolEffectConfig>;
 }
@@ -136,7 +140,7 @@ export interface ToolAnimConfig {
 }
 
 export interface ToolEffectConfig {
-  actions_required: number;
+  damage: number;
   affects_adjacent: boolean;
   adjacent_mode?: 'row_or_column';
 }

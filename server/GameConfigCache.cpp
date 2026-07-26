@@ -144,6 +144,12 @@ std::optional<nlohmann::json> GameConfigCache::loadWeedingMap(const std::string&
     return data;
 }
 
+std::optional<nlohmann::json> GameConfigCache::loadWeedingLevelConfig(const std::string& filename) {
+    nlohmann::json& data = getConfig("weeding/" + filename);
+    if (data.is_null()) return std::nullopt;
+    return data;
+}
+
 nlohmann::json GameConfigCache::getAllConfigs() const {
     nlohmann::json result;
     auto get = [&](const std::string& name) -> const nlohmann::json& {

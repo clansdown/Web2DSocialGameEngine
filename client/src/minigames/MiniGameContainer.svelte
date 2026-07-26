@@ -51,6 +51,10 @@
   let showTDIntro = $state(false);
   let tdIntroText = $state('');
 
+  // Weeding intro overlay state
+  let showWeedingIntro = $state(false);
+  let weedingIntroText = $state('');
+
   // King's message overlay state
   let showKingsMessage = $state(false);
   let unlockQueue: QueueItem[] = $state([]);
@@ -79,6 +83,16 @@
     }
 
     if (miniGame === 'weeding') {
+      const introSeen = await storage.getConfigBoolean('wd_intro_seen', false);
+      if (!introSeen && levelId === 1) {
+        const texts = await getTextsRequest($language, ['wd_weeding_intro'], $currentCharacter?.sex || 'male');
+        weedingIntroText = texts['wd_weeding_intro'] || '';
+        if (weedingIntroText) {
+          showWeedingIntro = true;
+          loading = false;
+          return;
+        }
+      }
       weedingStarted = true;
       loading = false;
       return;
@@ -110,6 +124,15 @@
     showTDIntro = false;
     tdStarted = true;
     storage.setConfig('td_intro_seen', true);
+  }
+
+  /**
+   * Dismisses the weeding intro overlay and starts the game.
+   */
+  function dismissWeedingIntro() {
+    showWeedingIntro = false;
+    weedingStarted = true;
+    storage.setConfig('wd_intro_seen', true);
   }
 
   /**
@@ -329,6 +352,10 @@
   {:else if showTDIntro}
     <DialogOverlay title="" size="xlg" noPadding onDismiss={dismissTDIntro}>
       <GameText text={tdIntroText} />
+    </DialogOverlay>
+  {:else if showWeedingIntro}
+    <DialogOverlay title="" size="xlg" noPadding onDismiss={dismissWeedingIntro}>
+      <GameText text={weedingIntroText} />
     </DialogOverlay>
   {:else if tdStarted && !gameFinished && $currentCharacter}
     <TowerDefense

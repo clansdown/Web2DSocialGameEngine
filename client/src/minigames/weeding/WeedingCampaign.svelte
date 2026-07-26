@@ -59,8 +59,8 @@
   }
 
   $effect(() => {
-    getTextsRequest($language, ['wd_weeding_intro']).then(texts => {
-      infoText = texts['wd_weeding_intro'] ?? '';
+    getTextsRequest($language, ['wd_weeding_marche']).then(texts => {
+      infoText = texts['wd_weeding_marche'] ?? '';
     }).catch(() => {
       infoText = '';
     });
