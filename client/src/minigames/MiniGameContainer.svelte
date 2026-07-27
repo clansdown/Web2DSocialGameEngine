@@ -169,6 +169,15 @@
     if (gameFinished) return;
     gameFinished = true;
     gameResults = results;
+
+    const msgKey = results.completed ? 'wd_victory_message' : 'wd_defeat_message';
+    const texts = await getTextsRequest($language, [msgKey], $currentCharacter?.sex || 'male');
+    if (results.completed) {
+      winMessage = texts['wd_victory_message'] || '';
+    } else {
+      loseMessage = texts['wd_defeat_message'] || '';
+    }
+
     showResults = true;
   }
 

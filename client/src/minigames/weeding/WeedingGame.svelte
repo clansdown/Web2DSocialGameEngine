@@ -8,8 +8,8 @@
 
   import {
     initEngine, setBoardSize, afterDraw, getMousePosition,
-    gameObjects, clear, setBackground,
-    setBackgroundMode, setCameraFollowsPlayer
+    gameObjects, setBackground,
+    setBackgroundMode, setCameraFollowsPlayer, destroyEngine
   } from '../../../SimpleGame/ui/src/lib/simplegame';
   import {
     GameObject, GameObjectClass, createText
@@ -65,7 +65,6 @@
 
   const spriteCache: Map<string, HTMLImageElement> = new Map();
   let engineInited = false;
-  let overlayRegistered = false;
 
   const BW = 1600;
   const BH = 900;
@@ -275,10 +274,7 @@
     createHUD();
     updateButtonHighlights();
 
-    if (!overlayRegistered) {
-      afterDraw(drawWeedingOverlay);
-      overlayRegistered = true;
-    }
+    afterDraw(drawWeedingOverlay);
   }
 
   function createGrid(): void {
@@ -1022,12 +1018,11 @@
     window.removeEventListener('resize', resizeCanvas);
     if (engineInited) {
       try {
-        clear();
+        destroyEngine();
       } catch {
         // ignore cleanup errors
       }
       engineInited = false;
-      overlayRegistered = false;
     }
   });
 </script>

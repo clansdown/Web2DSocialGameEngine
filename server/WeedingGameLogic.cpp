@@ -231,6 +231,7 @@ int estimate_weed_clearing_rounds(const nlohmann::json& board, int grid_size, co
                 }
             }
             int actions_needed = static_cast<int>(std::ceil(static_cast<double>(plant_hp) / static_cast<double>(best_damage)));
+            total_base_actions += actions_needed * actions_needed;
             weed_type_counts[plant_type]++;
             total_weeds++;
         }
