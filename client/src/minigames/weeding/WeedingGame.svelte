@@ -5,6 +5,7 @@
   import type { EndMiniGameResponse } from '../../lib/api';
   import { getTextsRequest } from '../../lib/api';
   import { language } from '../../lib/stores';
+  import { marked } from 'marked';
 
   import {
     initEngine, setBoardSize, afterDraw, getMousePosition,
@@ -45,6 +46,12 @@
   let won = $state(false);
   let message = $state('');
   let cannotUseText = $state('');
+  let introText: string | null = $state(null);
+  let showIntro = $state(false);
+  let outroText: string | null = $state(null);
+  let outroTextId: string | null = $state(null);
+  let isToolAnimating = $state(false);
+  let awaitingRound = $state(false);
 
   let tools: RawToolConfig[] = $state([]);
   let plants: RawPlantConfig[] = $state([]);
@@ -154,7 +161,34 @@
   }
 
   function drawWeedingOverlay(ctx: CanvasRenderingContext2D, ox: number, oy: number): void {
-    if (equippedToolId) {
+    // Turn progress bar
+    {
+      const progress = awaitingRound ? 1.0 : Math.min((2 - actionsRemaining) / 2, 1);
+      const barW = 280;
+      const barH = 14;
+      const barCX = BW / 2 - ox;
+      const barY = 42 - oy;
+      const bx = barCX - barW / 2;
+      const by = barY - barH / 2;
+
+      ctx.fillStyle = '#3a3a35';
+      ctx.beginPath();
+      ctx.roundRect(bx, by, barW, barH, 5);
+      ctx.fill();
+
+      ctx.fillStyle = '#f0d050';
+      ctx.beginPath();
+      ctx.roundRect(bx, by, barW * progress, barH, 5);
+      ctx.fill();
+
+      ctx.strokeStyle = '#5a5a4a';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(bx, by, barW, barH, 5);
+      ctx.stroke();
+    }
+
+    if (equippedToolId && !isToolAnimating && !won) {
       const mouse = getMousePosition();
       const img = spriteCache.get(`tool_${equippedToolId}`);
       if (img && img.complete && img.naturalWidth > 0) {
@@ -267,6 +301,10 @@
       }
       plantClasses.set(plant.id, gc);
     }
+    if (!plantClasses.has('rye')) {
+      const gc = new GameObjectClass('rye', '/images/weeding/plants/rye.png', null, 1);
+      plantClasses.set('rye', gc);
+    }
     emptyCellClass = new GameObjectClass('weed_empty', null, null, 1);
 
     createGrid();
@@ -337,9 +375,9 @@
     const gb = mapMeta ? mapMeta.grid_bounds : { x: 0.18, y: 0.18, width: 0.59, height: 0.73 };
     const gridRight = (gb.x + gb.width) * BW;
     const sidebarCenter = gridRight + (BW - gridRight) / 2;
-    const btnW = 90;
-    const btnH = 80;
-    const topAnchor = 70;
+    const btnW = 120;
+    const btnH = 105;
+    const topAnchor = 60;
     const colHeight = BH - 60 - topAnchor;
 
     const btnClass = new ButtonClass('tool_btn', null);
@@ -348,7 +386,7 @@
     function iconSize(imgKey: string): { iw: number, ih: number } {
       const img = spriteCache.get(imgKey);
       if (!img || !img.complete || img.naturalWidth === 0) return { iw: 50, ih: 50 };
-      const maxIcon = 50;
+      const maxIcon = 75;
       const scale = maxIcon / Math.max(img.naturalWidth, img.naturalHeight);
       return { iw: Math.round(img.naturalWidth * scale), ih: Math.round(img.naturalHeight * scale) };
     }
@@ -356,7 +394,7 @@
     const col = new Column(sidebarCenter, topAnchor + colHeight / 2);
     col.setSize(btnW, colHeight);
     col.setPadding(0);
-    col.setGutter(6);
+    col.setGutter(10);
 
     // Tool buttons (exclude seed_bag)
     for (const tool of tools) {
@@ -392,7 +430,7 @@
         lastActionWasSwitch = true;
         updateButtonHighlights();
         updateHUD();
-        if (actionsRemaining <= 0) submitBatch();
+        if (actionsRemaining <= 0) submitBatchWithDelay();
       });
       col.addChild(btn);
       toolButtons.push(btn);
@@ -432,7 +470,7 @@
         lastActionWasSwitch = true;
         updateButtonHighlights();
         updateHUD();
-        if (actionsRemaining <= 0) submitBatch();
+        if (actionsRemaining <= 0) submitBatchWithDelay();
         updateHUD();
       });
       col.addChild(btn);
@@ -539,10 +577,13 @@
   }
 
   function spawnToolAnim(cell: { x: number; y: number }, onComplete?: () => void): void {
+    isToolAnimating = true;
     const toolCfg = findTool(equippedToolId);
     const img = spriteCache.get(`tool_${equippedToolId}`);
     console.log('[Weeding] spawnToolAnim', { toolId: equippedToolId, hasAnim: !!toolCfg?.animation, hasImg: !!img, cellX: cell.x, cellY: cell.y });
-    if (!toolCfg?.animation) return;
+    if (!toolCfg?.animation) { isToolAnimating = false; return; }
+
+    const wrappedComplete = () => { isToolAnimating = false; onComplete?.(); };
 
     const cls = new GameObjectClass(`tool_anim`, null, null, 1);
     if (img) {
@@ -553,6 +594,7 @@
     }
     const obj = new GameObject(cls, cell.x, cell.y);
     obj.spriteForwardVector = (toolCfg.sprite as any)?.animation_forward_vector || (toolCfg.sprite as any)?.forward_vector || [0, -1];
+    obj.spriteUpVector = (toolCfg.sprite as any)?.sprite_up_vector || [-1, 0];
     if (img) {
       const toolSize = cellSize * 0.6;
       const aspect = img.naturalWidth / img.naturalHeight;
@@ -576,11 +618,117 @@
 
     if (animCfg.type === 'arc') {
       console.log('[Weeding] starting arc swing', { reps: animCfg.repetitions, duration: animCfg.duration_ms, arcAngle: animCfg.arc_angle, distance: animCfg.distance });
-      doArcSwing(obj, cellPos, animCfg, animCfg.repetitions, onComplete);
+      doArcSwing(obj, cellPos, animCfg, animCfg.repetitions, wrappedComplete);
     } else {
       console.log('[Weeding] starting straight thrust', { reps: animCfg.repetitions, duration: animCfg.duration_ms, distance: animCfg.distance });
-      doStraightThrust(obj, cellPos, animCfg, animCfg.repetitions, onComplete);
+      doStraightThrust(obj, cellPos, animCfg, animCfg.repetitions, wrappedComplete);
     }
+  }
+
+  function spawnSweepAnim(cells: WeedingCellObj[], clickedX: number, clickedY: number, onComplete?: () => void): void {
+    isToolAnimating = true;
+    const toolCfg = findTool(equippedToolId);
+    const img = spriteCache.get(`tool_${equippedToolId}`);
+    if (!toolCfg?.animation || cells.length < 2) {
+      isToolAnimating = false;
+      onComplete?.();
+      return;
+    }
+
+    const cls = new GameObjectClass(`tool_anim`, null, null, 1);
+    if (img) {
+      cls.image = img;
+      cls.defaultWidth = img.width;
+      cls.defaultHeight = img.height;
+      cls.loaded = true;
+    }
+    const obj = new GameObject(cls, clickedX, clickedY);
+    obj.spriteForwardVector = (toolCfg.sprite as any)?.animation_forward_vector || (toolCfg.sprite as any)?.forward_vector || [0, -1];
+    obj.mirrorOnDirection = true;
+    if (img) {
+      const toolSize = cellSize * 0.6;
+      const aspect = img.naturalWidth / img.naturalHeight;
+      if (aspect > 1) {
+        obj.width = toolSize;
+        obj.height = toolSize / aspect;
+      } else {
+        obj.width = toolSize * aspect;
+        obj.height = toolSize;
+      }
+    } else {
+      obj.width = cellSize * 0.6;
+      obj.height = cellSize * 0.6;
+    }
+    obj.zIndex = 30;
+    obj.fadeInMillis = 60;
+    gameObjects.add(obj);
+
+    const baseDur = toolCfg.animation.duration_ms || 600;
+    const totalDur = baseDur * (1 + 0.9 * (cells.length - 1));
+    const segTime = totalDur / 4 / 1000;
+    const start = cells[0];
+    const end = cells[cells.length - 1];
+
+    function sweepSegment(from: { x: number; y: number }, to: { x: number; y: number }, remainingCycles: number): void {
+      if (remainingCycles <= 0) {
+        obj.destroy();
+        isToolAnimating = false;
+        onComplete?.();
+        return;
+      }
+      obj.moveTo({ x: to.x, y: to.y }, segTime);
+      obj.onArrival(() => {
+        sweepSegment(to, from, remainingCycles - 1);
+      });
+    }
+
+    sweepSegment(start, end, 4);
+  }
+
+  function computeClearedLine(cell: WeedingCellObj, plantType: string): WeedingCellObj[] {
+    let rowLen = 1, rowStart = cell.gridX, rowEnd = cell.gridX;
+    for (let cx = cell.gridX - 1; cx >= 0; --cx) {
+      const c = weedingCells.find((wc) => wc.gridX === cx && wc.gridY === cell.gridY);
+      if (!c || c.isBlocked || c.isSmotherCrop || c.plantType !== plantType) break;
+      rowLen++; rowStart = cx;
+    }
+    for (let cx = cell.gridX + 1; cx < gridCols; ++cx) {
+      const c = weedingCells.find((wc) => wc.gridX === cx && wc.gridY === cell.gridY);
+      if (!c || c.isBlocked || c.isSmotherCrop || c.plantType !== plantType) break;
+      rowLen++; rowEnd = cx;
+    }
+    let colLen = 1, colStart = cell.gridY, colEnd = cell.gridY;
+    for (let cy = cell.gridY - 1; cy >= 0; --cy) {
+      const c = weedingCells.find((wc) => wc.gridX === cell.gridX && wc.gridY === cy);
+      if (!c || c.isBlocked || c.isSmotherCrop || c.plantType !== plantType) break;
+      colLen++; colStart = cy;
+    }
+    for (let cy = cell.gridY + 1; cy < gridRows; ++cy) {
+      const c = weedingCells.find((wc) => wc.gridX === cell.gridX && wc.gridY === cy);
+      if (!c || c.isBlocked || c.isSmotherCrop || c.plantType !== plantType) break;
+      colLen++; colEnd = cy;
+    }
+    const cells: WeedingCellObj[] = [];
+    if (rowLen >= colLen) {
+      for (let cx = rowStart; cx <= rowEnd; ++cx) {
+        const c = weedingCells.find((wc) => wc.gridX === cx && wc.gridY === cell.gridY);
+        if (c) cells.push(c);
+      }
+    } else {
+      for (let cy = colStart; cy <= colEnd; ++cy) {
+        const c = weedingCells.find((wc) => wc.gridX === cell.gridX && wc.gridY === cy);
+        if (c) cells.push(c);
+      }
+    }
+    return cells;
+  }
+
+  function clearCell(c: WeedingCellObj): void {
+    c.plantType = null;
+    c.isSmotherCrop = false;
+    c.progress = 0;
+    c.actionsNeeded = 0;
+    if (c.plantObj) { c.plantObj.destroy(); c.plantObj = null; }
   }
 
   async function handleCellClick(cell: WeedingCellObj): Promise<void> {
@@ -612,7 +760,7 @@
           recomputeAccessibility();
           updateHUD();
           checkLocalWin();
-          if (actionsRemaining <= 0) submitBatch();
+          if (actionsRemaining <= 0) submitBatchWithDelay();
         });
       }
       return;
@@ -627,66 +775,42 @@
     lastActionWasSwitch = false;
     updateButtonHighlights();
     updateHUD();
-    spawnToolAnim({ x: cell.x, y: cell.y }, () => {
-      console.log('[Weeding] use_tool onComplete', { cellGX: cell.gridX, cellGY: cell.gridY, plantType: cell.plantType, toolId: equippedToolId, progress: cell.progress, damage: toolEff.damage });
-      cell.progress += toolEff.damage;
-      if (cell.plantObj) {
-        cell.plantObj.hitpoints = Math.max(0, (plantCfg?.hp ?? 100) - cell.progress);
-      }
-      if (cell.progress >= (plantCfg?.hp ?? 100)) {
-        const plantType = cell.plantType;
-        const clearedCells: WeedingCellObj[] = [cell];
 
-        if (toolEff.affects_adjacent && toolEff.adjacent_mode === 'row_or_column') {
-          let rowLen = 1, rowStart = cell.gridX, rowEnd = cell.gridX;
-          for (let cx = cell.gridX - 1; cx >= 0; --cx) {
-            const c = weedingCells.find((wc) => wc.gridX === cx && wc.gridY === cell.gridY);
-            if (!c || c.isBlocked || c.isSmotherCrop || c.plantType !== plantType) break;
-            rowLen++; rowStart = cx;
-          }
-          for (let cx = cell.gridX + 1; cx < gridCols; ++cx) {
-            const c = weedingCells.find((wc) => wc.gridX === cx && wc.gridY === cell.gridY);
-            if (!c || c.isBlocked || c.isSmotherCrop || c.plantType !== plantType) break;
-            rowLen++; rowEnd = cx;
-          }
-          let colLen = 1, colStart = cell.gridY, colEnd = cell.gridY;
-          for (let cy = cell.gridY - 1; cy >= 0; --cy) {
-            const c = weedingCells.find((wc) => wc.gridX === cell.gridX && wc.gridY === cy);
-            if (!c || c.isBlocked || c.isSmotherCrop || c.plantType !== plantType) break;
-            colLen++; colStart = cy;
-          }
-          for (let cy = cell.gridY + 1; cy < gridRows; ++cy) {
-            const c = weedingCells.find((wc) => wc.gridX === cell.gridX && wc.gridY === cy);
-            if (!c || c.isBlocked || c.isSmotherCrop || c.plantType !== plantType) break;
-            colLen++; colEnd = cy;
-          }
-          if (rowLen >= colLen) {
-            for (let cx = rowStart; cx <= rowEnd; ++cx) {
-              const c = weedingCells.find((wc) => wc.gridX === cx && wc.gridY === cell.gridY);
-              if (c && c !== cell) clearedCells.push(c);
-            }
-          } else {
-            for (let cy = colStart; cy <= colEnd; ++cy) {
-              const c = weedingCells.find((wc) => wc.gridX === cell.gridX && wc.gridY === cy);
-              if (c && c !== cell) clearedCells.push(c);
-            }
-          }
-        }
+    const newProgress = cell.progress + toolEff.damage;
+    const isDead = newProgress >= (plantCfg?.hp ?? 100);
+    let clearedCells: WeedingCellObj[] = [];
 
-        for (const c of clearedCells) {
-          c.plantType = null;
-          c.isSmotherCrop = false;
-          c.progress = 0;
-          c.actionsNeeded = 0;
-          if (c.plantObj) { c.plantObj.destroy(); c.plantObj = null; }
-        }
-      }
+    if (isDead && toolEff.affects_adjacent && toolEff.adjacent_mode === 'row_or_column') {
+      clearedCells = computeClearedLine(cell, cell.plantType!);
+    }
+
+    const finishAction = () => {
       pendingActions.push({ action_type: 'use_tool', tool_id: equippedToolId!, target_x: cell.gridX, target_y: cell.gridY });
       recomputeAccessibility();
       updateHUD();
       checkLocalWin();
-      if (actionsRemaining <= 0) submitBatch();
-    });
+      if (actionsRemaining <= 0) submitBatchWithDelay();
+    };
+
+    if (clearedCells.length > 1) {
+      spawnSweepAnim(clearedCells, cell.x, cell.y, () => {
+        cell.progress = newProgress;
+        if (cell.plantObj) {
+          cell.plantObj.hitpoints = Math.max(0, (plantCfg?.hp ?? 100) - newProgress);
+        }
+        for (const c of clearedCells) clearCell(c);
+        finishAction();
+      });
+    } else {
+      spawnToolAnim({ x: cell.x, y: cell.y }, () => {
+        cell.progress = newProgress;
+        if (cell.plantObj) {
+          cell.plantObj.hitpoints = Math.max(0, (plantCfg?.hp ?? 100) - newProgress);
+        }
+        if (isDead) clearCell(cell);
+        finishAction();
+      });
+    }
   }
 
   function recomputeAccessibility(): void {
@@ -841,6 +965,19 @@
     submitBatch();
   }
 
+  function submitBatchWithDelay(): void {
+    if (turnPending || pendingActions.length === 0) return;
+    turnPending = true;
+    awaitingRound = true;
+    if (forfeitButton) forfeitButton.setDisabled(true);
+    for (const btn of toolButtons) btn.setDisabled(true);
+    setTimeout(() => {
+      awaitingRound = false;
+      turnPending = false;
+      submitBatch();
+    }, 500);
+  }
+
   async function submitBatch(): Promise<void> {
     if (turnPending || pendingActions.length === 0) return;
     console.log('[Weeding] submitBatch', { pendingActions: JSON.parse(JSON.stringify(pendingActions)), actionsRemaining, round });
@@ -899,6 +1036,7 @@
       score = resp.score;
       autoFillSmotherCrops();
       transformFinishedButton();
+      fetchOutroText();
     }
     if (resp.message) message = resp.message;
     updateHUD(); updateButtonHighlights();
@@ -928,6 +1066,16 @@
       results.duke_right_earned = true;
     }
     onComplete(results);
+  }
+
+  async function fetchOutroText(): Promise<void> {
+    if (!outroTextId || outroText) return;
+    try {
+      const texts = await getTextsRequest($language, [outroTextId]);
+      outroText = texts[outroTextId] || null;
+    } catch {
+      // ignore fetch errors
+    }
   }
 
   async function startSession(): Promise<void> {
@@ -961,6 +1109,17 @@
       if (state.map_metadata) {
         mapMeta = state.map_metadata;
       }
+
+      if (state.text_intro_id) {
+        outroTextId = state.text_outro_id || null;
+        try {
+          const texts = await getTextsRequest($language, [state.text_intro_id]);
+          introText = texts[state.text_intro_id] || null;
+          if (introText) showIntro = true;
+        } catch {
+          introText = null;
+        }
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to start weeding session';
       error = msg;
@@ -975,6 +1134,7 @@
     } catch {
       cannotUseText = 'This tool cannot be used here.';
     }
+
     updateButtonHighlights();
     loading = false;
   }
@@ -1046,6 +1206,22 @@
         style="display: block; margin: 0 auto; cursor: pointer;"
         aria-label="Weeding game board"
       ></canvas>
+      {#if showIntro}
+        <div class="position-absolute top-0 start-0 w-100 h-100 d-flex justify-content-center align-items-center" style="z-index: 1000; background: rgba(0,0,0,0.75);">
+          <div class="card bg-dark border-secondary mx-3" style="max-width: 600px;">
+            <div class="card-body text-center">
+              <p class="card-text text-light fs-5 mb-4 intro-text">{@html marked.parse(introText ?? '')}</p>
+              <button class="btn btn-primary px-4" onclick={() => showIntro = false}>Begin</button>
+            </div>
+          </div>
+        </div>
+      {/if}
+      {#if won && outroText}
+        <div class="position-absolute start-50 translate-middle-x bg-dark bg-opacity-90 border border-secondary rounded p-2" style="z-index: 999; top: 8px; max-width: 500px;">
+          <p class="text-light mb-0 text-center intro-text" style="font-size: 0.9rem;">{@html marked.parse(outroText ?? '')}</p>
+        </div>
+      {/if}
     </div>
   {/if}
 </div>
+

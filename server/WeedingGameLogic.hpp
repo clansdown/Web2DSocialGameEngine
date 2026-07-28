@@ -43,6 +43,7 @@ nlohmann::json initialize_board(
     int grid_size,
     const std::vector<std::pair<int, int>>& out_of_bounds,
     int difficulty,
+    const nlohmann::json& allowed_weeds,
     std::mt19937& rng
 );
 

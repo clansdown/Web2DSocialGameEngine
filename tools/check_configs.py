@@ -2579,6 +2579,58 @@ class ConfigValidator:
                 elif diff_val < 1 or diff_val > 10:
                     self._add_issue(file, 1, None, f"Level '{level_key}'.difficulty must be 1-10, got {diff_val}", Severity.ERROR)
 
+            # Validate allowed_tools if present
+            allowed_tools: object = level_data.get("allowed_tools")
+            if allowed_tools is not None:
+                if not isinstance(allowed_tools, list):
+                    self._add_issue(file, 1, None, f"Level '{level_key}'.allowed_tools must be an array", Severity.ERROR)
+                elif len(allowed_tools) == 0:
+                    self._add_issue(file, 1, None, f"Level '{level_key}'.allowed_tools must not be empty", Severity.WARN)
+                else:
+                    for idx, tool_id in enumerate(allowed_tools):
+                        if not isinstance(tool_id, str):
+                            self._add_issue(file, 1, None, f"Level '{level_key}'.allowed_tools[{idx}] must be a string", Severity.ERROR)
+
+            # Validate allowed_weeds if present
+            allowed_weeds: object = level_data.get("allowed_weeds")
+            if allowed_weeds is not None:
+                if not isinstance(allowed_weeds, list):
+                    self._add_issue(file, 1, None, f"Level '{level_key}'.allowed_weeds must be an array", Severity.ERROR)
+                elif len(allowed_weeds) == 0:
+                    self._add_issue(file, 1, None, f"Level '{level_key}'.allowed_weeds must not be empty", Severity.WARN)
+                else:
+                    for idx, weed_id in enumerate(allowed_weeds):
+                        if not isinstance(weed_id, str):
+                            self._add_issue(file, 1, None, f"Level '{level_key}'.allowed_weeds[{idx}] must be a string", Severity.ERROR)
+
+            # Validate allowed_smother_crops if present
+            allowed_smother: object = level_data.get("allowed_smother_crops")
+            if allowed_smother is not None:
+                if not isinstance(allowed_smother, list):
+                    self._add_issue(file, 1, None, f"Level '{level_key}'.allowed_smother_crops must be an array", Severity.ERROR)
+                elif len(allowed_smother) == 0:
+                    self._add_issue(file, 1, None, f"Level '{level_key}'.allowed_smother_crops must not be empty", Severity.WARN)
+                else:
+                    for idx, crop_id in enumerate(allowed_smother):
+                        if not isinstance(crop_id, str):
+                            self._add_issue(file, 1, None, f"Level '{level_key}'.allowed_smother_crops[{idx}] must be a string", Severity.ERROR)
+
+            # Validate text_intro if present
+            text_intro: object = level_data.get("text_intro")
+            if text_intro is not None:
+                if not isinstance(text_intro, str):
+                    self._add_issue(file, 1, None, f"Level '{level_key}'.text_intro must be a string", Severity.ERROR)
+                elif len(text_intro) == 0:
+                    self._add_issue(file, 1, None, f"Level '{level_key}'.text_intro must not be empty", Severity.ERROR)
+
+            # Validate text_outro if present
+            text_outro: object = level_data.get("text_outro")
+            if text_outro is not None:
+                if not isinstance(text_outro, str):
+                    self._add_issue(file, 1, None, f"Level '{level_key}'.text_outro must be a string", Severity.ERROR)
+                elif len(text_outro) == 0:
+                    self._add_issue(file, 1, None, f"Level '{level_key}'.text_outro must not be empty", Severity.ERROR)
+
     def validate_weeding_tools(self, file: Path) -> None:
         """Validate weeding/tools.json — forward_vector required in sprite config."""
         try:
@@ -2616,6 +2668,18 @@ class ConfigValidator:
                             self._add_issue(file, 1, None, f"Tool '{tool_id}'.sprite.forward_vector[{i}] must be -1, 0, or 1", Severity.ERROR)
                     if fv[0] == 0 and fv[1] == 0:
                         self._add_issue(file, 1, None, f"Tool '{tool_id}'.sprite.forward_vector cannot be [0, 0]", Severity.ERROR)
+
+            # Validate sprite_up_vector if present
+            suv: object = sprite.get("sprite_up_vector")
+            if suv is not None:
+                if not isinstance(suv, list) or len(suv) != 2:
+                    self._add_issue(file, 1, None, f"Tool '{tool_id}'.sprite.sprite_up_vector must be a 2-element array", Severity.ERROR)
+                else:
+                    for i, val in enumerate(suv):
+                        if not isinstance(val, int) or val < -1 or val > 1:
+                            self._add_issue(file, 1, None, f"Tool '{tool_id}'.sprite.sprite_up_vector[{i}] must be -1, 0, or 1", Severity.ERROR)
+                    if suv[0] == 0 and suv[1] == 0:
+                        self._add_issue(file, 1, None, f"Tool '{tool_id}'.sprite.sprite_up_vector cannot be [0, 0]", Severity.ERROR)
 
     def validate_all(
         self,

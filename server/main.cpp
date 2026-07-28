@@ -2087,6 +2087,83 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
                         specials_arr.push_back(entry);
                     }
 
+                    // Load level config to apply filtering and text
+                    json allowed_weeds;
+                    json allowed_tools_list;
+                    json allowed_smother_crops;
+                    json text_intro_val;
+                    json text_outro_val;
+                    {
+                        const auto& mini_games_config = config_cache.getMiniGames();
+                        if (mini_games_config.contains("weeding")) {
+                            const auto& weeding_config = mini_games_config["weeding"];
+                            std::string sched_file = resolve_schedule_file(weeding_config, sess.level_id);
+                            if (!sched_file.empty()) {
+                                auto level_config_opt = config_cache.loadWeedingLevelConfig(sched_file);
+                                if (level_config_opt.has_value()) {
+                                    const auto& level_config = *level_config_opt;
+                                    std::string lid_str = std::to_string(sess.level_id);
+                                    if (level_config.contains("levels") && level_config["levels"].contains(lid_str)) {
+                                        const auto& lvl = level_config["levels"][lid_str];
+                                        if (lvl.contains("allowed_weeds") && lvl["allowed_weeds"].is_array()) {
+                                            allowed_weeds = lvl["allowed_weeds"];
+                                        }
+                                        if (lvl.contains("allowed_tools") && lvl["allowed_tools"].is_array()) {
+                                            allowed_tools_list = lvl["allowed_tools"];
+                                        }
+                                        if (lvl.contains("allowed_smother_crops") && lvl["allowed_smother_crops"].is_array()) {
+                                            allowed_smother_crops = lvl["allowed_smother_crops"];
+                                        }
+                                        if (lvl.contains("text_intro")) text_intro_val = lvl["text_intro"];
+                                        if (lvl.contains("text_outro")) text_outro_val = lvl["text_outro"];
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Filter tools by allowed_tools if specified
+                    if (!allowed_tools_list.is_null() && allowed_tools_list.is_array()) {
+                        json filtered = json::array();
+                        for (auto& t : tools_arr) {
+                            for (auto& a : allowed_tools_list) {
+                                if (t["id"] == a) {
+                                    filtered.push_back(t);
+                                    break;
+                                }
+                            }
+                        }
+                        tools_arr = std::move(filtered);
+                    }
+
+                    // Filter plants by allowed_weeds / allowed_smother_crops if specified
+                    if (!allowed_weeds.is_null() || !allowed_smother_crops.is_null()) {
+                        json filtered = json::array();
+                        for (auto& p : plants_arr) {
+                            bool is_smother = p.contains("is_smother_crop") && p["is_smother_crop"].get<bool>();
+                            bool include = false;
+                            if (is_smother) {
+                                if (allowed_smother_crops.is_null()) {
+                                    include = true;
+                                } else {
+                                    for (auto& a : allowed_smother_crops) {
+                                        if (p["id"] == a) { include = true; break; }
+                                    }
+                                }
+                            } else {
+                                if (allowed_weeds.is_null()) {
+                                    include = true;
+                                } else {
+                                    for (auto& a : allowed_weeds) {
+                                        if (p["id"] == a) { include = true; break; }
+                                    }
+                                }
+                            }
+                            if (include) filtered.push_back(p);
+                        }
+                        plants_arr = std::move(filtered);
+                    }
+
                     // Build response from session state + fresh configs
                     response.data["session_id"] = sess.id;
                     response.data["character_id"] = character_id;
@@ -2104,6 +2181,13 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
                     response.data["available_specials"] = specials_arr;
                     response.data["map_metadata"] = map_meta;
                     response.data["message"] = "Weeding session resumed";
+
+                    if (!text_intro_val.is_null()) {
+                        response.data["text_intro_id"] = text_intro_val;
+                    }
+                    if (!text_outro_val.is_null()) {
+                        response.data["text_outro_id"] = text_outro_val;
+                    }
 
                     if (new_token) {
                         response.data["token"] = *new_token;
@@ -2169,6 +2253,11 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
         int difficulty = 1;
         std::string map_filename = "map_1.json";
         nlohmann::json map_meta;
+        json allowed_weeds;
+        json allowed_tools_list;
+        json allowed_smother_crops;
+        json text_intro_val;
+        json text_outro_val;
 
         if (level_id > 0) {
             // Resolve level config file (wildlands_marche.json or great_wildlands_marche.json)
@@ -2185,6 +2274,17 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
                             const auto& lvl = level_config["levels"][lid_str];
                             map_filename = lvl.value("map", map_filename);
                             difficulty = lvl.value("difficulty", 1);
+                            if (lvl.contains("allowed_weeds") && lvl["allowed_weeds"].is_array()) {
+                                allowed_weeds = lvl["allowed_weeds"];
+                            }
+                            if (lvl.contains("allowed_tools") && lvl["allowed_tools"].is_array()) {
+                                allowed_tools_list = lvl["allowed_tools"];
+                            }
+                            if (lvl.contains("allowed_smother_crops") && lvl["allowed_smother_crops"].is_array()) {
+                                allowed_smother_crops = lvl["allowed_smother_crops"];
+                            }
+                            if (lvl.contains("text_intro")) text_intro_val = lvl["text_intro"];
+                            if (lvl.contains("text_outro")) text_outro_val = lvl["text_outro"];
                         }
                     }
                 }
@@ -2225,7 +2325,7 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
         std::mt19937 rng(static_cast<unsigned>(now + character_id + level_id));
 
         // Initialize board
-        nlohmann::json board = weeding_logic::initialize_board(config_cache, grid_size, out_of_bounds, difficulty, rng);
+        nlohmann::json board = weeding_logic::initialize_board(config_cache, grid_size, out_of_bounds, difficulty, allowed_weeds, rng);
 
         // Compute par
         int par = weeding_logic::estimate_weed_clearing_rounds(board, grid_size, plants, difficulty);
@@ -2255,12 +2355,54 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
             tools_arr.push_back(tool_entry);
         }
 
+        // Filter tools by allowed_tools if specified
+        if (!allowed_tools_list.is_null() && allowed_tools_list.is_array()) {
+            json filtered = json::array();
+            for (auto& t : tools_arr) {
+                for (auto& a : allowed_tools_list) {
+                    if (t["id"] == a) {
+                        filtered.push_back(t);
+                        break;
+                    }
+                }
+            }
+            tools_arr = std::move(filtered);
+        }
+
         // Convert plants object to array
         json plants_arr = json::array();
         for (auto it = plants.begin(); it != plants.end(); ++it) {
             json plant_entry = it.value();
             plant_entry["id"] = it.key();
             plants_arr.push_back(plant_entry);
+        }
+
+        // Filter plants by allowed_weeds / allowed_smother_crops if specified
+        if (!allowed_weeds.is_null() || !allowed_smother_crops.is_null()) {
+            json filtered = json::array();
+            for (auto& p : plants_arr) {
+                bool is_smother = p.contains("is_smother_crop") && p["is_smother_crop"].get<bool>();
+                bool include = false;
+                if (is_smother) {
+                    if (allowed_smother_crops.is_null()) {
+                        include = true;
+                    } else {
+                        for (auto& a : allowed_smother_crops) {
+                            if (p["id"] == a) { include = true; break; }
+                        }
+                    }
+                } else {
+                    if (allowed_weeds.is_null()) {
+                        include = true;
+                    } else {
+                        for (auto& a : allowed_weeds) {
+                            if (p["id"] == a) { include = true; break; }
+                        }
+                    }
+                }
+                if (include) filtered.push_back(p);
+            }
+            plants_arr = std::move(filtered);
         }
 
         // Convert specials object to array
@@ -2288,6 +2430,13 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
         response.data["available_specials"] = specials_arr;
         response.data["map_metadata"] = map_meta;
         response.data["message"] = "Weeding session started";
+
+        if (!text_intro_val.is_null()) {
+            response.data["text_intro_id"] = text_intro_val;
+        }
+        if (!text_outro_val.is_null()) {
+            response.data["text_outro_id"] = text_outro_val;
+        }
 
         if (new_token) {
             response.data["token"] = *new_token;

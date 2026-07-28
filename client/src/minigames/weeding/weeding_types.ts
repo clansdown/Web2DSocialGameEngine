@@ -17,6 +17,8 @@ export interface WeedingSessionState {
   won: boolean;
   score: number;
   message: string;
+  text_intro_id: string | null;
+  text_outro_id: string | null;
 }
 
 export interface GridSquare {

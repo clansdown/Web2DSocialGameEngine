@@ -12,6 +12,7 @@ nlohmann::json initialize_board(
     int grid_size,
     const std::vector<std::pair<int, int>>& out_of_bounds,
     int difficulty,
+    const nlohmann::json& allowed_weeds,
     std::mt19937& rng)
 {
     nlohmann::json board = nlohmann::json::array();
@@ -61,7 +62,24 @@ nlohmann::json initialize_board(
         }
     }
 
+    // If allowed_weeds is specified, further filter to only included weed IDs
+    if (!allowed_weeds.empty() && allowed_weeds.is_array()) {
+        std::vector<std::string> filtered;
+        for (const auto& w : eligible_weeds) {
+            for (const auto& a : allowed_weeds) {
+                if (a.is_string() && w == a.get<std::string>()) {
+                    filtered.push_back(w);
+                    break;
+                }
+            }
+        }
+        eligible_weeds = std::move(filtered);
+    }
+
     // Build board
+    if (eligible_weeds.empty()) {
+        eligible_weeds.push_back("bindweed"); // fallback
+    }
     std::uniform_int_distribution<int> weed_pick(0, (int)eligible_weeds.size() - 1);
 
     // Partition into cells: count valid cells
