@@ -30,9 +30,9 @@ namespace {
     ensureIndex(db, "idx_player_game_state_character", "player_game_state", "character_id");
     ensureIndex(db, "idx_mini_game_progress_character", "mini_game_progress", "character_id, mini_game");
     ensureIndex(db, "idx_td_player_unlocks_character", "td_player_unlocks", "character_id");
-    ensureIndex(db, "idx_dukedoms_owner", "dukedoms", "owner_character_id");
-    ensureIndex(db, "idx_dukedom_members_dukedom", "dukedom_members", "dukedom_id");
-    ensureIndex(db, "idx_dukedom_members_character", "dukedom_members", "character_id");
+    ensureIndex(db, "idx_baronies_owner", "baronies", "owner_character_id");
+    ensureIndex(db, "idx_barony_members_barony", "barony_members", "barony_id");
+    ensureIndex(db, "idx_barony_members_character", "barony_members", "character_id");
     ensureIndex(db, "idx_game_sessions_character", "game_sessions", "character_id");
     ensureIndex(db, "idx_weeding_sessions_character", "weeding_sessions", "character_id");
     }
@@ -64,6 +64,25 @@ namespace {
             db << "ALTER TABLE fiefdoms ADD COLUMN manor_level INTEGER NOT NULL DEFAULT 1;";
         } catch (const std::exception&) {
             // Column already exists — ignore
+        }
+    }
+
+    void migrate_import_settings(sqlite::database& db) {
+        try {
+            db << "ALTER TABLE fiefdoms ADD COLUMN import_settings TEXT NOT NULL DEFAULT "
+                  "'{\"grain\":true,\"wood\":true,\"steel\":true,\"bronze\":true,"
+                  "\"stone\":true,\"leather\":true,\"mana\":true}';";
+        } catch (const std::exception&) {
+            // Column already exists — ignore
+        }
+    }
+
+    void migrate_barony_tables(sqlite::database& db) {
+        try {
+            db << "DROP TABLE IF EXISTS dukedom_members;";
+            db << "DROP TABLE IF EXISTS dukedoms;";
+        } catch (const std::exception&) {
+            // Tables may not exist — ignore
         }
     }
 
@@ -174,7 +193,7 @@ namespace {
             "FOREIGN KEY(character_id) REFERENCES characters(id)"
         );
 
-        createTable(db, "dukedoms",
+        createTable(db, "baronies",
             "id INTEGER PRIMARY KEY AUTOINCREMENT,"
             "name TEXT NOT NULL UNIQUE,"
             "owner_character_id INTEGER NOT NULL,"
@@ -183,14 +202,14 @@ namespace {
             "FOREIGN KEY(owner_character_id) REFERENCES characters(id)"
         );
 
-        createTable(db, "dukedom_members",
+        createTable(db, "barony_members",
             "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "dukedom_id INTEGER NOT NULL,"
+            "barony_id INTEGER NOT NULL,"
             "character_id INTEGER NOT NULL UNIQUE,"
             "fiefdom_id INTEGER NOT NULL,"
             "joined_at INTEGER NOT NULL,"
             "role TEXT NOT NULL DEFAULT 'member',"
-            "FOREIGN KEY(dukedom_id) REFERENCES dukedoms(id),"
+            "FOREIGN KEY(barony_id) REFERENCES baronies(id),"
             "FOREIGN KEY(character_id) REFERENCES characters(id),"
             "FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id)"
         );
@@ -283,12 +302,14 @@ void migrate_placements(sqlite::database& db) {
 }
 
 void initializeGameDB(sqlite::database& db) {
+    migrate_barony_tables(db);
     createGameDBTables(db);
     migrate_character_archetype(db);
     migrate_character_sex(db);
     migrate_manor_level(db);
     migrate_spawn_schedule(db);
     migrate_placements(db);
+    migrate_import_settings(db);
     ensureGameDBIndexes_private(db);
 }
 

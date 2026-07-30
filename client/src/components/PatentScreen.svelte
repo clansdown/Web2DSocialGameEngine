@@ -1,27 +1,27 @@
 <script lang="ts">
   /**
    * Displays the Land Patent screen after completing all 9 initial missions.
-   * Offers two paths: join an existing dukedom or start the duke track
-   * to earn the right to create one's own dukedom.
+   * Offers two paths: join an existing barony or start the baron track
+   * to earn the right to create one's own barony.
    *
    * Fetches translated text in the current language on mount.
    */
 
   import { language, currentCharacter } from '../lib/stores';
-  import { getTextsRequest, startDukeTrackRequest } from '../lib/api';
+  import { getTextsRequest, startBaronTrackRequest } from '../lib/api';
   import * as auth from '../lib/auth';
   import { handleError } from '../lib/errors';
 
   interface Props {
-    onJoinDukedom: () => void;
-    onStartDukeTrack: () => void;
+    onJoinBarony: () => void;
+    onStartBaronTrack: () => void;
   }
 
-  let { onJoinDukedom, onStartDukeTrack }: Props = $props();
+  let { onJoinBarony, onStartBaronTrack }: Props = $props();
 
   let texts = $state<Record<string, string>>({});
   let textsLoaded = $state(false);
-  let loadingDukeTrack = $state(false);
+  let loadingBaronTrack = $state(false);
 
   const TEXT_IDS: string[] = [
     'ui_patent_title',
@@ -41,9 +41,9 @@
     }
   }
 
-  async function handleStartDukeTrack(): Promise<void> {
-    if (!$currentCharacter || loadingDukeTrack) return;
-    loadingDukeTrack = true;
+  async function handleStartBaronTrack(): Promise<void> {
+    if (!$currentCharacter || loadingBaronTrack) return;
+    loadingBaronTrack = true;
     try {
       const token = auth.getSessionToken();
       const username = auth.getInMemoryCredentials()?.username;
@@ -51,12 +51,12 @@
         handleError('Not authenticated', new Error('No session'));
         return;
       }
-      await startDukeTrackRequest($currentCharacter.id, { username, token });
-      onStartDukeTrack();
+      await startBaronTrackRequest($currentCharacter.id, { username, token });
+      onStartBaronTrack();
     } catch (e) {
-      handleError('Failed to start duke track', e);
+      handleError('Failed to start baron track', e);
     } finally {
-      loadingDukeTrack = false;
+      loadingBaronTrack = false;
     }
   }
 
@@ -104,10 +104,10 @@
           <div class="col-12 col-md-6">
             <div class="card h-100 text-center">
               <div class="card-body">
-                <h5 class="card-title">{texts['ui_patent_join'] || 'Join a Dukedom'}</h5>
-                <p class="card-text text-muted">Join an existing dukedom, receive a manor, and start building.</p>
-                <button class="btn btn-primary mt-2" onclick={onJoinDukedom}>
-                  {texts['ui_patent_join'] || 'Join a Dukedom'}
+                <h5 class="card-title">{texts['ui_patent_join'] || 'Join a Barony'}</h5>
+                <p class="card-text text-muted">Join an existing barony, receive a manor, and start building.</p>
+                <button class="btn btn-primary mt-2" onclick={onJoinBarony}>
+                  {texts['ui_patent_join'] || 'Join a Barony'}
                 </button>
               </div>
             </div>
@@ -117,13 +117,13 @@
             <div class="card h-100 text-center">
               <div class="card-body">
                 <h5 class="card-title">{texts['ui_patent_start_own'] || 'Earn the Right to Start One'}</h5>
-                <p class="card-text text-muted">Clear a 4x4 grid of additional missions to earn the right to found your own dukedom.</p>
+                <p class="card-text text-muted">Clear a 4x4 grid of additional missions to earn the right to found your own barony.</p>
                 <button
                   class="btn btn-outline-primary mt-2"
-                  onclick={handleStartDukeTrack}
-                  disabled={loadingDukeTrack}
+                  onclick={handleStartBaronTrack}
+                  disabled={loadingBaronTrack}
                 >
-                  {#if loadingDukeTrack}
+                  {#if loadingBaronTrack}
                     <span class="spinner-border spinner-border-sm me-1" role="status"></span>
                   {/if}
                   {texts['ui_patent_start_own'] || 'Earn the Right to Start One'}

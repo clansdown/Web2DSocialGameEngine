@@ -23,6 +23,7 @@ CREATE TABLE fiefdoms (
     wall_count INTEGER NOT NULL DEFAULT 0,
     morale REAL NOT NULL DEFAULT 0,
     last_update_time INTEGER NOT NULL DEFAULT 0,
+    manor_level INTEGER NOT NULL DEFAULT 1,
     FOREIGN KEY(owner_id) REFERENCES characters(id)
 );
 ```
@@ -48,6 +49,7 @@ CREATE TABLE fiefdoms (
 | wall_count | INTEGER | NOT NULL DEFAULT 0 | Defensive wall layers |
 | morale | REAL | NOT NULL DEFAULT 0 | Fiefdom morale score | Range: -1000 (disastrous) to 1000 (inspired). Default 0 (neutral). Affects bonuses for production, building speed, combat, etc. |
 | last_update_time | INTEGER | NOT NULL DEFAULT 0 | Unix timestamp (seconds) when production updates were last applied. Used to calculate pending resource production since last update. |
+| manor_level | INTEGER | NOT NULL DEFAULT 1 | Manor house upgrade level. Controls building type unlocks and max building count. Upgraded via build endpoint. |
 
 ## Indexes
 

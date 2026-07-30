@@ -8,8 +8,8 @@
   import PathSelect from './components/PathSelect.svelte';
   import SexSelect from './components/SexSelect.svelte';
   import PatentScreen from './components/PatentScreen.svelte';
-  import DukedomJoin from './components/DukedomJoin.svelte';
-  import DukedomCreate from './components/DukedomCreate.svelte';
+  import BaronyJoin from './components/BaronyJoin.svelte';
+  import BaronyCreate from './components/BaronyCreate.svelte';
   import DialogOverlay from './components/DialogOverlay.svelte';
   // MiniGameSelect is used internally by HubScreen
   import MiniGameContainer from './minigames/MiniGameContainer.svelte';
@@ -34,10 +34,10 @@
   let introTitle = $state('');
   let introBody = $state('');
 
-  // Dukedom flow state
-  let showDukedomList = $state(false);
-  let showDukedomCreate = $state(false);
-  let showDukedomGrid = $state(false);
+  // Barony flow state
+  let showBaronyList = $state(false);
+  let showBaronyCreate = $state(false);
+  let showBaronyGrid = $state(false);
 
   /**
    * Loads stored language preference on startup.
@@ -191,26 +191,26 @@
     handleError('Mini-game error', new Error(error));
   }
 
-  // ── Dukedom flow handlers ──────────────────────────────────────
+  // ── Barony flow handlers ──────────────────────────────────────
 
-  function handleGoToJoinDukedom(): void {
-    showDukedomList = true;
+  function handleGoToJoinBarony(): void {
+    showBaronyList = true;
   }
 
-  function handleDukedomJoined(): void {
-    showDukedomList = false;
+  function handleBaronyJoined(): void {
+    showBaronyList = false;
     // Fetch game state to update phase to sandbox
     if ($currentCharacter) {
       fetchPlayerState($currentCharacter.id);
     }
   }
 
-  function handleBackFromDukedomList(): void {
-    showDukedomList = false;
+  function handleBackFromBaronyList(): void {
+    showBaronyList = false;
   }
 
-  function handleDukeTrackStarted(): void {
-    // Game phase is now duke_track — the routing will show MiniGameSelect
+  function handleBaronTrackStarted(): void {
+    // Game phase is now baron_track — the routing will show MiniGameSelect
     // Fetch game state to refresh
     if ($currentCharacter) {
       fetchPlayerState($currentCharacter.id);
@@ -222,21 +222,21 @@
     if ($currentCharacter) {
       fetchPlayerState($currentCharacter.id);
     }
-    // If we just completed the duke track, show the create dukedom screen
-    if (results.duke_right_earned) {
-      showDukedomCreate = true;
+    // If we just completed the baron track, show the create barony screen
+    if (results.baron_right_earned) {
+      showBaronyCreate = true;
     }
   }
 
-  function handleDukedomCreated(): void {
-    showDukedomCreate = false;
+  function handleBaronyCreated(): void {
+    showBaronyCreate = false;
     if ($currentCharacter) {
       fetchPlayerState($currentCharacter.id);
     }
   }
 
-  function handleBackFromDukedomCreate(): void {
-    showDukedomCreate = false;
+  function handleBackFromBaronyCreate(): void {
+    showBaronyCreate = false;
   }
 
   $effect(() => {
@@ -292,15 +292,15 @@
   <SexSelect onConfirm={handleSetSex} />
 {:else if $currentCharacter.archetype === null && !showIntroOverlay}
   <PathSelect onConfirm={handleConfirmPath} />
-{:else if showDukedomList}
-  <DukedomJoin
-    onJoined={handleDukedomJoined}
-    onBack={handleBackFromDukedomList}
+{:else if showBaronyList}
+  <BaronyJoin
+    onJoined={handleBaronyJoined}
+    onBack={handleBackFromBaronyList}
   />
-{:else if showDukedomCreate}
-  <DukedomCreate
-    onCreated={handleDukedomCreated}
-    onBack={handleBackFromDukedomCreate}
+{:else if showBaronyCreate}
+  <BaronyCreate
+    onCreated={handleBaronyCreated}
+    onBack={handleBackFromBaronyCreate}
   />
 {:else if activeMiniGame}
   <MiniGameContainer
@@ -322,18 +322,18 @@
   />
 {:else if $playerGameState.game_phase === 'land_patent'}
   <PatentScreen
-    onJoinDukedom={handleGoToJoinDukedom}
-    onStartDukeTrack={handleDukeTrackStarted}
+    onJoinBarony={handleGoToJoinBarony}
+    onStartBaronTrack={handleBaronTrackStarted}
   />
-{:else if $playerGameState.game_phase === 'duke_track'}
+{:else if $playerGameState.game_phase === 'baron_track'}
   <HubScreen
     activities={$playerGameState.available_activities}
     onStartLevel={handleStartLevel}
   />
-{:else if $playerGameState.game_phase === 'duke_right'}
-  <DukedomCreate
-    onCreated={handleDukedomCreated}
-    onBack={handleBackFromDukedomCreate}
+{:else if $playerGameState.game_phase === 'baron_right'}
+  <BaronyCreate
+    onCreated={handleBaronyCreated}
+    onBack={handleBackFromBaronyCreate}
   />
 {:else if $playerGameState.game_phase === 'sandbox'}
   <HubScreen

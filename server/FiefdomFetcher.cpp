@@ -20,12 +20,12 @@ std::optional<FiefdomData> fetchFiefdomById(
     
     bool found = false;
     db << R"(
-        SELECT owner_id, name, x, y, peasants, gold, grain, wood, steel, bronze, stone, leather, mana, wall_count, morale, last_update_time, manor_level
+        SELECT owner_id, name, x, y, peasants, gold, grain, wood, steel, bronze, stone, leather, mana, wall_count, morale, last_update_time, manor_level, import_settings
         FROM fiefdoms WHERE id = ?;
     )" << fiefdom_id
     >> [&](int owner_id, std::string name, int x, int y,
            int peasants, int gold, int grain, int wood, int steel,
-           int bronze, int stone, int leather, int mana, int wall_count, double morale, int64_t last_update_time, int manor_level) {
+           int bronze, int stone, int leather, int mana, int wall_count, double morale, int64_t last_update_time, int manor_level, std::string import_settings_str) {
         fiefdom.owner_id = owner_id;
         fiefdom.name = name;
         fiefdom.x = x;
@@ -43,6 +43,8 @@ std::optional<FiefdomData> fetchFiefdomById(
         fiefdom.morale = morale;
         fiefdom.last_update_time = last_update_time;
         fiefdom.manor_level = manor_level;
+        try { fiefdom.import_settings = nlohmann::json::parse(import_settings_str); }
+        catch (...) { fiefdom.import_settings = nlohmann::json::object(); }
         found = true;
     };
     

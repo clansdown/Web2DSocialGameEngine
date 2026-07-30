@@ -242,6 +242,7 @@ class ConfigValidator:
         # Track IDs for image validation
         self.validated_combatant_ids: set[str] = set()
         self.validated_building_ids: set[str] = set()
+        self.external_image_building_ids: set[str] = set()
         self.validated_hero_ids: set[str] = set()
         self.hero_skills: dict[str, set[str]] = {}  # hero_id -> skill_ids
         self.validated_portrait_ids: set[int] = set()  # portrait_id -> image directory
@@ -954,6 +955,256 @@ class ConfigValidator:
                     Severity.ERROR
                 )
 
+        self._validate_building_modifiers(file, building_id, data)
+        self._validate_building_dependencies(file, building_id, data)
+        self._validate_building_hourly_costs(file, building_id, data)
+
+    def _validate_building_modifiers(
+        self,
+        file: Path,
+        building_id: str,
+        data: dict[str, Any]
+    ) -> None:
+        """Validate modifiers array for a building."""
+        if "modifiers" not in data:
+            return
+
+        modifiers: Any = data["modifiers"]
+        if not isinstance(modifiers, list):
+            self._add_issue(
+                file, 1, None,
+                f"Building '{building_id}'.modifiers must be an array",
+                Severity.ERROR
+            )
+            return
+
+        for i, mod in enumerate(modifiers):
+            if not isinstance(mod, dict):
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.modifiers[{i}] must be an object",
+                    Severity.ERROR
+                )
+                continue
+
+            required_mod_fields = ["modifier_id", "target_building", "target_resource", "multiplier", "max_targets"]
+            for field in required_mod_fields:
+                if field not in mod:
+                    self._add_issue(
+                        file, 1, None,
+                        f"Building '{building_id}'.modifiers[{i}] is missing required field '{field}'",
+                        Severity.ERROR
+                    )
+
+            if "modifier_id" in mod:
+                mid: Any = mod["modifier_id"]
+                if not isinstance(mid, str) or not mid:
+                    self._add_issue(
+                        file, 1, None,
+                        f"Building '{building_id}'.modifiers[{i}].modifier_id must be a non-empty string",
+                        Severity.ERROR
+                    )
+
+            if "target_building" in mod:
+                tb: Any = mod["target_building"]
+                if not isinstance(tb, str) or not tb:
+                    self._add_issue(
+                        file, 1, None,
+                        f"Building '{building_id}'.modifiers[{i}].target_building must be a non-empty string",
+                        Severity.ERROR
+                    )
+
+            if "target_resource" in mod:
+                tr: Any = mod["target_resource"]
+                if not isinstance(tr, str) or not tr:
+                    self._add_issue(
+                        file, 1, None,
+                        f"Building '{building_id}'.modifiers[{i}].target_resource must be a non-empty string",
+                        Severity.ERROR
+                    )
+
+            if "multiplier" in mod:
+                self._validate_modifier_numeric(
+                    file, building_id, i, mod, "multiplier", allow_negative=False
+                )
+
+            if "max_targets" in mod:
+                self._validate_modifier_numeric(
+                    file, building_id, i, mod, "max_targets", allow_negative=False, integer_only=True
+                )
+
+    def _validate_modifier_numeric(
+        self,
+        file: Path,
+        building_id: str,
+        mod_index: int,
+        mod: dict[str, Any],
+        field: str,
+        allow_negative: bool = False,
+        integer_only: bool = False
+    ) -> None:
+        """Validate a numeric field in a modifier that can be a number or array of numbers."""
+        val: Any = mod[field]
+        field_path = f"Building '{building_id}'.modifiers[{mod_index}].{field}"
+
+        if isinstance(val, (int, float)):
+            if integer_only and not isinstance(val, int):
+                self._add_issue(file, 1, None, f"{field_path} must be an integer", Severity.ERROR)
+            elif not allow_negative and val < 0:
+                self._add_issue(file, 1, None, f"{field_path} must be >= 0, got {val}", Severity.ERROR)
+            return
+
+        if isinstance(val, list):
+            for j, item in enumerate(val):
+                if not isinstance(item, (int, float)):
+                    self._add_issue(
+                        file, 1, None,
+                        f"{field_path}[{j}] must be a number, got {type(item).__name__}",
+                        Severity.ERROR
+                    )
+                elif integer_only and not isinstance(item, int):
+                    self._add_issue(
+                        file, 1, None,
+                        f"{field_path}[{j}] must be an integer, got {item}",
+                        Severity.ERROR
+                    )
+                elif not allow_negative and item < 0:
+                    self._add_issue(
+                        file, 1, None,
+                        f"{field_path}[{j}] must be >= 0, got {item}",
+                        Severity.ERROR
+                    )
+            return
+
+        self._add_issue(
+            file, 1, None,
+            f"{field_path} must be a number or array of numbers, got {type(val).__name__}",
+            Severity.ERROR
+        )
+
+    def _validate_building_dependencies(
+        self,
+        file: Path,
+        building_id: str,
+        data: dict[str, Any]
+    ) -> None:
+        """Validate dependencies array for a building."""
+        if "dependencies" not in data:
+            return
+
+        deps: Any = data["dependencies"]
+        if not isinstance(deps, list):
+            self._add_issue(
+                file, 1, None,
+                f"Building '{building_id}'.dependencies must be an array",
+                Severity.ERROR
+            )
+            return
+
+        for level_idx, level_deps in enumerate(deps):
+            if not isinstance(level_deps, list):
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.dependencies[{level_idx}] must be an array",
+                    Severity.ERROR
+                )
+                continue
+
+            for dep_idx, dep in enumerate(level_deps):
+                if not isinstance(dep, dict):
+                    self._add_issue(
+                        file, 1, None,
+                        f"Building '{building_id}'.dependencies[{level_idx}][{dep_idx}] must be an object",
+                        Severity.ERROR
+                    )
+                    continue
+
+                dep_fields = ["target_building", "count", "shared"]
+                for field in dep_fields:
+                    if field not in dep:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.dependencies[{level_idx}][{dep_idx}] missing '{field}'",
+                            Severity.ERROR
+                        )
+
+                if "target_building" in dep:
+                    tb: Any = dep["target_building"]
+                    if not isinstance(tb, str) or not tb:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.dependencies[{level_idx}][{dep_idx}].target_building must be non-empty string",
+                            Severity.ERROR
+                        )
+
+                if "count" in dep:
+                    cnt: Any = dep["count"]
+                    if not isinstance(cnt, int) or cnt < 1:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.dependencies[{level_idx}][{dep_idx}].count must be int >= 1, got {cnt}",
+                            Severity.ERROR
+                        )
+
+                if "shared" in dep:
+                    sh: Any = dep["shared"]
+                    if not isinstance(sh, bool):
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.dependencies[{level_idx}][{dep_idx}].shared must be boolean",
+                            Severity.ERROR
+                        )
+
+                if "min_level" in dep:
+                    ml: Any = dep["min_level"]
+                    if not isinstance(ml, int) or ml < 1:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.dependencies[{level_idx}][{dep_idx}].min_level must be int >= 1, got {ml}",
+                            Severity.ERROR
+                        )
+
+    def _validate_building_hourly_costs(
+        self,
+        file: Path,
+        building_id: str,
+        data: dict[str, Any]
+    ) -> None:
+        """Validate hourly_cost and priority fields."""
+        valid_resources = {"peasants", "gold", "grain", "wood", "steel", "bronze", "stone", "leather", "mana"}
+
+        if "hourly_cost" in data:
+            hc: Any = data["hourly_cost"]
+            if not isinstance(hc, dict):
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.hourly_cost must be an object",
+                    Severity.ERROR
+                )
+            else:
+                for res, rate in hc.items():
+                    if res not in valid_resources:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.hourly_cost has unknown resource '{res}'",
+                            Severity.WARN
+                        )
+                    if not isinstance(rate, (int, float)) or rate < 0:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.hourly_cost.{res} must be a non-negative number",
+                            Severity.ERROR
+                        )
+
+        if "priority" in data:
+            prio: Any = data["priority"]
+            if not isinstance(prio, int) or prio < 0:
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.priority must be a non-negative integer",
+                    Severity.ERROR
+                )
+
     def _validate_building_prerequisites(
         self,
         file: Path,
@@ -993,6 +1244,22 @@ class ConfigValidator:
                         continue
 
                     for req_building_id, required_level in prereq_obj.items():
+                        # Special prerequisite keys that are not building types
+                        if req_building_id in {"manor_level"}:
+                            if not isinstance(required_level, int):
+                                self._add_issue(
+                                    file, 1, None,
+                                    f"Building '{building_id}'.prerequisites[{i}].{req_building_id} must be an integer, got {type(required_level).__name__}",
+                                    Severity.ERROR
+                                )
+                            elif required_level < 0:
+                                self._add_issue(
+                                    file, 1, None,
+                                    f"Building '{building_id}'.prerequisites[{i}].{req_building_id} must be non-negative, got {required_level}",
+                                    Severity.ERROR
+                                )
+                            continue
+
                         if req_building_id not in valid_building_ids:
                             self._add_issue(
                                 file, 1, None,
@@ -1066,6 +1333,11 @@ class ConfigValidator:
                     continue
 
                 self._validate_building(file, content, building_id, building_data)
+
+                # Buildings with explicit image field use external images (e.g. game/images/manor/)
+                # and should not require server-side image directories
+                if isinstance(building_data, dict) and "image" in building_data:
+                    self.external_image_building_ids.add(building_id)
 
         self._validate_building_prerequisites(file, content, data, seen_ids)
 
@@ -1986,7 +2258,10 @@ class ConfigValidator:
             required.add(("combatants", combatant_id, "die"))
 
         # Buildings: construction, idle (required), harvest (optional)
+        # Skip buildings with explicit image field (they use external images, not server images/)
         for building_id in self.validated_building_ids:
+            if building_id in self.external_image_building_ids:
+                continue
             required.add(("buildings", building_id, "construction"))
             required.add(("buildings", building_id, "idle"))
             optional.add(("buildings", building_id, "harvest"))
@@ -2502,7 +2777,7 @@ class ConfigValidator:
                             self._add_issue(file, 1, None, f"Weed '{plant_id}'.tools.{tool_id}.damage must be 1-100, got {dmg}", Severity.ERROR)
 
     def validate_mini_games_weeding_levels(self, file: Path) -> None:
-        """Validate mini_games.json weeding section — schedule_file and duke_schedule_file must exist."""
+        """Validate mini_games.json weeding section — schedule_file and baron_schedule_file must exist."""
         try:
             content: str = file.read_text(encoding="utf-8")
         except Exception as e:
@@ -2525,7 +2800,7 @@ class ConfigValidator:
             return
 
         # Weeding levels must not have inline difficulty
-        for tier_name in ("levels", "duke_levels"):
+        for tier_name in ("levels", "baron_levels"):
             levels_array: object = weeding_config.get(tier_name)
             if not isinstance(levels_array, list):
                 continue
@@ -2799,7 +3074,7 @@ class ConfigValidator:
                     if isinstance(mg_data, dict) and "weeding" in mg_data:
                         wc: object = mg_data["weeding"]
                         if isinstance(wc, dict):
-                            for field in ("schedule_file", "duke_schedule_file"):
+                            for field in ("schedule_file", "baron_schedule_file"):
                                 sched_file: object = wc.get(field)
                                 if isinstance(sched_file, str):
                                     sched_path: Path = game_config_dir / "weeding" / sched_file

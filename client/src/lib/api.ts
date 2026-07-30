@@ -1,6 +1,8 @@
 const API_BASE = '';
 
 import * as auth from './auth';
+import { get } from 'svelte/store';
+import { language } from './stores';
 
 export interface ApiResponse<T = unknown> {
   status: 'ok';
@@ -335,7 +337,7 @@ export interface MiniGameProgress {
   last_played: number;
 }
 
-export type GamePhase = 'initial_mission' | 'land_patent' | 'duke_track' | 'duke_right' | 'sandbox';
+export type GamePhase = 'initial_mission' | 'land_patent' | 'baron_track' | 'baron_right' | 'sandbox';
 
 export interface PlayerGameState {
   character_id: number;
@@ -394,7 +396,7 @@ export interface EndMiniGameResponse {
   rewards: Record<string, number>;
   completion_bonus?: Record<string, number>;
   land_patent_earned?: boolean;
-  duke_right_earned?: boolean;
+  baron_right_earned?: boolean;
   new_unlocks?: NewUnlocks;
 }
 
@@ -414,8 +416,8 @@ export interface MiniGameConfig {
     difficulty_scaling: Record<string, number>;
     reward_scaling: Record<string, number>;
   };
-  duke_grid_size?: number;
-  duke_levels?: MiniGameLevelConfig[];
+  baron_grid_size?: number;
+  baron_levels?: MiniGameLevelConfig[];
 }
 
 
@@ -461,7 +463,7 @@ export interface TDRoundCompleteResponse {
   base_unlocked?: boolean;
   game_phase?: string;
   land_patent_earned?: boolean;
-  duke_right_earned?: boolean;
+  baron_right_earned?: boolean;
   new_unlocks?: NewUnlocks;
   [key: string]: unknown;
 }
@@ -507,6 +509,23 @@ export async function getTextsRequest(
     throw new Error(res.error);
   }
   return (res.data as { texts: Record<string, string> }).texts;
+}
+
+/**
+ * Fetches a single text by ID from the text system.
+ * Uses current language and optional sex for gender substitution.
+ * Returns empty string if the text file is not found.
+ *
+ * @param textId - Text file ID (without .txt extension)
+ * @param sex - Optional sex for gender token substitution
+ * @returns Promise<string> - The substituted text content
+ *
+ * Usage: const msg = await fetchGameText('welcome_message', 'male');
+ */
+export async function fetchGameText(textId: string, sex?: string): Promise<string> {
+  const lang = get(language);
+  const texts = await getTextsRequest(lang, [textId], sex);
+  return texts[textId] || '';
 }
 
 export interface UITexture {
@@ -620,9 +639,9 @@ export async function verifyAgeOverrideRequest(code: string): Promise<boolean> {
   return (res.data as { verified: boolean }).verified === true;
 }
 
-// ── Dukedom API types ─────────────────────────────────────────────
+// ── Barony API types ──────────────────────────────────────────────
 
-export interface DukedomInfo {
+export interface BaronyInfo {
   id: number;
   name: string;
   description: string;
@@ -632,37 +651,82 @@ export interface DukedomInfo {
   created_at: number;
 }
 
-export interface JoinDukedomResponse {
-  dukedom_id: number;
+export interface JoinBaronyResponse {
+  barony_id: number;
   fiefdom_id: number;
   game_phase: string;
   base_unlocked: boolean;
 }
 
-export interface CreateDukedomResponse {
-  dukedom_id: number;
+export interface CreateBaronyResponse {
+  barony_id: number;
   fiefdom_id: number;
   game_phase: string;
   base_unlocked: boolean;
 }
 
-export interface StartDukeTrackResponse {
+export interface FiefdomBuilding {
+  id: number;
+  name: string;
+  level: number;
+  x: number;
+  y: number;
+  construction_start_ts: number;
+  last_updated: number;
+  action_start_ts: number;
+  action_tag: string;
+}
+
+export interface FiefdomResponse {
+  id: number;
+  owner_id: number;
+  name: string;
+  x: number;
+  y: number;
+  peasants: number;
+  gold: number;
+  grain: number;
+  wood: number;
+  steel: number;
+  bronze: number;
+  stone: number;
+  leather: number;
+  mana: number;
+  wall_count: number;
+  morale: number;
+  manor_level: number;
+  buildings?: FiefdomBuilding[];
+  officials?: unknown[];
+  heroes?: unknown[];
+  stationed_combatants?: unknown[];
+}
+
+export interface BuildResponse {
+  building_id: number;
+  fiefdom_id: number;
+}
+
+export interface SetFiefdomImportResponse {
+  import_settings: Record<string, boolean>;
+}
+
+export interface StartBaronTrackResponse {
   game_phase: string;
 }
 
 /**
- * Fetches all available dukedoms from the server.
+ * Fetches all available baronies from the server.
  * Requires authentication.
  *
  * @param auth - Authentication object with username and token
- * @returns Promise<DukedomInfo[]> - List of dukedoms
+ * @returns Promise<BaronyInfo[]> - List of baronies
  *
- * Usage: Called to populate the dukedom selection screen
+ * Usage: Called to populate the barony selection screen
  */
-export async function getDukedomsRequest(
+export async function getBaroniesRequest(
   auth: { username: string; token: string }
-): Promise<DukedomInfo[]> {
-  const res = await apiPost<{ dukedoms: DukedomInfo[] }>('getDukedoms', {}, {
+): Promise<BaronyInfo[]> {
+  const res = await apiPost<{ baronies: BaronyInfo[] }>('getBaronies', {}, {
     username: auth.username,
     token: auth.token
   });
@@ -670,54 +734,54 @@ export async function getDukedomsRequest(
   if (res.error) {
     throw new Error(res.error);
   }
-  return (res.data as { dukedoms: DukedomInfo[] }).dukedoms;
+  return (res.data as { baronies: BaronyInfo[] }).baronies;
 }
 
 /**
- * Joins an existing dukedom, creating a fiefdom and transitioning to sandbox phase.
+ * Joins an existing barony, creating a fiefdom and transitioning to sandbox phase.
  *
  * @param characterId - Character to join with
- * @param dukedomId - Dukedom to join
+ * @param baronyId - Barony to join
  * @param auth - Authentication object with username and token
- * @returns Promise<JoinDukedomResponse> - New fiefdom and phase info
+ * @returns Promise<JoinBaronyResponse> - New fiefdom and phase info
  *
- * Usage: Called from DukedomJoin screen
+ * Usage: Called from BaronyJoin screen
  */
-export async function joinDukedomRequest(
+export async function joinBaronyRequest(
   characterId: number,
-  dukedomId: number,
+  baronyId: number,
   auth: { username: string; token: string }
-): Promise<JoinDukedomResponse> {
-  const res = await apiPost<JoinDukedomResponse>('joinDukedom', {
+): Promise<JoinBaronyResponse> {
+  const res = await apiPost<JoinBaronyResponse>('joinBarony', {
     character_id: characterId,
-    dukedom_id: dukedomId
+    barony_id: baronyId
   }, { username: auth.username, token: auth.token });
 
   if (res.error) {
     throw new Error(res.error);
   }
-  return res.data as JoinDukedomResponse;
+  return res.data as JoinBaronyResponse;
 }
 
 /**
- * Creates a new dukedom and transitions to sandbox phase.
- * Requires the character to have completed the duke track (all 25 levels).
+ * Creates a new barony and transitions to sandbox phase.
+ * Requires the character to have completed the baron track (all 25 levels).
  *
- * @param characterId - Character to create the dukedom for
- * @param name - Dukedom name (must be unique)
+ * @param characterId - Character to create the barony for
+ * @param name - Barony name (must be unique)
  * @param description - Optional description
  * @param auth - Authentication object with username and token
- * @returns Promise<CreateDukedomResponse> - New dukedom and fiefdom info
+ * @returns Promise<CreateBaronyResponse> - New barony and fiefdom info
  *
- * Usage: Called from the dukedom creation form after duke track completion
+ * Usage: Called from the barony creation form after baron track completion
  */
-export async function createDukedomRequest(
+export async function createBaronyRequest(
   characterId: number,
   name: string,
   description: string,
   auth: { username: string; token: string }
-): Promise<CreateDukedomResponse> {
-  const res = await apiPost<CreateDukedomResponse>('createDukedom', {
+): Promise<CreateBaronyResponse> {
+  const res = await apiPost<CreateBaronyResponse>('createBarony', {
     character_id: characterId,
     name,
     description
@@ -726,29 +790,114 @@ export async function createDukedomRequest(
   if (res.error) {
     throw new Error(res.error);
   }
-  return res.data as CreateDukedomResponse;
+  return res.data as CreateBaronyResponse;
 }
 
 /**
- * Opts into the duke track (4x4 grid, 16 harder levels) to earn the right
- * to start a dukedom instead of joining one.
+ * Fetches fiefdom data, optionally including buildings and other entities.
+ * Accepts fiefdom_id or character_id to look up the fiefdom.
  *
- * @param characterId - Character to start the duke track for
+ * @param params - fiefdom_id (direct) or character_id (lookup by owner)
  * @param auth - Authentication object with username and token
- * @returns Promise<StartDukeTrackResponse> - Updated game phase
+ * @returns Promise<FiefdomResponse> - Fiefdom data
  *
- * Usage: Called from PatentScreen when player chooses to start their own dukedom
+ * Usage: Called when opening the manor view
  */
-export async function startDukeTrackRequest(
+export async function getFiefdomRequest(
+  params: { fiefdom_id?: number; character_id?: number },
+  auth: { username: string; token: string }
+): Promise<FiefdomResponse> {
+  const res = await apiPost<FiefdomResponse>('getFiefdom', {
+    fiefdom_id: params.fiefdom_id || 0,
+    character_id: params.character_id || 0,
+    include_buildings: true,
+    include_officials: true,
+    include_heroes: true,
+    include_combatants: true
+  }, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return res.data as FiefdomResponse;
+}
+
+/**
+ * Builds a building in a fiefdom via the /api/Build endpoint.
+ *
+ * @param params - Build parameters (fiefdom_id, building_type, x, y)
+ * @param auth - Authentication object with username and token
+ * @returns Promise<BuildResponse> - Building creation response
+ *
+ * Usage: Called when placing a building on the manor
+ */
+export async function buildRequest(
+  params: { fiefdom_id: number; building_type: string; x: number; y: number },
+  auth: { username: string; token: string }
+): Promise<BuildResponse> {
+  const res = await apiPost<BuildResponse>('Build', {
+    action: 'create',
+    fiefdom_id: params.fiefdom_id,
+    building_type: params.building_type,
+    x: params.x,
+    y: params.y
+  }, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return res.data as BuildResponse;
+}
+
+/**
+ * Sets auto-import preference for a resource in a fiefdom.
+ *
+ * @param fiefdomId - Fiefdom ID
+ * @param resource - Resource name (e.g., "steel", "wood")
+ * @param autoImport - Whether to auto-import this resource
+ * @param auth - Authentication object with username and token
+ * @returns Promise<SetFiefdomImportResponse> - Updated import settings
+ *
+ * Usage: Called from the manor economy panel
+ */
+export async function setFiefdomImportRequest(
+  fiefdomId: number,
+  resource: string,
+  autoImport: boolean,
+  auth: { username: string; token: string }
+): Promise<SetFiefdomImportResponse> {
+  const res = await apiPost<SetFiefdomImportResponse>('setFiefdomImport', {
+    fiefdom_id: fiefdomId,
+    resource,
+    auto_import: autoImport
+  }, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return res.data as SetFiefdomImportResponse;
+}
+
+/**
+ * Opts into the baron track (4x4 grid, 16 harder levels) to earn the right
+ * to start a barony instead of joining one.
+ *
+ * @param characterId - Character to start the baron track for
+ * @param auth - Authentication object with username and token
+ * @returns Promise<StartBaronTrackResponse> - Updated game phase
+ *
+ * Usage: Called from PatentScreen when player chooses to start their own barony
+ */
+export async function startBaronTrackRequest(
   characterId: number,
   auth: { username: string; token: string }
-): Promise<StartDukeTrackResponse> {
-  const res = await apiPost<StartDukeTrackResponse>('startDukeTrack', {
+): Promise<StartBaronTrackResponse> {
+  const res = await apiPost<StartBaronTrackResponse>('startBaronTrack', {
     character_id: characterId
   }, { username: auth.username, token: auth.token });
 
   if (res.error) {
     throw new Error(res.error);
   }
-  return res.data as StartDukeTrackResponse;
+  return res.data as StartBaronTrackResponse;
 }

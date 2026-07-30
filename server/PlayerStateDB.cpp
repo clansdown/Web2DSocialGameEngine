@@ -261,16 +261,16 @@ void earn_land_patent(sqlite::database& db, int character_id, int64_t timestamp)
        << timestamp << character_id;
 }
 
-void start_duke_track(sqlite::database& db, int character_id, int64_t timestamp) {
+void start_baron_track(sqlite::database& db, int character_id, int64_t timestamp) {
     db << "UPDATE player_game_state SET "
-          "game_phase = 'duke_track', last_updated = ? "
+          "game_phase = 'baron_track', last_updated = ? "
           "WHERE character_id = ?;"
        << timestamp << character_id;
 }
 
-void earn_duke_right(sqlite::database& db, int character_id, int64_t timestamp) {
+void earn_baron_right(sqlite::database& db, int character_id, int64_t timestamp) {
     db << "UPDATE player_game_state SET "
-          "game_phase = 'duke_right', last_updated = ? "
+          "game_phase = 'baron_right', last_updated = ? "
           "WHERE character_id = ?;"
        << timestamp << character_id;
 }

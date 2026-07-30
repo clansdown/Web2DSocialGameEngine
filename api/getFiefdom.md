@@ -45,7 +45,8 @@ Get fiefdom information including resources, buildings, and officials.
     "leather": 150,
     "mana": 75,
     "wall_count": 3,
-    "morale": 0
+    "morale": 0,
+    "manor_level": 1
   }
 }
 ```
@@ -72,6 +73,7 @@ Get fiefdom information including resources, buildings, and officials.
     "mana": 75,
     "wall_count": 3,
     "morale": 0,
+    "manor_level": 1,
     "buildings": [
       {
         "id": 1,
@@ -153,6 +155,7 @@ Get fiefdom information including resources, buildings, and officials.
 | mana | integer | Magical resource amount |
 | wall_count | integer | Defensive wall layers |
 | morale | number | Fiefdom morale score (-1000 to 1000) |
+| manor_level | integer | Manor house upgrade level (default 1) |
 | buildings | array | Building instances (when include_buildings=true) |
 | officials | array | Official instances (when include_officials=true) |
 | heroes | array | Hero instances (when include_heroes=true) |

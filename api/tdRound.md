@@ -89,7 +89,7 @@ Manages tower defense round lifecycle — creates a new game session or complete
         "base_unlocked": false,
         "game_phase": "initial_mission",
         "land_patent_earned": false,
-        "duke_right_earned": false
+        "baron_right_earned": false
     }
 }
 ```

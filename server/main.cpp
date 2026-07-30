@@ -375,8 +375,17 @@ ApiResponse handleGetFiefdom(GameConfigCache& config_cache, const json& body,
     ApiResponse response;
 
     int fiefdom_id = body.value("fiefdom_id", 0);
+
+    // If character_id provided instead, look up fiefdom by character ownership
+    if (fiefdom_id == 0 && body.contains("character_id")) {
+        int character_id = body["character_id"].get<int>();
+        auto& db = Database::getInstance().gameDB();
+        db << "SELECT id FROM fiefdoms WHERE owner_id = ?;" << character_id
+           >> [&](int fid) { fiefdom_id = fid; };
+    }
+
     if (fiefdom_id == 0) {
-        response.error = "fiefdom_id required";
+        response.error = "fiefdom_id or character_id required";
         return response;
     }
 
@@ -917,9 +926,9 @@ ApiResponse handleGetPlayerState(GameConfigCache& config_cache, const json& body
         auto get_available_activities = [](const std::string& phase) -> std::vector<std::string> {
             if (phase == "initial_mission")
                 return {"tasks", "chat"};
-            if (phase == "land_patent" || phase == "duke_track")
+            if (phase == "land_patent" || phase == "baron_track")
                 return {"tasks", "manor", "chat"};
-            if (phase == "duke_right")
+            if (phase == "baron_right")
                 return {"tasks", "manor", "chat", "tournament"};
             if (phase == "sandbox")
                 return {"tasks", "manor", "chat", "tournament", "adventure"};
@@ -1263,10 +1272,10 @@ static std::string resolve_schedule_file(const nlohmann::json& mg_config, int le
             }
         }
     }
-    if (mg_config.contains("duke_levels")) {
-        for (const auto& lvl : mg_config["duke_levels"]) {
+    if (mg_config.contains("baron_levels")) {
+        for (const auto& lvl : mg_config["baron_levels"]) {
             if (lvl["id"] == level_id) {
-                return mg_config.value("duke_schedule_file", std::string());
+                return mg_config.value("baron_schedule_file", std::string());
             }
         }
     }
@@ -1284,7 +1293,7 @@ static json load_map_for_level(const json& mg_config, int level_id) {
         return std::string();
     };
     std::string map_file = find_map(mg_config.value("levels", json::array()));
-    if (map_file.empty()) map_file = find_map(mg_config.value("duke_levels", json::array()));
+    if (map_file.empty()) map_file = find_map(mg_config.value("baron_levels", json::array()));
 
     if (!map_file.empty()) {
         auto map_meta = TowerDefenseMapCache::get_instance().get_map(map_file);
@@ -1558,8 +1567,8 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
                         if (mg_config.contains("levels")) {
                             check_rewards(mg_config["levels"]);
                         }
-                        if (level_rewards.empty() && mg_config.contains("duke_levels")) {
-                            check_rewards(mg_config["duke_levels"]);
+                        if (level_rewards.empty() && mg_config.contains("baron_levels")) {
+                            check_rewards(mg_config["baron_levels"]);
                         }
                     }
                 }
@@ -1601,7 +1610,7 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
                     auto state = player_state_db::get_player_game_state(db, character_id);
                     response.data["game_phase"] = state.game_phase;
                     response.data["land_patent_earned"] = (state.game_phase == "land_patent");
-                    response.data["duke_right_earned"] = (state.game_phase == "duke_right");
+                    response.data["baron_right_earned"] = (state.game_phase == "baron_right");
                 }
             }
 
@@ -1810,10 +1819,10 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
                     return response;
                 }
             }
-        } else if (state.game_phase == "duke_track") {
+        } else if (state.game_phase == "baron_track") {
             auto next = player_state_db::get_next_incomplete_level(db, character_id, mini_game, 25);
             if (!next) {
-                response.error = "All duke levels completed";
+                response.error = "All baron levels completed";
                 return response;
             }
             level_id = *next;
@@ -1866,23 +1875,23 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
                 }
                 return -1;
             };
-            bool is_duke = false;
+            bool is_baron = false;
             int d = find_field(mg_config.value("levels", json::array()), "difficulty", 1);
             if (d < 0) {
-                d = find_field(mg_config.value("duke_levels", json::array()), "difficulty", 1);
-                is_duke = true;
+                d = find_field(mg_config.value("baron_levels", json::array()), "difficulty", 1);
+                is_baron = true;
             }
             if (d >= 0) difficulty = d;
             int r = find_field(mg_config.value("levels", json::array()), "rounds", 1);
-            if (r < 0) r = find_field(mg_config.value("duke_levels", json::array()), "rounds", 1);
+            if (r < 0) r = find_field(mg_config.value("baron_levels", json::array()), "rounds", 1);
             if (r >= 0) total_rounds = r;
 
             // Resolve schedule file for this level
             std::string schedule_file;
-            if (!is_duke && mg_config.contains("schedule_file")) {
+            if (!is_baron && mg_config.contains("schedule_file")) {
                 schedule_file = mg_config["schedule_file"].get<std::string>();
-            } else if (is_duke && mg_config.contains("duke_schedule_file")) {
-                schedule_file = mg_config["duke_schedule_file"].get<std::string>();
+            } else if (is_baron && mg_config.contains("baron_schedule_file")) {
+                schedule_file = mg_config["baron_schedule_file"].get<std::string>();
             }
 
             // Load map metadata and query completion count
@@ -2221,10 +2230,10 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
                     return response;
                 }
             }
-        } else if (state.game_phase == "duke_track") {
+        } else if (state.game_phase == "baron_track") {
             auto next = player_state_db::get_next_incomplete_level(db, character_id, "weeding", 25);
             if (!next) {
-                response.error = "All duke weeding levels completed";
+                response.error = "All baron weeding levels completed";
                 return response;
             }
             level_id = *next;
@@ -2628,8 +2637,8 @@ ApiResponse handleWeedingTurn(GameConfigCache& config_cache, const json& body,
                             response.data["completion_bonus"] = bonus["resources"];
                         }
                     }
-                } else if (pstate.game_phase == "duke_right") {
-                    response.data["duke_right_earned"] = true;
+                } else if (pstate.game_phase == "baron_right") {
+                    response.data["baron_right_earned"] = true;
                 }
                 response.data["game_phase"] = pstate.game_phase;
             } else {
@@ -2652,7 +2661,7 @@ ApiResponse handleWeedingTurn(GameConfigCache& config_cache, const json& body,
                     return false;
                 };
                 if (mg.contains("levels")) check(mg["levels"]);
-                if (level_rewards.empty() && mg.contains("duke_levels")) check(mg["duke_levels"]);
+                if (level_rewards.empty() && mg.contains("baron_levels")) check(mg["baron_levels"]);
             }
             response.data["rewards"] = level_rewards;
         }
@@ -2729,11 +2738,11 @@ ApiResponse handleStartMiniGame(GameConfigCache& config_cache, const json& body,
                     return response;
                 }
             }
-        } else if (state.game_phase == "duke_track") {
+        } else if (state.game_phase == "baron_track") {
             auto next_level = player_state_db::get_next_incomplete_level(db, character_id, mini_game, 25);
 
             if (!next_level) {
-                response.error = "All duke levels completed";
+                response.error = "All baron levels completed";
                 return response;
             }
 
@@ -2823,7 +2832,7 @@ ApiResponse handleEndMiniGame(GameConfigCache& config_cache, const json& body,
         auto state = player_state_db::get_player_game_state(db, character_id);
 
         // Determine expected total levels based on game phase
-        int expected_total_levels = (state.game_phase == "duke_track") ? 25 : 9;
+        int expected_total_levels = (state.game_phase == "baron_track") ? 25 : 9;
 
         if (!state.current_mini_game.has_value() || *state.current_mini_game != mini_game) {
             response.error = "Not currently playing " + mini_game;
@@ -2861,7 +2870,7 @@ ApiResponse handleEndMiniGame(GameConfigCache& config_cache, const json& body,
 
         // Handle phase transitions based on all-levels-done
         response.data["land_patent_earned"] = false;
-        response.data["duke_right_earned"] = false;
+        response.data["baron_right_earned"] = false;
 
         if (won && end_result.all_levels_done) {
             if (state.game_phase == "initial_mission" && !state.base_unlocked) {
@@ -2877,10 +2886,10 @@ ApiResponse handleEndMiniGame(GameConfigCache& config_cache, const json& body,
                         response.data["completion_bonus"] = mg_config["completion_bonus"]["resources"];
                     }
                 }
-            } else if (state.game_phase == "duke_track") {
-                // Transition to duke_right phase
-                player_state_db::earn_duke_right(db, character_id, now);
-                response.data["duke_right_earned"] = true;
+            } else if (state.game_phase == "baron_track") {
+                // Transition to baron_right phase
+                player_state_db::earn_baron_right(db, character_id, now);
+                response.data["baron_right_earned"] = true;
             }
         }
 
@@ -2901,9 +2910,9 @@ ApiResponse handleEndMiniGame(GameConfigCache& config_cache, const json& body,
                     }
                 }
 
-                // Check duke levels if not found in main levels
-                if (level_rewards.empty() && mg_config.contains("duke_levels")) {
-                    for (const auto& lvl : mg_config["duke_levels"]) {
+                // Check baron levels if not found in main levels
+                if (level_rewards.empty() && mg_config.contains("baron_levels")) {
+                    for (const auto& lvl : mg_config["baron_levels"]) {
                         if (lvl["id"] == level_id && lvl.contains("reward")) {
                             level_rewards = lvl["reward"];
                             break;
@@ -2921,8 +2930,8 @@ ApiResponse handleEndMiniGame(GameConfigCache& config_cache, const json& body,
         if (end_result.all_levels_done) {
             if (state.game_phase == "initial_mission") {
                 response.data["game_phase"] = "land_patent";
-            } else if (state.game_phase == "duke_track") {
-                response.data["game_phase"] = "duke_right";
+            } else if (state.game_phase == "baron_track") {
+                response.data["game_phase"] = "baron_right";
             } else if (state.game_phase == "land_patent") {
                 response.data["game_phase"] = "land_patent";
             } else {
@@ -3210,6 +3219,50 @@ ApiResponse handleSetCharacterArchetype(GameConfigCache& config_cache, const jso
     return response;
 }
 
+ApiResponse handleSetFiefdomImport(GameConfigCache& config_cache, const json& body,
+                                    const std::optional<std::string>& username,
+                                    const ClientInfo& client,
+                                    const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+
+    if (!body.contains("fiefdom_id") || !body.contains("resource") || !body.contains("auto_import")) {
+        response.error = "fiefdom_id, resource, and auto_import required";
+        return response;
+    }
+
+    int fiefdom_id = body["fiefdom_id"].get<int>();
+    std::string resource = body["resource"].get<std::string>();
+    bool auto_import = body["auto_import"].get<bool>();
+
+    try {
+        auto& db = Database::getInstance().gameDB();
+
+        // Read current import_settings
+        std::string import_str;
+        db << "SELECT import_settings FROM fiefdoms WHERE id = ?;" << fiefdom_id
+           >> [&](std::string s) { import_str = s; };
+
+        if (import_str.empty()) {
+            import_str = "{\"grain\":true,\"wood\":true,\"steel\":true,"
+                         "\"bronze\":true,\"stone\":true,\"leather\":true,\"mana\":true}";
+        }
+
+        auto settings = json::parse(import_str);
+        settings[resource] = auto_import;
+
+        db << "UPDATE fiefdoms SET import_settings = ? WHERE id = ?;"
+           << settings.dump() << fiefdom_id;
+
+        response.data["import_settings"] = settings;
+    } catch (const std::exception& e) {
+        response.error = std::string("Failed to update import settings: ") + e.what();
+    }
+
+    if (new_token) response.data["token"] = *new_token;
+    return response;
+}
+
 ApiResponse handleSetCharacterSex(GameConfigCache& config_cache, const json& body,
                                    const std::optional<std::string>& username,
                                    const ClientInfo& client,
@@ -3289,7 +3342,7 @@ ApiResponse handleSetCharacterSex(GameConfigCache& config_cache, const json& bod
     return response;
 }
 
-ApiResponse handleGetDukedoms(GameConfigCache& config_cache, const json& body,
+ApiResponse handleGetBaronies(GameConfigCache& config_cache, const json& body,
                                const std::optional<std::string>& username,
                                const ClientInfo& client,
                                const std::optional<std::string>& new_token)
@@ -3303,12 +3356,12 @@ ApiResponse handleGetDukedoms(GameConfigCache& config_cache, const json& body,
 
     try {
         auto& db = Database::getInstance().gameDB();
-        json dukedoms_list = json::array();
+        json baronies_list = json::array();
 
         db << "SELECT d.id, d.name, d.description, d.owner_character_id, d.created_at, "
               "COUNT(dm.id) as member_count, c.display_name as owner_name "
-              "FROM dukedoms d "
-              "LEFT JOIN dukedom_members dm ON dm.dukedom_id = d.id "
+              "FROM baronies d "
+              "LEFT JOIN barony_members dm ON dm.barony_id = d.id "
               "LEFT JOIN characters c ON c.id = d.owner_character_id "
               "GROUP BY d.id "
               "ORDER BY d.name;"
@@ -3321,23 +3374,51 @@ ApiResponse handleGetDukedoms(GameConfigCache& config_cache, const json& body,
                 entry["owner_name"] = owner_name;
                 entry["member_count"] = member_count;
                 entry["created_at"] = created_at;
-                dukedoms_list.push_back(entry);
+                baronies_list.push_back(entry);
             };
 
-        response.data["dukedoms"] = dukedoms_list;
+        response.data["baronies"] = baronies_list;
 
         if (new_token) {
             response.data["token"] = *new_token;
         }
     } catch (const std::exception& e) {
-        log_error("handleGetDukedoms", e.what());
-        response.error = std::string("Failed to fetch dukedoms: ") + e.what();
+        log_error("handleGetBaronies", e.what());
+        response.error = std::string("Failed to fetch baronies: ") + e.what();
     }
 
     return response;
 }
 
-ApiResponse handleJoinDukedom(GameConfigCache& config_cache, const json& body,
+/**
+ * Checks if a barony has 21+ members with manor_level >= 3.
+ * If so, promotes the mesne_lord to baron.
+ */
+void checkBaronPromotion(int barony_id) {
+    try {
+        auto& db = Database::getInstance().gameDB();
+
+        // Count members with manor_level >= 3
+        int qualified_members = 0;
+        db << "SELECT COUNT(*) FROM barony_members dm "
+              "JOIN fiefdoms f ON dm.fiefdom_id = f.id "
+              "WHERE dm.barony_id = ? AND f.manor_level >= 3;"
+           << barony_id
+           >> [&](int count) { qualified_members = count; };
+
+        if (qualified_members >= 21) {
+            // Promote mesne_lord to baron
+            db << "UPDATE barony_members SET role = 'baron' "
+                  "WHERE barony_id = ? AND role = 'mesne_lord' "
+                  "AND (SELECT COUNT(*) FROM barony_members WHERE barony_id = ? AND role = 'baron') = 0;"
+               << barony_id << barony_id;
+        }
+    } catch (const std::exception& e) {
+        log_error("checkBaronPromotion", e.what());
+    }
+}
+
+ApiResponse handleJoinBarony(GameConfigCache& config_cache, const json& body,
                                const std::optional<std::string>& username,
                                const ClientInfo& client,
                                const std::optional<std::string>& new_token)
@@ -3354,13 +3435,13 @@ ApiResponse handleJoinDukedom(GameConfigCache& config_cache, const json& body,
         return response;
     }
 
-    if (!body.contains("dukedom_id") || !body["dukedom_id"].is_number_integer()) {
-        response.error = "dukedom_id required";
+    if (!body.contains("barony_id") || !body["barony_id"].is_number_integer()) {
+        response.error = "barony_id required";
         return response;
     }
 
     int character_id = body["character_id"].get<int>();
-    int dukedom_id = body["dukedom_id"].get<int>();
+    int barony_id = body["barony_id"].get<int>();
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 
     try {
@@ -3377,20 +3458,20 @@ ApiResponse handleJoinDukedom(GameConfigCache& config_cache, const json& body,
             return response;
         }
 
-        // Verify dukedom exists
-        int dukedom_exists = 0;
-        db << "SELECT COUNT(*) FROM dukedoms WHERE id = ?;" << dukedom_id >> [&](int count) { dukedom_exists = count; };
-        if (!dukedom_exists) {
-            response.error = "Dukedom not found";
+        // Verify barony exists
+        int barony_exists = 0;
+        db << "SELECT COUNT(*) FROM baronies WHERE id = ?;" << barony_id >> [&](int count) { barony_exists = count; };
+        if (!barony_exists) {
+            response.error = "Barony not found";
             return response;
         }
 
-        // Check if already a member of any dukedom
+        // Check if already a member of any barony
         int existing_member = 0;
-        db << "SELECT COUNT(*) FROM dukedom_members WHERE character_id = ?;"
+        db << "SELECT COUNT(*) FROM barony_members WHERE character_id = ?;"
            << character_id >> [&](int count) { existing_member = count; };
         if (existing_member > 0) {
-            response.error = "Already a member of a dukedom";
+            response.error = "Already a member of a barony";
             return response;
         }
 
@@ -3399,7 +3480,7 @@ ApiResponse handleJoinDukedom(GameConfigCache& config_cache, const json& body,
         db << "SELECT game_phase FROM player_game_state WHERE character_id = ?;"
            << character_id >> [&](std::string phase) { current_phase = phase; };
         if (current_phase != "land_patent") {
-            response.error = "Must have a land patent to join a dukedom";
+            response.error = "Must have a land patent to join a barony";
             return response;
         }
 
@@ -3416,15 +3497,18 @@ ApiResponse handleJoinDukedom(GameConfigCache& config_cache, const json& body,
 
         int fiefdom_id = db.last_insert_rowid();
 
-        // Add to dukedom members
-        db << "INSERT INTO dukedom_members (dukedom_id, character_id, fiefdom_id, joined_at, role) "
+        // Add to barony members
+        db << "INSERT INTO barony_members (barony_id, character_id, fiefdom_id, joined_at, role) "
               "VALUES (?, ?, ?, ?, 'member');"
-           << dukedom_id << character_id << fiefdom_id << now;
+           << barony_id << character_id << fiefdom_id << now;
 
         // Unlock base (sandbox phase)
         player_state_db::unlock_base(db, character_id, now);
 
-        response.data["dukedom_id"] = dukedom_id;
+        // Check for baron promotion: 21+ members with manor_level >= 3
+        checkBaronPromotion(barony_id);
+
+        response.data["barony_id"] = barony_id;
         response.data["fiefdom_id"] = fiefdom_id;
         response.data["game_phase"] = "sandbox";
         response.data["base_unlocked"] = true;
@@ -3433,14 +3517,14 @@ ApiResponse handleJoinDukedom(GameConfigCache& config_cache, const json& body,
             response.data["token"] = *new_token;
         }
     } catch (const std::exception& e) {
-        log_error("handleJoinDukedom", e.what());
-        response.error = std::string("Failed to join dukedom: ") + e.what();
+        log_error("handleJoinBarony", e.what());
+        response.error = std::string("Failed to join barony: ") + e.what();
     }
 
     return response;
 }
 
-ApiResponse handleCreateDukedom(GameConfigCache& config_cache, const json& body,
+ApiResponse handleCreateBarony(GameConfigCache& config_cache, const json& body,
                                  const std::optional<std::string>& username,
                                  const ClientInfo& client,
                                  const std::optional<std::string>& new_token)
@@ -3480,35 +3564,35 @@ ApiResponse handleCreateDukedom(GameConfigCache& config_cache, const json& body,
             return response;
         }
 
-        // Check for duplicate dukedom name
+        // Check for duplicate barony name
         int name_taken = 0;
-        db << "SELECT COUNT(*) FROM dukedoms WHERE name = ?;" << name >> [&](int count) { name_taken = count; };
+        db << "SELECT COUNT(*) FROM baronies WHERE name = ?;" << name >> [&](int count) { name_taken = count; };
         if (name_taken > 0) {
-            response.error = "A dukedom with that name already exists";
+            response.error = "A barony with that name already exists";
             return response;
         }
 
-        // Verify character is in duke_right phase (all 25 levels complete)
+        // Verify character is in baron_right phase (all 25 levels complete)
         std::string current_phase;
         db << "SELECT game_phase FROM player_game_state WHERE character_id = ?;"
            << character_id >> [&](std::string phase) { current_phase = phase; };
-        if (current_phase != "duke_right") {
-            response.error = "Must complete the duke track to start a dukedom";
+        if (current_phase != "baron_right") {
+            response.error = "Must complete the baron track to start a barony";
             return response;
         }
 
         // Check not already a member
         int existing_member = 0;
-        db << "SELECT COUNT(*) FROM dukedom_members WHERE character_id = ?;"
+        db << "SELECT COUNT(*) FROM barony_members WHERE character_id = ?;"
            << character_id >> [&](int count) { existing_member = count; };
         if (existing_member > 0) {
-            response.error = "Already a member of a dukedom";
+            response.error = "Already a member of a barony";
             return response;
         }
 
         // Create fiefdom
-        static std::atomic<int> duke_fiefdom_counter(0);
-        int counter = duke_fiefdom_counter++;
+        static std::atomic<int> barony_fiefdom_counter(0);
+        int counter = barony_fiefdom_counter++;
         std::string fiefdom_name = "Manor of " + *username;
         int fx = (counter % 100) * 10;
         int fy = (counter / 100) * 10;
@@ -3519,22 +3603,22 @@ ApiResponse handleCreateDukedom(GameConfigCache& config_cache, const json& body,
 
         int fiefdom_id = db.last_insert_rowid();
 
-        // Create dukedom
-        db << "INSERT INTO dukedoms (name, owner_character_id, description, created_at) "
+        // Create barony
+        db << "INSERT INTO baronies (name, owner_character_id, description, created_at) "
               "VALUES (?, ?, ?, ?);"
            << name << character_id << description << now;
 
-        int dukedom_id = db.last_insert_rowid();
+        int barony_id = db.last_insert_rowid();
 
         // Add founder as member with mesne_lord role
-        db << "INSERT INTO dukedom_members (dukedom_id, character_id, fiefdom_id, joined_at, role) "
+        db << "INSERT INTO barony_members (barony_id, character_id, fiefdom_id, joined_at, role) "
               "VALUES (?, ?, ?, ?, 'mesne_lord');"
-           << dukedom_id << character_id << fiefdom_id << now;
+           << barony_id << character_id << fiefdom_id << now;
 
         // Unlock base
         player_state_db::unlock_base(db, character_id, now);
 
-        response.data["dukedom_id"] = dukedom_id;
+        response.data["barony_id"] = barony_id;
         response.data["fiefdom_id"] = fiefdom_id;
         response.data["game_phase"] = "sandbox";
         response.data["base_unlocked"] = true;
@@ -3543,14 +3627,14 @@ ApiResponse handleCreateDukedom(GameConfigCache& config_cache, const json& body,
             response.data["token"] = *new_token;
         }
     } catch (const std::exception& e) {
-        log_error("handleCreateDukedom", e.what());
-        response.error = std::string("Failed to create dukedom: ") + e.what();
+        log_error("handleCreateBarony", e.what());
+        response.error = std::string("Failed to create barony: ") + e.what();
     }
 
     return response;
 }
 
-ApiResponse handleStartDukeTrack(GameConfigCache& config_cache, const json& body,
+ApiResponse handleStartBaronTrack(GameConfigCache& config_cache, const json& body,
                                   const std::optional<std::string>& username,
                                   const ClientInfo& client,
                                   const std::optional<std::string>& new_token)
@@ -3588,21 +3672,21 @@ ApiResponse handleStartDukeTrack(GameConfigCache& config_cache, const json& body
         db << "SELECT game_phase FROM player_game_state WHERE character_id = ?;"
            << character_id >> [&](std::string phase) { current_phase = phase; };
         if (current_phase != "land_patent") {
-            response.error = "Must have a land patent to start the duke track";
+            response.error = "Must have a land patent to start the baron track";
             return response;
         }
 
-        // Switch to duke_track phase
-        player_state_db::start_duke_track(db, character_id, now);
+        // Switch to baron_track phase
+        player_state_db::start_baron_track(db, character_id, now);
 
-        response.data["game_phase"] = "duke_track";
+        response.data["game_phase"] = "baron_track";
 
         if (new_token) {
             response.data["token"] = *new_token;
         }
     } catch (const std::exception& e) {
-        log_error("handleStartDukeTrack", e.what());
-        response.error = std::string("Failed to start duke track: ") + e.what();
+        log_error("handleStartBaronTrack", e.what());
+        response.error = std::string("Failed to start baron track: ") + e.what();
     }
 
     return response;

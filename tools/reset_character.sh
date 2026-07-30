@@ -1,6 +1,6 @@
 #!/bin/bash
 # Reset a character to initial state for path re-selection.
-# Clears archetype, sex, all progress, sessions, unlocks, and any fiefdom/dukedom.
+# Clears archetype, sex, all progress, sessions, unlocks, and any fiefdom/barony.
 #
 # Usage:
 #   ./tools/reset_character.sh              # list characters
@@ -71,9 +71,9 @@ DELETE FROM officials WHERE fiefdom_id IN (SELECT id FROM fiefdoms WHERE owner_i
 DELETE FROM fiefdom_buildings WHERE fiefdom_id IN (SELECT id FROM fiefdoms WHERE owner_id = $CHARACTER_ID);
 DELETE FROM fiefdoms WHERE owner_id = $CHARACTER_ID;
 
--- Remove from dukedom (both as member and as owner)
-DELETE FROM dukedom_members WHERE character_id = $CHARACTER_ID;
-DELETE FROM dukedoms WHERE owner_character_id = $CHARACTER_ID;
+-- Remove from barony (both as member and as owner)
+DELETE FROM barony_members WHERE character_id = $CHARACTER_ID;
+DELETE FROM baronies WHERE owner_character_id = $CHARACTER_ID;
 SQL
 
 echo "Character $CHARACTER_ID reset complete."

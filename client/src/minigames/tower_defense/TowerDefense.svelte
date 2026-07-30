@@ -1620,7 +1620,7 @@
           next_level_id: null,
           rewards: ar.rewards || {},
           land_patent_earned: ar.land_patent_earned || false,
-          duke_right_earned: ar.duke_right_earned || false,
+          baron_right_earned: ar.baron_right_earned || false,
           new_unlocks: ar.new_unlocks as NewUnlocks | undefined
         });
       }
@@ -1663,7 +1663,7 @@
         next_level_id: null,
         rewards: cr.rewards || {},
         land_patent_earned: cr.land_patent_earned || false,
-        duke_right_earned: cr.duke_right_earned || false,
+        baron_right_earned: cr.baron_right_earned || false,
         new_unlocks: cr.new_unlocks
       }, forfeited);
     } catch (e) {
@@ -1680,7 +1680,7 @@
       boardDragActive = false;
       dragUnitId = null;
       selectedTower = null;
-      onComplete({ completed: false, score: 0, new_best_score: 0, times_played: 0, all_levels_done: false, base_unlocked: false, game_phase: 'initial_mission', next_level_id: null, rewards: {}, land_patent_earned: false, duke_right_earned: false }, true);
+      onComplete({ completed: false, score: 0, new_best_score: 0, times_played: 0, all_levels_done: false, base_unlocked: false, game_phase: 'initial_mission', next_level_id: null, rewards: {}, land_patent_earned: false, baron_right_earned: false }, true);
       return;
     }
     gameState = 'lost';

@@ -1,5 +1,6 @@
 #pragma once
 #include "ActionHandler.hpp"
+#include <map>
 #include <unordered_map>
 
 namespace GameLogic {
@@ -57,9 +58,35 @@ std::optional<nlohmann::json> getPrerequisitesForLevel(
 
 int getBuildingLevelInFiefdom(int fiefdom_id, const std::string& building_name);
 
+int getFiefdomManorLevel(int fiefdom_id);
+
 bool checkFiefdomPrerequisites(int fiefdom_id, const nlohmann::json& prerequisites);
 
 bool hasCompletedHomeBase(int fiefdom_id);
+
+nlohmann::json getDependenciesForLevel(
+    GameConfigCache& cache,
+    const std::string& building_type,
+    int target_level
+);
+
+int countBuildingsByType(int fiefdom_id, const std::string& target_building, int min_level);
+
+std::map<std::string, std::pair<int, int>> aggregateFiefdomDependencies(
+    GameConfigCache& cache,
+    int fiefdom_id,
+    const std::vector<BuildingData>& buildings,
+    const nlohmann::json& additional_deps
+);
+
+std::pair<bool, std::string> checkBuildingDependencies(
+    GameConfigCache& cache,
+    int fiefdom_id,
+    const std::vector<BuildingData>& buildings,
+    const nlohmann::json& deps_to_check
+);
+
+std::vector<BuildingData> getFiefdomAllBuildings(int fiefdom_id);
 
 } // namespace Validation
 

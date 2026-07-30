@@ -90,9 +90,9 @@ void clear_current_mini_game(sqlite::database& db, int character_id, int64_t tim
 
 void earn_land_patent(sqlite::database& db, int character_id, int64_t timestamp);
 
-void start_duke_track(sqlite::database& db, int character_id, int64_t timestamp);
+void start_baron_track(sqlite::database& db, int character_id, int64_t timestamp);
 
-void earn_duke_right(sqlite::database& db, int character_id, int64_t timestamp);
+void earn_baron_right(sqlite::database& db, int character_id, int64_t timestamp);
 
 // Game session management
 GameSessionRow create_game_session(sqlite::database& db, int character_id, const std::string& mini_game, int level_id, int difficulty, int total_rounds, int64_t timestamp);

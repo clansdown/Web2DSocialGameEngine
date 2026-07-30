@@ -25,7 +25,7 @@ CREATE TABLE weeding_sessions (
 |-------|------|-------------|
 | `id` | INTEGER | Auto-increment primary key |
 | `character_id` | INTEGER | FK to `characters(id)`. The player who owns this session |
-| `level_id` | INTEGER | Which level is being played (1-9 campaign, 10-25 duke, 0 sandbox) |
+| `level_id` | INTEGER | Which level is being played (1-9 campaign, 10-25 baron, 0 sandbox) |
 | `started_at` | INTEGER | Unix timestamp when the session was created |
 | `last_activity` | INTEGER | Unix timestamp of the last action/turn |
 | `state` | TEXT | Session state: `'active'`, `'won'`, `'forfeited'` |

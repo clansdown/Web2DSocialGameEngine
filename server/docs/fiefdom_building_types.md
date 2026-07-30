@@ -49,6 +49,7 @@ interface FiefdomBuildingType {
     // --- Optional Structural Fields ---
     can_build_outside_wall?: boolean;  // Defaults to false
     display_name?: string;              // User-facing name (e.g., "Manor House")
+    image?: string;                     // Client-side sprite path (e.g., "/images/manor/buildings/blacksmith.png")
 
     // --- Construction ---
     construction_times: number[];       // Seconds per level (index = level)
@@ -108,8 +109,9 @@ The `prerequisites` field defines required buildings and their minimum levels fo
 - Array index corresponds to building level (like `construction_times`)
 - Index 0 = requirements for building to reach level 1 (first active level)
 - Each array element is an object where:
-  - **Keys**: Building type IDs (e.g., "home_base", "farm", "barracks")
-  - **Values**: Minimum required level for that building
+  - **Keys**: Building type IDs (e.g., "home_base", "farm", "barracks") or special keys like `manor_level`
+  - **Values**: Minimum required level for that building/manor
+  - `manor_level` is a special key — checks the fiefdom's manor_level instead of a building level
 
 #### Prerequisites Extrapolation Rules
 
@@ -220,6 +222,65 @@ Given `construction_times: [10, 15, 20]` with `max_level: 5`:
 | 3 | 25 (20 + 5) |
 | 4 | 30 (25 + 5) |
 | 5+ | 35, 40, ... (continues with slope 5) |
+
+## Dependencies Field
+
+The optional `dependencies` field defines **count-based building requirements**. Unlike `prerequisites` (which check if a building type exists at a minimum level), dependencies check **how many** buildings of a given type exist in the fiefdom.
+
+### TypeScript Definition
+
+```typescript
+interface BuildingDependency {
+    target_building: string;  // Building type ID to count
+    count: number;            // How many are required
+    shared: boolean;          // If true, counts toward shared pool; if false, exclusive
+    min_level?: number;       // Minimum level of target buildings to count (default 1)
+}
+```
+
+### Config Format
+
+The `dependencies` field is an array indexed by building level (same pattern as `construction_times` and `prerequisites`). Each entry is an array of dependency objects:
+
+```json
+{
+    "sawyer": {
+        "dependencies": [
+            [{"target_building": "peasant", "count": 5, "shared": false, "min_level": 2}],   // Level 1 (build)
+            [{"target_building": "peasant", "count": 5, "shared": false}],                    // Level 2
+            [{"target_building": "peasant", "count": 10, "shared": false}]                    // Level 3
+        ]
+    }
+}
+```
+
+### Shared vs Exclusive
+
+The `shared` flag determines whether a building's count can overlap with other dependencies:
+
+| Scenario | Shared | Exclusive |
+|----------|--------|-----------|
+| Manor needs 20 peasants | 20 | — |
+| Sawyer needs 5 peasants | — | 5 |
+| **Total needed** | **max(20,5) = 20** | **20 + 5 = 25** |
+
+- **Shared**: All shared dependencies for the same target_building share one pool. Total needed = `max(all shared counts)`.
+- **Exclusive**: Each exclusive dependency adds to the total. Total needed = `sum(all exclusive counts)` + `max(all shared counts)`.
+
+### Level Arrays
+
+Both `count` and `min_level` support level-indexed arrays with linear extrapolation (same rules as `construction_times`).
+
+### Extrapolation Rules
+
+If the `dependencies` array is shorter than the building's `max_level`, the last entry is used for all remaining levels (same as prerequisites).
+
+### Check Points
+
+Dependencies are verified at:
+1. **Build time** — when constructing a new building (level 1)
+2. **Upgrade time** — when upgrading a building (checked against next level's dependencies)
+3. **Construction completion** — when `construction_start_ts` elapses and the building levels up
 
 ## Resource Production Calculation
 
@@ -372,6 +433,123 @@ Level 0 represents a building **under construction**. During this level:
 - Building cannot be used for production
 
 Level 1+ represents active, producing buildings.
+
+## Hourly Cost Field
+
+The optional `hourly_cost` and `priority` fields define a building's ongoing resource consumption. Consumption is processed by the economy engine each time fiefdom state updates.
+
+```json
+{
+    "blacksmith": {
+        "hourly_cost": { "steel": 2.0 },
+        "priority": 50
+    },
+    "peasant": {
+        "hourly_cost": { "grain": 1.0 },
+        "priority": 5
+    }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `hourly_cost` | object | omitted | Map of resource → hourly consumption rate. Resources are consumed continuously. |
+| `priority` | integer | `economy.json.default_priority` (50) | Allocation priority. Lower numbers are satisfied first when resources are scarce. |
+
+### How Consumption Works
+
+1. All consumption entries from all buildings + population costs are collected
+2. Sorted by priority ascending
+3. Resources are allocated in priority order — high-priority consumers (peasants at 5) get their needs met before low-priority ones (blacksmith at 50)
+4. If resources run out, unmet needs cause morale penalties
+5. Players can toggle auto-import per resource to fill deficits with gold
+
+### Population Costs
+
+Global population costs are defined in `economy.json` under `population_costs`. These consume resources based on the fiefdom's population count:
+
+```json
+{
+    "population_costs": {
+        "peasants": { "grain": 1.0, "priority": 1 }
+    }
+}
+```
+
+Only `peasants` is currently supported — extend by adding more fiefdom resource columns.
+
+## Modifiers Field
+
+The optional `modifiers` field defines building-to-building production boosts. One building can increase another building's resource production output.
+
+### TypeScript Definition
+
+```typescript
+interface BuildingModifier {
+    modifier_id: string;         // Unique ID for stacking prevention
+    target_building: string;     // Building type ID to boost (e.g., "woodcutter")
+    target_resource: string;     // Resource to multiply (e.g., "wood", "grain")
+    multiplier: number | number[];  // Production multiplier (5.0 = 500% = +400%)
+    max_targets: number | number[]; // Max buildings this can boost
+}
+```
+
+### Field Descriptions
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `modifier_id` | string | required | Unique identifier for this modifier. Two sources with the same ID cannot boost the same target (prevents stacking duplicates) |
+| `target_building` | string | required | Building type ID that receives the boost |
+| `target_resource` | string | required | Resource production to multiply (e.g., `"wood"`, `"grain"`, `"gold"`) |
+| `multiplier` | number or number[] | required | Total production multiplier. `5.0` means the target produces `5×` their base. Can be an array indexed by level for per-level scaling |
+| `max_targets` | number or number[] | required | Maximum number of buildings this can simultaneously boost. Can be an array indexed by level. `1` = single-target, `[100, 150]` = 100 at level 1, 150 at level 2 |
+
+### Array Scaling Rules
+
+Both `multiplier` and `max_targets` accept:
+- A single number (constant across all building levels)
+- An array indexed by building level (level 0 → index 0). Linear extrapolation when level exceeds array size (same rules as `construction_times`)
+
+### Stacking Rules
+
+1. **Same `modifier_id`**: Only one source can boost a given target (e.g., two wood hewers with `sharpen_axes` cannot both boost the same woodcutter). Excess boosters distribute across unboosted targets, up to their `max_targets`.
+2. **Different `modifier_id`s**: Multipliers stack multiplicatively (e.g., wood hewer `5.0` + sawyer `1.5` → `7.5×` total)
+3. **Capacity resolution**: Higher-level boosters get priority when assigning to targets
+
+### Assignment Algorithm
+
+```
+For each modifier_id group:
+  1. Collect all source buildings with this modifier (level > 0)
+  2. Sort sources by level descending
+  3. Collect all target buildings (level > 0) of target_building type
+  4. For each source (in priority order):
+     - Determine effective max_targets from source's level
+     - Assign to unboosted targets up to max_targets
+     - Each target can be boosted at most once per modifier_id
+```
+
+### Example Configs
+
+```json
+// Wood hewer boosts 1 woodcutter's wood production by 400% (5×)
+"modifiers": [{
+    "modifier_id": "sharpen_axes",
+    "target_building": "woodcutter",
+    "target_resource": "wood",
+    "multiplier": 5.0,
+    "max_targets": 1
+}]
+
+// Miller boosts peasant grain production, capacity scales with level
+"modifiers": [{
+    "modifier_id": "flour_milling",
+    "target_building": "peasant",
+    "target_resource": "grain",
+    "multiplier": 3.0,
+    "max_targets": [100, 150, 200, 250, 300]
+}]
+```
 
 ## Client-Side Notes
 

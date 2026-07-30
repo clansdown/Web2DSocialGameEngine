@@ -1,11 +1,11 @@
 <script lang="ts">
   /**
-   * Creates a new dukedom after completing the duke track.
+   * Creates a new barony after completing the baron track.
    * Shows a form for name and optional description.
    */
 
   import { language, currentCharacter } from '../lib/stores';
-  import { createDukedomRequest } from '../lib/api';
+  import { createBaronyRequest } from '../lib/api';
   import * as auth from '../lib/auth';
   import { handleError } from '../lib/errors';
   import { getTextsRequest } from '../lib/api';
@@ -24,8 +24,8 @@
   let texts = $state<Record<string, string>>({});
 
   const TEXT_IDS: string[] = [
-    'ui_dukedom_create_title',
-    'ui_dukedom_create_desc_label',
+    'ui_barony_create_title',
+    'ui_barony_create_desc_label',
     'ui_confirm',
   ];
 
@@ -45,10 +45,10 @@
       const token = auth.getSessionToken();
       const username = auth.getInMemoryCredentials()?.username;
       if (!token || !username) return;
-      await createDukedomRequest($currentCharacter.id, name.trim(), description.trim(), { username, token });
+      await createBaronyRequest($currentCharacter.id, name.trim(), description.trim(), { username, token });
       onCreated();
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to create dukedom';
+      error = e instanceof Error ? e.message : 'Failed to create barony';
     } finally {
       loading = false;
     }
@@ -64,7 +64,7 @@
     <button class="btn btn-outline-secondary me-3" onclick={onBack}>
       &larr; Back
     </button>
-    <h2 class="mb-0">{texts['ui_dukedom_create_title'] || 'Name Your Dukedom'}</h2>
+    <h2 class="mb-0">{texts['ui_barony_create_title'] || 'Name Your Barony'}</h2>
   </div>
 
   <div class="row justify-content-center">
@@ -74,9 +74,9 @@
       {/if}
 
       <div class="mb-3">
-        <label for="dukedom-name" class="form-label">{texts['ui_dukedom_create_title'] || 'Name'}</label>
+        <label for="barony-name" class="form-label">{texts['ui_barony_create_title'] || 'Name'}</label>
         <input
-          id="dukedom-name"
+          id="barony-name"
           type="text"
           class="form-control"
           bind:value={name}
@@ -86,9 +86,9 @@
       </div>
 
       <div class="mb-3">
-        <label for="dukedom-desc" class="form-label">{texts['ui_dukedom_create_desc_label'] || 'Description (optional)'}</label>
+        <label for="barony-desc" class="form-label">{texts['ui_barony_create_desc_label'] || 'Description (optional)'}</label>
         <textarea
-          id="dukedom-desc"
+          id="barony-desc"
           class="form-control"
           bind:value={description}
           rows={3}

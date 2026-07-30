@@ -202,7 +202,7 @@ export interface AdvanceResponse {
   next_level_id?: number | null;
   rewards?: Record<string, number>;
   land_patent_earned?: boolean;
-  duke_right_earned?: boolean;
+  baron_right_earned?: boolean;
   new_unlocks?: unknown;
   [key: string]: unknown;
 }

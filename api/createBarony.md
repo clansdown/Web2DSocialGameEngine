@@ -1,6 +1,6 @@
-# `/api/createDukedom`
+# `/api/createBarony`
 
-Creates a new dukedom for a character who has completed the duke track.
+Creates a new barony for a character who has completed the baron track.
 Transitions the player to sandbox phase.
 
 **Requires authentication.**
@@ -25,7 +25,7 @@ Transitions the player to sandbox phase.
 {
     "status": "ok",
     "data": {
-        "dukedom_id": 1,
+        "barony_id": 1,
         "fiefdom_id": 5,
         "game_phase": "sandbox",
         "base_unlocked": true
@@ -37,13 +37,13 @@ Transitions the player to sandbox phase.
 
 ```json
 { "error": "name required" }
-{ "error": "A dukedom with that name already exists" }
-{ "error": "Must complete the duke track to start a dukedom" }
+{ "error": "A barony with that name already exists" }
+{ "error": "Must complete the baron track to start a barony" }
 ```
 
 ## Notes
 
-- Character must be in `duke_right` game phase (all 25 levels completed)
+- Character must be in `baron_right` game phase (all 25 levels completed)
 - Founder is added as `mesne_lord` role
-- Dukedom name must be unique
+- Barony name must be unique
 - Fiefdom is created with `manor_level = 1`

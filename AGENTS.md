@@ -549,9 +549,9 @@ Build the full game progression and content system with a working tower defense 
 - Add more map JSONs for levels 2–9 in `mini_games.json`
 - Fill in narrative placeholder text in `text/en/` with gender-substituted content
 - Create arrow/bolt projectile images at `game/images/tower_defense/projectiles/`
-- Implement Duke promotion check (21 members with manor ≥ 3 → duke role)
+- Implement Baron promotion check (21 members with manor ≥ 3 → baron role)
 - Generate parchment background and path icon images
-- Add `rounds` field to duke_levels in `mini_games.json` if needed
+- Add `rounds` field to baron_levels in `mini_games.json` if needed
 
 ### Critical Context
 - **Server compiles** with `./compile_server.sh` (no arguments). Client `npm run check` passes with only pre-existing WeedingGame errors.

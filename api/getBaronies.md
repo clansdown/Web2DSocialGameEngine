@@ -1,6 +1,6 @@
-# `/api/getDukedoms`
+# `/api/getBaronies`
 
-Fetches all available dukedoms that a player can join.
+Fetches all available baronies that a player can join.
 
 **Requires authentication.**
 
@@ -21,7 +21,7 @@ Fetches all available dukedoms that a player can join.
 {
     "status": "ok",
     "data": {
-        "dukedoms": [
+        "baronies": [
             {
                 "id": 1,
                 "name": "Stormhold",
@@ -38,5 +38,5 @@ Fetches all available dukedoms that a player can join.
 
 ## Notes
 
-- Returns all dukedoms regardless of membership
-- Use `/api/joinDukedom` to join one
+- Returns all baronies regardless of membership
+- Use `/api/joinBarony` to join one

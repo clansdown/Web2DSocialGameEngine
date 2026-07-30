@@ -111,4 +111,20 @@ TimeUpdateResult updateStateSince(
     const std::string& fiefdom_filter_id = ""
 );
 
+/// Helper: index into a level-indexed JSON array with linear extrapolation.
+/// arr can be a number (returns as-is) or an array. level is 0-indexed.
+int getIntForLevel(const nlohmann::json& arr, int level, int default_val);
+double getDoubleForLevel(const nlohmann::json& arr, int level, double default_val);
+
+/// Result type for computeBuildingModifiers: target_building_id -> (resource -> combined_multiplier)
+using ModifierMap = std::unordered_map<int, std::unordered_map<std::string, double>>;
+
+/// Computes building-to-building modifier assignments for a fiefdom.
+/// Returns a map of (target_building_id) -> (resource -> total_multiplier).
+/// Modifiers are recomputed every cycle — no persistence needed.
+ModifierMap computeBuildingModifiers(
+    const std::vector<BuildingData>& buildings,
+    const nlohmann::json& building_types
+);
+
 } // namespace GameLogic

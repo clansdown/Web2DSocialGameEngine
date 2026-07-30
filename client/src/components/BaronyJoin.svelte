@@ -1,12 +1,12 @@
 <script lang="ts">
   /**
-   * Lists all available dukedoms for the player to join.
+   * Lists all available baronies for the player to join.
    * Shows name, description, owner, and member count for each.
    * On join, calls the API and transitions to sandbox (TownView).
    */
 
   import { language, currentCharacter } from '../lib/stores';
-  import { getDukedomsRequest, joinDukedomRequest } from '../lib/api';
+  import { getBaroniesRequest, joinBaronyRequest } from '../lib/api';
   import * as auth from '../lib/auth';
   import { handleError } from '../lib/errors';
 
@@ -17,44 +17,44 @@
 
   let { onJoined, onBack }: Props = $props();
 
-  let dukedoms = $state<Awaited<ReturnType<typeof getDukedomsRequest>>>([]);
+  let baronies = $state<Awaited<ReturnType<typeof getBaroniesRequest>>>([]);
   let loading = $state(true);
   let loadError = $state<string | null>(null);
-  let joiningId = $state<number | null>(null);
+  let joiningBaronyId = $state<number | null>(null);
 
-  async function loadDukedoms(): Promise<void> {
+  async function loadBaronys(): Promise<void> {
     loading = true;
     loadError = null;
     try {
       const token = auth.getSessionToken();
       const username = auth.getInMemoryCredentials()?.username;
       if (!token || !username) return;
-      dukedoms = await getDukedomsRequest({ username, token });
+      baronies = await getBaroniesRequest({ username, token });
     } catch (e) {
-      loadError = e instanceof Error ? e.message : 'Failed to load dukedoms';
+      loadError = e instanceof Error ? e.message : 'Failed to load baronies';
     } finally {
       loading = false;
     }
   }
 
-  async function handleJoin(dukedomId: number): Promise<void> {
-    if (!$currentCharacter || joiningId !== null) return;
-    joiningId = dukedomId;
+  async function handleJoin(baronyId: number): Promise<void> {
+    if (!$currentCharacter || joiningBaronyId !== null) return;
+    joiningBaronyId = baronyId;
     try {
       const token = auth.getSessionToken();
       const username = auth.getInMemoryCredentials()?.username;
       if (!token || !username) return;
-      await joinDukedomRequest($currentCharacter.id, dukedomId, { username, token });
+      await joinBaronyRequest($currentCharacter.id, baronyId, { username, token });
       onJoined();
     } catch (e) {
-      handleError('Failed to join dukedom', e);
+      handleError('Failed to join barony', e);
     } finally {
-      joiningId = null;
+      joiningBaronyId = null;
     }
   }
 
   $effect(() => {
-    loadDukedoms();
+    loadBaronys();
   });
 </script>
 
@@ -63,7 +63,7 @@
     <button class="btn btn-outline-secondary me-3" onclick={onBack}>
       &larr; Back
     </button>
-    <h2 class="mb-0">Choose a Dukedom</h2>
+    <h2 class="mb-0">Choose a Barony</h2>
   </div>
 
   {#if loading}
@@ -74,31 +74,31 @@
     </div>
   {:else if loadError}
     <div class="alert alert-danger">{loadError}</div>
-  {:else if dukedoms.length === 0}
+  {:else if baronies.length === 0}
     <div class="alert alert-info">
-      No dukedoms available yet. Consider starting your own!
+      No baronies available yet. Consider starting your own!
     </div>
   {:else}
     <div class="row g-3">
-      {#each dukedoms as dukedom}
+      {#each baronies as barony}
         <div class="col-12 col-md-6">
           <div class="card h-100">
             <div class="card-body">
-              <h5 class="card-title">{dukedom.name}</h5>
-              {#if dukedom.description}
-                <p class="card-text text-muted">{dukedom.description}</p>
+              <h5 class="card-title">{barony.name}</h5>
+              {#if barony.description}
+                <p class="card-text text-muted">{barony.description}</p>
               {/if}
               <p class="card-text">
                 <small class="text-muted">
-                  Founded by {dukedom.owner_name} &middot; {dukedom.member_count} member{dukedom.member_count !== 1 ? 's' : ''}
+                  Founded by {barony.owner_name} &middot; {barony.member_count} member{barony.member_count !== 1 ? 's' : ''}
                 </small>
               </p>
               <button
                 class="btn btn-primary"
-                onclick={() => handleJoin(dukedom.id)}
-                disabled={joiningId === dukedom.id}
+                onclick={() => handleJoin(barony.id)}
+                disabled={joiningBaronyId === barony.id}
               >
-                {#if joiningId === dukedom.id}
+                {#if joiningBaronyId === barony.id}
                   <span class="spinner-border spinner-border-sm me-1" role="status"></span>
                 {/if}
                 Join

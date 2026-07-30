@@ -1,6 +1,6 @@
 <script lang="ts">
   import { currentCharacter, playerGameState } from '../lib/stores';
-  import { getDukedomsRequest } from '../lib/api';
+  import { getBaroniesRequest } from '../lib/api';
   import * as auth from '../lib/auth';
 
   interface Props {
@@ -10,26 +10,26 @@
   let { onPlayMiniGame }: Props = $props();
 
   /**
-   * Fetches the player's dukedom membership.
+   * Fetches the player's barony membership.
    */
-  let dukedomName = $state<string | null>(null);
-  let dukedomRole = $state<string | null>(null);
+  let baronyName = $state<string | null>(null);
+  let baronyRole = $state<string | null>(null);
 
-  async function fetchDukedomInfo(): Promise<void> {
+  async function fetchBaronyInfo(): Promise<void> {
     try {
       const token = auth.getSessionToken();
       const username = auth.getInMemoryCredentials()?.username;
       if (!token || !username) return;
 
-      // Check which dukedom this character belongs to
-      const allDukedoms = await getDukedomsRequest({ username, token });
-      // For now, just show the first dukedom's info
-      // TODO: add a getMyDukedom endpoint for the logged-in character
-      if (allDukedoms.length > 0) {
-        dukedomName = 'Member of a dukedom'; // Placeholder
+      // Check which barony this character belongs to
+      const allBaronies = await getBaroniesRequest({ username, token });
+      // For now, just show the first barony's info
+      // TODO: add a getMyBarony endpoint for the logged-in character
+      if (allBaronies.length > 0) {
+        baronyName = 'Member of a barony'; // Placeholder
       }
     } catch {
-      // Ignore — dukedom info is secondary
+      // Ignore — barony info is secondary
     }
   }
 
@@ -38,7 +38,7 @@
   }
 
   $effect(() => {
-    fetchDukedomInfo();
+    fetchBaronyInfo();
   });
 </script>
 
@@ -46,8 +46,8 @@
   <div class="d-flex justify-content-between align-items-center mb-4">
     <div>
       <h1 class="mb-0">Ravenest</h1>
-      {#if dukedomName}
-        <small class="text-muted">{dukedomName}</small>
+      {#if baronyName}
+        <small class="text-muted">{baronyName}</small>
       {/if}
     </div>
     <div class="text-end">

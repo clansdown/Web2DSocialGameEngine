@@ -11,7 +11,7 @@
   import StoryText from '../components/StoryText.svelte';
   import { startMiniGame, endMiniGame } from '../lib/game_state';
   import { currentCharacter, playerGameState, language } from '../lib/stores';
-  import { getTextsRequest } from '../lib/api';
+  import { getTextsRequest, fetchGameText } from '../lib/api';
   import type { StartMiniGameResponse, EndMiniGameResponse, UnlockItem } from '../lib/api';
   import { marked } from 'marked';
   import * as storage from '../lib/storage';
@@ -61,6 +61,10 @@
   let unlockIndex = $state(0);
   let kingsMsgTemplate = $state('');
   let itemTexts: Record<string, string> = $state({});
+
+  // Land patent overlay state
+  let showLandPatent = $state(false);
+  let landPatentText = $state('');
 
   /**
    * Starts the mini-game session.
@@ -178,6 +182,11 @@
       loseMessage = texts['wd_defeat_message'] || '';
     }
 
+    if (results.land_patent_earned) {
+      await showLandPatentOverlay();
+      return;
+    }
+
     showResults = true;
   }
 
@@ -202,6 +211,12 @@
       winMessage = texts['td_victory_message'] || '';
     } else {
       loseMessage = texts['td_defeat_message'] || '';
+    }
+
+    // Land patent overlay takes priority over unlocks
+    if (results.land_patent_earned) {
+      await showLandPatentOverlay();
+      return;
     }
 
     const unlocks = results.new_unlocks;
@@ -283,6 +298,22 @@
     }
   }
 
+  function dismissLandPatent() {
+    showLandPatent = false;
+    showResults = true;
+  }
+
+  async function showLandPatentOverlay() {
+    const seal = `<img src="/images/ui/kings_seal.png" style="width: 10em; height: auto;" alt="King's Seal" />`;
+    const sex = $currentCharacter?.sex || 'male';
+    let raw = await fetchGameText('land_patent_earned', sex);
+    if ($currentCharacter) {
+      raw = raw.replace(/\{character_name\}/g, $currentCharacter.display_name);
+    }
+    landPatentText = raw.replace(/\<seal\>/g, `\n\n${seal}`);
+    showLandPatent = true;
+  }
+
   $effect(() => {
     if (!gameStarted && !gameFinished && !tdStarted) {
       initializeGame();
@@ -307,6 +338,10 @@
   {:else if showKingsMessage && unlockQueue.length > 0}
     <DialogOverlay title="" size="xlg" noPadding onDismiss={dismissKingsMessage}>
       <StoryText text={currentFullText()} />
+    </DialogOverlay>
+  {:else if showLandPatent}
+    <DialogOverlay title="" size="xlg" noPadding onDismiss={dismissLandPatent}>
+      <StoryText text={landPatentText} />
     </DialogOverlay>
   {:else if showResults && gameResults}
     <div class="container py-5">
@@ -339,16 +374,10 @@
               <p class="mb-0">You have proven yourself worthy. The right to build is yours.</p>
             </div>
           {/if}
-          {#if gameResults.land_patent_earned}
-            <div class="alert alert-info">
-              <h4 class="alert-heading">Land Patent Earned!</h4>
-              <p class="mb-0">You have completed all initial missions. You may now join a dukedom or earn the right to start your own.</p>
-            </div>
-          {/if}
-          {#if gameResults.duke_right_earned}
+          {#if gameResults.baron_right_earned}
             <div class="alert alert-warning">
-              <h4 class="alert-heading">Dukedom Right Earned!</h4>
-              <p class="mb-0">You have cleared the duke track. You may now found your own dukedom.</p>
+              <h4 class="alert-heading">Barony Right Earned!</h4>
+              <p class="mb-0">You have cleared the baron track. You may now found your own barony.</p>
             </div>
           {/if}
 

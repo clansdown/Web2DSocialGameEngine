@@ -3,6 +3,7 @@
 #include "Database.hpp"
 #include "GameConfigCache.hpp"
 #include "GridCollision.hpp"
+#include <map>
 #include <optional>
 #include <set>
 
@@ -79,6 +80,21 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
                 result.status = ActionStatus::FAIL;
                 result.error_code = "prerequisites_not_met";
                 result.error_message = "Building prerequisites not satisfied";
+                return result;
+            }
+        }
+    }
+
+    // Check building dependencies for the target level (level 1 = new build)
+    {
+        nlohmann::json deps = Validation::getDependenciesForLevel(*ctx.config_cache, building_type, 1);
+        if (!deps.empty()) {
+            auto all_buildings = Validation::getFiefdomAllBuildings(fiefdom_id);
+            auto dep_result = Validation::checkBuildingDependencies(*ctx.config_cache, fiefdom_id, all_buildings, deps);
+            if (!dep_result.first) {
+                result.status = ActionStatus::FAIL;
+                result.error_code = "dependencies_not_met";
+                result.error_message = dep_result.second;
                 return result;
             }
         }
@@ -1108,6 +1124,22 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
             }
         }
 
+        // Check building dependencies for the next level
+        {
+            int next_level = current_level + 1;
+            nlohmann::json deps = Validation::getDependenciesForLevel(*ctx.config_cache, building_name, next_level);
+            if (!deps.empty()) {
+                auto all_buildings = Validation::getFiefdomAllBuildings(fiefdom_id);
+                auto dep_result = Validation::checkBuildingDependencies(*ctx.config_cache, fiefdom_id, all_buildings, deps);
+                if (!dep_result.first) {
+                    result.status = ActionStatus::FAIL;
+                    result.error_code = "dependencies_not_met";
+                    result.error_message = dep_result.second;
+                    return result;
+                }
+            }
+        }
+
         nlohmann::json next_cost;
         std::string cost_fields[] = {"gold_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
         for (const auto& field : cost_fields) {
@@ -1393,16 +1425,166 @@ int getBuildingLevelInFiefdom(int fiefdom_id, const std::string& building_name) 
     return level;
 }
 
+int getFiefdomManorLevel(int fiefdom_id) {
+    auto& db = Database::getInstance().gameDB();
+    int level = 0;
+    db << "SELECT manor_level FROM fiefdoms WHERE id = ?;"
+       << fiefdom_id
+       >> [&](int ml) { level = ml; };
+    return level;
+}
+
 bool checkFiefdomPrerequisites(int fiefdom_id, const nlohmann::json& prerequisites) {
     if (prerequisites.empty()) return true;
     
     for (auto& [building_id, required_level] : prerequisites.items()) {
-        int current_level = getBuildingLevelInFiefdom(fiefdom_id, building_id);
-        if (current_level < required_level.get<int>()) {
-            return false;
+        if (building_id == "manor_level") {
+            int current_manor_level = getFiefdomManorLevel(fiefdom_id);
+            if (current_manor_level < required_level.get<int>()) {
+                return false;
+            }
+        } else {
+            int current_level = getBuildingLevelInFiefdom(fiefdom_id, building_id);
+            if (current_level < required_level.get<int>()) {
+                return false;
+            }
         }
     }
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Dependency helpers
+// ---------------------------------------------------------------------------
+
+/// Gets the dependencies array for a building at a given target level.
+/// Returns an empty array if no dependencies configured.
+nlohmann::json getDependenciesForLevel(
+    GameConfigCache& cache,
+    const std::string& building_type,
+    int target_level
+) {
+    auto config_opt = getBuildingConfig(cache, building_type);
+    if (!config_opt) return nlohmann::json::array();
+
+    auto config = *config_opt;
+    if (!config.contains("dependencies") || !config["dependencies"].is_array()) {
+        return nlohmann::json::array();
+    }
+
+    auto deps = config["dependencies"];
+    int arr_size = static_cast<int>(deps.size());
+
+    if (arr_size == 0) return nlohmann::json::array();
+    if (target_level < arr_size) return deps[target_level];
+    // Extrapolate: use last entry
+    return deps[arr_size - 1];
+}
+
+/// Counts buildings of a given type in a fiefdom that meet the minimum level.
+int countBuildingsByType(int fiefdom_id, const std::string& target_building, int min_level) {
+    auto& db = Database::getInstance().gameDB();
+    int count = 0;
+    db << "SELECT COUNT(*) FROM fiefdom_buildings "
+          "WHERE fiefdom_id = ? AND name = ? AND level >= ? AND level > 0;"
+       << fiefdom_id << target_building << min_level
+       >> [&](int c) { count = c; };
+    return count;
+}
+
+/// Aggregates dependency requirements across all buildings in a fiefdom,
+/// plus optional additional dependencies (e.g., from a building being validated).
+/// Returns a map: target_building -> (max_shared_count, sum_exclusive_count)
+std::map<std::string, std::pair<int, int>> aggregateFiefdomDependencies(
+    GameConfigCache& cache,
+    int fiefdom_id,
+    const std::vector<BuildingData>& buildings,
+    const nlohmann::json& additional_deps = nlohmann::json::array()
+) {
+    std::map<std::string, std::pair<int, int>> result;
+
+    // Aggregate from existing buildings
+    for (const auto& building : buildings) {
+        if (building.level <= 0) continue;
+        nlohmann::json deps = getDependenciesForLevel(cache, building.name, building.level - 1);
+        if (deps.empty()) continue;
+
+        for (const auto& dep : deps) {
+            if (!dep.contains("target_building") || !dep.contains("count")) continue;
+            std::string tb = dep["target_building"].get<std::string>();
+            int count = dep["count"].is_number() ? dep["count"].get<int>() : 1;
+            bool shared = dep.value("shared", false);
+
+            auto& entry = result[tb];
+            if (shared) {
+                entry.first = std::max(entry.first, count);
+            } else {
+                entry.second += count;
+            }
+        }
+    }
+
+    // Add additional dependencies (from the building being validated)
+    for (const auto& dep : additional_deps) {
+        if (!dep.contains("target_building") || !dep.contains("count")) continue;
+        std::string tb = dep["target_building"].get<std::string>();
+        int count = dep["count"].is_number() ? dep["count"].get<int>() : 1;
+        bool shared = dep.value("shared", false);
+
+        auto& entry = result[tb];
+        if (shared) {
+            entry.first = std::max(entry.first, count);
+        } else {
+            entry.second += count;
+        }
+    }
+
+    return result;
+}
+
+/// Checks if a fiefdom meets all building dependencies.
+/// Returns { true, "" } if met, or { false, "reason string" } if not.
+std::pair<bool, std::string> checkBuildingDependencies(
+    GameConfigCache& cache,
+    int fiefdom_id,
+    const std::vector<BuildingData>& buildings,
+    const nlohmann::json& deps_to_check
+) {
+    if (deps_to_check.empty()) return {true, ""};
+
+    auto aggregated = aggregateFiefdomDependencies(cache, fiefdom_id, buildings, deps_to_check);
+
+    for (const auto& [target_building, counts] : aggregated) {
+        int shared_needed = counts.first;
+        int exclusive_needed = counts.second;
+        int min_level = 1; // default minimum level for counting
+
+        // Use the min_level from the deps_to_check if provided
+        // (all deps in the same validation share the same target_building,
+        //  but could have different min_levels — take the highest)
+        for (const auto& dep : deps_to_check) {
+            if (dep.contains("target_building") && dep["target_building"] == target_building) {
+                int ml = dep.value("min_level", 1);
+                if (ml > min_level) min_level = ml;
+            }
+        }
+
+        int total = countBuildingsByType(fiefdom_id, target_building, min_level);
+        int needed = shared_needed + exclusive_needed;
+
+        if (total < needed) {
+            int shortfall = needed - total;
+            return {false, "Need " + std::to_string(needed) + " " + target_building +
+                    " (have " + std::to_string(total) + ", need " + std::to_string(shortfall) + " more)"};
+        }
+    }
+
+    return {true, ""};
+}
+
+/// Gets all buildings in a fiefdom (used by dependency checker).
+std::vector<BuildingData> getFiefdomAllBuildings(int fiefdom_id) {
+    return FiefdomFetcher::fetchFiefdomBuildings(fiefdom_id);
 }
 
 } // namespace Validation

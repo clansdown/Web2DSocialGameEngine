@@ -32,6 +32,7 @@ public:
     nlohmann::json& getWeedingPlants();
     nlohmann::json& getWeedingTools();
     nlohmann::json& getWeedingSpecials();
+    nlohmann::json& getEconomyConfig();
     std::optional<nlohmann::json> loadWeedingMap(const std::string& filename);
     std::optional<nlohmann::json> loadWeedingLevelConfig(const std::string& filename);
 

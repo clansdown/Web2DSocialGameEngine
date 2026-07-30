@@ -1,6 +1,6 @@
-# `/api/joinDukedom`
+# `/api/joinBarony`
 
-Joins an existing dukedom, creates a fiefdom, and transitions the player to sandbox phase.
+Joins an existing barony, creates a fiefdom, and transitions the player to sandbox phase.
 
 **Requires authentication.**
 
@@ -9,7 +9,7 @@ Joins an existing dukedom, creates a fiefdom, and transitions the player to sand
 ```json
 {
     "character_id": 1,
-    "dukedom_id": 2,
+        "barony_id": 2,
     "auth": {
         "username": "player",
         "token": "session_token_hex"
@@ -23,7 +23,7 @@ Joins an existing dukedom, creates a fiefdom, and transitions the player to sand
 {
     "status": "ok",
     "data": {
-        "dukedom_id": 2,
+    "barony_id": 2,
         "fiefdom_id": 5,
         "game_phase": "sandbox",
         "base_unlocked": true
@@ -35,15 +35,15 @@ Joins an existing dukedom, creates a fiefdom, and transitions the player to sand
 
 ```json
 { "error": "character_id required" }
-{ "error": "dukedom_id required" }
-{ "error": "Dukedom not found" }
-{ "error": "Already a member of a dukedom" }
-{ "error": "Must have a land patent to join a dukedom" }
+{ "error": "barony_id required" }
+{ "error": "Barony not found" }
+{ "error": "Already a member of a barony" }
+{ "error": "Must have a land patent to join a barony" }
 ```
 
 ## Notes
 
 - Creates a fiefdom for the character with `manor_level = 1`
 - Character must be in `land_patent` game phase
-- Character can only be in one dukedom at a time
+- Character can only be in one barony at a time
 - Fiefdom position is auto-assigned

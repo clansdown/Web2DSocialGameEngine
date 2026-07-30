@@ -1062,8 +1062,8 @@
     if (resp.land_patent_earned) {
       results.land_patent_earned = true;
     }
-    if (resp.duke_right_earned) {
-      results.duke_right_earned = true;
+    if (resp.baron_right_earned) {
+      results.baron_right_earned = true;
     }
     onComplete(results);
   }

@@ -64,6 +64,7 @@ bool GameConfigCache::initialize(const std::string& config_dir) {
     add("weeding/plants.json");
     add("weeding/tools.json");
     add("weeding/specials.json");
+    add("economy.json");
 
     for (auto& [name, entry] : configs_) {
         struct stat st;
@@ -131,6 +132,7 @@ nlohmann::json& GameConfigCache::getTowerDefenseWaveTemplates() { return getConf
 nlohmann::json& GameConfigCache::getWeedingPlants() { return getConfig("weeding/plants.json"); }
 nlohmann::json& GameConfigCache::getWeedingTools() { return getConfig("weeding/tools.json"); }
 nlohmann::json& GameConfigCache::getWeedingSpecials() { return getConfig("weeding/specials.json"); }
+nlohmann::json& GameConfigCache::getEconomyConfig() { return getConfig("economy.json"); }
 
 std::optional<nlohmann::json> GameConfigCache::getTowerDefenseSpawnSchedule(const std::string& filename) {
     nlohmann::json& data = getConfig("tower_defense/spawn_schedules/" + filename);

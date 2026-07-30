@@ -19,13 +19,13 @@
   let customRewards = $state('');
 
   let isCampaign = $derived(
-    $playerGameState?.game_phase === 'initial_mission' || $playerGameState?.game_phase === 'duke_track'
+    $playerGameState?.game_phase === 'initial_mission' || $playerGameState?.game_phase === 'baron_track'
   );
 
-  let isDukeTrack = $derived($playerGameState?.game_phase === 'duke_track');
-  let campaignSize = $derived(isDukeTrack ? 4 : 3);
-  let minLevelId = $derived(isDukeTrack ? 10 : 1);
-  let campaignId = $derived(isDukeTrack ? 'great_wolf_marche' : 'wolf_marche');
+  let isBaronTrack = $derived($playerGameState?.game_phase === 'baron_track');
+  let campaignSize = $derived(isBaronTrack ? 4 : 3);
+  let minLevelId = $derived(isBaronTrack ? 10 : 1);
+  let campaignId = $derived(isBaronTrack ? 'great_wolf_marche' : 'wolf_marche');
 
   async function startCustomGame() {
     const result = await tdRound($currentCharacter!.id, {

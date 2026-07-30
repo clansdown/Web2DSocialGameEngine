@@ -69,7 +69,7 @@ export interface WeedingTurnResponse {
   rewards?: Record<string, number>;
   completion_bonus?: Record<string, number>;
   land_patent_earned?: boolean;
-  duke_right_earned?: boolean;
+  baron_right_earned?: boolean;
   next_level_id?: number | null;
 }
 

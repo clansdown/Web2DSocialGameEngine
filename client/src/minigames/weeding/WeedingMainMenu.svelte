@@ -15,19 +15,19 @@
 
   let gridSize = $derived.by(() => {
     if (!config) return 3;
-    if ($playerGameState?.game_phase === 'duke_track') {
-      return config.duke_grid_size ?? 4;
+    if ($playerGameState?.game_phase === 'baron_track') {
+      return config.baron_grid_size ?? 4;
     }
     return config.grid_size ?? 3;
   });
 
   let minLevelId = $derived(
-    $playerGameState?.game_phase === 'duke_track' ? 10 : 1
+    $playerGameState?.game_phase === 'baron_track' ? 10 : 1
   );
 
   let isCampaign = $derived(
     $playerGameState?.game_phase === 'initial_mission' ||
-    $playerGameState?.game_phase === 'duke_track'
+    $playerGameState?.game_phase === 'baron_track'
   );
 
   async function loadConfig() {
