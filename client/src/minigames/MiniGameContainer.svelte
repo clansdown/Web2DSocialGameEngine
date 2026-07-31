@@ -11,7 +11,7 @@
   import StoryText from '../components/StoryText.svelte';
   import { startMiniGame, endMiniGame } from '../lib/game_state';
   import { currentCharacter, playerGameState, language } from '../lib/stores';
-  import { getTextsRequest, fetchGameText } from '../lib/api';
+  import { getTextsRequest, fetchGameText, acknowledgeLandPatentRequest } from '../lib/api';
   import type { StartMiniGameResponse, EndMiniGameResponse, UnlockItem } from '../lib/api';
   import { marked } from 'marked';
   import * as storage from '../lib/storage';
@@ -298,7 +298,14 @@
     }
   }
 
-  function dismissLandPatent() {
+  async function dismissLandPatent() {
+    const creds = (await import('../lib/auth')).getInMemoryCredentials();
+    const token = (await import('../lib/auth')).getSessionToken();
+    if (creds && token && $currentCharacter) {
+      try {
+        await acknowledgeLandPatentRequest($currentCharacter.id, { username: creds.username, token });
+      } catch { /* best effort */ }
+    }
     showLandPatent = false;
     showResults = true;
   }

@@ -7,15 +7,15 @@
   import LanguageSelect from './components/LanguageSelect.svelte';
   import PathSelect from './components/PathSelect.svelte';
   import SexSelect from './components/SexSelect.svelte';
-  import PatentScreen from './components/PatentScreen.svelte';
   import BaronyJoin from './components/BaronyJoin.svelte';
   import BaronyCreate from './components/BaronyCreate.svelte';
   import DialogOverlay from './components/DialogOverlay.svelte';
+  import StoryText from './components/StoryText.svelte';
   // MiniGameSelect is used internally by HubScreen
   import MiniGameContainer from './minigames/MiniGameContainer.svelte';
   import * as auth from './lib/auth';
   import { user, characters, currentCharacter, authLoading, playerGameState, language, isAuthenticated } from './lib/stores';
-  import { loginRequest, refreshToken, setCharacterArchetypeRequest, setCharacterSexRequest, getTextsRequest } from './lib/api';
+  import { loginRequest, refreshToken, setCharacterArchetypeRequest, setCharacterSexRequest, getTextsRequest, acknowledgeLandPatentRequest, fetchGameText } from './lib/api';
   import { fetchPlayerState } from './lib/game_state';
   import type { EndMiniGameResponse } from './lib/api';
   import { handleError } from './lib/errors';
@@ -38,6 +38,11 @@
   let showBaronyList = $state(false);
   let showBaronyCreate = $state(false);
   let showBaronyGrid = $state(false);
+
+  // Land patent notification state
+  let showLandPatent = $state(false);
+  let landPatentText = $state('');
+  let landPatentHandled = $state(false);
 
   /**
    * Loads stored language preference on startup.
@@ -228,6 +233,42 @@
     }
   }
 
+  /**
+   * Dismisses the land patent notification and acknowledges it server-side.
+   */
+  async function dismissLandPatent(): Promise<void> {
+    const creds = auth.getInMemoryCredentials();
+    const token = auth.getSessionToken();
+    if (creds && token && $currentCharacter) {
+      try {
+        await acknowledgeLandPatentRequest($currentCharacter.id, { username: creds.username, token });
+      } catch { /* best effort */ }
+    }
+    showLandPatent = false;
+    landPatentHandled = true;
+  }
+
+  /**
+   * Shows the land patent overlay when the server flags an unacknowledged
+   * patent transition in the player state response.
+   */
+  $effect(() => {
+    const state = $playerGameState;
+    if (!state || landPatentHandled) return;
+    if ((state as any).land_patent_earned && !showLandPatent) {
+      const sex = $currentCharacter?.sex || 'male';
+      fetchGameText('land_patent_earned', sex).then((raw) => {
+        let text = raw;
+        if ($currentCharacter) {
+          text = text.replace(/\{character_name\}/g, $currentCharacter.display_name);
+        }
+        text = text.replace(/\<seal\>/g, `\n\n<img src="/images/ui/kings_seal.png" style="width: 10em; height: auto;" alt="King's Seal" />`);
+        landPatentText = text;
+        showLandPatent = true;
+      });
+    }
+  });
+
   function handleBaronyCreated(): void {
     showBaronyCreate = false;
     if ($currentCharacter) {
@@ -268,6 +309,17 @@
     body={introBody}
     onDismiss={handleIntroDismiss}
   />
+{/if}
+
+{#if showLandPatent}
+  <DialogOverlay
+    title=""
+    size="xlg"
+    noPadding
+    onDismiss={dismissLandPatent}
+  >
+    <StoryText text={landPatentText} />
+  </DialogOverlay>
 {/if}
 
 {#if languageLoading}
@@ -320,15 +372,12 @@
     activities={$playerGameState.available_activities}
     onStartLevel={handleStartLevel}
   />
-{:else if $playerGameState.game_phase === 'land_patent'}
-  <PatentScreen
-    onJoinBarony={handleGoToJoinBarony}
-    onStartBaronTrack={handleBaronTrackStarted}
-  />
-{:else if $playerGameState.game_phase === 'baron_track'}
+{:else if $playerGameState.game_phase === 'land_patent' || $playerGameState.game_phase === 'baron_track'}
   <HubScreen
     activities={$playerGameState.available_activities}
     onStartLevel={handleStartLevel}
+    onJoinBarony={handleGoToJoinBarony}
+    onBaronTrackStarted={handleBaronTrackStarted}
   />
 {:else if $playerGameState.game_phase === 'baron_right'}
   <BaronyCreate

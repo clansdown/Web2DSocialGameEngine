@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { currentCharacter } from '../lib/stores';
-  import { getFiefdomRequest, buildRequest, getTextsRequest } from '../lib/api';
-  import type { FiefdomResponse } from '../lib/api';
+  import { getFiefdomRequest, buildRequest, getTextsRequest, getBuildingConfigsRequest } from '../lib/api';
+  import type { FiefdomResponse, BuildingTypeConfig } from '../lib/api';
   import { getSessionToken, getInMemoryCredentials } from '../lib/auth';
   import { getConfigBoolean, setConfig as setConfigKV, getConfigNumber } from '../lib/storage';
 
@@ -31,68 +31,16 @@
   const CX = BW / 2;
   const CY = BH / 2;
 
-  interface BuildingCfg {
-    display_name: string;
-    image: string;
-    w: number;
-    h: number;
-    min_manor_level: number;
-    costs: Record<string, number>;
-  }
-
-  const BUILDING_CONFIGS: Record<string, BuildingCfg> = {
-    home_base: {
-      display_name: 'Manor House',
-      image: '/images/manor/buildings/manor_house_1.png',
-      w: 5, h: 5,
-      min_manor_level: 1,
-      costs: {}
-    },
-    woodcutter: {
-      display_name: 'Woodcutter',
-      image: '/images/manor/buildings/woodcutter.png',
-      w: 2, h: 2,
-      min_manor_level: 1,
-      costs: { gold: 20 }
-    },
-    wood_hewer: {
-      display_name: 'Wood Hewer',
-      image: '/images/manor/buildings/wood_hewer.png',
-      w: 2, h: 2,
-      min_manor_level: 1,
-      costs: { gold: 30, stone: 10 }
-    },
-    peasant: {
-      display_name: 'Peasant Cottage',
-      image: '/images/manor/buildings/peasant.png',
-      w: 3, h: 3,
-      min_manor_level: 1,
-      costs: { gold: 40, wood: 20 }
-    },
-    miller: {
-      display_name: 'Miller',
-      image: '/images/manor/buildings/miller.png',
-      w: 3, h: 3,
-      min_manor_level: 2,
-      costs: { gold: 30, wood: 15 }
-    },
-    blacksmith: {
-      display_name: 'Blacksmith',
-      image: '/images/manor/buildings/blacksmith.png',
-      w: 3, h: 3,
-      min_manor_level: 2,
-      costs: { gold: 50, wood: 20 }
-    }
-  };
-
   let canvasEl: HTMLCanvasElement;
   let debugDiv: HTMLDivElement;
   let loading = $state(true);
   let errorMsg = $state<string | null>(null);
   let fiefdomData: FiefdomResponse | null = $state(null);
+  let buildingConfigs: Record<string, BuildingTypeConfig> = $state({});
 
   let buildingGameObjMap = new Map<number, GameObject>();
   let buildingClasses = new Map<string, GameObjectClass>();
+  let underConstructionSet = new Set<number>();
 
   let placementMode = $state(false);
   let placementType = $state<string | null>(null);
@@ -142,18 +90,22 @@
     return a.l < b.r && a.r > b.l && a.t < b.b && a.b > b.t;
   }
 
+  function getCfg(id: string): BuildingTypeConfig | undefined {
+    return buildingConfigs[id];
+  }
+
   function checkVal(gx: number, gy: number, typeId: string): { valid: boolean; reason: string } {
     if (!fiefdomData) return { valid: false, reason: 'No fiefdom data' };
-    const cfg = BUILDING_CONFIGS[typeId];
+    const cfg = getCfg(typeId);
     if (!cfg) return { valid: false, reason: 'Unknown building type' };
     if (fiefdomData.manor_level < cfg.min_manor_level) {
       return { valid: false, reason: `Need manor level ${cfg.min_manor_level}` };
     }
-    const ghostRect = getRect(gx, gy, cfg.w, cfg.h);
+    const ghostRect = getRect(gx, gy, cfg.width, cfg.height);
     for (const b of fiefdomData.buildings || []) {
-      const existing = BUILDING_CONFIGS[b.name];
+      const existing = getCfg(b.name);
       if (!existing) continue;
-      if (overlap(ghostRect, getRect(b.x, b.y, existing.w, existing.h))) {
+      if (overlap(ghostRect, getRect(b.x, b.y, existing.width, existing.height))) {
         return { valid: false, reason: `Overlaps ${existing.display_name}` };
       }
     }
@@ -169,37 +121,77 @@
   function clearBuildings() {
     for (const obj of buildingGameObjMap.values()) obj.destroy();
     buildingGameObjMap.clear();
+    buildingClasses.clear();
+    underConstructionSet.clear();
   }
 
   function renderBuildings() {
     if (!fiefdomData) return;
     const homeBasePlaced = fiefdomData.buildings?.some(b => b.name === 'home_base');
+    const now = Date.now() / 1000;
 
     for (const b of fiefdomData.buildings || []) {
       if (b.name === 'home_base') continue;
-      const cfg = BUILDING_CONFIGS[b.name];
+      const cfg = getCfg(b.name);
       if (!cfg) continue;
-      let cls = buildingClasses.get(b.name);
+
+      const underConstruction = b.construction_start_ts > 0;
+      const imgUrl = underConstruction ? cfg.construction_image : cfg.image;
+      const classKey = b.name + (underConstruction ? '_con' : '');
+
+      let cls = buildingClasses.get(classKey);
       if (!cls) {
-        cls = new GameObjectClass(b.name, cfg.image, null);
-        buildingClasses.set(b.name, cls);
+        cls = new GameObjectClass(classKey, imgUrl, null);
+        buildingClasses.set(classKey, cls);
       }
-      const pos = g2b(b.x, b.y, cfg.w, cfg.h);
+
+      const pos = g2b(b.x, b.y, cfg.width, cfg.height);
       const obj = new GameObject(cls, pos.x, pos.y);
-      obj.width = cfg.w * CELL;
-      obj.height = cfg.h * CELL;
+      obj.width = cfg.width * CELL;
+      obj.height = cfg.height * CELL;
+
+      if (underConstruction) {
+        underConstructionSet.add(b.id);
+        const totalSec = cfg.construction_times[b.level] || cfg.construction_times[0] || 60;
+        obj.var.construction_start = b.construction_start_ts;
+        obj.var.construction_duration = totalSec;
+        obj.var.progress = Math.min((now - b.construction_start_ts) / totalSec, 1);
+        obj.setProgressBar(() => obj.var.progress, '#4caf50', '#333333', 0.9);
+      }
+
       buildingGameObjMap.set(b.id, obj);
     }
 
-    const manorCls = buildingClasses.get('home_base') ??
-      new GameObjectClass('home_base', BUILDING_CONFIGS.home_base.image, null);
-    if (!buildingClasses.has('home_base')) buildingClasses.set('home_base', manorCls);
-    const mPos = g2b(0, 0, 5, 5);
-    const manorObj = new GameObject(manorCls, mPos.x, mPos.y);
-    manorObj.width = 5 * CELL;
-    manorObj.height = 5 * CELL;
-    manorObj.opacity = homeBasePlaced ? 1.0 : 0.4;
-    buildingGameObjMap.set(-1, manorObj);
+    // Manor house (always at center)
+    const manorCfg = getCfg('home_base');
+    if (manorCfg) {
+      const manorUnderConstruction = homeBasePlaced
+        ? ((fiefdomData.buildings || []).find(b => b.name === 'home_base')?.construction_start_ts ?? 0) > 0
+        : false;
+      const manorImg = manorUnderConstruction ? manorCfg.construction_image : manorCfg.image;
+      const manorKey = 'home_base' + (manorUnderConstruction ? '_con' : '');
+      let manorCls = buildingClasses.get(manorKey);
+      if (!manorCls) {
+        manorCls = new GameObjectClass(manorKey, manorImg, null);
+        buildingClasses.set(manorKey, manorCls);
+      }
+      const mPos = g2b(0, 0, 5, 5);
+      const manorObj = new GameObject(manorCls, mPos.x, mPos.y);
+      manorObj.width = 5 * CELL;
+      manorObj.height = 5 * CELL;
+      manorObj.opacity = homeBasePlaced ? 1.0 : 0.4;
+      buildingGameObjMap.set(-1, manorObj);
+
+      if (manorUnderConstruction) {
+        const b = (fiefdomData.buildings || []).find(b => b.name === 'home_base')!;
+        underConstructionSet.add(b.id);
+        const totalSec = manorCfg.construction_times[b.level] || manorCfg.construction_times[0] || 60;
+        manorObj.var.construction_start = b.construction_start_ts;
+        manorObj.var.construction_duration = totalSec;
+        manorObj.var.progress = Math.min((now - b.construction_start_ts) / totalSec, 1);
+        manorObj.setProgressBar(() => manorObj.var.progress, '#4caf50', '#333333', 0.9);
+      }
+    }
   }
 
   function enterPlacement(typeId: string) {
@@ -207,13 +199,14 @@
     placementMode = true;
     placementType = typeId;
 
-    const cfg = BUILDING_CONFIGS[typeId];
+    const cfg = getCfg(typeId);
+    if (!cfg) return;
 
     const ghostCls = new GameObjectClass('ghost_' + typeId, cfg.image, null);
-    const pos = g2b(0, 0, cfg.w, cfg.h);
+    const pos = g2b(0, 0, cfg.width, cfg.height);
     ghostBuilding = new GameObject(ghostCls, pos.x, pos.y);
-    ghostBuilding.width = cfg.w * CELL;
-    ghostBuilding.height = cfg.h * CELL;
+    ghostBuilding.width = cfg.width * CELL;
+    ghostBuilding.height = cfg.height * CELL;
     ghostBuilding.opacity = 0.5;
     ghostBuilding.draggable = true;
     ghostBuilding.onDragMap.set(0, () => {
@@ -231,18 +224,18 @@
     const iCls = invalidOverlayClass!;
 
     ghostOverlayValid = new GameObject(vCls, pos.x, pos.y);
-    ghostOverlayValid.width = cfg.w * CELL;
-    ghostOverlayValid.height = cfg.h * CELL;
+    ghostOverlayValid.width = cfg.width * CELL;
+    ghostOverlayValid.height = cfg.height * CELL;
     ghostOverlayValid.opacity = 0.6;
     ghostOverlayValid.visible = true;
 
     ghostOverlayInvalid = new GameObject(iCls, pos.x, pos.y);
-    ghostOverlayInvalid.width = cfg.w * CELL;
-    ghostOverlayInvalid.height = cfg.h * CELL;
+    ghostOverlayInvalid.width = cfg.width * CELL;
+    ghostOverlayInvalid.height = cfg.height * CELL;
     ghostOverlayInvalid.opacity = 0.6;
     ghostOverlayInvalid.visible = false;
 
-    ghostTooltip = createText('', { x: pos.x, y: pos.y - cfg.h * CELL / 2 - 30 });
+    ghostTooltip = createText('', { x: pos.x, y: pos.y - cfg.height * CELL / 2 - 30 });
 
     ghostPos = { gx: 0, gy: 0 };
     ghostValid = false;
@@ -308,12 +301,11 @@
     buildCol = new Column(BW - 120, 80);
 
     const homeBasePlaced = fiefdomData?.buildings?.some(b => b.name === 'home_base');
-    const available = Object.entries(BUILDING_CONFIGS).filter(([id, cfg]) => {
+    const available = Object.entries(buildingConfigs).filter(([id, cfg]) => {
       if (id === 'home_base' && homeBasePlaced) return false;
       return fiefdomData && fiefdomData.manor_level >= cfg.min_manor_level;
     });
 
-    let btnCount = 0;
     for (const [typeId, cfg] of available) {
       const bc = new ButtonClass('b_' + typeId);
       const btn = bc.spawn(0, 0, cfg.display_name, cfg.image, {
@@ -323,7 +315,6 @@
       btn.zIndex = 100;
       btn.onClick(0, () => enterPlacement(typeId));
       buildCol.addChild(btn);
-      btnCount++;
     }
 
     const cc = new ButtonClass('cancel_manor');
@@ -355,6 +346,16 @@
     }
 
     loading = true;
+
+    // Fetch building configs from server
+    try {
+      buildingConfigs = await getBuildingConfigsRequest();
+    } catch (e) {
+      errorMsg = 'Failed to load building configs';
+      loading = false;
+      return;
+    }
+
     await loadFiefdomData();
 
     const token = getSessionToken();
@@ -367,6 +368,20 @@
     if (errorMsg) {
       loading = false;
       return;
+    }
+
+    // Auto-place manor house if not already placed
+    if (fiefdomData && !fiefdomData.buildings?.some(b => b.name === 'home_base')) {
+      try {
+        await buildRequest({
+          fiefdom_id: fiefdomData.id,
+          building_type: 'home_base',
+          x: 0, y: 0
+        }, { username: creds.username, token });
+        await loadFiefdomData();
+      } catch (e) {
+        // Silently continue — manor may already exist or be in progress
+      }
     }
 
     debugDiv = document.createElement('div');
@@ -388,12 +403,12 @@
       }
 
       if (ghostBuilding && placementType) {
-        const cfg = BUILDING_CONFIGS[placementType];
+        const cfg = getCfg(placementType);
         if (!cfg) return;
 
         const mouse = getMousePosition();
         const snapped = b2g(mouse.x, mouse.y);
-        const pos = g2b(snapped.gx, snapped.gy, cfg.w, cfg.h);
+        const pos = g2b(snapped.gx, snapped.gy, cfg.width, cfg.height);
 
         ghostBuilding.x = pos.x;
         ghostBuilding.y = pos.y;
@@ -410,7 +425,7 @@
           if (ghostOverlayInvalid) ghostOverlayInvalid.visible = true;
           if (ghostTooltip) {
             ghostTooltip.x = pos.x;
-            ghostTooltip.y = pos.y - cfg.h * CELL / 2 - 30;
+            ghostTooltip.y = pos.y - cfg.height * CELL / 2 - 30;
             ghostTooltip.text = result.reason;
             ghostTooltip.opacity = 1;
           }
@@ -418,6 +433,22 @@
           if (ghostOverlayValid) ghostOverlayValid.visible = true;
           if (ghostOverlayInvalid) ghostOverlayInvalid.visible = false;
           if (ghostTooltip) ghostTooltip.opacity = 0;
+        }
+      }
+
+      // Update progress bars for construction buildings
+      const now = Date.now() / 1000;
+      for (const id of underConstructionSet) {
+        const obj = buildingGameObjMap.get(id);
+        if (obj && obj.var.construction_duration) {
+          obj.var.progress = Math.min(
+            (now - obj.var.construction_start) / obj.var.construction_duration,
+            1
+          );
+          if (obj.var.progress > 0.999) {
+            underConstructionSet.delete(id);
+            obj.setProgressBar(null, '#4caf50', '#333333', 0.9);
+          }
         }
       }
     });

@@ -183,6 +183,16 @@ ApiResponse handleVerifyAgeOverride(GameConfigCache& config_cache, const nlohman
                                      const ClientInfo& client,
                                      const std::optional<std::string>& new_token);
 
+ApiResponse handleAcknowledgeLandPatent(GameConfigCache& config_cache, const nlohmann::json& body,
+                                         const std::optional<std::string>& username,
+                                         const ClientInfo& client,
+                                         const std::optional<std::string>& new_token);
+
+ApiResponse handleGetBuildingConfigs(GameConfigCache& config_cache, const nlohmann::json& body,
+                                      const std::optional<std::string>& username,
+                                      const ClientInfo& client,
+                                      const std::optional<std::string>& new_token);
+
 inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfigCache& config_cache) {
     using Json = const nlohmann::json&;
     using Username = const std::optional<std::string>&;
@@ -219,5 +229,7 @@ inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfi
     add("tdRound",                [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleTDRound(c, b, u, cl, t); });
     add("weedingStart",           [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleWeedingStart(c, b, u, cl, t); });
     add("weedingTurn",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleWeedingTurn(c, b, u, cl, t); });
+    add("getBuildingConfigs",     [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetBuildingConfigs(c, b, u, cl, t); });
+    add("acknowledgeLandPatent",  [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleAcknowledgeLandPatent(c, b, u, cl, t); });
     return handlers;
 }

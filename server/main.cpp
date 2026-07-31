@@ -921,12 +921,25 @@ ApiResponse handleGetPlayerState(GameConfigCache& config_cache, const json& body
         auto& db = Database::getInstance().gameDB();
         auto state = player_state_db::get_player_game_state(db, character_id);
 
+        // Phase transition recovery: all levels done but game phase stuck
+        if (state.game_phase == "initial_mission") {
+            auto now_ts = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+            if (!player_state_db::get_next_incomplete_level(db, character_id, "weeding", 9) ||
+                !player_state_db::get_next_incomplete_level(db, character_id, "tower_defense", 9)) {
+                player_state_db::earn_land_patent(db, character_id, now_ts);
+                player_state_db::clear_current_mini_game(db, character_id, now_ts);
+                state = player_state_db::get_player_game_state(db, character_id);
+            }
+        }
+
         // Available activities — phase-based access control
         // TODO: replace with config-driven logic for monthly pass etc.
         auto get_available_activities = [](const std::string& phase) -> std::vector<std::string> {
             if (phase == "initial_mission")
                 return {"tasks", "chat"};
-            if (phase == "land_patent" || phase == "baron_track")
+            if (phase == "land_patent")
+                return {"tasks", "land_patent", "chat"};
+            if (phase == "baron_track")
                 return {"tasks", "manor", "chat"};
             if (phase == "baron_right")
                 return {"tasks", "manor", "chat", "tournament"};
@@ -937,6 +950,11 @@ ApiResponse handleGetPlayerState(GameConfigCache& config_cache, const json& body
         state.available_activities = get_available_activities(state.game_phase);
 
         response.data = state.toJson();
+
+        // Flag for client: land patent needs acknowledgment
+        if (state.game_phase == "land_patent" && !state.land_patent_acknowledged) {
+            response.data["land_patent_earned"] = true;
+        }
 
         if (new_token) {
             response.data["token"] = *new_token;
@@ -1604,13 +1622,16 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
                 response.data["all_levels_done"] = end_result.all_levels_done;
 
                 if (end_result.all_levels_done && won) {
-                    if (end_result.base_unlocked) {
-                        response.data["base_unlocked"] = true;
-                    }
                     auto state = player_state_db::get_player_game_state(db, character_id);
+                    if (state.game_phase == "initial_mission" && !state.base_unlocked) {
+                        player_state_db::earn_land_patent(db, character_id, now);
+                        response.data["land_patent_earned"] = true;
+                    } else if (state.game_phase == "baron_track") {
+                        player_state_db::earn_baron_right(db, character_id, now);
+                        response.data["baron_right_earned"] = true;
+                    }
+                    state = player_state_db::get_player_game_state(db, character_id);
                     response.data["game_phase"] = state.game_phase;
-                    response.data["land_patent_earned"] = (state.game_phase == "land_patent");
-                    response.data["baron_right_earned"] = (state.game_phase == "baron_right");
                 }
             }
 
@@ -1795,6 +1816,19 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
                 player_state_db::clear_current_mini_game(db, character_id, now);
             } else {
                 response.error = "Already in a mini-game: " + *state.current_mini_game;
+                return response;
+            }
+        }
+
+        // Phase transition recovery: all levels done but game phase stuck
+        if (state.game_phase == "initial_mission") {
+            auto remaining = player_state_db::get_next_incomplete_level(db, character_id, mini_game, 9);
+            if (!remaining) {
+                auto now_ts = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                player_state_db::earn_land_patent(db, character_id, now_ts);
+                player_state_db::clear_current_mini_game(db, character_id, now_ts);
+                response.data["land_patent_earned"] = true;
+                response.data["game_phase"] = "land_patent";
                 return response;
             }
         }
@@ -2208,6 +2242,19 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
                 player_state_db::clear_current_mini_game(db, character_id, now);
             } else {
                 response.error = "Already in a mini-game: " + *state.current_mini_game;
+                return response;
+            }
+        }
+
+        // Phase transition recovery: all levels done but game phase stuck
+        if (state.game_phase == "initial_mission") {
+            auto remaining = player_state_db::get_next_incomplete_level(db, character_id, "weeding", 9);
+            if (!remaining) {
+                auto now_ts = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                player_state_db::earn_land_patent(db, character_id, now_ts);
+                player_state_db::clear_current_mini_game(db, character_id, now_ts);
+                response.data["land_patent_earned"] = true;
+                response.data["game_phase"] = "land_patent";
                 return response;
             }
         }
@@ -2627,7 +2674,8 @@ ApiResponse handleWeedingTurn(GameConfigCache& config_cache, const json& body,
             // Phase transitions
             if (end_result.all_levels_done) {
                 auto pstate = player_state_db::get_player_game_state(db, character_id);
-                if (pstate.game_phase == "land_patent") {
+                if (pstate.game_phase == "initial_mission" && !pstate.base_unlocked) {
+                    player_state_db::earn_land_patent(db, character_id, now);
                     response.data["land_patent_earned"] = true;
                     // Award completion bonus
                     const auto& mini_games_config = config_cache.getMiniGames();
@@ -2637,9 +2685,11 @@ ApiResponse handleWeedingTurn(GameConfigCache& config_cache, const json& body,
                             response.data["completion_bonus"] = bonus["resources"];
                         }
                     }
-                } else if (pstate.game_phase == "baron_right") {
+                } else if (pstate.game_phase == "baron_track") {
+                    player_state_db::earn_baron_right(db, character_id, now);
                     response.data["baron_right_earned"] = true;
                 }
+                pstate = player_state_db::get_player_game_state(db, character_id);
                 response.data["game_phase"] = pstate.game_phase;
             } else {
                 auto pstate = player_state_db::get_player_game_state(db, character_id);
@@ -3342,6 +3392,32 @@ ApiResponse handleSetCharacterSex(GameConfigCache& config_cache, const json& bod
     return response;
 }
 
+ApiResponse handleAcknowledgeLandPatent(GameConfigCache& config_cache, const json& body,
+                                         const std::optional<std::string>& username,
+                                         const ClientInfo& client,
+                                         const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+
+    if (!body.contains("character_id") || !body["character_id"].is_number_integer()) {
+        response.error = "character_id required";
+        return response;
+    }
+
+    int character_id = body["character_id"].get<int>();
+
+    try {
+        auto& db = Database::getInstance().gameDB();
+        player_state_db::acknowledge_land_patent(db, character_id);
+    } catch (const std::exception& e) {
+        log_error("handleAcknowledgeLandPatent", e.what());
+        response.error = std::string("Failed to acknowledge land patent: ") + e.what();
+    }
+
+    if (new_token) response.data["token"] = *new_token;
+    return response;
+}
+
 ApiResponse handleGetBaronies(GameConfigCache& config_cache, const json& body,
                                const std::optional<std::string>& username,
                                const ClientInfo& client,
@@ -3687,6 +3763,64 @@ ApiResponse handleStartBaronTrack(GameConfigCache& config_cache, const json& bod
     } catch (const std::exception& e) {
         log_error("handleStartBaronTrack", e.what());
         response.error = std::string("Failed to start baron track: ") + e.what();
+    }
+
+    return response;
+}
+
+ApiResponse handleGetBuildingConfigs(GameConfigCache& config_cache, const nlohmann::json& body,
+                                      const std::optional<std::string>& username,
+                                      const ClientInfo& client,
+                                      const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+
+    auto building_types = config_cache.getFiefdomBuildingTypes();
+    json result = json::object();
+
+    for (const auto& entry : building_types) {
+        for (auto it = entry.begin(); it != entry.end(); ++it) {
+            const std::string& type_id = it.key();
+            json cfg = it.value();
+
+            // Normalize construction_image: if absent, copy image
+            if (!cfg.contains("construction_image") && cfg.contains("image")) {
+                cfg["construction_image"] = cfg["image"];
+            } else if (!cfg.contains("construction_image")) {
+                cfg["construction_image"] = "";
+            }
+
+            // Extract level-1 costs
+            json costs = json::object();
+            auto extract_cost = [&](const std::string& key, const std::string& res) {
+                if (cfg.contains(key) && cfg[key].is_array() && !cfg[key].empty()) {
+                    costs[res] = cfg[key][0];
+                }
+            };
+            extract_cost("gold_cost", "gold");
+            extract_cost("wood_cost", "wood");
+            extract_cost("stone_cost", "stone");
+
+            cfg["costs"] = costs;
+
+            // Extract min_manor_level from prerequisites
+            int min_level = 1;
+            if (cfg.contains("prerequisites") && cfg["prerequisites"].is_array() && !cfg["prerequisites"].empty()) {
+                auto prereq = cfg["prerequisites"][0];
+                if (prereq.is_object() && prereq.contains("manor_level")) {
+                    min_level = prereq["manor_level"].get<int>();
+                }
+            }
+            cfg["min_manor_level"] = min_level;
+
+            result[type_id] = cfg;
+        }
+    }
+
+    response.data = result;
+
+    if (new_token) {
+        response.data["token"] = *new_token;
     }
 
     return response;

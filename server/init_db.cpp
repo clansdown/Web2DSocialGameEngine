@@ -67,15 +67,23 @@ namespace {
         }
     }
 
-    void migrate_import_settings(sqlite::database& db) {
-        try {
-            db << "ALTER TABLE fiefdoms ADD COLUMN import_settings TEXT NOT NULL DEFAULT "
-                  "'{\"grain\":true,\"wood\":true,\"steel\":true,\"bronze\":true,"
-                  "\"stone\":true,\"leather\":true,\"mana\":true}';";
-        } catch (const std::exception&) {
-            // Column already exists — ignore
-        }
+void migrate_import_settings(sqlite::database& db) {
+    try {
+        db << "ALTER TABLE fiefdoms ADD COLUMN import_settings TEXT NOT NULL DEFAULT "
+              "'{\"grain\":true,\"wood\":true,\"steel\":true,\"bronze\":true,"
+              "\"stone\":true,\"leather\":true,\"mana\":true}';";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
     }
+}
+
+void migrate_land_patent_acknowledged(sqlite::database& db) {
+    try {
+        db << "ALTER TABLE player_game_state ADD COLUMN land_patent_acknowledged INTEGER NOT NULL DEFAULT 0;";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+}
 
     void migrate_barony_tables(sqlite::database& db) {
         try {
@@ -310,6 +318,7 @@ void initializeGameDB(sqlite::database& db) {
     migrate_spawn_schedule(db);
     migrate_placements(db);
     migrate_import_settings(db);
+    migrate_land_patent_acknowledged(db);
     ensureGameDBIndexes_private(db);
 }
 

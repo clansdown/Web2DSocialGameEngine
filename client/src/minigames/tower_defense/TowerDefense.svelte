@@ -1764,7 +1764,28 @@
 
   async function init() {
     try {
-      tdData = await getTdData();
+      const data = await getTdData();
+
+      // Phase transition redirect from server (all levels done, stuck phase)
+      if ((data as any).land_patent_earned) {
+        onComplete({
+          completed: true,
+          game_over: true,
+          won: true,
+          all_levels_done: true,
+          land_patent_earned: true,
+          game_phase: (data as any).game_phase || 'land_patent',
+          score: 0,
+          lives: 0,
+          gold: 0,
+          rewards: {},
+          new_best_score: 0,
+          times_played: 0
+        } as unknown as EndMiniGameResponse);
+        return;
+      }
+
+      tdData = data;
       await initEngineWithData();
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : 'Failed to start TD';

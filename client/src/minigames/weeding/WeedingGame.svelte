@@ -1083,6 +1083,21 @@
     error = null;
     try {
       const state = await startWeedingSession(characterId, levelId);
+
+      // Phase transition redirect: all levels already done, phase was stuck
+      if ((state as any).land_patent_earned) {
+        onComplete({
+          completed: true,
+          all_levels_done: true,
+          land_patent_earned: true,
+          game_phase: (state as any).game_phase || 'land_patent',
+          score: 0,
+          new_best_score: 0,
+          times_played: 0
+        } as EndMiniGameResponse);
+        return;
+      }
+
       sessionId = state.session_id;
       boardData = state.board;
       gridSize = state.grid_size;

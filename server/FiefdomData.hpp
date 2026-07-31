@@ -199,6 +199,7 @@ struct PlayerGameStateData {
     std::optional<std::string> current_mini_game;
     std::optional<int> current_level_id;
     bool base_unlocked;
+    bool land_patent_acknowledged = false;
     int64_t entered_at;
     int64_t last_updated;
     std::vector<MiniGameProgressData> progress;
@@ -210,6 +211,7 @@ struct PlayerGameStateData {
         json["current_mini_game"] = current_mini_game ? nlohmann::json(*current_mini_game) : nlohmann::json(nullptr);
         json["current_level_id"] = current_level_id ? nlohmann::json(*current_level_id) : nlohmann::json(nullptr);
         json["base_unlocked"] = base_unlocked;
+        json["land_patent_acknowledged"] = land_patent_acknowledged;
         json["entered_at"] = entered_at;
         json["last_updated"] = last_updated;
 

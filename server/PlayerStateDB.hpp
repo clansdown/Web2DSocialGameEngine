@@ -25,6 +25,7 @@ struct PlayerGameStateRow {
     std::optional<std::string> current_mini_game;
     std::optional<int> current_level_id;
     bool base_unlocked;
+    bool land_patent_acknowledged = false;
     int64_t entered_at;
     int64_t last_updated;
     std::vector<MiniGameProgressRow> progress;
@@ -89,6 +90,8 @@ void unlock_base(sqlite::database& db, int character_id, int64_t timestamp);
 void clear_current_mini_game(sqlite::database& db, int character_id, int64_t timestamp);
 
 void earn_land_patent(sqlite::database& db, int character_id, int64_t timestamp);
+
+void acknowledge_land_patent(sqlite::database& db, int character_id);
 
 void start_baron_track(sqlite::database& db, int character_id, int64_t timestamp);
 

@@ -59,6 +59,20 @@
     return level?.completed ?? false;
   }
 
+  let allLevelsDone = $derived.by(() => {
+    if (!$playerGameState || !config) return false;
+    const totalLevels = config.grid_size * config.grid_size;
+    if ($playerGameState.game_phase === 'baron_track') {
+      const gs = config.baron_grid_size ?? 4;
+      return $playerGameState.progress.filter(
+        p => p.mini_game === 'weeding' && p.completed
+      ).length >= gs * gs;
+    }
+    return $playerGameState.progress.filter(
+      p => p.mini_game === 'weeding' && p.completed
+    ).length >= totalLevels;
+  });
+
   function handleLevelClick(levelId: number) {
     if (isLevelAvailable(levelId)) {
       onStartLevel(levelId);
@@ -84,6 +98,13 @@
       {onStartLevel}
       {onBack}
     />
+    {#if allLevelsDone && $playerGameState?.game_phase === 'initial_mission'}
+      <div class="text-center py-4">
+        <button class="btn btn-success btn-lg" onclick={() => onStartLevel(minLevelId)}>
+          Continue
+        </button>
+      </div>
+    {/if}
   {:else}
     <!-- Level grid -->
     <div class="container py-5">

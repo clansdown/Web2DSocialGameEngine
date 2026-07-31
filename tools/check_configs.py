@@ -113,6 +113,7 @@ class BuildingTypedDict(TypedDict, total=False):
     can_build_outside_wall: bool
     display_name: str
     construction_times: list[float]
+    construction_image: str
     construction_images: list[str]
     idle_images: list[str]
     harvest_images: list[str]
@@ -907,6 +908,15 @@ class ConfigValidator:
                 self._add_issue(
                     file, 1, None,
                     f"Building '{building_id}'.display_name must be a non-empty string",
+                    Severity.ERROR
+                )
+
+        if "construction_image" in data:
+            val: Any = data["construction_image"]
+            if not isinstance(val, str) or not val:
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.construction_image must be a non-empty string",
                     Severity.ERROR
                 )
 

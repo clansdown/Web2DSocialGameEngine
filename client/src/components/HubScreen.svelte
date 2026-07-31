@@ -7,34 +7,39 @@
   import Chat from './Chat.svelte';
   import RoyalTournament from './RoyalTournament.svelte';
   import Adventure from './Adventure.svelte';
+  import LandPatentPanel from './LandPatentPanel.svelte';
 
   interface Props {
     activities?: string[];
     onStartLevel: (gameId: string, levelId: number) => void;
+    onJoinBarony?: () => void;
+    onBaronTrackStarted?: () => void;
   }
 
-  let { activities = [], onStartLevel }: Props = $props();
+  let { activities = [], onStartLevel, onJoinBarony, onBaronTrackStarted }: Props = $props();
 
   let selectedActivity = $state<string | null>(null);
   let displayNames = $state<Record<string, string>>({});
   let resuming = $state(true);
 
+  let gridActivities = $derived(activities.filter(id => id !== 'land_patent'));
+
   /**
    * Loads display names for all available activities from the text system.
    */
   async function loadActivityNames() {
-    const keys = activities.map(id => `activity_${id}`);
+    const keys = gridActivities.map(id => `activity_${id}`);
     try {
       const texts = await getTextsRequest($language, keys, $currentCharacter?.sex || undefined);
       const names: Record<string, string> = {};
-      for (const id of activities) {
+      for (const id of gridActivities) {
         names[id] = texts[`activity_${id}`] || id.charAt(0).toUpperCase() + id.slice(1);
       }
       displayNames = names;
     } catch {
       // Fallback to capitalized IDs
       const names: Record<string, string> = {};
-      for (const id of activities) {
+      for (const id of gridActivities) {
         names[id] = id.charAt(0).toUpperCase() + id.slice(1);
       }
       displayNames = names;
@@ -47,7 +52,7 @@
   async function restoreLastActivity() {
     try {
       const last = await getConfig<string>('last_activity');
-      if (last && activities.includes(last)) {
+      if (last && gridActivities.includes(last)) {
         selectedActivity = last;
       }
     } catch {
@@ -68,7 +73,7 @@
   }
 
   $effect(() => {
-    if (activities.length > 0) {
+    if (gridActivities.length > 0) {
       loadActivityNames();
       restoreLastActivity();
     } else {
@@ -97,7 +102,15 @@
     </div>
 
     <div class="row g-4 justify-content-center">
-      {#each activities as id}
+      {#if activities.includes('land_patent') && onJoinBarony && onBaronTrackStarted}
+        <div class="col-12">
+          <LandPatentPanel
+            onJoinBarony={onJoinBarony}
+            onBaronTrackStarted={onBaronTrackStarted}
+          />
+        </div>
+      {/if}
+      {#each gridActivities as id}
         <div class="col-md-5 col-lg-4">
           <div
             class="card h-100 border-primary cursor-pointer"

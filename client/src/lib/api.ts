@@ -901,3 +901,49 @@ export async function startBaronTrackRequest(
   }
   return res.data as StartBaronTrackResponse;
 }
+
+// ── Building config types ──────────────────────────────────────────
+
+export interface BuildingTypeConfig {
+  display_name: string;
+  image: string;
+  construction_image: string;
+  width: number;
+  height: number;
+  construction_times: number[];
+  costs: Record<string, number>;
+  min_manor_level: number;
+  [key: string]: unknown;
+}
+
+/**
+ * Acknowledges the land patent notification, silencing the flag.
+ *
+ * @param characterId - Character to acknowledge for
+ * @param auth - Authentication object with username and token
+ */
+export async function acknowledgeLandPatentRequest(
+  characterId: number,
+  auth: { username: string; token: string }
+): Promise<void> {
+  await apiPost('acknowledgeLandPatent', {
+    character_id: characterId
+  }, { username: auth.username, token: auth.token });
+}
+
+/**
+ * Fetches building type configurations from the server.
+ * Public endpoint — no authentication required.
+ *
+ * @returns Promise<Record<string, BuildingTypeConfig>> - Building configs keyed by type ID
+ *
+ * Usage: Called when opening the manor view to get building metadata
+ */
+export async function getBuildingConfigsRequest(): Promise<Record<string, BuildingTypeConfig>> {
+  const res = await apiPost<Record<string, BuildingTypeConfig>>('getBuildingConfigs', {});
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return res.data as Record<string, BuildingTypeConfig>;
+}

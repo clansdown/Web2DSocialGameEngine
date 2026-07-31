@@ -23,6 +23,7 @@ Retrieves the current player's game state including phase, active mini-game, and
   "data": {
     "character_id": 1,
     "game_phase": "initial_mission",
+    "available_activities": ["tasks", "chat"],
     "current_mini_game": null,
     "current_level_id": null,
     "base_unlocked": false,
@@ -69,10 +70,26 @@ Retrieves the current player's game state including phase, active mini-game, and
 | Field | Type | Description |
 |-------|------|-------------|
 | `game_phase` | string | `"initial_mission"` before base unlock, `"sandbox"` after |
+| `available_activities` | array of strings | Activity IDs the hub should show for the current phase (see below) |
 | `current_mini_game` | string or null | Active mini-game name if currently playing, else null |
 | `current_level_id` | int or null | Active level ID if currently playing, else null |
 | `base_unlocked` | boolean | Whether the player has earned the right to build a base |
 | `progress` | array | Array of MiniGameProgress objects for all mini-games |
+
+### `available_activities` by phase
+
+The server controls which activities the hub grid exposes. During the `land_patent`
+phase the `land_patent` activity replaces `manor`; the client renders it as the
+land-patent decision panel (join a dukedom or start the duke track) instead of a
+generic activity card.
+
+| Phase | Activities |
+|-------|------------|
+| `initial_mission` | `tasks`, `chat` |
+| `land_patent` | `tasks`, `land_patent`, `chat` |
+| `baron_track` | `tasks`, `manor`, `chat` |
+| `baron_right` | `tasks`, `manor`, `chat`, `tournament` |
+| `sandbox` | `tasks`, `manor`, `chat`, `tournament`, `adventure` |
 
 ### MiniGameProgress Fields
 
