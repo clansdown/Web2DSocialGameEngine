@@ -49,6 +49,19 @@ Returns mini-game configuration data. Can filter by specific mini-game or return
         "random_generation": true,
         "difficulty_scaling": { "base": 1 },
         "reward_scaling": { "base": 5 }
+      },
+      "ongoing": {
+        "game": "tower_defense",
+        "difficulty_options": [1, 2, 3],
+        "default_difficulty": 1,
+        "difficulty_coeff_pence": 1,
+        "size_options": [
+          { "value": 3, "reward_pence": 1 },
+          { "value": 5, "reward_pence": 2 },
+          { "value": 10, "reward_pence": 4 },
+          { "value": 20, "reward_pence": 5 }
+        ],
+        "default_size": 5
       }
     },
     "weeding": {
@@ -68,6 +81,16 @@ Returns mini-game configuration data. Can filter by specific mini-game or return
         "random_generation": true,
         "difficulty_scaling": { "base": 1 },
         "reward_scaling": { "base": 5 }
+      },
+      "ongoing": {
+        "game": "weeding",
+        "difficulty_options": [1, 2, 3],
+        "default_difficulty": 1,
+        "difficulty_coeff_pence": 1,
+        "size_options": [
+          { "value": 4, "reward_pence": 1 }
+        ],
+        "default_size": 4
       }
     }
   },
@@ -109,6 +132,7 @@ Returns mini-game configuration data. Can filter by specific mini-game or return
 | `levels` | array | Level definitions with id, row, col, difficulty, reward |
 | `completion_bonus` | object | One-time rewards for completing all levels |
 | `replay_config` | object | Configuration for random generation in sandbox mode |
+| `ongoing` | object | Ongoing-mode options: `difficulty_options`, `default_difficulty`, `difficulty_coeff_pence`, `size_options` (array of `{value, reward_pence}`), `default_size`. `value` is rounds for tower_defense, grid size for weeding. Server-served so the client only offers what the server allows. |
 
 ## See Also
 

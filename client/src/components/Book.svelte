@@ -12,8 +12,7 @@
    *   height - Fixed height (px). Omit to fill container with aspect ratio
    */
   import { marked } from 'marked';
-  import { language } from '../lib/stores';
-  import { getTextsRequest } from '../lib/api';
+  import { loadTexts as fetchTexts } from '../lib/text';
 
   interface BookPage {
     image: string;
@@ -64,7 +63,7 @@
     textsLoaded = false;
     const ids = pages.map(p => p.textId);
     try {
-      const texts = await getTextsRequest($language, ids);
+      const texts = await fetchTexts(ids);
       pageTexts = texts;
     } catch {
       pageTexts = {};

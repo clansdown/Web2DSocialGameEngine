@@ -4,8 +4,9 @@
  * Shows two cards (Male / Female) with icons, loads text from the server,
  * and calls the API to persist the choice.
  */
-  import { language, currentCharacter } from '../lib/stores';
-  import { getTextsRequest, setCharacterSexRequest } from '../lib/api';
+  import { currentCharacter } from '../lib/stores';
+  import { setCharacterSexRequest } from '../lib/api';
+  import { loadTexts as fetchTexts } from '../lib/text';
   import * as auth from '../lib/auth';
 
   interface Props {
@@ -29,7 +30,7 @@
   async function loadTexts(): Promise<void> {
     textsLoaded = false;
     try {
-      texts = await getTextsRequest($language, TEXT_IDS);
+      texts = await fetchTexts(TEXT_IDS);
     } catch {
       texts = {};
     } finally {

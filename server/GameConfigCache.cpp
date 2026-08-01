@@ -61,9 +61,11 @@ bool GameConfigCache::initialize(const std::string& config_dir) {
     add("tower_defense/unit_unlocks.json");
     add("tower_defense/projectiles.json");
     add("tower_defense/wave_templates.json");
+    add("tower_defense/ongoing.json");
     add("weeding/plants.json");
     add("weeding/tools.json");
     add("weeding/specials.json");
+    add("weeding/ongoing.json");
     add("economy.json");
 
     for (auto& [name, entry] : configs_) {
@@ -129,9 +131,11 @@ nlohmann::json& GameConfigCache::getTowerDefenseUnits() { return getConfig("towe
 nlohmann::json& GameConfigCache::getTowerDefenseUnitUnlocks() { return getConfig("tower_defense/unit_unlocks.json"); }
 nlohmann::json& GameConfigCache::getTowerDefenseProjectiles() { return getConfig("tower_defense/projectiles.json"); }
 nlohmann::json& GameConfigCache::getTowerDefenseWaveTemplates() { return getConfig("tower_defense/wave_templates.json"); }
+nlohmann::json& GameConfigCache::getTowerDefenseOngoing() { return getConfig("tower_defense/ongoing.json"); }
 nlohmann::json& GameConfigCache::getWeedingPlants() { return getConfig("weeding/plants.json"); }
 nlohmann::json& GameConfigCache::getWeedingTools() { return getConfig("weeding/tools.json"); }
 nlohmann::json& GameConfigCache::getWeedingSpecials() { return getConfig("weeding/specials.json"); }
+nlohmann::json& GameConfigCache::getWeedingOngoing() { return getConfig("weeding/ongoing.json"); }
 nlohmann::json& GameConfigCache::getEconomyConfig() { return getConfig("economy.json"); }
 
 std::optional<nlohmann::json> GameConfigCache::getTowerDefenseSpawnSchedule(const std::string& filename) {

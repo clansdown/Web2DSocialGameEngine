@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { playerGameState, language } from '../../lib/stores';
-  import { getTextsRequest } from '../../lib/api';
+  import { playerGameState } from '../../lib/stores';
+  import { loadTexts } from '../../lib/text';
   import GameText from '../../components/GameText.svelte';
   import Book from '../../components/Book.svelte';
 
@@ -59,7 +59,7 @@
   }
 
   $effect(() => {
-    getTextsRequest($language, ['wd_weeding_marche']).then(texts => {
+    loadTexts(['wd_weeding_marche']).then(texts => {
       infoText = texts['wd_weeding_marche'] ?? '';
     }).catch(() => {
       infoText = '';

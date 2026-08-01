@@ -330,10 +330,16 @@ class ConfigValidator:
         data: dict[str, Any],
         field_name: str,
         required_keys: Union[set[str], frozenset[str]],
-        damage_types: Union[set[str], frozenset[str]],
+        allowed_keys: Union[set[str], frozenset[str]],
         is_defense: bool = False
     ) -> bool:
-        """Validate a combatant array field (damage, defense, costs)."""
+        """Validate a combatant array field (damage, defense, costs).
+
+        `required_keys` must always be present on each entry; `allowed_keys`
+        is the full set of known keys (required plus optional damage types
+        from damage_types.json). Unknown keys are reported as warnings, and
+        values on any known key are type-checked.
+        """
         if field_name not in data:
             return True
 
@@ -363,7 +369,7 @@ class ConfigValidator:
                 continue
 
             item_keys: set[str] = set(item.keys())
-            unexpected: set[str] = item_keys - set(required_keys)
+            unexpected: set[str] = item_keys - set(allowed_keys)
             if unexpected:
                 self._add_issue(
                     file, line, None,
@@ -381,7 +387,9 @@ class ConfigValidator:
                 valid = False
                 continue
 
-            for key in required_keys:
+            for key in item_keys:
+                if key not in allowed_keys:
+                    continue
                 value: Any = item.get(key, 0)
                 if not isinstance(value, (int, float)):
                     self._add_issue(
@@ -443,16 +451,17 @@ class ConfigValidator:
                 valid = False
 
         damage_types_set: set[str] = set(self.damage_types) if self.damage_types else set(VALID_DAMAGE_TYPES)
+        core_damage_types: set[str] = set(VALID_DAMAGE_TYPES)
 
         if not self._validate_combatant_array(
             file, content, data, "damage",
-            set(damage_types_set), set(damage_types_set), False
+            core_damage_types, damage_types_set, False
         ):
             valid = False
 
         if not self._validate_combatant_array(
             file, content, data, "defense",
-            set(damage_types_set), set(damage_types_set), True
+            core_damage_types, damage_types_set, True
         ):
             valid = False
 
@@ -2293,7 +2302,14 @@ class ConfigValidator:
         return required, optional
 
     def validate_images_directory(self, images_dir: Path) -> None:
-        """Validate the images directory structure against config files."""
+        """Validate the images directory structure against config files.
+
+        Only the entity directories (combatants, buildings, heroes, portraits)
+        are validated; unrelated game asset directories (e.g. tower_defense,
+        ui, weeding) are ignored.
+        """
+        entity_types: set[str] = {"combatants", "buildings", "heroes", "portraits"}
+
         if not images_dir.exists():
             return
 
@@ -2310,11 +2326,15 @@ class ConfigValidator:
 
             if len(relative_parts) >= 3:
                 img_type = relative_parts[0]
+                if img_type not in entity_types:
+                    continue
                 item_id = relative_parts[1]
                 subtype = relative_parts[2]
                 found_dirs.add((img_type, item_id, subtype))
             elif len(relative_parts) == 2:
                 img_type = relative_parts[0]
+                if img_type not in entity_types:
+                    continue
                 item_id = relative_parts[1]
                 self._add_issue(
                     images_dir, 1, None,
@@ -2888,13 +2908,11 @@ class ConfigValidator:
                         if not isinstance(weed_id, str):
                             self._add_issue(file, 1, None, f"Level '{level_key}'.allowed_weeds[{idx}] must be a string", Severity.ERROR)
 
-            # Validate allowed_smother_crops if present
+            # Validate allowed_smother_crops if present (empty array means none allowed)
             allowed_smother: object = level_data.get("allowed_smother_crops")
             if allowed_smother is not None:
                 if not isinstance(allowed_smother, list):
                     self._add_issue(file, 1, None, f"Level '{level_key}'.allowed_smother_crops must be an array", Severity.ERROR)
-                elif len(allowed_smother) == 0:
-                    self._add_issue(file, 1, None, f"Level '{level_key}'.allowed_smother_crops must not be empty", Severity.WARN)
                 else:
                     for idx, crop_id in enumerate(allowed_smother):
                         if not isinstance(crop_id, str):
@@ -2965,6 +2983,113 @@ class ConfigValidator:
                             self._add_issue(file, 1, None, f"Tool '{tool_id}'.sprite.sprite_up_vector[{i}] must be -1, 0, or 1", Severity.ERROR)
                     if suv[0] == 0 and suv[1] == 0:
                         self._add_issue(file, 1, None, f"Tool '{tool_id}'.sprite.sprite_up_vector cannot be [0, 0]", Severity.ERROR)
+
+    def validate_ongoing_config(self, file: Path) -> None:
+        """Validate a game's ongoing.json (tower_defense/ongoing.json or weeding/ongoing.json)."""
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+
+        data: object = self._validate_json(content, file)
+        if data is None:
+            return
+
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with ongoing config", Severity.ERROR)
+            return
+
+        if "game" not in data or not isinstance(data["game"], str) or not data["game"]:
+            self._add_issue(file, 1, None, "Missing required field 'game' (string)", Severity.ERROR)
+
+        # difficulty_options
+        diff_opts: object = data.get("difficulty_options")
+        if not isinstance(diff_opts, list) or not diff_opts:
+            self._add_issue(file, 1, None, "'difficulty_options' must be a non-empty array", Severity.ERROR)
+        elif not all(isinstance(d, int) and d >= 1 for d in diff_opts):
+            self._add_issue(file, 1, None, "'difficulty_options' must contain only positive integers", Severity.ERROR)
+
+        # default_difficulty must be offered
+        default_diff: object = data.get("default_difficulty", 1)
+        if isinstance(default_diff, int) and isinstance(diff_opts, list) and default_diff not in diff_opts:
+            self._add_issue(file, 1, None, f"'default_difficulty' {default_diff} not in difficulty_options", Severity.ERROR)
+
+        # difficulty_coeff_pence
+        coeff: object = data.get("difficulty_coeff_pence", 0)
+        if not isinstance(coeff, int) or coeff < 0:
+            self._add_issue(file, 1, None, "'difficulty_coeff_pence' must be a non-negative integer", Severity.ERROR)
+
+        # size_options
+        size_opts: object = data.get("size_options")
+        if not isinstance(size_opts, list) or not size_opts:
+            self._add_issue(file, 1, None, "'size_options' must be a non-empty array", Severity.ERROR)
+            return
+
+        seen_sizes: set[int] = set()
+        for i, opt in enumerate(size_opts):
+            if not isinstance(opt, dict):
+                self._add_issue(file, 1, None, f"'size_options[{i}]' must be an object", Severity.ERROR)
+                continue
+            value: object = opt.get("value")
+            reward: object = opt.get("reward_pence")
+            if not isinstance(value, int) or value < 1:
+                self._add_issue(file, 1, None, f"'size_options[{i}].value' must be a positive integer", Severity.ERROR)
+            elif value in seen_sizes:
+                self._add_issue(file, 1, None, f"Duplicate size option value {value}", Severity.ERROR)
+            else:
+                seen_sizes.add(value)
+            if not isinstance(reward, int) or reward < 0:
+                self._add_issue(file, 1, None, f"'size_options[{i}].reward_pence' must be a non-negative integer", Severity.ERROR)
+
+        # default_size must be offered
+        default_size: object = data.get("default_size")
+        if isinstance(default_size, int) and default_size not in seen_sizes:
+            self._add_issue(file, 1, None, f"'default_size' {default_size} not in size_options", Severity.ERROR)
+
+        self.validated_files.append(file)
+
+    def validate_economy(self, file: Path) -> None:
+        """Validate economy.json — currency and reward_pools blocks."""
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+
+        data: object = self._validate_json(content, file)
+        if data is None:
+            return
+
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with economy config", Severity.ERROR)
+            return
+
+        currency: object = data.get("currency")
+        if currency is not None:
+            if not isinstance(currency, dict):
+                self._add_issue(file, 1, None, "'currency' must be an object", Severity.ERROR)
+            else:
+                for field, positive in (("pence_per_shilling", True), ("shillings_per_pound", True), ("pence_per_gold", True)):
+                    val: object = currency.get(field)
+                    if not isinstance(val, int) or val < (1 if positive else 0):
+                        self._add_issue(file, 1, None, f"'currency.{field}' must be a positive integer", Severity.ERROR)
+
+        pools: object = data.get("reward_pools")
+        if pools is not None:
+            if not isinstance(pools, dict):
+                self._add_issue(file, 1, None, "'reward_pools' must be an object", Severity.ERROR)
+            else:
+                for field in ("full_pool_max", "half_pool_max", "replenish_per_day", "min_reward_pence"):
+                    val: object = pools.get(field)
+                    if not isinstance(val, int) or val < 1:
+                        self._add_issue(file, 1, None, f"'reward_pools.{field}' must be a positive integer", Severity.ERROR)
+                for field in ("half_multiplier", "quarter_multiplier"):
+                    val: object = pools.get(field)
+                    if not isinstance(val, (int, float)) or not (0 < val < 1):
+                        self._add_issue(file, 1, None, f"'reward_pools.{field}' must be a number between 0 and 1", Severity.ERROR)
+
+        self.validated_files.append(file)
 
     def validate_all(
         self,
@@ -3072,6 +3197,24 @@ class ConfigValidator:
             if weeding_tools_file.exists():
                 self.validate_weeding_tools(weeding_tools_file)
 
+            # Validate ongoing-mode configs (server-served difficulty/size/rewards)
+            td_ongoing_file: Path = game_config_dir / "tower_defense" / "ongoing.json"
+            if td_ongoing_file.exists():
+                self.validate_ongoing_config(td_ongoing_file)
+            else:
+                self._add_issue(td_ongoing_file, 1, None, "Config file not found", Severity.ERROR)
+
+            wd_ongoing_file: Path = game_config_dir / "weeding" / "ongoing.json"
+            if wd_ongoing_file.exists():
+                self.validate_ongoing_config(wd_ongoing_file)
+            else:
+                self._add_issue(wd_ongoing_file, 1, None, "Config file not found", Severity.ERROR)
+
+            # Validate economy.json (currency + reward_pools)
+            economy_file: Path = game_config_dir / "economy.json"
+            if economy_file.exists():
+                self.validate_economy(economy_file)
+
             mini_games_file: Path = game_config_dir / "mini_games.json"
             if mini_games_file.exists():
                 self.validate_mini_games_weeding_levels(mini_games_file)
@@ -3118,7 +3261,7 @@ Examples:
   ./tools/check_configs.py --no-warnings      # Show errors only
   ./tools/check_configs.py -h                 # Show this help
   ./tools/check_configs.py --verbose          # Show validated files on success
-  ./tools/check_configs.py -c server/config -g game/config   # Explicit paths
+  ./tools/check_configs.py -c game/config -g game/config     # Explicit paths
 
 Exit codes:
   0: All configs valid (no errors)
@@ -3139,8 +3282,8 @@ Exit codes:
     parser.add_argument(
         "--config-dir", "-c",
         type=Path,
-        default=Path("server/config"),
-        help="Directory containing config files (default: server/config)"
+        default=Path("game/config"),
+        help="Directory containing config files (default: game/config)"
     )
     parser.add_argument(
         "--game-config-dir", "-g",

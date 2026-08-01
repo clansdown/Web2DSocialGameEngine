@@ -27,11 +27,13 @@ public:
     nlohmann::json& getTowerDefenseUnitUnlocks();
     nlohmann::json& getTowerDefenseProjectiles();
     nlohmann::json& getTowerDefenseWaveTemplates();
+    nlohmann::json& getTowerDefenseOngoing();
     std::optional<nlohmann::json> getTowerDefenseSpawnSchedule(const std::string& filename);
 
     nlohmann::json& getWeedingPlants();
     nlohmann::json& getWeedingTools();
     nlohmann::json& getWeedingSpecials();
+    nlohmann::json& getWeedingOngoing();
     nlohmann::json& getEconomyConfig();
     std::optional<nlohmann::json> loadWeedingMap(const std::string& filename);
     std::optional<nlohmann::json> loadWeedingLevelConfig(const std::string& filename);

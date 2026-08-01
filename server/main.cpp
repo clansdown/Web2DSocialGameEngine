@@ -38,6 +38,7 @@
 #include "TDPlacementValidator.hpp"
 #include "TDGoldCalculator.hpp"
 #include "WeedingGameLogic.hpp"
+#include "OngoingRewards.hpp"
 #include <sqlite_modern_cpp/errors.h>
 
 using json = nlohmann::json;
@@ -57,6 +58,128 @@ void log_sql(const std::string& context, const std::string& sql) {
         std::cout << "[" << std::put_time(std::localtime(&now), "%Y-%m-%d %H:%M:%S") << "] "
                   << "[SQL] " << context << ": " << sql << std::endl;
     }
+}
+
+/**
+ * Fetches the stored difficulty and size for the character's most recent
+ * ongoing (level 0) session of the given mini-game. TD reads game_sessions
+ * (difficulty + total_rounds); weeding reads the weeding session JSON
+ * (difficulty + grid_size). Used by the generic endMiniGame path to compute
+ * ongoing rewards from server-owned session data.
+ */
+static std::optional<std::pair<int, int>> fetch_ongoing_session_params(sqlite::database& db,
+                                                                       int character_id,
+                                                                       const std::string& mini_game) {
+    try {
+        if (mini_game == "tower_defense") {
+            int difficulty = 1;
+            int rounds = 0;
+            bool found = false;
+            db << "SELECT difficulty, total_rounds FROM game_sessions WHERE character_id = ? AND level_id = 0 "
+                  "ORDER BY id DESC LIMIT 1;"
+               << character_id
+               >> [&](int d, int r) { difficulty = d; rounds = r; found = true; };
+            if (!found || rounds <= 0) return std::nullopt;
+            return std::make_pair(difficulty, rounds);
+        }
+        if (mini_game == "weeding") {
+            std::string session_json;
+            bool found = false;
+            db << "SELECT session_json FROM weeding_sessions WHERE character_id = ? AND level_id = 0 "
+                  "ORDER BY id DESC LIMIT 1;"
+               << character_id
+               >> [&](std::string sj) { session_json = sj; found = true; };
+            if (!found) return std::nullopt;
+            json j = json::parse(session_json);
+            int difficulty = j.value("difficulty", 1);
+            int grid_size = j.value("grid_size", 0);
+            if (grid_size <= 0) return std::nullopt;
+            return std::make_pair(difficulty, grid_size);
+        }
+    } catch (const std::exception& e) {
+        log_error("fetch_ongoing_session_params", e.what());
+    }
+    return std::nullopt;
+}
+
+/**
+ * Resolves the ongoing config reference for a mini-game, or nullptr.
+ */
+static const json* resolve_ongoing_config(GameConfigCache& config_cache, const std::string& mini_game) {
+    if (mini_game == "tower_defense" && config_cache.getTowerDefenseOngoing().is_object()) {
+        return &config_cache.getTowerDefenseOngoing();
+    }
+    if (mini_game == "weeding" && config_cache.getWeedingOngoing().is_object()) {
+        return &config_cache.getWeedingOngoing();
+    }
+    return nullptr;
+}
+
+/**
+ * Computes the ongoing-mode silver reward for a won game, consumes the shared
+ * reward pool, and credits the fiefdom's silver_pence balance when one exists.
+ * Returns a JSON object with silver_pence / silver_formatted / reward_tier, or
+ * an empty object when no ongoing reward applies (e.g. campaign levels, losses).
+ */
+static json apply_ongoing_reward(GameConfigCache& config_cache, sqlite::database& db,
+                                 int character_id, const std::string& mini_game,
+                                 int difficulty, int size, bool won, int64_t now) {
+    json result = json::object();
+    if (!won) return result;
+
+    const json* ongoing_config = resolve_ongoing_config(config_cache, mini_game);
+    if (!ongoing_config) return result;
+
+    int base = ongoing_rewards::compute_base_reward_pence(*ongoing_config, difficulty, size);
+    if (base <= 0) return result;
+
+    const auto& economy = config_cache.getEconomyConfig();
+    const json reward_pools_cfg = economy.value("reward_pools", json::object());
+    auto consumed = ongoing_rewards::consume_pool(db, character_id, base, reward_pools_cfg, now);
+
+    // Credit the fiefdom when the character has one (none exists pre-manor).
+    int fiefdom_id = 0;
+    db << "SELECT id FROM fiefdoms WHERE owner_id = ? LIMIT 1;" << character_id
+       >> [&](int id) { fiefdom_id = id; };
+    if (fiefdom_id > 0) {
+        auto fiefdom = FiefdomFetcher::fetchFiefdomById(fiefdom_id);
+        if (fiefdom.has_value()) {
+            FiefdomFetcher::FiefdomResources res;
+            res.gold = fiefdom->gold;
+            res.silver_pence = fiefdom->silver_pence + consumed.reward_pence;
+            res.grain = fiefdom->grain;
+            res.wood = fiefdom->wood;
+            res.steel = fiefdom->steel;
+            res.bronze = fiefdom->bronze;
+            res.stone = fiefdom->stone;
+            res.leather = fiefdom->leather;
+            res.mana = fiefdom->mana;
+            FiefdomFetcher::updateFiefdomResources(fiefdom_id, res);
+        }
+    }
+
+    const json currency_cfg = economy.value("currency", json::object());
+    result["silver_pence"] = consumed.reward_pence;
+    result["silver_formatted"] = ongoing_rewards::format_silver_pence(consumed.reward_pence, currency_cfg);
+    result["reward_tier"] = consumed.tier;
+    return result;
+}
+
+/**
+ * Fills the rewards object for an ongoing (level 0) won game by computing and
+ * consuming the shared reward pool. Writes silver_pence into rewards and sets
+ * response.data["silver_formatted"]. No-op when ongoing result is empty.
+ */
+static void fill_ongoing_rewards(GameConfigCache& config_cache, sqlite::database& db,
+                                 json& level_rewards, json& response_data,
+                                 int character_id, const std::string& mini_game,
+                                 int difficulty, int size, bool won, int64_t now) {
+    json ongoing = apply_ongoing_reward(config_cache, db, character_id, mini_game,
+                                        difficulty, size, won, now);
+    if (ongoing.empty()) return;
+    level_rewards["silver_pence"] = ongoing["silver_pence"];
+    response_data["silver_formatted"] = ongoing["silver_formatted"];
+    response_data["reward_tier"] = ongoing["reward_tier"];
 }
 
 std::atomic<int> g_request_count(0);
@@ -1591,6 +1714,13 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
                     }
                 }
 
+                // Ongoing (level 0) games pay silver from the shared reward pool
+                if (level_rewards.empty() && session->level_id == 0) {
+                    fill_ongoing_rewards(config_cache, db, level_rewards, response.data,
+                                         character_id, session->mini_game,
+                                         session->difficulty, session->total_rounds, won, now);
+                }
+
                 // Check and grant milestone unlocks
                 if (won && session->mini_game == "tower_defense") {
                     int completed_count = 0;
@@ -1886,6 +2016,15 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
             difficulty = body["difficulty"].get<int>();
             total_rounds = body["rounds"].get<int>();
             is_random = true;
+
+            // Validate against the ongoing config so clients can't pick settings
+            // the server hasn't offered
+            const json* ongoing_config = resolve_ongoing_config(config_cache, mini_game);
+            if (ongoing_config && !ongoing_rewards::validate_ongoing_options(*ongoing_config, difficulty, total_rounds)) {
+                response.error = "Invalid rounds or difficulty for ongoing game";
+                return response;
+            }
+
             json empty_sp = json::array();
             int kickoff_completed = 0;
             if (character_id > 0) kickoff_completed = query_td_completed_count(db, character_id);
@@ -2307,6 +2446,7 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
 
         // Determine difficulty and map
         int difficulty = 1;
+        int ongoing_grid_size_override = 0;
         std::string map_filename = "map_1.json";
         nlohmann::json map_meta;
         json allowed_weeds;
@@ -2347,9 +2487,23 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
             }
             if (difficulty < 1) difficulty = 1;
         } else {
-            // Sandbox: random map
+            // Ongoing (level 0): difficulty and grid size selected by the player,
+            // validated against the server's ongoing config
             difficulty = body.value("difficulty", 1);
+            int requested_grid_size = body.value("grid_size", 0);
+            const json* ongoing_config = resolve_ongoing_config(config_cache, "weeding");
+            if (!ongoing_config) {
+                response.error = "Ongoing weeding config unavailable";
+                return response;
+            }
+            int default_size = ongoing_config->value("default_size", 4);
+            if (requested_grid_size <= 0) requested_grid_size = default_size;
+            if (!ongoing_rewards::validate_ongoing_options(*ongoing_config, difficulty, requested_grid_size)) {
+                response.error = "Invalid difficulty or grid size for ongoing weeding";
+                return response;
+            }
             map_filename = "map_1.json";
+            ongoing_grid_size_override = requested_grid_size;
         }
 
         auto map_opt = config_cache.loadWeedingMap(map_filename);
@@ -2366,6 +2520,10 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
         }
 
         int grid_size = map_meta["grid_size"].get<int>();
+        if (ongoing_grid_size_override > 0) {
+            grid_size = ongoing_grid_size_override;
+            map_meta["grid_size"] = grid_size;
+        }
 
         // Parse out_of_bounds
         std::vector<std::pair<int, int>> out_of_bounds;
@@ -2391,6 +2549,7 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
         json session_json;
         session_json["board"] = board;
         session_json["grid_size"] = grid_size;
+        session_json["difficulty"] = difficulty;
         session_json["round"] = 1;
         session_json["actions_remaining"] = 2;
         session_json["last_action_was_switch"] = false;
@@ -2713,6 +2872,14 @@ ApiResponse handleWeedingTurn(GameConfigCache& config_cache, const json& body,
                 if (mg.contains("levels")) check(mg["levels"]);
                 if (level_rewards.empty() && mg.contains("baron_levels")) check(mg["baron_levels"]);
             }
+
+            // Ongoing (level 0) games pay silver from the shared reward pool
+            if (level_rewards.empty() && session.level_id == 0) {
+                int wd_size = session.session_json.value("grid_size", 0);
+                int wd_difficulty = session.session_json.value("difficulty", 1);
+                fill_ongoing_rewards(config_cache, db, level_rewards, response.data,
+                                     character_id, "weeding", wd_difficulty, wd_size, true, now);
+            }
             response.data["rewards"] = level_rewards;
         }
 
@@ -2971,6 +3138,16 @@ ApiResponse handleEndMiniGame(GameConfigCache& config_cache, const json& body,
                 }
             }
 
+            // Ongoing (level 0) games pay silver from the shared reward pool
+            if (level_rewards.empty() && level_id == 0) {
+                auto params = fetch_ongoing_session_params(db, character_id, mini_game);
+                if (params.has_value()) {
+                    fill_ongoing_rewards(config_cache, db, level_rewards, response.data,
+                                         character_id, mini_game,
+                                         params->first, params->second, true, now);
+                }
+            }
+
             response.data["rewards"] = level_rewards;
         }
 
@@ -3029,13 +3206,97 @@ ApiResponse handleGetMiniGameConfig(GameConfigCache& config_cache, const json& b
 
         if (mini_games.contains(mini_game)) {
             response.data[mini_game] = mini_games[mini_game];
+            const json* ongoing_config = resolve_ongoing_config(config_cache, mini_game);
+            if (ongoing_config) {
+                response.data[mini_game]["ongoing"] = *ongoing_config;
+            }
         } else {
             response.error = "Unknown mini_game: " + mini_game;
             return response;
         }
     } else {
         response.data = config_cache.getMiniGames();
+        const json* td_ongoing = resolve_ongoing_config(config_cache, "tower_defense");
+        const json* wd_ongoing = resolve_ongoing_config(config_cache, "weeding");
+        if (td_ongoing && response.data.contains("tower_defense")) {
+            response.data["tower_defense"]["ongoing"] = *td_ongoing;
+        }
+        if (wd_ongoing && response.data.contains("weeding")) {
+            response.data["weeding"]["ongoing"] = *wd_ongoing;
+        }
     }
+
+    if (new_token) {
+        response.data["token"] = *new_token;
+    }
+
+    return response;
+}
+
+ApiResponse handleEstimateOngoingRewards(GameConfigCache& config_cache, const json& body,
+                                         const std::optional<std::string>& username,
+                                         const ClientInfo& client,
+                                         const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+
+    if (!body.contains("character_id") || !body["character_id"].is_number_integer()) {
+        response.error = "character_id required";
+        return response;
+    }
+    if (!body.contains("mini_game") || !body["mini_game"].is_string()) {
+        response.error = "mini_game required";
+        return response;
+    }
+
+    int character_id = body["character_id"].get<int>();
+    std::string mini_game = body["mini_game"].get<std::string>();
+
+    const json* ongoing_config = resolve_ongoing_config(config_cache, mini_game);
+    if (!ongoing_config) {
+        response.error = "No ongoing config for mini_game: " + mini_game;
+        return response;
+    }
+
+    int difficulty = body.value("difficulty", ongoing_config->value("default_difficulty", 1));
+    int size = body.value("size", ongoing_config->value("default_size", 0));
+
+    int base = ongoing_rewards::compute_base_reward_pence(*ongoing_config, difficulty, size);
+
+    const auto& economy = config_cache.getEconomyConfig();
+    const json reward_pools_cfg = economy.value("reward_pools", json::object());
+    auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    auto& db = Database::getInstance().gameDB();
+    auto pools = ongoing_rewards::effective_pool_state(db, character_id, reward_pools_cfg, now);
+
+    // Determine the multiplier that would apply without consuming the pool
+    double mult = 1.0;
+    if (pools.full_pool <= 0 && pools.half_pool <= 0) {
+        mult = reward_pools_cfg.value("quarter_multiplier", 0.25);
+    } else if (pools.full_pool <= 0) {
+        mult = reward_pools_cfg.value("half_multiplier", 0.5);
+    }
+
+    int reward = static_cast<int>(base * mult);
+    if (mult < 1.0) {
+        int min_reward = reward_pools_cfg.value("min_reward_pence", 1);
+        if (reward < min_reward) reward = min_reward;
+    }
+
+    const json currency_cfg = economy.value("currency", json::object());
+    response.data["silver_pence"] = reward;
+    response.data["silver_formatted"] = ongoing_rewards::format_silver_pence(reward, currency_cfg);
+    response.data["base_silver_pence"] = base;
+    response.data["reward_multiplier"] = mult;
+    response.data["pool"] = {
+        {"full", pools.full_pool},
+        {"half", pools.half_pool}
+    };
 
     if (new_token) {
         response.data["token"] = *new_token;
@@ -3143,9 +3404,90 @@ ApiResponse handleGetTexts(GameConfigCache& config_cache, const json& body,
         return response;
     }
 
+    json texts = json::object();
+
+    for (const auto& id_val : body["text_ids"]) {
+        if (!id_val.is_string()) continue;
+        std::string text_id = id_val.get<std::string>();
+        std::string raw = g_text_manager->get_text(language, text_id);
+        // Public endpoint: no character context, so gender tokens resolve to the
+        // male default form (TextManager::substitute_gender with no sex).
+        texts[text_id] = TextManager::substitute_gender(raw, std::nullopt);
+    }
+
+    response.data["texts"] = texts;
+
+    if (new_token) {
+        response.data["token"] = *new_token;
+    }
+
+    return response;
+}
+
+ApiResponse handleGetCharacterTexts(GameConfigCache& config_cache, const json& body,
+                                    const std::optional<std::string>& username,
+                                    const ClientInfo& client,
+                                    const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+
+    if (!g_text_manager) {
+        response.error = "Text system not initialized";
+        return response;
+    }
+
+    if (!body.contains("character_id") || !body["character_id"].is_number_integer()) {
+        response.error = "character_id required";
+        return response;
+    }
+
+    std::string language = body.value("language", "en");
+
+    if (!body.contains("text_ids") || !body["text_ids"].is_array()) {
+        response.error = "text_ids array required";
+        return response;
+    }
+
+    int character_id = body["character_id"].get<int>();
+    auto& db = Database::getInstance().gameDB();
+
+    int owner_id = 0;
+    db << "SELECT user_id FROM characters WHERE id = ?;"
+       << character_id
+       >> [&](int uid) { owner_id = uid; };
+
+    if (owner_id == 0) {
+        response.error = "Character not found";
+        return response;
+    }
+
+    int user_id = 0;
+    db << "SELECT id FROM users WHERE username = ?;"
+       << *username
+       >> [&](int id) { user_id = id; };
+
+    if (owner_id != user_id) {
+        response.error = "Character does not belong to this user";
+        return response;
+    }
+
+    std::string display_name;
+    std::unique_ptr<std::string> sex_ptr;
+    db << "SELECT display_name, sex FROM characters WHERE id = ?;"
+       << character_id
+       >> [&](std::string dn, std::unique_ptr<std::string> s) {
+              display_name = dn;
+              sex_ptr = std::move(s);
+          };
+
     std::optional<std::string> sex;
-    if (body.contains("sex") && body["sex"].is_string()) {
-        sex = body["sex"].get<std::string>();
+    if (sex_ptr && !sex_ptr->empty()) {
+        sex = *sex_ptr;
     }
 
     json texts = json::object();
@@ -3154,7 +3496,17 @@ ApiResponse handleGetTexts(GameConfigCache& config_cache, const json& body,
         if (!id_val.is_string()) continue;
         std::string text_id = id_val.get<std::string>();
         std::string raw = g_text_manager->get_text(language, text_id);
-        texts[text_id] = TextManager::substitute_gender(raw, sex);
+        std::string substituted = TextManager::substitute_gender(raw, sex);
+        if (!display_name.empty()) {
+            // Character name is substituted server-side — the client never sends it.
+            std::string token = "{character_name}";
+            std::size_t pos = 0;
+            while ((pos = substituted.find(token, pos)) != std::string::npos) {
+                substituted.replace(pos, token.length(), display_name);
+                pos += display_name.length();
+            }
+        }
+        texts[text_id] = substituted;
     }
 
     response.data["texts"] = texts;

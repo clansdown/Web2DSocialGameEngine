@@ -10,10 +10,10 @@
   import GameText from '../components/GameText.svelte';
   import StoryText from '../components/StoryText.svelte';
   import { startMiniGame, endMiniGame } from '../lib/game_state';
-  import { currentCharacter, playerGameState, language } from '../lib/stores';
-  import { getTextsRequest, fetchGameText, acknowledgeLandPatentRequest } from '../lib/api';
+  import { currentCharacter, playerGameState } from '../lib/stores';
+  import { acknowledgeLandPatentRequest } from '../lib/api';
+  import { loadTexts, loadText } from '../lib/text';
   import type { StartMiniGameResponse, EndMiniGameResponse, UnlockItem } from '../lib/api';
-  import { marked } from 'marked';
   import * as storage from '../lib/storage';
 
   interface QueueItem {
@@ -73,7 +73,7 @@
     if (miniGame === 'tower_defense') {
       const introSeen = await storage.getConfigBoolean('td_intro_seen', false);
       if (!introSeen && levelId === 1) {
-        const texts = await getTextsRequest($language, ['td_intro'], $currentCharacter?.sex || 'male');
+        const texts = await loadTexts(['td_intro']);
         tdIntroText = texts['td_intro'] || '';
         if (tdIntroText) {
           showTDIntro = true;
@@ -89,7 +89,7 @@
     if (miniGame === 'weeding') {
       const introSeen = await storage.getConfigBoolean('wd_intro_seen', false);
       if (!introSeen && levelId === 1) {
-        const texts = await getTextsRequest($language, ['wd_weeding_intro'], $currentCharacter?.sex || 'male');
+        const texts = await loadTexts(['wd_weeding_intro']);
         weedingIntroText = texts['wd_weeding_intro'] || '';
         if (weedingIntroText) {
           showWeedingIntro = true;
@@ -175,7 +175,7 @@
     gameResults = results;
 
     const msgKey = results.completed ? 'wd_victory_message' : 'wd_defeat_message';
-    const texts = await getTextsRequest($language, [msgKey], $currentCharacter?.sex || 'male');
+    const texts = await loadTexts([msgKey]);
     if (results.completed) {
       winMessage = texts['wd_victory_message'] || '';
     } else {
@@ -206,7 +206,7 @@
 
     // Fetch win/lose message text
     const msgKey = results.completed ? 'td_victory_message' : 'td_defeat_message';
-    const texts = await getTextsRequest($language, [msgKey], $currentCharacter?.sex || 'male');
+    const texts = await loadTexts([msgKey]);
     if (results.completed) {
       winMessage = texts['td_victory_message'] || '';
     } else {
@@ -244,8 +244,7 @@
       }
 
       // Fetch all text content
-      const sex = $currentCharacter?.sex || 'male';
-      const texts = await getTextsRequest($language, textKeysToFetch, sex);
+      const texts = await loadTexts(textKeysToFetch);
 
       kingsMsgTemplate = texts['kings_message_unlock'] || '';
 
@@ -279,10 +278,6 @@
         .replace(/\<unit\>/g, `\n\n![](${item.imageUrl})\n\n${itemText}`)
         .replace(/\<seal\>/g, `\n\n<img src="/images/ui/kings_seal.png" style="width: 10em; height: auto;" alt="King's Seal" />`);
 
-    if ($currentCharacter) {
-      msg = msg.replace(/\{character_name\}/g, $currentCharacter.display_name);
-    }
-
     return msg;
   }
 
@@ -312,11 +307,7 @@
 
   async function showLandPatentOverlay() {
     const seal = `<img src="/images/ui/kings_seal.png" style="width: 10em; height: auto;" alt="King's Seal" />`;
-    const sex = $currentCharacter?.sex || 'male';
-    let raw = await fetchGameText('land_patent_earned', sex);
-    if ($currentCharacter) {
-      raw = raw.replace(/\{character_name\}/g, $currentCharacter.display_name);
-    }
+    let raw = await loadText('land_patent_earned');
     landPatentText = raw.replace(/\<seal\>/g, `\n\n${seal}`);
     showLandPatent = true;
   }
@@ -370,8 +361,15 @@
           {#if gameResults.completed}
             <div class="mb-3">
               <h5>Rewards</h5>
+              {#if gameResults.rewards.silver_pence}
+                <span class="badge bg-success me-2">
+                  Silver: +{gameResults.silver_formatted ?? `${gameResults.rewards.silver_pence}d`}
+                </span>
+              {/if}
               {#each Object.entries(gameResults.rewards) as [resource, amount]}
-                <span class="badge bg-success me-2">{resource}: +{amount}</span>
+                {#if resource !== 'silver_pence'}
+                  <span class="badge bg-success me-2">{resource}: +{amount}</span>
+                {/if}
               {/each}
             </div>
           {/if}

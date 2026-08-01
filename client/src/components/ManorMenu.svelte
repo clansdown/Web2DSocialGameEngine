@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { currentCharacter } from '../lib/stores';
-  import { getFiefdomRequest, buildRequest, getTextsRequest, getBuildingConfigsRequest } from '../lib/api';
+  import { getFiefdomRequest, buildRequest, getBuildingConfigsRequest } from '../lib/api';
   import type { FiefdomResponse, BuildingTypeConfig } from '../lib/api';
+  import { loadTexts } from '../lib/text';
   import { getSessionToken, getInMemoryCredentials } from '../lib/auth';
   import { getConfigBoolean, setConfig as setConfigKV, getConfigNumber } from '../lib/storage';
 
@@ -336,7 +337,7 @@
   async function initialize() {
     const introSeen = await getConfigBoolean('manor_intro_seen', false);
     if (!introSeen) {
-      const texts = await getTextsRequest('en', ['manor_intro'], 'male');
+      const texts = await loadTexts(['manor_intro']);
       introHtml = texts['manor_intro'] || '';
       if (introHtml) {
         showIntro = true;

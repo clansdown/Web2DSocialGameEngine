@@ -88,7 +88,9 @@ export const playerGameState = writable<PlayerGameState | null>(null);
  *
  * @type {writable<string>}
  *
- * Usage: Pass to getTextsRequest() calls to fetch text in the correct language
+ * Usage: Consumed by loadTexts()/loadText() in lib/text.ts to fetch text
+ * in the correct language; also read directly by GameText/StoryText for
+ * re-fetching when the language changes.
  */
 export const language = writable<string>('en');
 

@@ -398,12 +398,14 @@ export interface EndMiniGameResponse {
   land_patent_earned?: boolean;
   baron_right_earned?: boolean;
   new_unlocks?: NewUnlocks;
+  silver_formatted?: string;
 }
 
 export interface MiniGameConfig {
   name: string;
   display_name: string;
   description: string;
+  image?: string;
   grid_size: number;
   sequential: boolean;
   levels: MiniGameLevelConfig[];
@@ -418,6 +420,34 @@ export interface MiniGameConfig {
   };
   baron_grid_size?: number;
   baron_levels?: MiniGameLevelConfig[];
+  ongoing?: OngoingGameConfig;
+}
+
+/**
+ * Ongoing-mode configuration served by the server for a mini-game.
+ * Defines which difficulty/size options are available and the silver reward
+ * tables. The server is authoritative for rewards; the client only renders
+ * these options and queries estimateOngoingRewards for expected payouts.
+ */
+export interface OngoingGameConfig {
+  game: string;
+  difficulty_options: number[];
+  default_difficulty: number;
+  difficulty_coeff_pence: number;
+  size_options: { value: number; reward_pence: number }[];
+  default_size: number;
+  [key: string]: unknown;
+}
+
+/** Response from estimateOngoingRewards: expected silver reward at the given
+ * settings, adjusted for the character's current reward pool (diminishing
+ * returns). */
+export interface OngoingRewardEstimate {
+  silver_pence: number;
+  silver_formatted: string;
+  base_silver_pence: number;
+  reward_multiplier: number;
+  pool: { full: number; half: number };
 }
 
 
@@ -465,6 +495,7 @@ export interface TDRoundCompleteResponse {
   land_patent_earned?: boolean;
   baron_right_earned?: boolean;
   new_unlocks?: NewUnlocks;
+  silver_formatted?: string;
   [key: string]: unknown;
 }
 
@@ -481,27 +512,24 @@ export type TDRoundResponse = TDRoundKickoffResponse | TDRoundCompleteResponse;
  */
 /**
  * Fetches translated text from the server for the specified language and text IDs.
- * This is a public endpoint — no authentication required.
- * Falls back to English if a translation doesn't exist.
+ * This is a public endpoint — no authentication required. No gender or
+ * character-name substitution is applied (use getCharacterTextsRequest for
+ * character-context text). Falls back to English if a translation doesn't exist.
  *
  * @param language - Language code ('en', 'es', 'de', etc.)
  * @param textIds - Array of text IDs to fetch
  * @returns Promise<Record<string, string>> - Map of text ID to translated content
  *
- * Usage: Called by components that need translated UI text
+ * Usage: Called by pre-auth screens (language select, login) that have no character
  */
 export async function getTextsRequest(
   language: string,
-  textIds: string[],
-  sex?: string
+  textIds: string[]
 ): Promise<Record<string, string>> {
   const body: Record<string, unknown> = {
     language,
     text_ids: textIds
   };
-  if (sex) {
-    body.sex = sex;
-  }
 
   const res = await apiPost<{ texts: Record<string, string> }>('getTexts', body);
 
@@ -512,20 +540,28 @@ export async function getTextsRequest(
 }
 
 /**
- * Fetches a single text by ID from the text system.
- * Uses current language and optional sex for gender substitution.
- * Returns empty string if the text file is not found.
+ * Fetches translated text for a character via the authenticated endpoint.
+ * The server applies gender substitution ({male|female} tokens) and replaces
+ * {character_name} with the character's display name, so the client never
+ * sends sex or the character name. Falls back to English if a translation
+ * doesn't exist.
  *
- * @param textId - Text file ID (without .txt extension)
- * @param sex - Optional sex for gender token substitution
- * @returns Promise<string> - The substituted text content
+ * @param characterId - ID of the character whose context applies
+ * @param textIds - Array of text IDs to fetch
+ * @returns Promise<Record<string, string>> - Map of text ID to substituted content
  *
- * Usage: const msg = await fetchGameText('welcome_message', 'male');
+ * Usage: In-game screens with a selected character; prefer loadTexts() in lib/text.ts
  */
-export async function fetchGameText(textId: string, sex?: string): Promise<string> {
+export async function getCharacterTextsRequest(
+  characterId: number,
+  textIds: string[]
+): Promise<Record<string, string>> {
   const lang = get(language);
-  const texts = await getTextsRequest(lang, [textId], sex);
-  return texts[textId] || '';
+  return await authenticatedPost<{ texts: Record<string, string> }>('getCharacterTexts', {
+    character_id: characterId,
+    language: lang,
+    text_ids: textIds
+  }).then(data => data.texts);
 }
 
 export interface UITexture {
@@ -900,6 +936,38 @@ export async function startBaronTrackRequest(
     throw new Error(res.error);
   }
   return res.data as StartBaronTrackResponse;
+}
+
+/**
+ * Queries the server for the expected silver reward of an ongoing game at the
+ * given difficulty/size, adjusted for the character's current reward pool.
+ * The server is authoritative; this is a read-only hint for display only.
+ *
+ * @param characterId - Character playing
+ * @param miniGame - Mini-game name ('tower_defense' or 'weeding')
+ * @param difficulty - Chosen difficulty
+ * @param size - Chosen size (rounds for TD, grid size for weeding)
+ * @param auth - Authentication object with username and token
+ * @returns Promise<OngoingRewardEstimate> - Pool-adjusted silver reward estimate
+ */
+export async function estimateOngoingRewards(
+  characterId: number,
+  miniGame: string,
+  difficulty: number,
+  size: number,
+  auth: { username: string; token: string }
+): Promise<OngoingRewardEstimate> {
+  const res = await apiPost<OngoingRewardEstimate>('estimateOngoingRewards', {
+    character_id: characterId,
+    mini_game: miniGame,
+    difficulty,
+    size
+  }, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return res.data as OngoingRewardEstimate;
 }
 
 // ── Building config types ──────────────────────────────────────────

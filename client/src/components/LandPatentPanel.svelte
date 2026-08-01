@@ -11,8 +11,9 @@
    * Fetches translated text in the current language on mount.
    */
 
-  import { language, currentCharacter } from '../lib/stores';
-  import { getTextsRequest, startBaronTrackRequest } from '../lib/api';
+  import { currentCharacter } from '../lib/stores';
+  import { startBaronTrackRequest } from '../lib/api';
+  import { loadTexts as fetchTexts } from '../lib/text';
   import * as auth from '../lib/auth';
   import { handleError } from '../lib/errors';
   import GameText from './GameText.svelte';
@@ -41,7 +42,7 @@
   async function loadTexts(): Promise<void> {
     textsLoaded = false;
     try {
-      texts = await getTextsRequest($language, TEXT_IDS, $currentCharacter?.sex || undefined);
+      texts = await fetchTexts(TEXT_IDS);
     } catch {
       texts = {};
     } finally {

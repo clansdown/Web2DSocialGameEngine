@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { playerGameState, language } from '../../lib/stores';
-  import { getTextsRequest } from '../../lib/api';
+  import { playerGameState } from '../../lib/stores';
+  import { loadTexts as fetchTexts } from '../../lib/text';
   import Book from '../../components/Book.svelte';
   import GameText from '../../components/GameText.svelte';
 
@@ -73,7 +73,7 @@
   }
 
   $effect(() => {
-    getTextsRequest($language, [titleKey, infoTextId]).then(texts => {
+    fetchTexts([titleKey, infoTextId]).then(texts => {
       displayName = texts[titleKey] ?? 'Wolf Marche';
       infoText = texts[infoTextId] ?? '';
     }).catch(() => {

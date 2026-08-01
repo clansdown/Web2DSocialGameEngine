@@ -202,6 +202,19 @@ All responses descend from base structure:
 - **Behavior**: Endpoint-specific functionality
 - **Token refresh**: Accept password in auth object to generate new token
 
+### getTexts
+- **Auth**: Not required (public, pre-auth screens only)
+- **Behavior**: Returns translated text for `language` + `text_ids` with NO gender/name substitution (gender tokens resolve to male default)
+- **Response**: `{ "texts": { "<id>": "...", ... } }`
+- **Note**: The client never sends `sex` to this endpoint. See `getCharacterTexts` for in-game text.
+
+### getCharacterTexts
+- **Auth**: Required (password OR token)
+- **Behavior**: Returns translated text for `language` + `text_ids`, applying gender substitution (`{male|female}` tokens) and `{character_name}` replacement using the character's stored `sex` and `display_name`
+- **Request**: `{ "character_id": ..., "language": "...", "text_ids": [...] }`
+- **Response**: `{ "texts": { "<id>": "...", ... } }`
+- **Note**: Character must belong to the authenticated user. Client callers use `loadTexts()`/`loadText()` from `client/src/lib/text.ts`, which route here automatically.
+
 ## Database Architecture
 
 Two independent SQLite databases for maximum concurrency:
@@ -359,7 +372,10 @@ On startup, the server loads game configuration and image data:
    - `heroes.json` - Hero character definitions
    - `fiefdom_officials.json` - Fiefdom official templates
     - `wall_config.json` - Wall configuration definitions
-    - `mini_games.json` - Mini-game definitions including level grids, rewards, and replay config
+    - `mini_games.json` - Mini-game definitions including level grids, rewards, replay config, and an optional `image` field (client-facing card image path)
+    - `tower_defense/ongoing.json` - Ongoing-mode options for Tower Defense (difficulty/size availability + silver reward tables)
+    - `weeding/ongoing.json` - Ongoing-mode options for Assarting (difficulty/size availability + silver reward tables)
+    - `economy.json` - Economy config including the `currency` block (old-English ratios: 6 pence/shillling, 20 shillings/pound, 120 pence/gold) and `reward_pools` (diminishing-returns limits)
     - `tower_defense/maps/` - Tower defense map metadata JSON files (dynamic: directory is rescanned on each request, allowing hot-reload of new maps without server restart)
 
  2. **TowerDefenseMapCache**: Dynamically loads tower defense map metadata from `config/tower_defense/maps/`. Each `.json` file follows the map metadata format documented in `/tower_defense_map_metadata_format.md`. The directory is rescanned when its modification time changes, so new maps can be added at runtime without restarting the server. Maps are served to clients as `map_metadata` in `/api/startMiniGame` responses.
@@ -375,6 +391,28 @@ On startup, the server loads game configuration and image data:
  The `TowerDefenseMapCache` is separate from the `ImageCache` because maps are loaded dynamically and served as JSON metadata (not enumerated image assets). Map background images are served directly via a static file GET route, bypassing the ImageCache entirely.
 
  All caches are used by their respective endpoints to provide complete game data to clients.
+
+## Mini-game Rewards & Diminishing Returns
+
+Ongoing-mode games (level 0, played outside the marches) pay **silver** rewards
+denominated in pence and formatted in old-English (6 pence/shillling, 20
+shillings/pound). The server is authoritative for rewards:
+
+- Options (available difficulties/sizes) and base reward tables come from
+  `tower_defense/ongoing.json` and `weeding/ongoing.json`; the server rejects
+  any `difficulty`/`rounds`/`grid_size` not offered by these configs.
+- Reward formula: `base_pence = size_reward_pence + difficulty_coeff_pence × (difficulty − 1)`.
+- The client queries `/api/estimateOngoingRewards` (read-only) to preview the
+  expected payout, which is adjusted for the character's reward pool.
+- **Diminishing returns** are enforced entirely server-side and shared across
+  all ongoing mini-games. A per-character `reward_pools` row (lazily
+  replenished from `last_consumed_at`, 5/day, never written by estimate calls)
+  gives the first 15 wins full rewards, the next 5 half (rounded down, min 1
+  penny), and everything after a quarter (rounded down, min 1 penny).
+- Payouts are computed at completion from server-owned session data (TD:
+  `game_sessions.difficulty`/`total_rounds`; weeding: session `difficulty`/`grid_size`)
+  and credited to the fiefdom's `silver_pence` balance when the character has a
+  fiefdom (during `land_patent`, pre-manor, rewards are display-only).
 
 ## Future Enhancements
 

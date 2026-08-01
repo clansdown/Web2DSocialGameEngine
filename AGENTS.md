@@ -167,6 +167,8 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - See `api/updateUserProfile.md` for `/api/updateUserProfile` documentation
 - See `api/updateCharacterProfile.md` for `/api/updateCharacterProfile` documentation
 - See `api/tdRound.md` for `/api/tdRound` documentation
+- See `api/getTexts.md` for `/api/getTexts` documentation
+- See `api/getCharacterTexts.md` for `/api/getCharacterTexts` documentation
 
 #### Endpoint Overview
 
@@ -181,6 +183,8 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - **/api/campaign**: Campaign management (STUB - TODO: implement)
 - **/api/hunt**: Hunting activities (STUB - TODO: implement)
 - **/api/tdRound**: Tower defense round lifecycle (kickoff + completion)
+- **/api/getTexts**: Public text fetch (pre-auth screens, no substitution)
+- **/api/getCharacterTexts**: Character-context text fetch (server applies gender + `{character_name}` substitution)
 
 ### Building
 
@@ -352,6 +356,15 @@ The client is a Vite + Svelte 5 + TypeScript application that provides the game 
 - Use Bootstrap's dark mode via `data-bs-theme="dark"` on `<html>` tag
 - Reference: https://getbootstrap.com/docs/5.3/
 
+**No Hardcoded User-Facing Text — Use the Text System:**
+- ALL user-facing strings MUST come from the text system — never embed display text in Svelte markup, component `<script>`, error messages, or fallbacks
+- Text lives in Markdown files at `game/text/<lang>/<id>.txt` (English is the source; other languages fall back to it)
+- Fetch via `loadTexts(textIds)` / `loadText(textId)` from `client/src/lib/text.ts` (reads language + character stores, routes to the correct endpoint, caches). NEVER call `getTextsRequest`/`getCharacterTextsRequest` directly from components
+- Render Markdown as HTML automatically with the `id` prop on `GameText`/`StoryText` (e.g. `<GameText id="td_ongoing_info" />`); use the `tokens` prop to substitute `{key}`/`<key>` placeholders
+- Gender tokens (`{male|female}`) and `{character_name}` are substituted SERVER-SIDE by `getCharacterTexts` — the client never sends `sex` or the character name
+- Adding a new string: (1) create `game/text/en/<id>.txt`, (2) fetch with `loadTexts` or render via a `GameText`/`StoryText` `id` prop
+- Text IDs use lowercase snake_case; prefix UI strings with `ui_`
+
 **SimpleGame (client/SimpleGame/):**
 - **NEVER modify any file under `client/SimpleGame/`** under any circumstances
 - SimpleGame is an imported engine project (local package via `file:./SimpleGame/ui` in package.json)
@@ -447,7 +460,7 @@ Validates all JSON configuration files against their schema rules. Written in Py
 
 **Options:**
 - `--no-warnings, -w`: Suppress warnings, only show errors
-- `--config-dir, -c`: Directory containing config files (default: `server/config`)
+- `--config-dir, -c`: Directory containing config files (default: `game/config`)
 
 **Exit Codes:**
 - `0`: All configs valid (no errors found)
@@ -464,15 +477,15 @@ Validates all JSON configuration files against their schema rules. Written in Py
 - Missing required damage types (melee, ranged, magical)
 
 **Config Files Validated:**
-- `server/config/damage_types.json` - Damage type definitions
-- `server/config/player_combatants.json` - Player unit definitions
-- `server/config/enemy_combatants.json` - Enemy unit definitions
-- `server/config/fiefdom_building_types.json` - Building type definitions
-- `server/config/heroes.json` - Hero definitions with equipment, skills, and status effects
-- `server/config/fiefdom_officials.json` - Fiefdom official templates with stats and roles
+- `game/config/damage_types.json` - Damage type definitions
+- `game/config/player_combatants.json` - Player unit definitions
+- `game/config/enemy_combatants.json` - Enemy unit definitions
+- `game/config/fiefdom_building_types.json` - Building type definitions
+- `game/config/heroes.json` - Hero definitions with equipment, skills, and status effects
+- `game/config/fiefdom_officials.json` - Fiefdom official templates with stats and roles
 
 **Image Directory Validation:**
-- `server/images/` - Game images (auto-detected from directory structure)
+- `game/images/` - Game images (auto-detected from directory structure; only `combatants/`, `buildings/`, `heroes/`, `portraits/` entity directories are validated)
 - Linter validates: required directories exist and are non-empty, file naming convention
 - See README.md "Images" section for directory structure specification
 

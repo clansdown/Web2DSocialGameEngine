@@ -3,8 +3,8 @@
   import { startWeedingSession, submitWeedingTurn } from '../../lib/game_state';
   import type { WeedingSessionState, WeedingTurnRequest, WeedingTurnResponse, WeedingActionItem, BoardChange, GridSquare, RawToolConfig, RawWeedingMapConfig, RawPlantConfig } from './weeding_types';
   import type { EndMiniGameResponse } from '../../lib/api';
-  import { getTextsRequest } from '../../lib/api';
-  import { language } from '../../lib/stores';
+  import { loadTexts } from '../../lib/text';
+  import { getConfig, deleteConfig } from '../../lib/storage';
   import { marked } from 'marked';
 
   import {
@@ -1065,13 +1065,16 @@
     if (resp.baron_right_earned) {
       results.baron_right_earned = true;
     }
+    if (resp.silver_formatted) {
+      results.silver_formatted = resp.silver_formatted;
+    }
     onComplete(results);
   }
 
   async function fetchOutroText(): Promise<void> {
     if (!outroTextId || outroText) return;
     try {
-      const texts = await getTextsRequest($language, [outroTextId]);
+      const texts = await loadTexts([outroTextId]);
       outroText = texts[outroTextId] || null;
     } catch {
       // ignore fetch errors
@@ -1082,7 +1085,13 @@
     loading = true;
     error = null;
     try {
-      const state = await startWeedingSession(characterId, levelId);
+      // Ongoing-mode settings (if any) are stored by WeedingOngoing; consume
+      // them so the session starts with the player's chosen difficulty/grid.
+      const pending = await getConfig<{ difficulty?: number; grid_size?: number }>('pending_weeding_game');
+      if (pending) {
+        await deleteConfig('pending_weeding_game');
+      }
+      const state = await startWeedingSession(characterId, levelId, pending ?? undefined);
 
       // Phase transition redirect: all levels already done, phase was stuck
       if ((state as any).land_patent_earned) {
@@ -1128,7 +1137,7 @@
       if (state.text_intro_id) {
         outroTextId = state.text_outro_id || null;
         try {
-          const texts = await getTextsRequest($language, [state.text_intro_id]);
+          const texts = await loadTexts([state.text_intro_id]);
           introText = texts[state.text_intro_id] || null;
           if (introText) showIntro = true;
         } catch {
@@ -1144,7 +1153,7 @@
     }
     selectedCrop = null;
     try {
-      const texts = await getTextsRequest($language, ['wd_error_cannot_use']);
+      const texts = await loadTexts(['wd_error_cannot_use']);
       cannotUseText = texts['wd_error_cannot_use'] || 'This tool cannot be used here.';
     } catch {
       cannotUseText = 'This tool cannot be used here.';

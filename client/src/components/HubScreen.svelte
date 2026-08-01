@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { language, playerGameState, currentCharacter } from '../lib/stores';
-  import { getTextsRequest } from '../lib/api';
+  import { playerGameState, currentCharacter } from '../lib/stores';
+  import { loadTexts } from '../lib/text';
   import { getConfig, setConfig } from '../lib/storage';
   import MiniGameSelect from '../minigames/MiniGameSelect.svelte';
   import ManorMenu from './ManorMenu.svelte';
@@ -30,7 +30,7 @@
   async function loadActivityNames() {
     const keys = gridActivities.map(id => `activity_${id}`);
     try {
-      const texts = await getTextsRequest($language, keys, $currentCharacter?.sex || undefined);
+      const texts = await loadTexts(keys);
       const names: Record<string, string> = {};
       for (const id of gridActivities) {
         names[id] = texts[`activity_${id}`] || id.charAt(0).toUpperCase() + id.slice(1);

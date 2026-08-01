@@ -7,8 +7,7 @@
    * Fetches the necessary text IDs on mount in the current language.
    */
 
-  import { language } from '../lib/stores';
-  import { getTextsRequest } from '../lib/api';
+  import { loadTexts as fetchTexts } from '../lib/text';
   import StoryText from './StoryText.svelte';
 
   interface Props {
@@ -36,9 +35,9 @@
   async function loadTexts(): Promise<void> {
     textsLoaded = false;
     try {
-      texts = await getTextsRequest($language, TEXT_IDS);
+      texts = await fetchTexts(TEXT_IDS);
     } catch {
-      // Fall back to English IDs as display — empty strings handled in template
+      // Fall back to empty — template handles missing keys
       texts = {};
     } finally {
       textsLoaded = true;
@@ -111,13 +110,7 @@
           onclick={() => handleCardClick('assarter')}
           onkeydown={(e) => { if (e.key === 'Enter') handleCardClick('assarter'); }}
         >
-          <!-- Image placeholder: path_assarter.png — settler with axe clearing land -->
-          <div
-            class="d-flex align-items-center justify-content-center bg-secondary-subtle mx-auto mt-3 rounded"
-            style="width: 200px; height: 200px;"
-          >
-            <span class="text-muted">Assarter</span>
-          </div>
+          <img src="/images/ui/path_assarter.png" alt="Assarter" class="img-fluid rounded mx-auto mt-3 d-block" style="width: 200px; height: 200px; object-fit: cover;" />
           <div class="card-body">
             <h4 class="card-title">{texts['ui_path_assarter'] || 'Assarter of the Wildlands'}</h4>
           </div>

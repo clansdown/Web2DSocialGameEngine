@@ -1621,7 +1621,8 @@
           rewards: ar.rewards || {},
           land_patent_earned: ar.land_patent_earned || false,
           baron_right_earned: ar.baron_right_earned || false,
-          new_unlocks: ar.new_unlocks as NewUnlocks | undefined
+          new_unlocks: ar.new_unlocks as NewUnlocks | undefined,
+          silver_formatted: ar.silver_formatted
         });
       }
     } catch (e) {
@@ -1664,7 +1665,8 @@
         rewards: cr.rewards || {},
         land_patent_earned: cr.land_patent_earned || false,
         baron_right_earned: cr.baron_right_earned || false,
-        new_unlocks: cr.new_unlocks
+        new_unlocks: cr.new_unlocks,
+        silver_formatted: cr.silver_formatted
       }, forfeited);
     } catch (e) {
       onError(e instanceof Error ? e.message : 'Failed to end game');

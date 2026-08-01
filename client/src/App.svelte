@@ -15,7 +15,8 @@
   import MiniGameContainer from './minigames/MiniGameContainer.svelte';
   import * as auth from './lib/auth';
   import { user, characters, currentCharacter, authLoading, playerGameState, language, isAuthenticated } from './lib/stores';
-  import { loginRequest, refreshToken, setCharacterArchetypeRequest, setCharacterSexRequest, getTextsRequest, acknowledgeLandPatentRequest, fetchGameText } from './lib/api';
+  import { loginRequest, refreshToken, setCharacterArchetypeRequest, setCharacterSexRequest, acknowledgeLandPatentRequest } from './lib/api';
+  import { loadTexts, loadText } from './lib/text';
   import { fetchPlayerState } from './lib/game_state';
   import type { EndMiniGameResponse } from './lib/api';
   import { handleError } from './lib/errors';
@@ -168,7 +169,7 @@
         ? ['path_wolf_warden_intro_title', 'path_wolf_warden_intro_body']
         : ['path_assarter_intro_title', 'path_assarter_intro_body'];
 
-      const introTexts = await getTextsRequest($language, textIds, $currentCharacter.sex ?? undefined);
+      const introTexts = await loadTexts(textIds);
 
       introTitle = introTexts[textIds[0]] || '';
       introBody = introTexts[textIds[1]] || '';
@@ -256,12 +257,8 @@
     const state = $playerGameState;
     if (!state || landPatentHandled) return;
     if ((state as any).land_patent_earned && !showLandPatent) {
-      const sex = $currentCharacter?.sex || 'male';
-      fetchGameText('land_patent_earned', sex).then((raw) => {
+      loadText('land_patent_earned').then((raw) => {
         let text = raw;
-        if ($currentCharacter) {
-          text = text.replace(/\{character_name\}/g, $currentCharacter.display_name);
-        }
         text = text.replace(/\<seal\>/g, `\n\n<img src="/images/ui/kings_seal.png" style="width: 10em; height: auto;" alt="King's Seal" />`);
         landPatentText = text;
         showLandPatent = true;

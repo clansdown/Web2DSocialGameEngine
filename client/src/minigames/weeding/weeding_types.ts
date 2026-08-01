@@ -71,6 +71,7 @@ export interface WeedingTurnResponse {
   land_patent_earned?: boolean;
   baron_right_earned?: boolean;
   next_level_id?: number | null;
+  silver_formatted?: string;
 }
 
 export interface BoardChange {

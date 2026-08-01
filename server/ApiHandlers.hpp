@@ -118,10 +118,20 @@ ApiResponse handleGetMiniGameConfig(GameConfigCache& config_cache, const nlohman
                                      const ClientInfo& client,
                                      const std::optional<std::string>& new_token);
 
+ApiResponse handleEstimateOngoingRewards(GameConfigCache& config_cache, const nlohmann::json& body,
+                                         const std::optional<std::string>& username,
+                                         const ClientInfo& client,
+                                         const std::optional<std::string>& new_token);
+
 ApiResponse handleGetTexts(GameConfigCache& config_cache, const nlohmann::json& body,
                             const std::optional<std::string>& username,
                             const ClientInfo& client,
                             const std::optional<std::string>& new_token);
+
+ApiResponse handleGetCharacterTexts(GameConfigCache& config_cache, const nlohmann::json& body,
+                                    const std::optional<std::string>& username,
+                                    const ClientInfo& client,
+                                    const std::optional<std::string>& new_token);
 
 ApiResponse handleSetCharacterArchetype(GameConfigCache& config_cache, const nlohmann::json& body,
                                          const std::optional<std::string>& username,
@@ -219,6 +229,7 @@ inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfi
     add("endMiniGame",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleEndMiniGame(c, b, u, cl, t); });
     add("getMiniGameConfig",      [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetMiniGameConfig(c, b, u, cl, t); });
     add("getTexts",               [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetTexts(c, b, u, cl, t); });
+    add("getCharacterTexts",      [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetCharacterTexts(c, b, u, cl, t); });
     add("setCharacterArchetype",  [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSetCharacterArchetype(c, b, u, cl, t); });
     add("setFiefdomImport",       [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSetFiefdomImport(c, b, u, cl, t); });
     add("getBaronies",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetBaronies(c, b, u, cl, t); });
@@ -231,5 +242,6 @@ inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfi
     add("weedingTurn",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleWeedingTurn(c, b, u, cl, t); });
     add("getBuildingConfigs",     [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetBuildingConfigs(c, b, u, cl, t); });
     add("acknowledgeLandPatent",  [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleAcknowledgeLandPatent(c, b, u, cl, t); });
+    add("estimateOngoingRewards", [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleEstimateOngoingRewards(c, b, u, cl, t); });
     return handlers;
 }

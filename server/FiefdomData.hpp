@@ -233,6 +233,7 @@ struct FiefdomData {
     int y;
     int peasants;
     int gold;
+    int silver_pence = 0;
     int grain;
     int wood;
     int steel;
@@ -260,6 +261,7 @@ struct FiefdomData {
         json["y"] = y;
         json["peasants"] = peasants;
         json["gold"] = gold;
+        json["silver_pence"] = silver_pence;
         json["grain"] = grain;
         json["wood"] = wood;
         json["steel"] = steel;

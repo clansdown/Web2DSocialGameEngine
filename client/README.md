@@ -178,6 +178,18 @@ The client provides three reusable display components for showing text and conte
 - For game descriptions and tooltips: use `GameText`
 - Pass markdown content via the `text` prop, or use `children` for custom HTML/Svelte content
 
+## Text System
+
+All user-facing text comes from the text system — never hardcode display strings.
+
+- Text files live in `game/text/<lang>/<id>.txt` (Markdown format; English is the source, other languages fall back to it).
+- **Fetching**: use `loadTexts(textIds)` / `loadText(textId)` from `src/lib/text.ts`. They read the current language and character stores, route to the correct endpoint, and cache results.
+  - With a selected character → authenticated `getCharacterTexts` (server substitutes `{male|female}` gender tokens and `{character_name}`).
+  - No character (pre-auth screens) → public `getTexts`.
+- **Auto-fetch rendering**: `GameText` and `StoryText` accept an `id` prop (`<GameText id="td_ongoing_info" />`) that fetches the text reactively and renders its Markdown as HTML. Optional `tokens` prop replaces `{key}`/`<key>` placeholders before rendering.
+- **New strings**: create `game/text/en/<id>.txt`, then fetch it with `loadTexts` (or pass the ID to `GameText`/`StoryText`).
+- The client never sends `sex` or the character name — the server applies those substitutions itself.
+
 ## IDE Setup
 
 **Recommended:** VS Code + Svelte extension

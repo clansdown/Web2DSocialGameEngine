@@ -85,6 +85,14 @@ void migrate_land_patent_acknowledged(sqlite::database& db) {
     }
 }
 
+void migrate_silver_pence(sqlite::database& db) {
+    try {
+        db << "ALTER TABLE fiefdoms ADD COLUMN silver_pence INTEGER NOT NULL DEFAULT 0;";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+}
+
     void migrate_barony_tables(sqlite::database& db) {
         try {
             db << "DROP TABLE IF EXISTS dukedom_members;";
@@ -120,6 +128,7 @@ void migrate_land_patent_acknowledged(sqlite::database& db) {
             "y INTEGER NOT NULL,"
             "peasants INTEGER NOT NULL DEFAULT 0,"
             "gold INTEGER NOT NULL DEFAULT 0,"
+            "silver_pence INTEGER NOT NULL DEFAULT 0,"
             "grain INTEGER NOT NULL DEFAULT 0,"
             "wood INTEGER NOT NULL DEFAULT 0,"
             "steel INTEGER NOT NULL DEFAULT 0,"
@@ -273,6 +282,14 @@ void migrate_land_patent_acknowledged(sqlite::database& db) {
             "FOREIGN KEY(character_id) REFERENCES characters(id),"
             "UNIQUE(character_id, mini_game, level_id)"
         );
+
+        createTable(db, "reward_pools",
+            "character_id INTEGER PRIMARY KEY NOT NULL,"
+            "full_pool INTEGER NOT NULL DEFAULT 15,"
+            "half_pool INTEGER NOT NULL DEFAULT 5,"
+            "last_consumed_at INTEGER NOT NULL DEFAULT 0,"
+            "FOREIGN KEY(character_id) REFERENCES characters(id)"
+        );
     }
 
     void createMessagesDBTables(sqlite::database& db) {
@@ -319,6 +336,7 @@ void initializeGameDB(sqlite::database& db) {
     migrate_placements(db);
     migrate_import_settings(db);
     migrate_land_patent_acknowledged(db);
+    migrate_silver_pence(db);
     ensureGameDBIndexes_private(db);
 }
 

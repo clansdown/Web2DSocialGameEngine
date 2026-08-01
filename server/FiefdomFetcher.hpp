@@ -47,6 +47,7 @@ bool createOfficial(int fiefdom_id, fiefdom::OfficialRole role, const std::strin
 
 struct FiefdomResources {
     int gold = 0;
+    int silver_pence = 0;
     int grain = 0;
     int wood = 0;
     int steel = 0;

@@ -204,5 +204,6 @@ export interface AdvanceResponse {
   land_patent_earned?: boolean;
   baron_right_earned?: boolean;
   new_unlocks?: unknown;
+  silver_formatted?: string;
   [key: string]: unknown;
 }

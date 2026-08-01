@@ -104,17 +104,21 @@ export async function tdRound(
 /**
  * Starts a new weeding session.
  * @param characterId - The character ID
- * @param levelId - The level ID to play
+ * @param levelId - The level ID to play (0 for ongoing mode)
+ * @param options - Optional ongoing-mode settings (difficulty, grid_size)
  * @returns The initial weeding session state
  */
 export async function startWeedingSession(
   characterId: number,
-  levelId: number
+  levelId: number,
+  options?: { difficulty?: number; grid_size?: number }
 ): Promise<WeedingSessionState> {
   const body: Record<string, unknown> = {
     character_id: characterId,
     level_id: levelId
   };
+  if (options?.difficulty !== undefined) body.difficulty = options.difficulty;
+  if (options?.grid_size !== undefined) body.grid_size = options.grid_size;
   return await authenticatedPost<WeedingSessionState>('weedingStart', body);
 }
 

@@ -4,11 +4,11 @@
    * Shows a form for name and optional description.
    */
 
-  import { language, currentCharacter } from '../lib/stores';
+  import { currentCharacter } from '../lib/stores';
   import { createBaronyRequest } from '../lib/api';
   import * as auth from '../lib/auth';
   import { handleError } from '../lib/errors';
-  import { getTextsRequest } from '../lib/api';
+  import { loadTexts as fetchTexts } from '../lib/text';
 
   interface Props {
     onCreated: () => void;
@@ -31,7 +31,7 @@
 
   async function loadTexts(): Promise<void> {
     try {
-      texts = await getTextsRequest($language, TEXT_IDS);
+      texts = await fetchTexts(TEXT_IDS);
     } catch {
       texts = {};
     }

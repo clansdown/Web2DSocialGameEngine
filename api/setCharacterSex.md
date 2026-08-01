@@ -63,7 +63,7 @@ This endpoint requires authentication.
 
 - Valid sex values are `"male"` and `"female"` only (case-sensitive).
 - The endpoint verifies that the character belongs to the authenticated user.
-- Once set, `sex` is used by `POST /api/getTexts` to apply gender substitution when the optional `sex` field is provided in the request.
+- Once set, `sex` is used by `POST /api/getCharacterTexts` to apply gender substitution server-side. The client never sends `sex`; it calls `loadTexts()`/`loadText()` from `client/src/lib/text.ts`, which routes to `getCharacterTexts` when a character is selected.
 - Text files use `{male_form|female_form}` syntax with the male option always first.
 - Example: `{He|She} walks through the forest.` → "He" for male, "She" for female.
-- If no sex is set or the `sex` field is omitted from `getTexts`, the male form is used as default.
+- If no sex is set, the male form is used as default.

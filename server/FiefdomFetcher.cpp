@@ -20,11 +20,11 @@ std::optional<FiefdomData> fetchFiefdomById(
     
     bool found = false;
     db << R"(
-        SELECT owner_id, name, x, y, peasants, gold, grain, wood, steel, bronze, stone, leather, mana, wall_count, morale, last_update_time, manor_level, import_settings
+        SELECT owner_id, name, x, y, peasants, gold, silver_pence, grain, wood, steel, bronze, stone, leather, mana, wall_count, morale, last_update_time, manor_level, import_settings
         FROM fiefdoms WHERE id = ?;
     )" << fiefdom_id
     >> [&](int owner_id, std::string name, int x, int y,
-           int peasants, int gold, int grain, int wood, int steel,
+           int peasants, int gold, int silver_pence, int grain, int wood, int steel,
            int bronze, int stone, int leather, int mana, int wall_count, double morale, int64_t last_update_time, int manor_level, std::string import_settings_str) {
         fiefdom.owner_id = owner_id;
         fiefdom.name = name;
@@ -32,6 +32,7 @@ std::optional<FiefdomData> fetchFiefdomById(
         fiefdom.y = y;
         fiefdom.peasants = peasants;
         fiefdom.gold = gold;
+        fiefdom.silver_pence = silver_pence;
         fiefdom.grain = grain;
         fiefdom.wood = wood;
         fiefdom.steel = steel;
@@ -344,6 +345,7 @@ bool updateFiefdomResources(int fiefdom_id, const FiefdomResources& resources) {
         db << R"(
             UPDATE fiefdoms SET
                 gold = ?,
+                silver_pence = ?,
                 grain = ?,
                 wood = ?,
                 steel = ?,
@@ -352,7 +354,7 @@ bool updateFiefdomResources(int fiefdom_id, const FiefdomResources& resources) {
                 leather = ?,
                 mana = ?
             WHERE id = ?;
-        )" << resources.gold << resources.grain << resources.wood << resources.steel
+        )" << resources.gold << resources.silver_pence << resources.grain << resources.wood << resources.steel
            << resources.bronze << resources.stone << resources.leather << resources.mana
            << fiefdom_id;
         return true;

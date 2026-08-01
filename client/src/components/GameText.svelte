@@ -5,21 +5,33 @@
  * appropriate size based on the container's rendered height via
  * ResizeObserver. Supports markdown text via the `text` prop, or
  * custom content via the children snippet.
+ *
+ * Text may be provided directly (`text`), or fetched from the text system
+ * by ID (`id`). When `id` is used, the text is fetched in the current
+ * language with the current character's context (gender/name substitution),
+ * and re-fetched whenever language or character changes.
+ * Optional `tokens` replace `{key}`/`<key>` placeholders before markdown
+ * rendering (e.g. {seal} -> an <img> tag).
  */
   import { marked } from 'marked';
   import type { Snippet } from 'svelte';
+  import { language, currentCharacter } from '../lib/stores';
   import { getUITexturesRequest } from '../lib/api';
+  import { loadText } from '../lib/text';
   import type { UITexture, UITexturesResponse } from '../lib/api';
 
   interface Props {
     text?: string;
+    id?: string;
+    tokens?: Record<string, string>;
     children?: Snippet;
     class?: string;
   }
 
-  let { text, children, class: className = '' }: Props = $props();
+  let { text, id, tokens, children, class: className = '' }: Props = $props();
 
-  let htmlContent = $derived(text ? marked.parse(text) : '');
+  let fetchedText = $state('');
+  let htmlContent = $derived(marked.parse(applyTokens(id ? fetchedText : (text ?? ''), tokens)));
   let containerEl: HTMLDivElement;
   let textures: UITexture[] = $state([]);
   let texturesLoaded = $state(false);
@@ -32,6 +44,40 @@
 
   const MAX_STRETCH = 1.3;
   const MIN_STRETCH = 0.7;
+
+  /**
+   * Replaces {key} and <key> placeholders in the text with the provided token
+   * values. Leaves unknown placeholders untouched.
+   *
+   * @param content - Raw markdown text
+   * @param tokenMap - Map of placeholder key to replacement string
+   * @returns Content with placeholders substituted
+   */
+  function applyTokens(content: string, tokenMap?: Record<string, string>): string {
+    if (!tokenMap || !content) return content;
+    let result = content;
+    for (const [key, value] of Object.entries(tokenMap)) {
+      result = result.split(`{${key}}`).join(value);
+      result = result.split(`<${key}>`).join(value);
+    }
+    return result;
+  }
+
+  /**
+   * Fetches text by ID whenever it (or the language/character context) changes.
+   * Guards against races with a cancelled flag on cleanup.
+   */
+  $effect(() => {
+    if (!id) {
+      fetchedText = '';
+      return;
+    }
+    $language;
+    $currentCharacter;
+    let cancelled = false;
+    loadText(id).then(t => { if (!cancelled) fetchedText = t; });
+    return () => { cancelled = true; };
+  });
 
   function pickBg(height: number): { url: string; w: number; h: number } | null {
     if (textures.length === 0) return null;
