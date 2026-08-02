@@ -93,6 +93,14 @@ void migrate_silver_pence(sqlite::database& db) {
     }
 }
 
+void migrate_baron_character_id(sqlite::database& db) {
+    try {
+        db << "ALTER TABLE baronies ADD COLUMN baron_character_id INTEGER;";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+}
+
     void migrate_barony_tables(sqlite::database& db) {
         try {
             db << "DROP TABLE IF EXISTS dukedom_members;";
@@ -337,6 +345,7 @@ void initializeGameDB(sqlite::database& db) {
     migrate_import_settings(db);
     migrate_land_patent_acknowledged(db);
     migrate_silver_pence(db);
+    migrate_baron_character_id(db);
     ensureGameDBIndexes_private(db);
 }
 

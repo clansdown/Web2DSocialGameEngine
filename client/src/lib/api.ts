@@ -685,6 +685,8 @@ export interface BaronyInfo {
   owner_name: string;
   member_count: number;
   created_at: number;
+  baron_character_id?: number;
+  baron_name?: string;
 }
 
 export interface JoinBaronyResponse {

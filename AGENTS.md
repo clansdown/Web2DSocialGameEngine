@@ -260,6 +260,25 @@ When testing or verifying the server, use the `agent_test_server.sh` script for 
 - Verbose debugging: `./agent_test_server.sh -N 10 -v`
 - Keep databases for inspection: `./agent_test_server.sh -N 5 --keep-db`
 
+### March Progress Testing
+
+Use `tools/set_march_progress.sh` to set a character's march progress to an exact point for testing campaign/phase flows. It edits `game.db` directly via sqlite3 (no API calls), so the server can be running or stopped.
+
+```bash
+./tools/set_march_progress.sh                                          # List characters (find id)
+./tools/set_march_progress.sh <target> <mini_game> <next_level>        # Set progress
+./tools/set_march_progress.sh 12 tower_defense 5                       # Wolf marche, level 5 next
+./tools/set_march_progress.sh player_one weeding 10                    # Wildlands marche, all 9 done
+```
+
+- `<target>`: numeric character id, username (exact), or display/safe name (substring). Ambiguous matches list matching rows and exit.
+- `<mini_game>`: `tower_defense`/`wolf_marche`/`wolf` or `weeding`/`wildlands_marche`/`assarter`
+- `<next_level>`: the next level the player will play; levels `1..next_level-1` are marked completed
+- Track is derived from the character's current `game_phase`:
+  - `initial_mission` → levels 1–9 (`next_level` 1–10; 10 = all 9 done, server auto-advances to `land_patent`)
+  - `baron_track` → levels 10–25 (`next_level` 10–26; levels 1–9 also filled)
+- The script only touches `mini_game_progress` — never `game_phase`, sessions, or unlocks.
+
 ### Deployment Notes
 
 1. **HTTP Only**: The server listens on HTTP (port 2290). TLS/HTTPS is handled by a reverse proxy (nginx, etc.)

@@ -3787,13 +3787,15 @@ ApiResponse handleGetBaronies(GameConfigCache& config_cache, const json& body,
         json baronies_list = json::array();
 
         db << "SELECT d.id, d.name, d.description, d.owner_character_id, d.created_at, "
-              "COUNT(dm.id) as member_count, c.display_name as owner_name "
+              "COUNT(dm.id) as member_count, c.display_name as owner_name, "
+              "d.baron_character_id, bc.display_name as baron_name "
               "FROM baronies d "
               "LEFT JOIN barony_members dm ON dm.barony_id = d.id "
               "LEFT JOIN characters c ON c.id = d.owner_character_id "
+              "LEFT JOIN characters bc ON bc.id = d.baron_character_id "
               "GROUP BY d.id "
               "ORDER BY d.name;"
-           >> [&](int id, std::string name, std::string description, int owner_id, int64_t created_at, int member_count, std::string owner_name) {
+           >> [&](int id, std::string name, std::string description, int owner_id, int64_t created_at, int member_count, std::string owner_name, std::optional<int> baron_id, std::optional<std::string> baron_name) {
                 json entry;
                 entry["id"] = id;
                 entry["name"] = name;
@@ -3802,6 +3804,12 @@ ApiResponse handleGetBaronies(GameConfigCache& config_cache, const json& body,
                 entry["owner_name"] = owner_name;
                 entry["member_count"] = member_count;
                 entry["created_at"] = created_at;
+                if (baron_id) {
+                    entry["baron_character_id"] = *baron_id;
+                }
+                if (baron_name) {
+                    entry["baron_name"] = *baron_name;
+                }
                 baronies_list.push_back(entry);
             };
 
@@ -3839,6 +3847,14 @@ void checkBaronPromotion(int barony_id) {
             db << "UPDATE barony_members SET role = 'baron' "
                   "WHERE barony_id = ? AND role = 'mesne_lord' "
                   "AND (SELECT COUNT(*) FROM barony_members WHERE barony_id = ? AND role = 'baron') = 0;"
+               << barony_id << barony_id;
+
+            // Track the current baron on the baronies row so leadership is
+            // queryable and can be reassigned if a baron is replaced.
+            db << "UPDATE baronies SET baron_character_id = "
+                  "(SELECT character_id FROM barony_members "
+                  " WHERE barony_id = ? AND role = 'baron' LIMIT 1) "
+                  "WHERE id = ?;"
                << barony_id << barony_id;
         }
     } catch (const std::exception& e) {
