@@ -45,5 +45,8 @@ Transitions the player to sandbox phase.
 
 - Character must be in `baron_right` game phase (all 25 levels completed)
 - Founder is added as `mesne_lord` role
-- Barony name must be unique
-- Fiefdom is created with `manor_level = 1`
+- Barony name must be unique — checked case-insensitively, matching the
+  capture-time uniqueness rule in `/api/startBaronTrack`
+- Fiefdom is created with `manor_level = 1` and 5 starting gold
+- `player_game_state.honor_name` is synced to the final barony name, so a name
+  edited here overrides the name captured at track start

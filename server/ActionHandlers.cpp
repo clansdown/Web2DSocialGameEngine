@@ -73,6 +73,16 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
         }
     }
 
+    if (config.contains("max_per_fiefdom") && config["max_per_fiefdom"].is_number()) {
+        int max_count = config["max_per_fiefdom"].get<int>();
+        if (max_count >= 1 && Validation::countBuildingsByType(fiefdom_id, building_type, 1) >= max_count) {
+            result.status = ActionStatus::FAIL;
+            result.error_code = "max_per_fiefdom_reached";
+            result.error_message = "Only " + std::to_string(max_count) + " " + display_name + "(s) may be built in a fiefdom";
+            return result;
+        }
+    }
+
     if (config.contains("prerequisites") && config["prerequisites"].is_array()) {
         auto prerequisites_opt = Validation::getPrerequisitesForLevel(*ctx.config_cache, building_type, 1);
         if (prerequisites_opt && !prerequisites_opt->empty()) {
@@ -382,7 +392,7 @@ public:
                         auto costs = config[field];
                         int level_index = level - 1;
                         if (level_index >= 0 && level_index < costs.size()) {
-                            int full_cost = costs[level_index].get<int>();
+                            double full_cost = costs[level_index].get<double>();
                             cost[resource_fields[i]] = full_cost / 10;
                         }
                     }
@@ -512,14 +522,15 @@ bool fiefdomExists(int fiefdom_id) {
 
 bool hasEnoughResources(int fiefdom_id, const json& costs) {
     auto& db = Database::getInstance().gameDB();
-    int gold = 0, wood = 0, stone = 0, steel = 0, bronze = 0, grain = 0, leather = 0, mana = 0;
+    double gold = 0;
+    int wood = 0, stone = 0, steel = 0, bronze = 0, grain = 0, leather = 0, mana = 0;
     db << "SELECT gold, wood, stone, steel, bronze, grain, leather, mana FROM fiefdoms WHERE id = ?;"
        << fiefdom_id
-       >> [&](int g, int w, int st, int stl, int b, int gr, int l, int m) {
+       >> [&](double g, int w, int st, int stl, int b, int gr, int l, int m) {
            gold = g; wood = w; stone = st; steel = stl; bronze = b; grain = gr; leather = l; mana = m;
        };
     
-    if (costs.contains("gold") && gold < costs["gold"]) return false;
+    if (costs.contains("gold") && gold < costs["gold"].get<double>()) return false;
     if (costs.contains("wood") && wood < costs["wood"]) return false;
     if (costs.contains("stone") && stone < costs["stone"]) return false;
     if (costs.contains("steel") && steel < costs["steel"]) return false;
@@ -539,21 +550,30 @@ ActionResult deductResources(int fiefdom_id, const json& costs, ActionResult& re
     
     if (costs.empty()) return r;
     
-    int gold = 0, wood = 0, stone = 0, steel = 0, bronze = 0, grain = 0, leather = 0, mana = 0;
+    double gold = 0;
+    int wood = 0, stone = 0, steel = 0, bronze = 0, grain = 0, leather = 0, mana = 0;
     db << "SELECT gold, wood, stone, steel, bronze, grain, leather, mana FROM fiefdoms WHERE id = ?;"
        << fiefdom_id
-       >> [&](int g, int w, int st, int stl, int b, int gr, int l, int m) {
+       >> [&](double g, int w, int st, int stl, int b, int gr, int l, int m) {
            gold = g; wood = w; stone = st; steel = stl; bronze = b; grain = gr; leather = l; mana = m;
        };
     
     std::string resource_fields[] = {"gold", "wood", "stone", "steel", "bronze", "grain", "leather", "mana"};
-    int* resource_ptrs[] = {&gold, &wood, &stone, &steel, &bronze, &grain, &leather, &mana};
+    double* gold_ptr = &gold;
+    int* resource_ptrs[] = {nullptr, &wood, &stone, &steel, &bronze, &grain, &leather, &mana};
     
     for (size_t i = 0; i < 8; i++) {
         if (costs.contains(resource_fields[i])) {
-            int before = *resource_ptrs[i];
-            *resource_ptrs[i] -= costs[resource_fields[i]].get<int>();
-            int after = *resource_ptrs[i];
+            double before;
+            double amount = costs[resource_fields[i]].get<double>();
+            if (i == 0) {
+                before = *gold_ptr;
+                *gold_ptr -= amount;
+            } else {
+                before = *resource_ptrs[i];
+                *resource_ptrs[i] -= static_cast<int>(amount);
+            }
+            double after = (i == 0) ? *gold_ptr : static_cast<double>(*resource_ptrs[i]);
             
             DiffValue diff;
             diff.field = resource_fields[i];
@@ -660,9 +680,9 @@ nlohmann::json calculateCumulativeCost(GameConfigCache& cache, const std::string
 
         if (config.contains(cost_key) && config[cost_key].is_array()) {
             auto costs = config[cost_key];
-            int total = 0;
+            double total = 0;
             for (int j = 0; j < current_level && j < costs.size(); j++) {
-                total += costs[j].get<int>();
+                total += costs[j].get<double>();
             }
             if (total > 0) cumulative[resource_key] = total;
         }
@@ -687,22 +707,30 @@ bool userOwnsBuilding(int building_id, const ActionContext& ctx) {
 ActionResult refundResources(int fiefdom_id, const nlohmann::json& amounts, ActionResult& result) {
     auto& db = Database::getInstance().gameDB();
 
-    int gold = 0, wood = 0, stone = 0, steel = 0, bronze = 0, grain = 0, leather = 0, mana = 0;
+    double gold = 0;
+    int wood = 0, stone = 0, steel = 0, bronze = 0, grain = 0, leather = 0, mana = 0;
     db << "SELECT gold, wood, stone, steel, bronze, grain, leather, mana FROM fiefdoms WHERE id = ?;"
        << fiefdom_id
-       >> [&](int g, int w, int st, int stl, int b, int gr, int l, int m) {
+       >> [&](double g, int w, int st, int stl, int b, int gr, int l, int m) {
            gold = g; wood = w; stone = st; steel = stl; bronze = b; grain = gr; leather = l; mana = m;
        };
 
     std::string resource_fields[] = {"gold", "wood", "stone", "steel", "bronze", "grain", "leather", "mana"};
-    int* resource_ptrs[] = {&gold, &wood, &stone, &steel, &bronze, &grain, &leather, &mana};
+    double* gold_ptr = &gold;
+    int* resource_ptrs[] = {nullptr, &wood, &stone, &steel, &bronze, &grain, &leather, &mana};
 
     for (size_t i = 0; i < 8; i++) {
         if (amounts.contains(resource_fields[i])) {
-            int refund = amounts[resource_fields[i]].get<int>();
-            int before = *resource_ptrs[i];
-            *resource_ptrs[i] += refund;
-            int after = *resource_ptrs[i];
+            double refund = amounts[resource_fields[i]].get<double>();
+            double before;
+            if (i == 0) {
+                before = *gold_ptr;
+                *gold_ptr += refund;
+            } else {
+                before = *resource_ptrs[i];
+                *resource_ptrs[i] += static_cast<int>(refund);
+            }
+            double after = (i == 0) ? *gold_ptr : static_cast<double>(*resource_ptrs[i]);
 
             DiffValue diff;
             diff.field = resource_fields[i];
@@ -776,19 +804,23 @@ bool canAffordWall(GameConfigCache& cache, int fiefdom_id, int generation, int l
     std::string resource_fields[] = {"gold", "stone"};
 
     auto& db = Database::getInstance().gameDB();
-    int gold = 0, stone = 0;
+    double gold = 0;
+    int stone = 0;
     db << "SELECT gold, stone FROM fiefdoms WHERE id = ?;"
        << fiefdom_id
-       >> [&](int g, int s) { gold = g; stone = s; };
+       >> [&](double g, int s) { gold = g; stone = s; };
 
-    int* resource_ptrs[] = {&gold, &stone};
+    double* gold_ptr = &gold;
+    int* stone_ptr = &stone;
+    double* resource_ptrs[] = {gold_ptr, nullptr};
 
     for (size_t i = 0; i < 2; i++) {
         if (config_opt->contains(cost_fields[i])) {
             auto costs = (*config_opt)[cost_fields[i]];
             if (costs.is_array() && level > 0 && level <= static_cast<int>(costs.size())) {
-                int cost = costs[level - 1].get<int>();
-                if (*resource_ptrs[i] < cost) return false;
+                double cost = costs[level - 1].get<double>();
+                if (i == 0 && *gold_ptr < cost) return false;
+                if (i == 1 && *stone_ptr < cost) return false;
             }
         }
     }
@@ -834,7 +866,7 @@ nlohmann::json calculateWallUpgradeCost(GameConfigCache& cache, int generation, 
         if (config_opt->contains(cost_fields[i])) {
             auto costs = (*config_opt)[cost_fields[i]];
             if (costs.is_array() && current_level + 1 > 0 && (current_level + 1) <= static_cast<int>(costs.size())) {
-                cost[resource_fields[i]] = costs[current_level].get<int>();
+                cost[resource_fields[i]] = costs[current_level].get<double>();
             }
         }
     }
@@ -1146,7 +1178,7 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
             if (config_opt->contains(field)) {
                 auto costs = (*config_opt)[field];
                 if (costs.is_array() && current_level > 0 && current_level < static_cast<int>(costs.size())) {
-                    next_cost[field] = costs[current_level].get<int>();
+                    next_cost[field] = costs[current_level].get<double>();
                 }
             }
         }
@@ -1262,7 +1294,7 @@ ActionResult UpgradeActionHandler::execute(const json& payload, const ActionCont
                 if (config_opt->contains(field)) {
                     auto costs = (*config_opt)[field];
                     if (costs.is_array() && current_level > 0 && current_level < static_cast<int>(costs.size())) {
-                        next_cost[field] = costs[current_level].get<int>();
+                        next_cost[field] = costs[current_level].get<double>();
                     }
                 }
             }

@@ -53,6 +53,7 @@ nlohmann::json PlayerGameStateRow::toJson() const {
     j["current_level_id"] = current_level_id ? nlohmann::json(*current_level_id) : nlohmann::json(nullptr);
     j["base_unlocked"] = base_unlocked;
     j["land_patent_acknowledged"] = land_patent_acknowledged;
+    j["honor_name"] = honor_name ? nlohmann::json(*honor_name) : nlohmann::json(nullptr);
     j["entered_at"] = entered_at;
     j["last_updated"] = last_updated;
 
@@ -77,7 +78,7 @@ PlayerGameStateRow get_player_game_state(sqlite::database& db, int character_id)
     PlayerGameStateRow state;
     state.character_id = character_id;
 
-    db << "SELECT game_phase, current_mini_game, current_level_id, base_unlocked, land_patent_acknowledged, entered_at, last_updated "
+    db << "SELECT game_phase, current_mini_game, current_level_id, base_unlocked, land_patent_acknowledged, honor_name, entered_at, last_updated "
           "FROM player_game_state WHERE character_id = ?;"
        << character_id
        >> [&](std::string game_phase,
@@ -85,6 +86,7 @@ PlayerGameStateRow get_player_game_state(sqlite::database& db, int character_id)
                std::optional<int> current_level_id,
                int base_unlocked,
                int land_patent_acknowledged,
+               std::optional<std::string> honor_name,
                int64_t entered_at,
                int64_t last_updated) {
             state.game_phase = game_phase;
@@ -92,6 +94,7 @@ PlayerGameStateRow get_player_game_state(sqlite::database& db, int character_id)
             state.current_level_id = current_level_id;
             state.base_unlocked = (base_unlocked != 0);
             state.land_patent_acknowledged = (land_patent_acknowledged != 0);
+            state.honor_name = honor_name;
             state.entered_at = entered_at;
             state.last_updated = last_updated;
        };
@@ -269,11 +272,18 @@ void acknowledge_land_patent(sqlite::database& db, int character_id) {
        << character_id;
 }
 
-void start_baron_track(sqlite::database& db, int character_id, int64_t timestamp) {
-    db << "UPDATE player_game_state SET "
-          "game_phase = 'baron_track', last_updated = ? "
-          "WHERE character_id = ?;"
-       << timestamp << character_id;
+void start_baron_track(sqlite::database& db, int character_id, int64_t timestamp, const std::optional<std::string>& honor_name) {
+    if (honor_name && !honor_name->empty()) {
+        db << "UPDATE player_game_state SET "
+              "game_phase = 'baron_track', honor_name = ?, last_updated = ? "
+              "WHERE character_id = ?;"
+           << *honor_name << timestamp << character_id;
+    } else {
+        db << "UPDATE player_game_state SET "
+              "game_phase = 'baron_track', last_updated = ? "
+              "WHERE character_id = ?;"
+           << timestamp << character_id;
+    }
 }
 
 void earn_baron_right(sqlite::database& db, int character_id, int64_t timestamp) {

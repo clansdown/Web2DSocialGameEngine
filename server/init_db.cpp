@@ -71,7 +71,7 @@ void migrate_import_settings(sqlite::database& db) {
     try {
         db << "ALTER TABLE fiefdoms ADD COLUMN import_settings TEXT NOT NULL DEFAULT "
               "'{\"grain\":true,\"wood\":true,\"steel\":true,\"bronze\":true,"
-              "\"stone\":true,\"leather\":true,\"mana\":true}';";
+              "\"stone\":true,\"leather\":true,\"mana\":true,\"charcoal\":true,\"iron\":true,\"ironwork\":true}';";
     } catch (const std::exception&) {
         // Column already exists — ignore
     }
@@ -85,9 +85,59 @@ void migrate_land_patent_acknowledged(sqlite::database& db) {
     }
 }
 
+void migrate_honor_name(sqlite::database& db) {
+    try {
+        db << "ALTER TABLE player_game_state ADD COLUMN honor_name TEXT;";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+}
+
 void migrate_silver_pence(sqlite::database& db) {
     try {
         db << "ALTER TABLE fiefdoms ADD COLUMN silver_pence INTEGER NOT NULL DEFAULT 0;";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+}
+
+void migrate_fancy_ironwork(sqlite::database& db) {
+    try {
+        db << "ALTER TABLE fiefdoms ADD COLUMN fancy_ironwork INTEGER NOT NULL DEFAULT 0;";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+}
+
+void migrate_building_output_rates(sqlite::database& db) {
+    try {
+        db << "ALTER TABLE fiefdom_buildings ADD COLUMN output_rates TEXT NOT NULL DEFAULT '{}';";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+}
+
+void migrate_charcoal_iron(sqlite::database& db) {
+    try {
+        db << "ALTER TABLE fiefdoms ADD COLUMN charcoal INTEGER NOT NULL DEFAULT 0;";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+    try {
+        db << "ALTER TABLE fiefdoms ADD COLUMN iron INTEGER NOT NULL DEFAULT 0;";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+    try {
+        db << "ALTER TABLE fiefdoms ADD COLUMN ironwork INTEGER NOT NULL DEFAULT 0;";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+}
+
+void migrate_reserves(sqlite::database& db) {
+    try {
+        db << "ALTER TABLE fiefdoms ADD COLUMN reserves TEXT NOT NULL DEFAULT '{}';";
     } catch (const std::exception&) {
         // Column already exists — ignore
     }
@@ -144,9 +194,14 @@ void migrate_baron_character_id(sqlite::database& db) {
             "stone INTEGER NOT NULL DEFAULT 0,"
             "leather INTEGER NOT NULL DEFAULT 0,"
             "mana INTEGER NOT NULL DEFAULT 0,"
+            "charcoal INTEGER NOT NULL DEFAULT 0,"
+            "iron INTEGER NOT NULL DEFAULT 0,"
+            "ironwork INTEGER NOT NULL DEFAULT 0,"
+            "fancy_ironwork INTEGER NOT NULL DEFAULT 0,"
             "wall_count INTEGER NOT NULL DEFAULT 0,"
             "morale REAL NOT NULL DEFAULT 0,"
             "last_update_time INTEGER NOT NULL DEFAULT 0,"
+            "reserves TEXT NOT NULL DEFAULT '{}',"
             "FOREIGN KEY(owner_id) REFERENCES characters(id)"
         );
 
@@ -161,6 +216,7 @@ void migrate_baron_character_id(sqlite::database& db) {
             "last_updated INTEGER NOT NULL DEFAULT 0,"
             "action_start_ts INTEGER NOT NULL DEFAULT 0,"
             "action_tag TEXT NOT NULL DEFAULT '',"
+            "output_rates TEXT NOT NULL DEFAULT '{}',"
             "FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id)"
         );
 
@@ -215,6 +271,7 @@ void migrate_baron_character_id(sqlite::database& db) {
             "base_unlocked INTEGER NOT NULL DEFAULT 0,"
             "entered_at INTEGER NOT NULL DEFAULT 0,"
             "last_updated INTEGER NOT NULL DEFAULT 0,"
+            "honor_name TEXT,"
             "FOREIGN KEY(character_id) REFERENCES characters(id)"
         );
 
@@ -344,8 +401,13 @@ void initializeGameDB(sqlite::database& db) {
     migrate_placements(db);
     migrate_import_settings(db);
     migrate_land_patent_acknowledged(db);
+    migrate_honor_name(db);
     migrate_silver_pence(db);
+    migrate_fancy_ironwork(db);
+    migrate_charcoal_iron(db);
+    migrate_reserves(db);
     migrate_baron_character_id(db);
+    migrate_building_output_rates(db);
     ensureGameDBIndexes_private(db);
 }
 

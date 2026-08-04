@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { currentCharacter } from '../lib/stores';
-  import { getFiefdomRequest, buildRequest, getBuildingConfigsRequest } from '../lib/api';
-  import type { FiefdomResponse, BuildingTypeConfig } from '../lib/api';
+  import { getFiefdomRequest, buildRequest, getBuildingConfigsRequest, setFiefdomImportRequest, setFiefdomReserveRequest, setBuildingOutputRateRequest } from '../lib/api';
+  import type { FiefdomResponse, BuildingTypeConfig, EconomyReport } from '../lib/api';
   import { loadTexts } from '../lib/text';
   import { getSessionToken, getInMemoryCredentials } from '../lib/auth';
   import { getConfigBoolean, setConfig as setConfigKV, getConfigNumber } from '../lib/storage';
@@ -62,6 +62,17 @@
 
   let showIntro = $state(false);
   let introHtml = $state('');
+
+  let showEconomy = $state(false);
+  let showProduction = $state(false);
+  let economyReport = $state<EconomyReport | null>(null);
+  const IMPORT_RESOURCES = ['grain', 'wood', 'steel', 'bronze', 'stone', 'leather', 'mana', 'charcoal', 'iron', 'ironwork', 'fancy_ironwork'];
+  const RESOURCE_DISPLAY: Record<string, string> = {
+    grain: 'Grain', wood: 'Wood', steel: 'Steel', bronze: 'Bronze',
+    stone: 'Stone', leather: 'Leather', mana: 'Mana', charcoal: 'Charcoal',
+    iron: 'Iron', ironwork: 'Ironwork', fancy_ironwork: 'Fancy Ironwork'
+  };
+  let reserveInputs = $state<Record<string, number>>({});
 
   function createOverlayClass(color: string, id: string): GameObjectClass {
     const c = document.createElement('canvas');
@@ -288,8 +299,76 @@
       );
       if (data.id && !fid) await setConfigKV('fiefdom_id', data.id);
       fiefdomData = data;
+      economyReport = data.economy_report || null;
+      if (data.reserves) {
+        const next: Record<string, number> = {};
+        for (const res of IMPORT_RESOURCES) {
+          next[res] = typeof data.reserves[res] === 'number' ? data.reserves[res] : 0;
+        }
+        reserveInputs = next;
+      }
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : 'Failed to load fiefdom';
+    }
+  }
+
+  async function toggleEconomy() {
+    showEconomy = !showEconomy;
+    if (showEconomy) {
+      showProduction = false;
+      await loadFiefdomData();
+    }
+  }
+
+  async function toggleProduction() {
+    showProduction = !showProduction;
+    if (showProduction) {
+      showEconomy = false;
+      await loadFiefdomData();
+    }
+  }
+
+  /**
+   * Sets how much of a building output actually runs (0..1). Also scales that
+   * output's input requirements. Reloads fiefdom data to reflect server state.
+   */
+  async function setOutputRate(buildingId: number, output: string, rate: number): Promise<void> {
+    const token = getSessionToken();
+    const creds = getInMemoryCredentials();
+    if (!token || !creds || !fiefdomData) return;
+    try {
+      await setBuildingOutputRateRequest(buildingId, output, rate, { username: creds.username, token });
+      await loadFiefdomData();
+    } catch (e) {
+      errorMsg = e instanceof Error ? e.message : 'Failed to set output rate';
+    }
+  }
+
+  async function toggleImport(resource: string) {
+    const token = getSessionToken();
+    const creds = getInMemoryCredentials();
+    if (!token || !creds || !fiefdomData || !fiefdomData.import_settings) return;
+    const next = !fiefdomData.import_settings[resource];
+    try {
+      const res = await setFiefdomImportRequest(fiefdomData.id, resource, next, { username: creds.username, token });
+      if (fiefdomData) fiefdomData.import_settings = res.import_settings;
+      await loadFiefdomData();
+    } catch (e) {
+      errorMsg = e instanceof Error ? e.message : 'Failed to update import setting';
+    }
+  }
+
+  async function setReserve(resource: string) {
+    const token = getSessionToken();
+    const creds = getInMemoryCredentials();
+    if (!token || !creds || !fiefdomData) return;
+    const value = reserveInputs[resource] || 0;
+    try {
+      const res = await setFiefdomReserveRequest(fiefdomData.id, resource, value, { username: creds.username, token });
+      if (fiefdomData) fiefdomData.reserves = res.reserves;
+      await loadFiefdomData();
+    } catch (e) {
+      errorMsg = e instanceof Error ? e.message : 'Failed to update reserve';
     }
   }
 
@@ -397,7 +476,7 @@
 
     everyTick(() => {
       if (resText && fiefdomData) {
-        resText.text = `Gold: ${fiefdomData.gold}  Wood: ${fiefdomData.wood}  Stone: ${fiefdomData.stone}  Grain: ${fiefdomData.grain}`;
+        resText.text = `Gold: ${fiefdomData.gold}  Silver: ${fiefdomData.silver_pence}d  Wood: ${fiefdomData.wood}  Stone: ${fiefdomData.stone}  Grain: ${fiefdomData.grain}`;
       }
       if (mlText && fiefdomData) {
         mlText.text = `Manor Level ${fiefdomData.manor_level}`;
@@ -498,4 +577,153 @@
   {/if}
 
   <canvas bind:this={canvasEl} class="w-100" style="display: {loading || showIntro || errorMsg ? 'none' : 'block'}; height: calc(100vh - 60px);"></canvas>
+
+  {#if !loading && !showIntro && !errorMsg}
+    <div class="position-absolute top-0 end-0 m-3 d-flex flex-column gap-2">
+      <button
+        class="btn btn-outline-light"
+        onclick={toggleEconomy}
+      >
+        {showEconomy ? 'Close Economy' : 'Economy'}
+      </button>
+      <button
+        class="btn btn-outline-light"
+        onclick={toggleProduction}
+      >
+        {showProduction ? 'Close Production' : 'Production'}
+      </button>
+    </div>
+
+    {#if showEconomy}
+      <div class="card position-absolute end-0 m-3" style="width: 420px; max-height: 80vh; overflow-y: auto; top: 7rem;">
+        <div class="card-body">
+          <h6 class="card-title">Manor Economy</h6>
+
+          {#if economyReport}
+            <div class="mb-3">
+              <div class="fw-semibold">Net gold this period: {economyReport.net_gold.toFixed(2)}</div>
+              {#if economyReport.net_silver != null}
+                <div class="fw-semibold">Net silver this period: {economyReport.net_silver}d</div>
+              {/if}
+              {#if Object.keys(economyReport.produced).length > 0}
+                <div class="small text-muted">
+                  Produced: {Object.entries(economyReport.produced).map(([r, a]) => `${r} ${a.toFixed(1)}`).join(', ')}
+                </div>
+              {/if}
+              {#if Object.keys(economyReport.consumed).length > 0}
+                <div class="small text-muted">
+                  Consumed: {Object.entries(economyReport.consumed).map(([r, a]) => `${r} ${a.toFixed(1)}`).join(', ')}
+                </div>
+              {/if}
+              {#if Object.keys(economyReport.imported).length > 0}
+                <div class="small text-muted">
+                  Imported: {Object.entries(economyReport.imported).map(([r, a]) => `${r} ${a.toFixed(1)}`).join(', ')}
+                </div>
+              {/if}
+              {#if Object.keys(economyReport.exported).length > 0}
+                <div class="small text-muted">
+                  Exported: {Object.entries(economyReport.exported).map(([r, v]) => v.pence != null ? `${r} ${v.amount.toFixed(1)} (${v.pence}d)` : `${r} ${v.amount.toFixed(1)} (${v.gold.toFixed(1)}g)`).join(', ')}
+                </div>
+              {/if}
+            </div>
+
+            {#if economyReport.recommendations && economyReport.recommendations.length > 0}
+              <div class="mb-3">
+                <div class="fw-semibold mb-1">Advice</div>
+                {#each economyReport.recommendations as rec}
+                  <div class="small mb-1">
+                    <span class="text-warning">&#9654;</span> {rec}
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          {:else}
+            <p class="small text-muted">No economy data yet — check back after resources produce.</p>
+          {/if}
+
+          <hr />
+          <div class="fw-semibold mb-2">Auto-import (full-buy)</div>
+          <div class="d-flex flex-wrap gap-2">
+            {#each IMPORT_RESOURCES as resource}
+              <button
+                class="btn btn-sm {fiefdomData?.import_settings?.[resource] ? 'btn-primary' : 'btn-outline-secondary'}"
+                onclick={() => toggleImport(resource)}
+              >
+                {RESOURCE_DISPLAY[resource] ?? resource}
+              </button>
+            {/each}
+          </div>
+          <div class="small text-muted mt-2">
+            Full-buy: shortfalls are imported automatically — gold for most resources, silver pence for grain.
+          </div>
+
+          <hr />
+          <div class="fw-semibold mb-2">Reserves (sell excess above)</div>
+          <div class="small text-muted mb-2">Excess stock is sold at each resource's export price (default 50% of import, ironwork 25%) — grain for silver pence, other resources for gold.</div>
+          <div class="d-flex flex-wrap gap-2 align-items-center">
+            {#each IMPORT_RESOURCES as resource}
+              <div class="d-flex align-items-center gap-1">
+                <span class="small">{RESOURCE_DISPLAY[resource] ?? resource}:</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  style="width: 70px;"
+                  class="form-control form-control-sm"
+                  bind:value={reserveInputs[resource]}
+                />
+                <button
+                  class="btn btn-sm btn-outline-light"
+                  onclick={() => setReserve(resource)}
+                >
+                  Set
+                </button>
+              </div>
+            {/each}
+          </div>
+          <div class="small text-muted mt-2">
+            Excess above each reserve is auto-sold for gold; amounts at or below are kept.
+          </div>
+        </div>
+      </div>
+    {/if}
+
+    {#if showProduction}
+      <div class="card position-absolute end-0 m-3" style="width: 420px; max-height: 80vh; overflow-y: auto; top: 7rem;">
+        <div class="card-body">
+          <h6 class="card-title">Production Rates</h6>
+          {#each fiefdomData?.buildings ?? [] as building}
+            {@const cfg = buildingConfigs[building.name]}
+            {@const outputs = (cfg?.outputs ?? []).filter(o => building.level >= (o.min_level ?? 1))}
+            {#if outputs.length > 0}
+              <div class="mb-3">
+                <div class="fw-semibold small">{cfg?.display_name ?? building.name} (L{building.level})</div>
+                {#each outputs as output}
+                  <div class="d-flex align-items-center gap-2 mb-1">
+                    <span class="small flex-shrink-0" style="width: 110px;">{RESOURCE_DISPLAY[output.resource] ?? output.resource}</span>
+                    <input
+                      type="range"
+                      class="form-range flex-grow-1"
+                      min="0"
+                      max="100"
+                      step="5"
+                      value={Math.round(((building.output_rates?.[output.resource] ?? 1) * 100))}
+                      onchange={(e) => setOutputRate(building.id, output.resource, Number(e.currentTarget.value) / 100)}
+                    />
+                    <span class="small flex-shrink-0" style="width: 42px;">{Math.round(((building.output_rates?.[output.resource] ?? 1) * 100))}%</span>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          {/each}
+          {#if !(fiefdomData?.buildings ?? []).some(b => {
+            const cfg = buildingConfigs[b.name];
+            return (cfg?.outputs ?? []).some(o => b.level >= (o.min_level ?? 1));
+          })}
+            <p class="small text-muted">No adjustable outputs on your manor yet.</p>
+          {/if}
+        </div>
+      </div>
+    {/if}
+  {/if}
 </div>

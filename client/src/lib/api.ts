@@ -345,6 +345,7 @@ export interface PlayerGameState {
   current_mini_game: string | null;
   current_level_id: number | null;
   base_unlocked: boolean;
+  honor_name: string | null;
   entered_at: number;
   last_updated: number;
   progress: MiniGameProgress[];
@@ -713,6 +714,7 @@ export interface FiefdomBuilding {
   last_updated: number;
   action_start_ts: number;
   action_tag: string;
+  output_rates: Record<string, number>;
 }
 
 export interface FiefdomResponse {
@@ -723,6 +725,7 @@ export interface FiefdomResponse {
   y: number;
   peasants: number;
   gold: number;
+  silver_pence: number;
   grain: number;
   wood: number;
   steel: number;
@@ -730,6 +733,10 @@ export interface FiefdomResponse {
   stone: number;
   leather: number;
   mana: number;
+  charcoal: number;
+  iron: number;
+  ironwork: number;
+  fancy_ironwork: number;
   wall_count: number;
   morale: number;
   manor_level: number;
@@ -737,6 +744,32 @@ export interface FiefdomResponse {
   officials?: unknown[];
   heroes?: unknown[];
   stationed_combatants?: unknown[];
+  import_settings?: Record<string, boolean>;
+  reserves?: Record<string, number>;
+  economy_report?: EconomyReport;
+}
+
+export interface EconomyExport {
+  amount: number;
+  gold: number;
+  pence?: number;
+}
+
+/**
+ * Per-fiefdom economy ledger returned by getFiefdom after a time update.
+ * Produced/consumed/imported map resource names to amounts; exported maps
+ * resource names to {amount, gold} sold above reserve.
+ * net_gold is gold produced + export gold − import spend − gold consumed.
+ */
+export interface EconomyReport {
+  elapsed_seconds: number;
+  produced: Record<string, number>;
+  consumed: Record<string, number>;
+  imported: Record<string, number>;
+  exported: Record<string, EconomyExport>;
+  net_gold: number;
+  net_silver?: number;
+  recommendations: string[];
 }
 
 export interface BuildResponse {
@@ -750,6 +783,7 @@ export interface SetFiefdomImportResponse {
 
 export interface StartBaronTrackResponse {
   game_phase: string;
+  honor_name: string;
 }
 
 /**
@@ -916,22 +950,95 @@ export async function setFiefdomImportRequest(
   return res.data as SetFiefdomImportResponse;
 }
 
+export interface SetFiefdomReserveResponse {
+  reserves: Record<string, number>;
+}
+
+/**
+ * Sets the reserve (minimum stock kept) for a resource in a fiefdom.
+ * Excess above the reserve is auto-sold for gold each economy tick.
+ *
+ * @param fiefdomId - Fiefdom ID
+ * @param resource - Resource name (e.g., "grain", "ironwork")
+ * @param reserve - Minimum amount to keep in stock (0 sells all excess)
+ * @param auth - Authentication object with username and token
+ * @returns Promise<SetFiefdomReserveResponse> - Updated reserve settings
+ *
+ * Usage: Called from the manor economy panel
+ */
+export async function setFiefdomReserveRequest(
+  fiefdomId: number,
+  resource: string,
+  reserve: number,
+  auth: { username: string; token: string }
+): Promise<SetFiefdomReserveResponse> {
+  const res = await apiPost<SetFiefdomReserveResponse>('setFiefdomReserve', {
+    fiefdom_id: fiefdomId,
+    resource,
+    reserve
+  }, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return res.data as SetFiefdomReserveResponse;
+}
+
+export interface SetBuildingOutputRateResponse {
+  output_rates: Record<string, number>;
+}
+
+/**
+ * Sets how much of a building's maximum possible output actually runs (0..1).
+ * The output must be produced by the building's config and unlocked at its
+ * level. Scaling the rate also scales that output's input requirements.
+ *
+ * @param buildingId - Building instance ID
+ * @param output - Output resource name (e.g., "fancy_ironwork")
+ * @param rate - Utilization 0..1 (0 = off, 1 = full)
+ * @param auth - Authentication object with username and token
+ * @returns Promise<SetBuildingOutputRateResponse> - Updated per-output rates
+ *
+ * Usage: Called from the manor production panel
+ */
+export async function setBuildingOutputRateRequest(
+  buildingId: number,
+  output: string,
+  rate: number,
+  auth: { username: string; token: string }
+): Promise<SetBuildingOutputRateResponse> {
+  const res = await apiPost<SetBuildingOutputRateResponse>('setBuildingOutputRate', {
+    building_id: buildingId,
+    output,
+    rate
+  }, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return res.data as SetBuildingOutputRateResponse;
+}
+
 /**
  * Opts into the baron track (4x4 grid, 16 harder levels) to earn the right
- * to start a barony instead of joining one.
+ * to start a barony instead of joining one. Captures the aspiring barony's
+ * honor name, which the server requires to be unique (case-insensitive).
  *
  * @param characterId - Character to start the baron track for
+ * @param honorName - The aspiring barony's honor name (required, <= 64 chars)
  * @param auth - Authentication object with username and token
- * @returns Promise<StartBaronTrackResponse> - Updated game phase
+ * @returns Promise<StartBaronTrackResponse> - Updated game phase and honor name
  *
- * Usage: Called from PatentScreen when player chooses to start their own barony
+ * Usage: Called from LandPatentPanel when player chooses to start their own barony
  */
 export async function startBaronTrackRequest(
   characterId: number,
+  honorName: string,
   auth: { username: string; token: string }
 ): Promise<StartBaronTrackResponse> {
   const res = await apiPost<StartBaronTrackResponse>('startBaronTrack', {
-    character_id: characterId
+    character_id: characterId,
+    honor_name: honorName
   }, { username: auth.username, token: auth.token });
 
   if (res.error) {
@@ -974,6 +1081,13 @@ export async function estimateOngoingRewards(
 
 // ── Building config types ──────────────────────────────────────────
 
+export interface BuildingOutputConfig {
+  resource: string;
+  amount: number;
+  inputs?: Record<string, { amount?: number } | number>;
+  min_level?: number;
+}
+
 export interface BuildingTypeConfig {
   display_name: string;
   image: string;
@@ -983,6 +1097,7 @@ export interface BuildingTypeConfig {
   construction_times: number[];
   costs: Record<string, number>;
   min_manor_level: number;
+  outputs?: BuildingOutputConfig[];
   [key: string]: unknown;
 }
 

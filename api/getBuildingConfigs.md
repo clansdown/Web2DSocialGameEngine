@@ -50,7 +50,7 @@ No required or optional parameters.
 - `construction_image` is always present: if the config defines it, that value is used; if not, it's copied from `image`
 - `costs` is an object with level-1 costs for `gold`, `wood`, `stone` keys (whichever exist)
 - `min_manor_level` is extracted from `prerequisites[0].manor_level`, defaults to 1
-- The full building type config from `fiefdom_building_types.json` is included (production fields, hourly_cost, modifiers, etc.)
+- The full building type config from `fiefdom_building_types.json` is included (per-day production fields, daily_cost, modifiers, etc.)
 
 ### Error
 

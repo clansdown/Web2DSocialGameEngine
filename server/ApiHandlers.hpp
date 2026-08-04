@@ -163,6 +163,16 @@ ApiResponse handleSetFiefdomImport(GameConfigCache& config_cache, const nlohmann
                                    const ClientInfo& client,
                                    const std::optional<std::string>& new_token);
 
+ApiResponse handleSetFiefdomReserve(GameConfigCache& config_cache, const nlohmann::json& body,
+                                    const std::optional<std::string>& username,
+                                    const ClientInfo& client,
+                                    const std::optional<std::string>& new_token);
+
+ApiResponse handleSetBuildingOutputRate(GameConfigCache& config_cache, const nlohmann::json& body,
+                                        const std::optional<std::string>& username,
+                                        const ClientInfo& client,
+                                        const std::optional<std::string>& new_token);
+
 ApiResponse handleSetCharacterSex(GameConfigCache& config_cache, const nlohmann::json& body,
                                    const std::optional<std::string>& username,
                                    const ClientInfo& client,
@@ -232,6 +242,8 @@ inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfi
     add("getCharacterTexts",      [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetCharacterTexts(c, b, u, cl, t); });
     add("setCharacterArchetype",  [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSetCharacterArchetype(c, b, u, cl, t); });
     add("setFiefdomImport",       [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSetFiefdomImport(c, b, u, cl, t); });
+    add("setFiefdomReserve",      [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSetFiefdomReserve(c, b, u, cl, t); });
+    add("setBuildingOutputRate",  [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSetBuildingOutputRate(c, b, u, cl, t); });
     add("getBaronies",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetBaronies(c, b, u, cl, t); });
     add("joinBarony",             [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleJoinBarony(c, b, u, cl, t); });
     add("createBarony",           [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleCreateBarony(c, b, u, cl, t); });

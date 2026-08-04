@@ -20,12 +20,12 @@ std::optional<FiefdomData> fetchFiefdomById(
     
     bool found = false;
     db << R"(
-        SELECT owner_id, name, x, y, peasants, gold, silver_pence, grain, wood, steel, bronze, stone, leather, mana, wall_count, morale, last_update_time, manor_level, import_settings
+        SELECT owner_id, name, x, y, peasants, gold, silver_pence, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, fancy_ironwork, wall_count, morale, last_update_time, manor_level, import_settings, reserves
         FROM fiefdoms WHERE id = ?;
     )" << fiefdom_id
     >> [&](int owner_id, std::string name, int x, int y,
-           int peasants, int gold, int silver_pence, int grain, int wood, int steel,
-           int bronze, int stone, int leather, int mana, int wall_count, double morale, int64_t last_update_time, int manor_level, std::string import_settings_str) {
+           int peasants, double gold, int silver_pence, int grain, int wood, int steel,
+           int bronze, int stone, int leather, int mana, int charcoal, int iron, int ironwork, int fancy_ironwork, int wall_count, double morale, int64_t last_update_time, int manor_level, std::string import_settings_str, std::string reserves_str) {
         fiefdom.owner_id = owner_id;
         fiefdom.name = name;
         fiefdom.x = x;
@@ -40,12 +40,18 @@ std::optional<FiefdomData> fetchFiefdomById(
         fiefdom.stone = stone;
         fiefdom.leather = leather;
         fiefdom.mana = mana;
+        fiefdom.charcoal = charcoal;
+        fiefdom.iron = iron;
+        fiefdom.ironwork = ironwork;
+        fiefdom.fancy_ironwork = fancy_ironwork;
         fiefdom.wall_count = wall_count;
         fiefdom.morale = morale;
         fiefdom.last_update_time = last_update_time;
         fiefdom.manor_level = manor_level;
         try { fiefdom.import_settings = nlohmann::json::parse(import_settings_str); }
         catch (...) { fiefdom.import_settings = nlohmann::json::object(); }
+        try { fiefdom.reserves = nlohmann::json::parse(reserves_str); }
+        catch (...) { fiefdom.reserves = nlohmann::json::object(); }
         found = true;
     };
     
@@ -95,10 +101,10 @@ std::vector<BuildingData> fetchFiefdomBuildings(int fiefdom_id) {
 
     std::vector<BuildingData> buildings;
 
-    db << "SELECT id, name, level, x, y, construction_start_ts, last_updated, action_start_ts, action_tag FROM fiefdom_buildings WHERE fiefdom_id = ?;"
+    db << "SELECT id, name, level, x, y, construction_start_ts, last_updated, action_start_ts, action_tag, output_rates FROM fiefdom_buildings WHERE fiefdom_id = ?;"
        << fiefdom_id
        >> [&](int id, std::string name, int level, int x, int y, int64_t construction_start_ts,
-              int64_t last_updated, int64_t action_start_ts, std::string action_tag) {
+              int64_t last_updated, int64_t action_start_ts, std::string action_tag, std::string output_rates_str) {
            BuildingData building;
            building.id = id;
            building.name = name;
@@ -109,6 +115,8 @@ std::vector<BuildingData> fetchFiefdomBuildings(int fiefdom_id) {
            building.last_updated = last_updated;
            building.action_start_ts = action_start_ts;
            building.action_tag = action_tag;
+           try { building.output_rates = nlohmann::json::parse(output_rates_str); }
+           catch (...) { building.output_rates = nlohmann::json::object(); }
            buildings.push_back(building);
        };
 
@@ -352,10 +360,15 @@ bool updateFiefdomResources(int fiefdom_id, const FiefdomResources& resources) {
                 bronze = ?,
                 stone = ?,
                 leather = ?,
-                mana = ?
+                mana = ?,
+                charcoal = ?,
+                iron = ?,
+                ironwork = ?,
+                fancy_ironwork = ?
             WHERE id = ?;
         )" << resources.gold << resources.silver_pence << resources.grain << resources.wood << resources.steel
            << resources.bronze << resources.stone << resources.leather << resources.mana
+           << resources.charcoal << resources.iron << resources.ironwork << resources.fancy_ironwork
            << fiefdom_id;
         return true;
     } catch (const std::exception& e) {

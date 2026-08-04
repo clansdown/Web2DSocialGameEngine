@@ -45,6 +45,10 @@
   let landPatentText = $state('');
   let landPatentHandled = $state(false);
 
+  // Barony patent notification state (shown when the baron track is completed)
+  let showBaronyPatent = $state(false);
+  let baronyPatentText = $state('');
+
   /**
    * Loads stored language preference on startup.
    */
@@ -228,9 +232,15 @@
     if ($currentCharacter) {
       fetchPlayerState($currentCharacter.id);
     }
-    // If we just completed the baron track, show the create barony screen
+    // If we just completed the baron track, show the barony patent first, then
+    // the create barony screen once it is dismissed.
     if (results.baron_right_earned) {
-      showBaronyCreate = true;
+      loadText('barony_patent_earned').then((raw) => {
+        let text = raw;
+        text = text.replace(/\<seal\>/g, `\n\n<img src="/images/ui/kings_seal.png" style="width: 10em; height: auto;" alt="King's Seal" />`);
+        baronyPatentText = text;
+        showBaronyPatent = true;
+      });
     }
   }
 
@@ -247,6 +257,15 @@
     }
     showLandPatent = false;
     landPatentHandled = true;
+  }
+
+  /**
+   * Dismisses the barony patent notification and proceeds to create the barony
+   * (the player's honor name is already prefilled).
+   */
+  function dismissBaronyPatent(): void {
+    showBaronyPatent = false;
+    showBaronyCreate = true;
   }
 
   /**
@@ -316,6 +335,17 @@
     onDismiss={dismissLandPatent}
   >
     <StoryText text={landPatentText} />
+  </DialogOverlay>
+{/if}
+
+{#if showBaronyPatent}
+  <DialogOverlay
+    title=""
+    size="xlg"
+    noPadding
+    onDismiss={dismissBaronyPatent}
+  >
+    <StoryText text={baronyPatentText} />
   </DialogOverlay>
 {/if}
 

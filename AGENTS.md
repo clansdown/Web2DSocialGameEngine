@@ -55,6 +55,7 @@ The `server/tables/` directory contains detailed schema documentation for each S
 - `server/tables/fiefdoms.md` - fiefdoms table
 - `server/tables/player_messages.md` - player_messages table
 - `server/tables/message_queues.md` - message_queues table
+- `server/tables/player_game_state.md` - player_game_state table (game phases, baron-track honor name)
 
 Each `.md` file documents the table's purpose, full schema, field descriptions, indexes, relationships, and usage notes. See `server/tables/README.md` for guidance on documenting new tables.
 
@@ -108,6 +109,37 @@ CREATE TABLE fiefdoms (
     FOREIGN KEY(owner_id) REFERENCES characters(id)
 );
 ```
+
+**Note:** The full `fiefdoms` schema (see `server/tables/fiefdoms.md`) also includes resource
+columns — `peasants, gold, silver_pence, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron,
+ironwork, fancy_ironwork` — plus `wall_count`, `morale`, `last_update_time`, and `import_settings`. `gold` is
+read/written as a double (fractional values allowed). `charcoal` is produced by the collier and
+consumed by the blacksmith and bloomery; `iron` is produced by the bloomery and consumed by the
+blacksmith; `ironwork` is produced by the blacksmith and consumed by building upkeep and unit
+upkeep; `fancy_ironwork`
+is produced by the blacksmith's level-2+ `fancy_ironwork` output. Craft buildings are self-contained
+households: each (peasant cottage, blacksmith, collier, woodcutter, wood_hewer) produces **18 grain/day**
+(subsistence plot) and consumes **36 grain/day** via `daily_cost`, plus a small `daily_cost` of
+`ironwork` (tools: home_base 20, peasant 1, woodcutter 5, wood_hewer 5, miller 5, collier 2). One
+blacksmith produces **100 ironwork/day** (input-gated on grain 100 + charcoal 100 + iron 100 per day),
+covering ~50 peasants + 2 woodcutters + 2 woodhewers + a miller + a few colliers + the home base.
+All production
+and consumption share a fixed **1-day period** (`amount` = per day, scaled by fractional elapsed
+days — no per-cycle `periodicity`/`amount_multiplier` fields). Buildings may define production as
+either flat `<resource>: {amount}` fields + a building-level `inputs` map, or a multi-output
+`outputs` array where each output has its own `inputs`, a `min_level` unlock, and a per-player
+rate (0..1) stored in `fiefdom_buildings.output_rates` (set via `/api/setBuildingOutputRate`).
+`reserves` (a JSON object)
+stores per-resource stockpile minimums; excess above a reserve is auto-sold at the resource's
+export price — `export_prices[resource]` (explicit), else `export_sell_multipliers[resource]`
+(per-resource ratio), else `export_sell_multiplier` (0.5) × import price.
+`import_prices` values are plain numbers (gold-denominated) or money objects `{gold, shillings,
+pence}` — the latter are **penny-market** resources paid in `silver_pence` (grain is `{"shillings":
+1}`, imported at 1 shilling / sold at 6 pence). Import prices **deflate as production scales up**
+(anchored to grain, 1 shilling ≈ 0.05 gold): wood 0.03, charcoal 0.03, iron 0.06, ironwork 0.02.
+`ironwork` exports sell at **25% of its import price** (`export_sell_multipliers.ironwork = 0.25`);
+other resources sell at 50%. Currency ratios are standard medieval:
+12 pence/shillng, 20 shillings/pound, 240 pence/gold.
 
 ### messages.db Schema
 
@@ -169,6 +201,8 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - See `api/tdRound.md` for `/api/tdRound` documentation
 - See `api/getTexts.md` for `/api/getTexts` documentation
 - See `api/getCharacterTexts.md` for `/api/getCharacterTexts` documentation
+- See `api/setFiefdomReserve.md` for `/api/setFiefdomReserve` documentation
+- See `api/setBuildingOutputRate.md` for `/api/setBuildingOutputRate` documentation
 
 #### Endpoint Overview
 
@@ -185,6 +219,8 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - **/api/tdRound**: Tower defense round lifecycle (kickoff + completion)
 - **/api/getTexts**: Public text fetch (pre-auth screens, no substitution)
 - **/api/getCharacterTexts**: Character-context text fetch (server applies gender + `{character_name}` substitution)
+- **/api/setFiefdomReserve**: Set per-resource stockpile reserves (excess above reserve is auto-sold at the resource's export price — explicit `export_prices`, else `export_sell_multipliers` ratio, else 50% of import price)
+- **/api/setBuildingOutputRate**: Set a building output's production rate (0..1) per building instance — scales that output and its inputs; validates the output exists and is unlocked at the building's level
 
 ### Building
 
@@ -494,6 +530,7 @@ Validates all JSON configuration files against their schema rules. Written in Py
 - Naming convention suggestions (lowercase snake_case IDs)
 - Duplicate ID detection
 - Missing required damage types (melee, ranged, magical)
+- Money costs (`gold_cost` on buildings and walls) accept either a plain number (gold) or a `{ gold, shillings, pence }` object (non-negative, at least one key)
 
 **Config Files Validated:**
 - `game/config/damage_types.json` - Damage type definitions
@@ -562,6 +599,11 @@ Build the full game progression and content system with a working tower defense 
 - **Pause button**: Added sidebar pause button using SimpleGame's exported `togglePause()`/`isPaused()`/`onPause`/`onResume` API
 - **Forfeit fix**: `forfeitGame()` skips server completion call if round never started
 - All `console.debug` → `console.log` for visible debug output
+- **Barony honor naming**: Capturing the aspiring barony's honor name up front. `player_game_state.honor_name` (new column + migration) is captured by `/api/startBaronTrack` (required, ≤ 64 chars, **hard** case-insensitive uniqueness against `baronies.name` — not a warning), prefilled (editable) into `/api/createBarony`, substituted for `{honor_name}` server-side in `getCharacterTexts`, and shown on `barony_patent_earned.txt` via a `DialogOverlay` on `baron_right_earned` before the create form. Name dialog lives in `LandPatentPanel` (text-system strings); `createBarony` duplicate check now `LOWER(name)=LOWER(?)`.
+- **Penny market + peasant economics**: Peasant Cottage produces **74 grain/day** and costs **36 grain/day** upkeep (net +38/day, auto-sold above reserve). Grain is a **penny-market** resource: `import_prices.grain = {"shillings": 1}`, so imports deduct from `fiefdoms.silver_pence` and excess auto-sells to it at 6 pence/unit (50%). Engine now loads/uses `silver_pence` in the economy tick (imports+exports+persist), reports `net_silver` and `{amount, pence}` export entries. Currency switched to standard medieval: **12 pence/shillng, 20 shillings/pound, 240 pence/gold** (`economy.json`, `Money.hpp`, mini-game reward formatting). Client shows the silver balance + pence-aware export/reserve labels.
+- **Per-commodity export pricing**: Export price resolves per resource with precedence `export_prices[resource]` (explicit gold/pence sell price) → `export_sell_multipliers[resource]` (ratio of import price) → global `export_sell_multiplier` (0.5). Engine resolves the unit sell value in the resource's market currency; linter validates both new maps in `economy.json`.
+- **Multi-output buildings + per-output rates**: A building may define an `outputs` array — each output with its own `inputs`, a `min_level` unlock, and a per-player rate (0..1). The blacksmith now produces `ironwork` (level 1+) and `fancy_ironwork` (level 2+, 2× iron input), both simultaneously at level 2+. Engine uses per-output plans: each output is gated by its own input-satisfaction ratio, rates scale output + inputs (0 = off). `fancy_ironwork` added as a real fiefdom resource (column + migration + full plumbing). Rates stored in `fiefdom_buildings.output_rates` (JSON), set via `/api/setBuildingOutputRate`; client has a Production Rates panel in `ManorMenu` with per-output sliders.
+- **Metalworking economy + household grain**: Every craft building (peasant, blacksmith, collier, woodcutter, wood_hewer) is a self-contained household — produces **18 grain/day** and consumes **36 grain/day** via `daily_cost`, plus a small `ironwork` tool upkeep (home_base 20, peasant 1, woodcutter 5, wood_hewer 5, miller 5, collier 2). Blacksmith output scaled to **100 ironwork/day** (inputs grain/charcoal/iron 100 each); collier charcoal 30 (wood 20 input), bloomery iron 20 (charcoal 30 input), woodcutter wood 20 — so ~5 bloomeries + ~9 colliers feed one full blacksmith, and one blacksmith covers ~50 peasants + 2 woodcutters + 2 woodhewers + a miller + a few colliers + the home base. **Prices deflate with production** (anchored to grain at 1 shilling ≈ 0.05 gold): wood 0.03, charcoal 0.03, iron 0.06, ironwork 0.02 import. **Ironwork exports sell at 25% of import** (`export_sell_multipliers.ironwork = 0.25`), other resources at 50%. `default_reserves` scaled up (grain 150, wood 100, steel 50, bronze 25, stone 60, leather 25, mana 10, charcoal/iron/ironwork 50, fancy_ironwork 10).
 
 #### In Progress
 - (none)
@@ -581,7 +623,6 @@ Build the full game progression and content system with a working tower defense 
 - Add more map JSONs for levels 2–9 in `mini_games.json`
 - Fill in narrative placeholder text in `text/en/` with gender-substituted content
 - Create arrow/bolt projectile images at `game/images/tower_defense/projectiles/`
-- Implement Baron promotion check (21 members with manor ≥ 3 → baron role)
 - Generate parchment background and path icon images
 - Add `rounds` field to baron_levels in `mini_games.json` if needed
 

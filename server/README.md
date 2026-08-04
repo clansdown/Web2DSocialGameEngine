@@ -274,6 +274,9 @@ CREATE TABLE fiefdoms (
     stone INTEGER NOT NULL DEFAULT 0,
     leather INTEGER NOT NULL DEFAULT 0,
     mana INTEGER NOT NULL DEFAULT 0,
+    charcoal INTEGER NOT NULL DEFAULT 0,
+    iron INTEGER NOT NULL DEFAULT 0,
+    ironwork INTEGER NOT NULL DEFAULT 0,
     wall_count INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY(owner_id) REFERENCES characters(id)
 );
@@ -366,7 +369,7 @@ On startup, the server loads game configuration and image data:
 
 1. **GameConfigCache**: Loads all JSON config files from `config/` directory:
    - `damage_types.json` - Damage type definitions
-   - `fiefdom_building_types.json` - Building definitions
+     - `fiefdom_building_types.json` - Building definitions (resource production + optional `inputs` for input-gated output scaling; a building may instead use an `outputs` array — each output with its own `inputs`, `min_level` unlock, and a per-player rate)
    - `player_combatants.json` - Player unit definitions
    - `enemy_combatants.json` - Enemy unit definitions
    - `heroes.json` - Hero character definitions
@@ -375,7 +378,7 @@ On startup, the server loads game configuration and image data:
     - `mini_games.json` - Mini-game definitions including level grids, rewards, replay config, and an optional `image` field (client-facing card image path)
     - `tower_defense/ongoing.json` - Ongoing-mode options for Tower Defense (difficulty/size availability + silver reward tables)
     - `weeding/ongoing.json` - Ongoing-mode options for Assarting (difficulty/size availability + silver reward tables)
-    - `economy.json` - Economy config including the `currency` block (old-English ratios: 6 pence/shillling, 20 shillings/pound, 120 pence/gold) and `reward_pools` (diminishing-returns limits)
+     - `economy.json` - Economy config including the `currency` block (old-English ratios: 12 pence/shillling, 20 shillings/pound, 240 pence/gold), `import_prices` (per-resource cost to buy shortfalls — plain numbers are gold prices, money objects `{gold, shillings, pence}` are paid from the silver-pence wallet, e.g. `grain: {"shillings": 1}`; prices deflate as production scales up, anchored to grain), `export_prices` (optional per-resource explicit sell prices, same money-form as import_prices), `export_sell_multipliers` (optional per-resource sell ratios of the import price — e.g. `ironwork: 0.25` sells at 25% of import), `export_sell_multiplier` (0.5 default; excess above reserve sells at `export_prices` → `export_sell_multipliers` → `export_sell_multiplier` × import price), `default_reserves` (per-resource stockpile minimums), `population_costs` (per-day per population unit), `combatant_upkeep_priority`, and `reward_pools` (diminishing-returns limits)
     - `tower_defense/maps/` - Tower defense map metadata JSON files (dynamic: directory is rescanned on each request, allowing hot-reload of new maps without server restart)
 
  2. **TowerDefenseMapCache**: Dynamically loads tower defense map metadata from `config/tower_defense/maps/`. Each `.json` file follows the map metadata format documented in `/tower_defense_map_metadata_format.md`. The directory is rescanned when its modification time changes, so new maps can be added at runtime without restarting the server. Maps are served to clients as `map_metadata` in `/api/startMiniGame` responses.
@@ -395,7 +398,7 @@ On startup, the server loads game configuration and image data:
 ## Mini-game Rewards & Diminishing Returns
 
 Ongoing-mode games (level 0, played outside the marches) pay **silver** rewards
-denominated in pence and formatted in old-English (6 pence/shillling, 20
+denominated in pence and formatted in old-English (12 pence/shillling, 20
 shillings/pound). The server is authoritative for rewards:
 
 - Options (available difficulties/sizes) and base reward tables come from

@@ -23,9 +23,9 @@ On-demand resource production and state progression based on elapsed time.
 
 ## Time Update Logic
 
-1. Calculate hours elapsed since `last_update_time`
+1. Calculate days elapsed since `last_update_time`
 2. For each fiefdom needing update:
-   - For each building, calculate production cycles
+   - For each building, calculate flat per-day production (amount × fractional days)
    - Apply resource changes in transaction
    - Record production changes
 3. Optionally recalculate morale

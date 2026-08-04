@@ -2,7 +2,8 @@
 
 ## Trigger Conditions
 
-Client calls `/api/updateState` with `last_update_time` or endpoint retrieves stored `last_update_time` per fiefdom.
+Client calls `/api/getFiefdom` (or other fiefdom endpoints) which invokes the economy update via
+`GameLogic::updateStateSince` using the fiefdom's stored `last_update_time`.
 
 ## Update Process
 
@@ -13,32 +14,28 @@ Client calls `/api/updateState` with `last_update_time` or endpoint retrieves st
 2. **Calculate elapsed time**
    ```
    hours_elapsed = (now - last_update_time) / 3600.0
+   days_elapsed  = hours_elapsed / 24.0
    ```
    - Now is current epoch seconds
-   - 3600 converts seconds to hours
-   - Result is floating point for fractional hours
+   - Result is floating point for fractional days
 
 3. **Skip tiny updates**
-   - If `hours_elapsed < 0.001` (~3.6 seconds), skip update
-   - Prevents unnecessary database writes
+   - If `hours_elapsed < 1/3600` (~1 second), skip update
+   - Prevents unnecessary database writes and rounding errors
 
 4. **Query fiefdoms needing updates**
-   ```sql
-   SELECT id FROM fiefdoms WHERE last_update_time < (now - hours_elapsed * 3600)
-   ```
 
 5. **Process each fiefdom**
    a. Load fiefdom data
    b. Get all buildings with level > 0
    c. For each building:
       - Get building type config
-      - Check if building produces resources
-      - If yes, calculate production cycles
-      - Calculate total resource produced
-      - Update fiefdom resource column
-   d. Calculate total production for fiefdom
-   e. Recalculate morale if needed
-   f. Mark fiefdom as updated
+      - Compute production: `amount × days_elapsed` (fractional, no flooring)
+      - Compute inputs, `daily_cost`, population costs, and combatant upkeep the same way
+      - Apply input-gated output scaling, imports, and sell-above-reserve
+      - Update fiefdom resource columns
+   d. Recalculate morale if needed
+   e. Mark fiefdom as updated
 
 6. **Record updates**
    - Update `fiefdom.last_update_time` to now
@@ -48,16 +45,12 @@ Client calls `/api/updateState` with `last_update_time` or endpoint retrieves st
 
 For each building with resource production:
 ```cpp
-cycles = floor(hours_elapsed / periodicity);
-
-if (cycles > 0) {
-    // Geometric series sum
-    total = amount * (pow(multiplier, cycles) - 1) / (multiplier - 1);
-    
-    // Or simpler case (multiplier == 1)
-    total = amount * cycles;
-}
+double days = (now - last_update_time) / 86400.0;   // fractional days
+if (days <= 0) return 0.0;
+produced = amount * days;
 ```
+
+No flooring and no geometric compounding — production is a flat per-day rate.
 
 ## Return Value
 
@@ -92,10 +85,3 @@ if (cycles > 0) {
 - Check "WHERE last_update_time = ?" during update
 - If rows affected = 0, another process updated first
 - Retry or return conflict error
-
-## Future Enhancements
-
-- Background processing for large updates
-- Partial updates for timeouts
-- Compression of production history
-- Analytics for production trends

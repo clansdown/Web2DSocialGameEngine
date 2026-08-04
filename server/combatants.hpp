@@ -27,6 +27,9 @@ struct CostStats {
     int bronze = 0;
     int stone = 0;
     int leather = 0;
+    int charcoal = 0;
+    int iron = 0;
+    int ironwork = 0;
 };
 
 struct Combatant {
@@ -39,6 +42,7 @@ struct Combatant {
     std::vector<std::optional<DefenseStats>> defense;
     std::vector<double> movement_speed;
     std::vector<CostStats> costs;
+    std::vector<CostStats> upkeep;
     
     DamageStats getDamage(int level) const {
         if (damage.empty()) {
@@ -125,6 +129,39 @@ struct Combatant {
         result.bronze = costs[last_idx].bronze + (idx - last_idx) * delta_bronze;
         result.stone = costs[last_idx].stone + (idx - last_idx) * delta_stone;
         result.leather = costs[last_idx].leather + (idx - last_idx) * delta_leather;
+        return result;
+    }
+
+    CostStats getUpkeep(int level) const {
+        if (upkeep.empty()) {
+            return CostStats{};
+        }
+        int idx = level - 1;
+        if (idx < upkeep.size()) {
+            return upkeep[idx];
+        }
+        int last_idx = upkeep.size() - 1;
+        int delta_gold = upkeep[last_idx].gold - upkeep[last_idx - 1].gold;
+        int delta_grain = upkeep[last_idx].grain - upkeep[last_idx - 1].grain;
+        int delta_wood = upkeep[last_idx].wood - upkeep[last_idx - 1].wood;
+        int delta_steel = upkeep[last_idx].steel - upkeep[last_idx - 1].steel;
+        int delta_bronze = upkeep[last_idx].bronze - upkeep[last_idx - 1].bronze;
+        int delta_stone = upkeep[last_idx].stone - upkeep[last_idx - 1].stone;
+        int delta_leather = upkeep[last_idx].leather - upkeep[last_idx - 1].leather;
+        int delta_charcoal = upkeep[last_idx].charcoal - upkeep[last_idx - 1].charcoal;
+        int delta_iron = upkeep[last_idx].iron - upkeep[last_idx - 1].iron;
+        int delta_ironwork = upkeep[last_idx].ironwork - upkeep[last_idx - 1].ironwork;
+        CostStats result;
+        result.gold = upkeep[last_idx].gold + (idx - last_idx) * delta_gold;
+        result.grain = upkeep[last_idx].grain + (idx - last_idx) * delta_grain;
+        result.wood = upkeep[last_idx].wood + (idx - last_idx) * delta_wood;
+        result.steel = upkeep[last_idx].steel + (idx - last_idx) * delta_steel;
+        result.bronze = upkeep[last_idx].bronze + (idx - last_idx) * delta_bronze;
+        result.stone = upkeep[last_idx].stone + (idx - last_idx) * delta_stone;
+        result.leather = upkeep[last_idx].leather + (idx - last_idx) * delta_leather;
+        result.charcoal = upkeep[last_idx].charcoal + (idx - last_idx) * delta_charcoal;
+        result.iron = upkeep[last_idx].iron + (idx - last_idx) * delta_iron;
+        result.ironwork = upkeep[last_idx].ironwork + (idx - last_idx) * delta_ironwork;
         return result;
     }
 };

@@ -32,7 +32,7 @@ recomputes and enforces the actual payout when the game completes.
   "status": "ok",
   "data": {
     "silver_pence": 10,
-    "silver_formatted": "1s 4d",
+    "silver_formatted": "10d",
     "base_silver_pence": 12,
     "reward_multiplier": 0.5,
     "pool": { "full": 0, "half": 4 }

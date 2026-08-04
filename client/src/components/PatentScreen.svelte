@@ -52,7 +52,9 @@
         handleError('Not authenticated', new Error('No session'));
         return;
       }
-      await startBaronTrackRequest($currentCharacter.id, { username, token });
+      // PatentScreen is not wired into the app; LandPatentPanel is the live
+      // component. Pass an empty honor name placeholder so the call compiles.
+      await startBaronTrackRequest($currentCharacter.id, '', { username, token });
       onStartBaronTrack();
     } catch (e) {
       handleError('Failed to start baron track', e);

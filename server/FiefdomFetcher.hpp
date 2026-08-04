@@ -46,7 +46,7 @@ bool createOfficial(int fiefdom_id, fiefdom::OfficialRole role, const std::strin
                     uint8_t intelligence, uint8_t charisma, uint8_t wisdom, uint8_t diligence);
 
 struct FiefdomResources {
-    int gold = 0;
+    double gold = 0;
     int silver_pence = 0;
     int grain = 0;
     int wood = 0;
@@ -55,6 +55,10 @@ struct FiefdomResources {
     int stone = 0;
     int leather = 0;
     int mana = 0;
+    int charcoal = 0;
+    int iron = 0;
+    int ironwork = 0;
+    int fancy_ironwork = 0;
 };
 
 bool updateFiefdomResources(int fiefdom_id, const FiefdomResources& resources);

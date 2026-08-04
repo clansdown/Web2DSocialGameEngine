@@ -16,6 +16,7 @@ CREATE TABLE fiefdom_buildings (
     last_updated INTEGER NOT NULL DEFAULT 0,
     action_start_ts INTEGER NOT NULL DEFAULT 0,
     action_tag TEXT NOT NULL DEFAULT '',
+    output_rates TEXT NOT NULL DEFAULT '{}',
     FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id)
 );
 ```
@@ -34,6 +35,7 @@ CREATE TABLE fiefdom_buildings (
 | last_updated | INTEGER | NOT NULL DEFAULT 0 | Unix timestamp of last update (production, construction completion) |
 | action_start_ts | INTEGER | NOT NULL DEFAULT 0 | Reserved for future action system |
 | action_tag | TEXT | NOT NULL DEFAULT '' | Reserved for future action system |
+| output_rates | TEXT | NOT NULL DEFAULT '{}' | JSON object mapping output resource → player rate (0..1). Missing entries default to 1.0. Set via `/api/setBuildingOutputRate`. |
 
 ## Indexes
 

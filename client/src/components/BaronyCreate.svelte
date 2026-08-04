@@ -4,7 +4,7 @@
    * Shows a form for name and optional description.
    */
 
-  import { currentCharacter } from '../lib/stores';
+  import { currentCharacter, playerGameState } from '../lib/stores';
   import { createBaronyRequest } from '../lib/api';
   import * as auth from '../lib/auth';
   import { handleError } from '../lib/errors';
@@ -17,7 +17,9 @@
 
   let { onCreated, onBack }: Props = $props();
 
-  let name = $state('');
+  // Prefill with the honor name the player chose when they started the baron
+  // track; it remains editable so they can change their mind at creation time.
+  let name = $state($playerGameState?.honor_name ?? '');
   let description = $state('');
   let loading = $state(false);
   let error = $state<string | null>(null);
@@ -25,6 +27,7 @@
 
   const TEXT_IDS: string[] = [
     'ui_barony_create_title',
+    'ui_barony_create_name_label',
     'ui_barony_create_desc_label',
     'ui_confirm',
   ];
@@ -36,6 +39,15 @@
       texts = {};
     }
   }
+
+  $effect(() => {
+    // Backstop: if the honor name arrives after mount, fill it when the field
+    // is still empty (never overwrite the player's own edits).
+    const honorName = $playerGameState?.honor_name;
+    if (honorName && !name.trim()) {
+      name = honorName;
+    }
+  });
 
   async function handleCreate(): Promise<void> {
     if (!$currentCharacter || loading || !name.trim()) return;
@@ -74,7 +86,7 @@
       {/if}
 
       <div class="mb-3">
-        <label for="barony-name" class="form-label">{texts['ui_barony_create_title'] || 'Name'}</label>
+        <label for="barony-name" class="form-label">{texts['ui_barony_create_name_label'] || 'Name of the barony'}</label>
         <input
           id="barony-name"
           type="text"

@@ -43,7 +43,7 @@ Joins an existing barony, creates a fiefdom, and transitions the player to sandb
 
 ## Notes
 
-- Creates a fiefdom for the character with `manor_level = 1`
+- Creates a fiefdom for the character with `manor_level = 1` and 5 starting gold
 - Character must be in `land_patent` game phase
 - Character can only be in one barony at a time
 - Fiefdom position is auto-assigned

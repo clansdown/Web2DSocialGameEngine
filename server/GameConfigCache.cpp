@@ -1,4 +1,5 @@
 #include "GameConfigCache.hpp"
+#include "Money.hpp"
 #include <fstream>
 #include <iostream>
 #include <filesystem>
@@ -48,12 +49,12 @@ bool GameConfigCache::initialize(const std::string& config_dir) {
     };
 
     add("damage_types.json");
-    add("fiefdom_building_types.json");
+    add("fiefdom_building_types.json", money::normalize_money_costs);
     add("player_combatants.json");
     add("enemy_combatants.json");
     add("heroes.json");
     add("fiefdom_officials.json");
-    add("wall_config.json");
+    add("wall_config.json", money::normalize_money_costs);
     add("mini_games.json");
     add("tower_defense/mobs.json");
     add("tower_defense/towers.json");

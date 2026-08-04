@@ -49,6 +49,7 @@ interface Combatant {
     defense: (DefenseStats | null)[];  // null = no defense at that level
     movement_speed: number[];
     costs: CostStats[];
+    upkeep: CostStats[];  // per-day upkeep per stationed unit (level-indexed)
 }
 
 // --- Config file format ---
@@ -67,6 +68,7 @@ type CombatantConfig = Record<string, Combatant>;  // Combatant ID -> Combatant
 | `defense` | (DefenseStats \| null)[] | Damage reduction per level (null = no defense) |
 | `movement_speed` | number[] | Movement speed per level |
 | `costs` | CostStats[] | Resource costs per level |
+| `upkeep` | CostStats[] | Per-day resource upkeep consumed by each stationed combatant per level (e.g. `{ "ironwork": 12 }`). Consumed each economy update, scaled by fractional elapsed days; shortfalls are imported/morale-penalized like other consumption. |
 
 ### Damage Stats
 
@@ -95,10 +97,13 @@ type CombatantConfig = Record<string, Combatant>;  // Combatant ID -> Combatant
 | `bronze` | number | Bronze cost |
 | `stone` | number | Stone cost |
 | `leather` | number | Leather cost |
+| `charcoal` | number | Charcoal cost |
+| `iron` | number | Iron cost |
+| `ironwork` | number | Ironwork cost |
 
 ## Extrapolation Rules
 
-All arrays (`damage`, `defense`, `movement_speed`, `costs`) use the same extrapolation logic:
+All arrays (`damage`, `defense`, `movement_speed`, `costs`, `upkeep`) use the same extrapolation logic:
 
 | Array Length | Behavior |
 |--------------|----------|

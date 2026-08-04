@@ -84,7 +84,27 @@ bool CombatantRegistry::loadPlayerCombatants(const std::string& config_path) {
                     if (cost_obj.contains("bronze")) cs.bronze = cost_obj["bronze"];
                     if (cost_obj.contains("stone")) cs.stone = cost_obj["stone"];
                     if (cost_obj.contains("leather")) cs.leather = cost_obj["leather"];
+                    if (cost_obj.contains("charcoal")) cs.charcoal = cost_obj["charcoal"];
+                    if (cost_obj.contains("iron")) cs.iron = cost_obj["iron"];
+                    if (cost_obj.contains("ironwork")) cs.ironwork = cost_obj["ironwork"];
                     c.costs.push_back(cs);
+                }
+            }
+
+            if (combatant_json.contains("upkeep")) {
+                for (auto& cost_obj : combatant_json["upkeep"]) {
+                    CostStats cs;
+                    if (cost_obj.contains("gold")) cs.gold = cost_obj["gold"];
+                    if (cost_obj.contains("grain")) cs.grain = cost_obj["grain"];
+                    if (cost_obj.contains("wood")) cs.wood = cost_obj["wood"];
+                    if (cost_obj.contains("steel")) cs.steel = cost_obj["steel"];
+                    if (cost_obj.contains("bronze")) cs.bronze = cost_obj["bronze"];
+                    if (cost_obj.contains("stone")) cs.stone = cost_obj["stone"];
+                    if (cost_obj.contains("leather")) cs.leather = cost_obj["leather"];
+                    if (cost_obj.contains("charcoal")) cs.charcoal = cost_obj["charcoal"];
+                    if (cost_obj.contains("iron")) cs.iron = cost_obj["iron"];
+                    if (cost_obj.contains("ironwork")) cs.ironwork = cost_obj["ironwork"];
+                    c.upkeep.push_back(cs);
                 }
             }
 
@@ -160,6 +180,9 @@ bool CombatantRegistry::loadEnemyCombatants(const std::string& config_path) {
                     if (cost_obj.contains("bronze")) cs.bronze = cost_obj["bronze"];
                     if (cost_obj.contains("stone")) cs.stone = cost_obj["stone"];
                     if (cost_obj.contains("leather")) cs.leather = cost_obj["leather"];
+                    if (cost_obj.contains("charcoal")) cs.charcoal = cost_obj["charcoal"];
+                    if (cost_obj.contains("iron")) cs.iron = cost_obj["iron"];
+                    if (cost_obj.contains("ironwork")) cs.ironwork = cost_obj["ironwork"];
                     c.costs.push_back(cs);
                 }
             }

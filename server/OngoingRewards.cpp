@@ -56,7 +56,7 @@ bool validate_ongoing_options(const nlohmann::json& ongoing_config, int difficul
 std::string format_silver_pence(int pence, const nlohmann::json& currency_config) {
     if (pence < 0) pence = 0;
 
-    int per_shilling = currency_config.value("pence_per_shilling", 6);
+    int per_shilling = currency_config.value("pence_per_shilling", 12);
     int shillings_per_pound = currency_config.value("shillings_per_pound", 20);
     int per_pound = per_shilling * shillings_per_pound;
 

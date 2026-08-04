@@ -1,6 +1,6 @@
 # Fiefdom Building Types Configuration
 
-Configuration file: `server/config/fiefdom_building_types.json`
+Configuration file: `game/config/fiefdom_building_types.json`
 
 This file defines all available building types in the game. It uses lenient JSON parsing (allows comments, trailing commas) via nlohmann/json with `ignore_comments=true`.
 
@@ -8,10 +8,13 @@ This file defines all available building types in the game. It uses lenient JSON
 
 ```typescript
 interface ResourceProduction {
-    amount?: number;
-    amount_multiplier?: number;
-    periodicity?: number;
-    periodicity_multiplier?: number;
+    amount?: number;  // Quantity produced/consumed per 1-day period
+}
+
+interface MoneyCost {
+    gold?: number;      // Gold pieces (pounds)
+    shillings?: number; // Silver shillings (20 per pound)
+    pence?: number;     // Silver pence (6 per shilling)
 }
 
 interface PrerequisiteObject {
@@ -29,10 +32,18 @@ interface FiefdomBuildingType {
     stone?: ResourceProduction;
     leather?: ResourceProduction;
     mana?: ResourceProduction;
+    charcoal?: ResourceProduction;
+    iron?: ResourceProduction;
+    ironwork?: ResourceProduction;
+
+    // --- Economic Inputs (optional) ---
+    inputs?: {
+        [resource: string]: ResourceProduction;
+    };
 
     // --- Construction Costs (all optional, defaults to empty array) ---
     peasants_cost?: number[];
-    gold_cost?: number[];
+    gold_cost?: (number | MoneyCost)[];
     grain_cost?: number[];
     wood_cost?: number[];
     steel_cost?: number[];
@@ -40,6 +51,9 @@ interface FiefdomBuildingType {
     stone_cost?: number[];
     leather_cost?: number[];
     mana_cost?: number[];
+    charcoal_cost?: number[];
+    iron_cost?: number[];
+    ironwork_cost?: number[];
 
     // --- Required Structural Fields ---
     width: number;
@@ -65,12 +79,94 @@ interface FiefdomBuildingType {
 
 All resource production fields follow the same structure and are optional. If omitted, the resource produces nothing.
 
+All production and consumption share a fixed **1-day period**: `amount` is the quantity
+produced/consumed **per day**. The engine scales linearly with fractional elapsed days
+(`amount × days_elapsed`), so any elapsed time beyond a tiny minimum (≈1 second) yields a
+proportional amount — nothing is floored to whole cycles.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `amount` | number | 0 | Base production amount at level 1 |
-| `amount_multiplier` | number | 0 | Multiplier applied per level (compounding) |
-| `periodicity` | number | 0 | Base time between productions in seconds at level 1 |
-| `periodicity_multiplier` | number | 0 | Periodicity multiplier applied per level (compounding) |
+| `amount` | number | 0 | Quantity produced/consumed per 1-day period |
+
+> **Removed fields:** the legacy `amount_multiplier`, `periodicity`, and
+> `periodicity_multiplier` per-cycle fields are gone (artifacts of an earlier computation
+> model). Building-to-building multipliers live in the `modifiers` array instead.
+
+### Economic Inputs Field
+
+The optional `inputs` object defines the resources a building **consumes** to produce its outputs.
+Inputs use the same `ResourceProduction` structure as outputs, so they are expressed as **per-day**
+consumption on the same 1-day period the economy engine uses for production.
+
+```json
+{
+    "blacksmith": {
+        "outputs": [
+            {
+                "resource": "ironwork",
+                "amount": 100,
+                "inputs": {
+                    "grain":    { "amount": 100 },
+                    "charcoal": { "amount": 100 },
+                    "iron":     { "amount": 100 }
+                },
+                "min_level": 1
+            },
+            {
+                "resource": "grain",
+                "amount": 18,
+                "min_level": 1
+            },
+            {
+                "resource": "fancy_ironwork",
+                "amount": 1,
+                "inputs": {
+                    "grain":    { "amount": 1 },
+                    "charcoal": { "amount": 1 },
+                    "iron":     { "amount": 2 }
+                },
+                "min_level": 2
+            }
+        ]
+    },
+    "collier": {
+        "charcoal": { "amount": 30 },
+        "grain":    { "amount": 18 },
+        "inputs": {
+            "wood": { "amount": 20 }
+        }
+    },
+    "bloomery": {
+        "iron": { "amount": 20 },
+        "inputs": {
+            "charcoal": { "amount": 30 }
+        }
+    }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `inputs` | object | omitted | Map of resource → `ResourceProduction` spec. Each entry is consumed per day. |
+
+### How Input Gating Works
+
+1. Each update, the engine computes each building's required inputs using the same flat per-day
+   formula as production (based on fractional elapsed days).
+2. Inputs are folded into the priority-sorted consumption pipeline alongside `daily_cost`,
+   population costs, and combatant upkeep (`player_combatants.json` `upkeep` arrays for stationed
+   units). Stock is drawn first; any shortfall is auto-imported with gold when that resource's
+   import setting is enabled (full-buy default), and remaining unmet needs cause morale penalties.
+3. Each building's output is **scaled by its input-satisfaction ratio** — the minimum across its
+   inputs of (supplied ÷ required). A blacksmith with half its iron produces half its ironwork.
+4. Buildings without `inputs` produce at 100%.
+5. After production, consumption, and imports, any resource **above its reserve** is auto-sold at
+   50% of the import price (`economy.json.export_sell_multiplier`); amounts at or below the reserve
+   are kept. Reserves default from `economy.json.default_reserves` and can be overridden per fiefdom
+   via `/api/setFiefdomReserve`.
+
+The per-update `economy_report` in `/api/getFiefdom` exposes the resulting produced/consumed/imported/
+exported amounts, `net_gold` (production minus imports), and advisor recommendations.
 
 ### Cost Arrays (construction costs)
 
@@ -79,6 +175,39 @@ Cost arrays specify the resource cost per building level. Index corresponds to l
 | Field | Type | Description |
 |-------|------|-------------|
 | `*_cost` | number[] | Array of resource costs per level |
+| `gold_cost` | (number \| MoneyCost)[] | Gold cost per level — each element is either a plain number (gold) or a `{ gold, shillings, pence }` object (all keys optional, non-negative) |
+
+A `MoneyCost` object is normalized to a gold double at config load:
+`gold + shillings/20 + pence/240` (1 gold = 20 shillings = 240 pence; 1 shilling = 12 pence).
+It is purely an authoring convenience — all cost readers, refunds, the client, and the economy see a plain gold number afterwards.
+
+Example — a manor house costing 100 gold at level 1 and 1 gold 10s 5d at level 2:
+
+```json
+"gold_cost": [
+    100,
+    { "gold": 1, "shillings": 10, "pence": 5 },
+    200
+]
+```
+
+### Max Per Fiefdom
+
+The optional `max_per_fiefdom` field limits how many buildings of this type can exist in a single fiefdom.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_per_fiefdom` | integer | unlimited | Maximum number of this building per fiefdom (e.g. `1` = unique building) |
+
+- Enforced at build time by the server (`build` action). Attempting to place another instance returns error `max_per_fiefdom_reached`.
+- Buildings without this field can be built any number of times.
+- The `home_base` uniqueness rule is separate (hardcoded, with stricter placement rules).
+- Example: a chapel is limited to one per fiefdom:
+  ```json
+  "chapel": {
+      "max_per_fiefdom": 1
+  }
+  ```
 
 ### Structural Fields
 
@@ -284,25 +413,27 @@ Dependencies are verified at:
 
 ## Resource Production Calculation
 
-For a resource at level `L` (1-indexed, where level 0 is under construction):
+Production and consumption are **flat per-day rates**. Given a resource spec with `amount`, the
+quantity over an elapsed period is:
 
 ```
-amount = base_amount * (amount_multiplier ^ (L - 1))
-periodicity = base_periodicity * (periodicity_multiplier ^ (L - 1))
+produced = amount × (elapsed_seconds / 86400)
 ```
+
+Fractional elapsed days are used directly — nothing is floored to whole cycles, so a 12-hour gap
+yields exactly half a day's production. Elapsed time below a tiny minimum (≈1 second) is ignored
+to avoid rounding errors. Building level does **not** scale production; upgrading gates
+construction, costs, prerequisites, and `modifiers`, not output rates.
 
 ### Example
 
-For a building with:
-- `grain: { amount: 10, amount_multiplier: 1.2, periodicity: 60, periodicity_multiplier: 1.05 }`
+For a building with `grain: { amount: 10 }`:
 
-| Level | Amount | Periodicity |
-|-------|--------|-------------|
-| 1 | 10.0 | 60.0s |
-| 2 | 12.0 | 63.0s |
-| 3 | 14.4 | 66.2s |
-| 4 | 17.3 | 69.5s |
-| 5 | 20.7 | 73.0s |
+| Elapsed | Amount Produced |
+|---------|-----------------|
+| 12 hours | 5.0 |
+| 1 day | 10.0 |
+| 2.5 days | 25.0 |
 
 ## Default Values
 
@@ -311,7 +442,7 @@ If a field is not specified, the following defaults apply:
 | Field | Default |
 |-------|---------|
 | `can_build_outside_wall` | `false` |
-| Any `ResourceProduction` field | All four properties default to `0` |
+| Any `ResourceProduction` field | `amount` defaults to `0` |
 | Any `*_cost` array | `[]` (empty array, free) |
 
 ## Image Auto-Detection
@@ -350,10 +481,7 @@ The `check_configs.py` tool validates the images directory:
             "max_level": 5,
             "can_build_outside_wall": true,
             "grain": {
-                "amount": 10,
-                "amount_multiplier": 1.2,
-                "periodicity": 60,
-                "periodicity_multiplier": 1.05
+                "amount": 10
             },
             "wood_cost": [5, 6, 7, 8, 9],
             "stone_cost": [10, 12, 14, 16, 18],
@@ -394,6 +522,10 @@ Available resource types for both production and costs:
 | `stone` | both | Construction material |
 | `leather` | both | Crafting material |
 | `mana` | production only | Magical resource |
+| `charcoal` | both | Fuel (collier output, blacksmith input) |
+| `iron` | both | Ore (blacksmith input; bloomery produces) |
+| `ironwork` | both | Forged metal tools (blacksmith output, building upkeep + combatant upkeep) |
+| `fancy_ironwork` | both | Fine tempered iron (blacksmith level 2+ output) |
 
 ## Building IDs
 
@@ -434,26 +566,61 @@ Level 0 represents a building **under construction**. During this level:
 
 Level 1+ represents active, producing buildings.
 
-## Hourly Cost Field
+## Daily Cost Field
 
-The optional `hourly_cost` and `priority` fields define a building's ongoing resource consumption. Consumption is processed by the economy engine each time fiefdom state updates.
+The optional `daily_cost` and `priority` fields define a building's ongoing resource consumption. Consumption is processed by the economy engine each time fiefdom state updates, scaled by fractional elapsed days.
+
+> **Note:** For input-gated production, prefer the `inputs` field above. `daily_cost` is a flat
+> per-day rate (not input-gated) and is satisfied alongside inputs. Buildings may use both.
 
 ```json
 {
     "blacksmith": {
-        "hourly_cost": { "steel": 2.0 },
+        "daily_cost": { "grain": 36 },
         "priority": 50
     },
     "peasant": {
-        "hourly_cost": { "grain": 1.0 },
+        "grain": { "amount": 74 },
+        "daily_cost": { "grain": 36, "ironwork": 1 },
         "priority": 5
     }
 }
 ```
 
+The Peasant Cottage produces **74 grain/day** and costs **36 grain/day** in
+upkeep (its household's food), for a net food surplus of 38 grain/day once
+populated, plus **1 ironwork/day** for its tools. Grain is a penny-market
+resource (`economy.json import_prices.grain` is a money object), so imports are
+paid in silver pence and surplus grain auto-sells for 6 pence each (50% of the
+1-shilling import price).
+
+### Ironwork upkeep & household grain
+
+Every active craft building is a self-contained household. It **produces 18
+grain/day** (a subsistence plot) and **consumes 36 grain/day** (worker food,
+`daily_cost`), and it requires a small **ironwork/day** `daily_cost` for its
+metal tools. Current per-building ironwork upkeep:
+
+| Building | ironwork/day |
+|----------|--------------|
+| home_base | 20 |
+| peasant | 1 |
+| woodcutter | 5 |
+| wood_hewer | 5 |
+| miller | 5 |
+| collier | 2 |
+
+One blacksmith produces **100 ironwork/day** (input-gated on grain 100 +
+charcoal 100 + iron 100 per day), which covers roughly 50 peasants, 2 woodcutters,
+2 woodhewers, a miller, a few colliers, and the home base (~100 ironwork/day).
+The blacksmith's own household produces grain 18/day and consumes grain
+36/day. Ironwork is **imported at 0.02 gold/unit** and **exports for 25% of the
+import price** (0.005 gold — `economy.json.export_sell_multipliers.ironwork =
+0.25`), so it is meant to be produced, not sold.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `hourly_cost` | object | omitted | Map of resource → hourly consumption rate. Resources are consumed continuously. |
+| `daily_cost` | object | omitted | Map of resource → per-day consumption rate. Resources are consumed continuously (scaled by fractional days). |
 | `priority` | integer | `economy.json.default_priority` (50) | Allocation priority. Lower numbers are satisfied first when resources are scarce. |
 
 ### How Consumption Works
@@ -462,21 +629,70 @@ The optional `hourly_cost` and `priority` fields define a building's ongoing res
 2. Sorted by priority ascending
 3. Resources are allocated in priority order — high-priority consumers (peasants at 5) get their needs met before low-priority ones (blacksmith at 50)
 4. If resources run out, unmet needs cause morale penalties
-5. Players can toggle auto-import per resource to fill deficits with gold
+5. Players can toggle auto-import per resource to fill deficits — gold for most
+   resources, silver pence for penny-market resources (money-form import prices)
 
-### Population Costs
+### Outputs (multi-output recipes)
 
-Global population costs are defined in `economy.json` under `population_costs`. These consume resources based on the fiefdom's population count:
+The optional `outputs` array defines a building's production as a set of
+recipes, each with its **own inputs** and an **unlock level**. This replaces the
+flat `<resource>: { amount }` fields + building-level `inputs` (a building may
+use one schema or the other — mixing them is a config error).
 
 ```json
 {
-    "population_costs": {
-        "peasants": { "grain": 1.0, "priority": 1 }
+    "blacksmith": {
+        "outputs": [
+            {
+                "resource": "ironwork",
+                "amount": 2,
+                "inputs": { "grain": { "amount": 1 }, "charcoal": { "amount": 1 }, "iron": { "amount": 1 } },
+                "min_level": 1
+            },
+            {
+                "resource": "fancy_ironwork",
+                "amount": 1,
+                "inputs": { "grain": { "amount": 1 }, "charcoal": { "amount": 1 }, "iron": { "amount": 2 } },
+                "min_level": 2
+            }
+        ]
     }
 }
 ```
 
-Only `peasants` is currently supported — extend by adding more fiefdom resource columns.
+| Field | Type | Description |
+|-------|------|-------------|
+| `resource` | string | Produced resource (a valid production resource, e.g. `ironwork`, `fancy_ironwork`) |
+| `amount` | number | Maximum per-day output (scaled by fractional elapsed days, modifiers, and the player rate) |
+| `inputs` | object | This output's own per-day input requirements; each value is a `{ amount }` spec |
+| `min_level` | integer | Building level at which the output unlocks (default 1) |
+
+A building at level < `min_level` cannot produce that output and consumes none of
+its inputs. At level ≥ `min_level`, every unlocked output runs at its **player
+rate** (default 1.0 = full). The player sets the rate per output via
+`/api/setBuildingOutputRate` (0..1); the rate scales both the output amount and
+that output's input requirements, and a rate of 0 turns the output fully off.
+Each output is gated by its **own** input-satisfaction ratio, so the blacksmith
+can keep forging `ironwork` while `fancy_ironwork` idles for want of iron.
+
+Example — blacksmith level 1 produces only `ironwork` (needs 100 iron/day);
+at level 2 it can also run `fancy_ironwork` (needs 2 iron/day) at the same time.
+
+### Population Costs
+
+Global population costs are defined in `economy.json` under `population_costs`. These consume resources based on the fiefdom's population count, scaled by fractional elapsed days:
+
+```json
+{
+    "population_costs": {
+        "peasants": { "grain": 0.5, "priority": 1 }
+    }
+}
+```
+
+This per-peasant grain cost is separate from the Peasant Cottage's own
+`daily_cost`; it represents the extra food each additional population unit eats
+on top of the cottage's 36-grain household upkeep.
 
 ## Modifiers Field
 

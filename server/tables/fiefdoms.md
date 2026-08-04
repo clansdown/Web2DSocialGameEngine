@@ -13,6 +13,7 @@ CREATE TABLE fiefdoms (
     y INTEGER NOT NULL,
     peasants INTEGER NOT NULL DEFAULT 0,
     gold INTEGER NOT NULL DEFAULT 0,
+    silver_pence INTEGER NOT NULL DEFAULT 0,
     grain INTEGER NOT NULL DEFAULT 0,
     wood INTEGER NOT NULL DEFAULT 0,
     steel INTEGER NOT NULL DEFAULT 0,
@@ -20,10 +21,16 @@ CREATE TABLE fiefdoms (
     stone INTEGER NOT NULL DEFAULT 0,
     leather INTEGER NOT NULL DEFAULT 0,
     mana INTEGER NOT NULL DEFAULT 0,
+    charcoal INTEGER NOT NULL DEFAULT 0,
+    iron INTEGER NOT NULL DEFAULT 0,
+    ironwork INTEGER NOT NULL DEFAULT 0,
+    fancy_ironwork INTEGER NOT NULL DEFAULT 0,
     wall_count INTEGER NOT NULL DEFAULT 0,
     morale REAL NOT NULL DEFAULT 0,
     last_update_time INTEGER NOT NULL DEFAULT 0,
     manor_level INTEGER NOT NULL DEFAULT 1,
+    import_settings TEXT NOT NULL DEFAULT '...',
+    reserves TEXT NOT NULL DEFAULT '{}',
     FOREIGN KEY(owner_id) REFERENCES characters(id)
 );
 ```
@@ -38,7 +45,8 @@ CREATE TABLE fiefdoms (
 | x | INTEGER | NOT NULL | X coordinate in world |
 | y | INTEGER | NOT NULL | Y coordinate in world |
 | peasants | INTEGER | NOT NULL DEFAULT 0 | Population count |
-| gold | INTEGER | NOT NULL DEFAULT 0 | Treasury currency |
+| gold | INTEGER | NOT NULL DEFAULT 0 | Treasury currency (building costs, non-penny imports) |
+| silver_pence | INTEGER | NOT NULL DEFAULT 0 | Silver-pence wallet (mini-game rewards + penny-market resource sales) |
 | grain | INTEGER | NOT NULL DEFAULT 0 | Food resource |
 | wood | INTEGER | NOT NULL DEFAULT 0 | Building material |
 | steel | INTEGER | NOT NULL DEFAULT 0 | Military material |
@@ -46,6 +54,10 @@ CREATE TABLE fiefdoms (
 | stone | INTEGER | NOT NULL DEFAULT 0 | Construction material |
 | leather | INTEGER | NOT NULL DEFAULT 0 | Crafting material |
 | mana | INTEGER | NOT NULL DEFAULT 0 | Magical resource |
+| charcoal | INTEGER | NOT NULL DEFAULT 0 | Fuel resource (produced by collier, consumed by blacksmith) |
+| iron | INTEGER | NOT NULL DEFAULT 0 | Ore resource (consumed by blacksmith; produced by the bloomery) |
+| ironwork | INTEGER | NOT NULL DEFAULT 0 | Forged metal tools (produced by blacksmith, consumed by building upkeep and unit upkeep) |
+| fancy_ironwork | INTEGER | NOT NULL DEFAULT 0 | Fine tempered iron (produced by blacksmith level 2+ via its `fancy_ironwork` output) |
 | wall_count | INTEGER | NOT NULL DEFAULT 0 | Defensive wall layers |
 | morale | REAL | NOT NULL DEFAULT 0 | Fiefdom morale score | Range: -1000 (disastrous) to 1000 (inspired). Default 0 (neutral). Affects bonuses for production, building speed, combat, etc. |
 | last_update_time | INTEGER | NOT NULL DEFAULT 0 | Unix timestamp (seconds) when production updates were last applied. Used to calculate pending resource production since last update. |
@@ -65,6 +77,11 @@ CREATE TABLE fiefdoms (
 
 - x and y coordinates represent grid world position
 - Resources use INTEGER (64-bit on most systems) for large stockpiles
+- `gold` is fractional-capable: the economy tick writes fractional values (e.g. from production or a 0.8 building cost) and the server reads it as a double, so gold can hold non-integer amounts (e.g. 0.8).
+- `silver_pence` is the penny-market wallet. Mini-game rewards credit it directly, and grain — whose `import_prices` value is a money object (`{ "shillings": 1 }`) — imports from it and auto-sells to it at 50% of import price (6 pence per grain). Non-penny resources still trade in gold.
+- `reserves` stores per-resource reserve amounts (JSON object). Each tick, any resource above its
+  reserve is auto-sold at 50% of the import price; amounts at/below reserve are kept. Set via
+  `/api/setFiefdomReserve`.
 - wall_count represents number of defensive layers around the manor
 - Accessed by `/api/getFiefdom` endpoint
 
@@ -81,6 +98,9 @@ CREATE TABLE fiefdoms (
 | stone | 0 - millions | Fortification building |
 | leather | 0 - millions | Equipment and armor |
 | mana | 0 - millions | Magic research |
+| charcoal | 0 - millions | Fuel for smelting |
+| iron | 0 - millions | Ore for smelting |
+| ironwork | 0 - millions | Military equipment |
 | wall_count | 0 - 100 | Defensive strength |
 | morale | -1000 to 1000 | Fiefdom morale rating |
 

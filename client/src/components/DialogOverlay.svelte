@@ -12,6 +12,8 @@
    *   size - Panel width: 'md' (600px), 'lg' (800px), 'xlg' (1000px)
    *   noPadding - When true, removes inner padding (for components with their own padding)
    *   scrollable - When true, enables internal scrolling (max-height 80vh). Default false.
+   *   hideContinue - When true, suppresses the default Continue button so children can
+   *                  provide their own footer actions. Default false.
    */
 
   import type { Snippet } from 'svelte';
@@ -24,9 +26,10 @@
     size?: 'md' | 'lg' | 'xlg';
     noPadding?: boolean;
     scrollable?: boolean;
+    hideContinue?: boolean;
   }
 
-  let { title, body = '', onDismiss, children, size = 'md', noPadding = false, scrollable = false }: Props = $props();
+  let { title, body = '', onDismiss, children, size = 'md', noPadding = false, scrollable = false, hideContinue = false }: Props = $props();
 
   const panelWidth = $derived(
     size === 'xlg' ? '1000px' : size === 'lg' ? '800px' : '600px'
@@ -72,14 +75,16 @@
       {/each}
     {/if}
 
-    <div class="text-center mt-4">
-      <button
-        class="btn px-4 py-2"
-        style="background: #8b7355; color: #f5e6c8; border: 1px solid #6b5335;"
-        onclick={onDismiss}
-      >
-        Continue
-      </button>
-    </div>
+    {#if !hideContinue}
+      <div class="text-center mt-4">
+        <button
+          class="btn px-4 py-2"
+          style="background: #8b7355; color: #f5e6c8; border: 1px solid #6b5335;"
+          onclick={onDismiss}
+        >
+          Continue
+        </button>
+      </div>
+    {/if}
   </div>
 </div>

@@ -103,6 +103,7 @@ struct BuildingData {
     int64_t last_updated = 0;
     int64_t action_start_ts = 0;
     std::string action_tag;
+    nlohmann::json output_rates = nlohmann::json::object();
 
     inline nlohmann::json toJson() const {
         nlohmann::json json;
@@ -115,6 +116,7 @@ struct BuildingData {
         json["last_updated"] = last_updated;
         json["action_start_ts"] = action_start_ts;
         json["action_tag"] = action_tag;
+        json["output_rates"] = output_rates;
         return json;
     }
 };
@@ -232,7 +234,7 @@ struct FiefdomData {
     int x;
     int y;
     int peasants;
-    int gold;
+    double gold;
     int silver_pence = 0;
     int grain;
     int wood;
@@ -241,11 +243,16 @@ struct FiefdomData {
     int stone;
     int leather;
     int mana;
+    int charcoal = 0;
+    int iron = 0;
+    int ironwork = 0;
+    int fancy_ironwork = 0;
     int wall_count;
     double morale = 0.0;
     int64_t last_update_time = 0;
     int manor_level = 1;
     nlohmann::json import_settings;
+    nlohmann::json reserves = nlohmann::json::object();
     std::vector<BuildingData> buildings;
     std::vector<WallData> walls;
     std::vector<OfficialData> officials;
@@ -269,11 +276,16 @@ struct FiefdomData {
         json["stone"] = stone;
         json["leather"] = leather;
         json["mana"] = mana;
+        json["charcoal"] = charcoal;
+        json["iron"] = iron;
+        json["ironwork"] = ironwork;
+        json["fancy_ironwork"] = fancy_ironwork;
         json["wall_count"] = wall_count;
         json["morale"] = morale;
         json["last_update_time"] = last_update_time;
         json["manor_level"] = manor_level;
         json["import_settings"] = import_settings;
+        json["reserves"] = reserves;
 
         nlohmann::json buildings_arr = nlohmann::json::array();
         for (const auto& b : buildings) {

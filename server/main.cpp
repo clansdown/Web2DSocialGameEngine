@@ -154,6 +154,10 @@ static json apply_ongoing_reward(GameConfigCache& config_cache, sqlite::database
             res.stone = fiefdom->stone;
             res.leather = fiefdom->leather;
             res.mana = fiefdom->mana;
+            res.charcoal = fiefdom->charcoal;
+            res.iron = fiefdom->iron;
+            res.ironwork = fiefdom->ironwork;
+            res.fancy_ironwork = fiefdom->fancy_ironwork;
             FiefdomFetcher::updateFiefdomResources(fiefdom_id, res);
         }
     }
@@ -522,7 +526,7 @@ ApiResponse handleGetFiefdom(GameConfigCache& config_cache, const json& body,
     db << "SELECT last_update_time FROM fiefdoms WHERE id = ?;" << fiefdom_id
        >> [&](int64_t ts) { last_update_time = ts; };
 
-    GameLogic::updateStateSince(config_cache, last_update_time, std::to_string(fiefdom_id));
+    auto time_result = GameLogic::updateStateSince(config_cache, last_update_time, std::to_string(fiefdom_id));
 
     auto fiefdom_opt = FiefdomFetcher::fetchFiefdomById(
         fiefdom_id,
@@ -538,6 +542,29 @@ ApiResponse handleGetFiefdom(GameConfigCache& config_cache, const json& body,
 
     FiefdomData& fiefdom = fiefdom_opt.value();
     response.data = fiefdom.toJson();
+
+    // Merge per-fiefdom reserve overrides with economy.json defaults so the
+    // client always sees the effective reserve for every resource.
+    {
+        json effective_reserves = json::object();
+        auto economy_cfg = config_cache.getEconomyConfig();
+        if (economy_cfg.contains("default_reserves") && economy_cfg["default_reserves"].is_object()) {
+            for (auto& [res, val] : economy_cfg["default_reserves"].items()) {
+                effective_reserves[res] = val;
+            }
+        }
+        if (fiefdom.reserves.is_object()) {
+            for (auto& [res, val] : fiefdom.reserves.items()) {
+                effective_reserves[res] = val;
+            }
+        }
+        response.data["reserves"] = effective_reserves;
+    }
+
+    auto report_it = time_result.economy_reports.find(fiefdom_id);
+    if (report_it != time_result.economy_reports.end()) {
+        response.data["economy_report"] = report_it->second;
+    }
 
     if (new_token) {
         response.data["token"] = *new_token;
@@ -3490,6 +3517,17 @@ ApiResponse handleGetCharacterTexts(GameConfigCache& config_cache, const json& b
         sex = *sex_ptr;
     }
 
+    // Honor name chosen when the character started their own baron track —
+    // substituted server-side so the client never sends it.
+    std::optional<std::string> honor_name;
+    db << "SELECT honor_name FROM player_game_state WHERE character_id = ?;"
+       << character_id
+       >> [&](std::unique_ptr<std::string> hn) {
+              if (hn && !hn->empty()) {
+                  honor_name = *hn;
+              }
+          };
+
     json texts = json::object();
 
     for (const auto& id_val : body["text_ids"]) {
@@ -3504,6 +3542,15 @@ ApiResponse handleGetCharacterTexts(GameConfigCache& config_cache, const json& b
             while ((pos = substituted.find(token, pos)) != std::string::npos) {
                 substituted.replace(pos, token.length(), display_name);
                 pos += display_name.length();
+            }
+        }
+        if (honor_name) {
+            // The aspiring barony's honor name is substituted server-side as well.
+            std::string token = "{honor_name}";
+            std::size_t pos = 0;
+            while ((pos = substituted.find(token, pos)) != std::string::npos) {
+                substituted.replace(pos, token.length(), *honor_name);
+                pos += honor_name->length();
             }
         }
         texts[text_id] = substituted;
@@ -3647,7 +3694,8 @@ ApiResponse handleSetFiefdomImport(GameConfigCache& config_cache, const json& bo
 
         if (import_str.empty()) {
             import_str = "{\"grain\":true,\"wood\":true,\"steel\":true,"
-                         "\"bronze\":true,\"stone\":true,\"leather\":true,\"mana\":true}";
+                         "\"bronze\":true,\"stone\":true,\"leather\":true,\"mana\":true,"
+                         "\"charcoal\":true,\"iron\":true,\"ironwork\":true}";
         }
 
         auto settings = json::parse(import_str);
@@ -3659,6 +3707,173 @@ ApiResponse handleSetFiefdomImport(GameConfigCache& config_cache, const json& bo
         response.data["import_settings"] = settings;
     } catch (const std::exception& e) {
         response.error = std::string("Failed to update import settings: ") + e.what();
+    }
+
+    if (new_token) response.data["token"] = *new_token;
+    return response;
+}
+
+ApiResponse handleSetFiefdomReserve(GameConfigCache& config_cache, const json& body,
+                                    const std::optional<std::string>& username,
+                                    const ClientInfo& client,
+                                    const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+
+    if (!body.contains("fiefdom_id") || !body.contains("resource") || !body.contains("reserve")) {
+        response.error = "fiefdom_id, resource, and reserve required";
+        return response;
+    }
+
+    int fiefdom_id = body["fiefdom_id"].get<int>();
+    std::string resource = body["resource"].get<std::string>();
+    double reserve = body["reserve"].get<double>();
+    if (reserve < 0) reserve = 0;
+
+    try {
+        auto& db = Database::getInstance().gameDB();
+
+        std::string reserves_str;
+        db << "SELECT reserves FROM fiefdoms WHERE id = ?;" << fiefdom_id
+           >> [&](std::string s) { reserves_str = s; };
+
+        auto settings = json::object();
+        if (!reserves_str.empty()) {
+            try { settings = json::parse(reserves_str); }
+            catch (...) { settings = json::object(); }
+        }
+        if (!settings.is_object()) settings = json::object();
+
+        settings[resource] = reserve;
+
+        db << "UPDATE fiefdoms SET reserves = ? WHERE id = ?;"
+           << settings.dump() << fiefdom_id;
+
+        response.data["reserves"] = settings;
+    } catch (const std::exception& e) {
+        response.error = std::string("Failed to update reserves: ") + e.what();
+    }
+
+    if (new_token) response.data["token"] = *new_token;
+    return response;
+}
+
+ApiResponse handleSetBuildingOutputRate(GameConfigCache& config_cache, const json& body,
+                                        const std::optional<std::string>& username,
+                                        const ClientInfo& client,
+                                        const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+
+    if (!body.contains("building_id") || !body["building_id"].is_number_integer()) {
+        response.error = "building_id required";
+        return response;
+    }
+    if (!body.contains("output") || !body["output"].is_string()) {
+        response.error = "output required";
+        return response;
+    }
+    if (!body.contains("rate") || !body["rate"].is_number()) {
+        response.error = "rate required";
+        return response;
+    }
+
+    int building_id = body["building_id"].get<int>();
+    std::string output = body["output"].get<std::string>();
+    double rate = body["rate"].get<double>();
+    if (rate < 0.0) rate = 0.0;
+    if (rate > 1.0) rate = 1.0;
+
+    try {
+        auto& db = Database::getInstance().gameDB();
+
+        // Load the building + its fiefdom and verify ownership (user owns the
+        // character that owns the fiefdom).
+        int fiefdom_id = 0;
+        std::string building_name;
+        int building_level = 0;
+        db << "SELECT fiefdom_id, name, level FROM fiefdom_buildings WHERE id = ?;" << building_id
+           >> [&](int fid, std::string bname, int blevel) {
+                fiefdom_id = fid;
+                building_name = bname;
+                building_level = blevel;
+            };
+        if (fiefdom_id == 0) {
+            response.error = "Building not found";
+            return response;
+        }
+
+        int owner_character = 0;
+        db << "SELECT owner_id FROM fiefdoms WHERE id = ?;" << fiefdom_id
+           >> [&](int oid) { owner_character = oid; };
+        int owner_user = 0;
+        db << "SELECT user_id FROM characters WHERE id = ?;" << owner_character
+           >> [&](int uid) { owner_user = uid; };
+        int user_id = 0;
+        db << "SELECT id FROM users WHERE username = ?;" << *username
+           >> [&](int id) { user_id = id; };
+        if (owner_user != user_id) {
+            response.error = "Character does not belong to this user";
+            return response;
+        }
+
+        // Validate the output against the building type config and level-gating.
+        auto building_types = config_cache.getFiefdomBuildingTypes();
+        json bld_cfg;
+        for (const auto& type_obj : building_types) {
+            if (type_obj.contains(building_name)) { bld_cfg = type_obj[building_name]; break; }
+        }
+        if (bld_cfg.is_null()) {
+            response.error = "Unknown building type";
+            return response;
+        }
+
+        bool output_found = false;
+        int min_level = 1;
+        if (bld_cfg.contains("outputs") && bld_cfg["outputs"].is_array()) {
+            for (const auto& out : bld_cfg["outputs"]) {
+                if (out.is_object() && out.value("resource", "") == output) {
+                    output_found = true;
+                    min_level = out.value("min_level", 1);
+                    break;
+                }
+            }
+        } else if (bld_cfg.contains(output)) {
+            output_found = true;
+        }
+        if (!output_found) {
+            response.error = "That building does not produce " + output;
+            return response;
+        }
+        if (building_level < min_level) {
+            response.error = "That output is not unlocked until level " + std::to_string(min_level);
+            return response;
+        }
+
+        // Persist the rate into the building's output_rates JSON.
+        std::string rates_str;
+        db << "SELECT output_rates FROM fiefdom_buildings WHERE id = ?;" << building_id
+           >> [&](std::string s) { rates_str = s; };
+        auto rates = json::object();
+        if (!rates_str.empty()) {
+            try { rates = json::parse(rates_str); }
+            catch (...) { rates = json::object(); }
+        }
+        if (!rates.is_object()) rates = json::object();
+        rates[output] = rate;
+
+        db << "UPDATE fiefdom_buildings SET output_rates = ? WHERE id = ?;"
+           << rates.dump() << building_id;
+
+        response.data["output_rates"] = rates;
+    } catch (const std::exception& e) {
+        log_error("handleSetBuildingOutputRate", e.what());
+        response.error = std::string("Failed to set building output rate: ") + e.what();
     }
 
     if (new_token) response.data["token"] = *new_token;
@@ -3935,8 +4150,8 @@ ApiResponse handleJoinBarony(GameConfigCache& config_cache, const json& body,
         int fx = (counter % 100) * 10;
         int fy = (counter / 100) * 10;
 
-        db << "INSERT INTO fiefdoms (owner_id, name, x, y, peasants, gold, grain, wood, steel, bronze, stone, leather, mana, wall_count, morale, last_update_time, manor_level) "
-              "VALUES (?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, ?, 1);"
+        db << "INSERT INTO fiefdoms (owner_id, name, x, y, peasants, gold, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, wall_count, morale, last_update_time, manor_level) "
+              "VALUES (?, ?, ?, ?, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, ?, 1);"
            << character_id << fiefdom_name << fx << fy << now;
 
         int fiefdom_id = db.last_insert_rowid();
@@ -4008,9 +4223,10 @@ ApiResponse handleCreateBarony(GameConfigCache& config_cache, const json& body,
             return response;
         }
 
-        // Check for duplicate barony name
+        // Check for duplicate barony name (case-insensitive, matching the
+        // capture-time uniqueness rule in handleStartBaronTrack)
         int name_taken = 0;
-        db << "SELECT COUNT(*) FROM baronies WHERE name = ?;" << name >> [&](int count) { name_taken = count; };
+        db << "SELECT COUNT(*) FROM baronies WHERE LOWER(name) = LOWER(?);" << name >> [&](int count) { name_taken = count; };
         if (name_taken > 0) {
             response.error = "A barony with that name already exists";
             return response;
@@ -4041,8 +4257,8 @@ ApiResponse handleCreateBarony(GameConfigCache& config_cache, const json& body,
         int fx = (counter % 100) * 10;
         int fy = (counter / 100) * 10;
 
-        db << "INSERT INTO fiefdoms (owner_id, name, x, y, peasants, gold, grain, wood, steel, bronze, stone, leather, mana, wall_count, morale, last_update_time, manor_level) "
-              "VALUES (?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, ?, 1);"
+        db << "INSERT INTO fiefdoms (owner_id, name, x, y, peasants, gold, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, wall_count, morale, last_update_time, manor_level) "
+              "VALUES (?, ?, ?, ?, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, ?, 1);"
            << character_id << fiefdom_name << fx << fy << now;
 
         int fiefdom_id = db.last_insert_rowid();
@@ -4061,6 +4277,10 @@ ApiResponse handleCreateBarony(GameConfigCache& config_cache, const json& body,
 
         // Unlock base
         player_state_db::unlock_base(db, character_id, now);
+
+        // Keep the captured honor name in sync if the player edited it at creation
+        db << "UPDATE player_game_state SET honor_name = ? WHERE character_id = ?;"
+           << name << character_id;
 
         response.data["barony_id"] = barony_id;
         response.data["fiefdom_id"] = fiefdom_id;
@@ -4096,6 +4316,21 @@ ApiResponse handleStartBaronTrack(GameConfigCache& config_cache, const json& bod
     }
 
     int character_id = body["character_id"].get<int>();
+
+    // The aspiring barony's honor name is captured up front: required, trimmed,
+    // length-capped, and must not collide (case-insensitively) with an existing barony.
+    std::string honor_name = body.value("honor_name", "");
+    honor_name.erase(0, honor_name.find_first_not_of(" \t\r\n"));
+    honor_name.erase(honor_name.find_last_not_of(" \t\r\n") + 1);
+    if (honor_name.empty()) {
+        response.error = "honor_name required";
+        return response;
+    }
+    if (honor_name.length() > 64) {
+        response.error = "honor_name must be 64 characters or fewer";
+        return response;
+    }
+
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 
     try {
@@ -4120,10 +4355,21 @@ ApiResponse handleStartBaronTrack(GameConfigCache& config_cache, const json& bod
             return response;
         }
 
-        // Switch to baron_track phase
-        player_state_db::start_baron_track(db, character_id, now);
+        // Reject an honor name that already belongs to a barony — the aspiring
+        // name must be unique from the moment it is chosen (not just a warning).
+        int name_taken = 0;
+        db << "SELECT COUNT(*) FROM baronies WHERE LOWER(name) = LOWER(?);"
+           << honor_name >> [&](int count) { name_taken = count; };
+        if (name_taken > 0) {
+            response.error = "A barony with that name already exists";
+            return response;
+        }
+
+        // Switch to baron_track phase and persist the chosen honor name
+        player_state_db::start_baron_track(db, character_id, now, honor_name);
 
         response.data["game_phase"] = "baron_track";
+        response.data["honor_name"] = honor_name;
 
         if (new_token) {
             response.data["token"] = *new_token;
