@@ -309,10 +309,10 @@ Use `tools/set_march_progress.sh` to set a character's march progress to an exac
 
 - `<target>`: numeric character id, username (exact), or display/safe name (substring). Ambiguous matches list matching rows and exit.
 - `<mini_game>`: `tower_defense`/`wolf_marche`/`wolf` or `weeding`/`wildlands_marche`/`assarter`
-- `<next_level>`: the next level the player will play; levels `1..next_level-1` are marked completed
+- `<next_level>`: the next level the player will play, relative to the current marche; levels `1..next_level-1` of that marche are marked completed
 - Track is derived from the character's current `game_phase`:
   - `initial_mission` → levels 1–9 (`next_level` 1–10; 10 = all 9 done, server auto-advances to `land_patent`)
-  - `baron_track` → levels 10–25 (`next_level` 10–26; levels 1–9 also filled)
+  - `baron_track` → levels 10–25 (`next_level` 1–17 relative to the barony marche: 1 = its first level [absolute 10], 17 = all 16 done; levels 1–9 also filled)
 - The script only touches `mini_game_progress` — never `game_phase`, sessions, or unlocks.
 
 ### Deployment Notes

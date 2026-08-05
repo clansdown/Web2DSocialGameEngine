@@ -15,10 +15,12 @@
 # <target>     numeric character id, username (exact), or display/safe name (substring).
 #              If multiple characters match, matching rows are listed and no change is made.
 # <mini_game>  tower_defense|wolf_marche|wolf  OR  weeding|wildlands_marche|assarter
-# <next_level> the next level the player will play; levels 1..next_level-1 are marked
-#              completed. Ranges are validated against the character's current phase:
-#                initial_mission -> 1..10  (10 = all 9 done; server auto-advances to land_patent)
-#                baron_track     -> 10..26 (levels 1-9 filled too, idempotent)
+# <next_level> the next level the player will play, relative to the current marche;
+#              levels 1..next_level-1 of that marche are marked completed. Ranges are
+#              validated against the character's current phase:
+#                initial_mission -> 1..10  (levels 1-9; 10 = all 9 done; server auto-advances to land_patent)
+#                baron_track     -> 1..17  (levels 1-16 of the barony marche = absolute 10-25;
+#                                           the 9 regular levels are always filled too; 17 = all done)
 #
 # Nothing else is modified: no game_phase, current_mini_game/current_level_id,
 # sessions, or unlocks are touched.
@@ -155,8 +157,8 @@ case "$PHASE" in
         MIN_NEXT=1
         ;;
     baron_track)
-        MAX_NEXT=26
-        MIN_NEXT=10
+        MAX_NEXT=17
+        MIN_NEXT=1
         ;;
     *)
         echo "Error: character $CHARACTER_ID is in phase '$PHASE' — marches are not the active campaign."
@@ -172,16 +174,31 @@ fi
 
 DISPLAY_NAME=$(sqlite3 "$DB_PATH" \
     "SELECT display_name FROM characters WHERE id = $CHARACTER_ID;")
+
+# The argument is relative to the active marche. Convert to the absolute
+# level range to fill: initial_mission levels 1..NEXT_LEVEL-1 (relative ==
+# absolute), baron_track regular 1-9 always + barony 1..NEXT_LEVEL-1
+# (absolute 1..NEXT_LEVEL+8).
+FILL_MAX=$((NEXT_LEVEL - 1))
+TRACK_LABEL="regular marche"
+if [ "$PHASE" = "baron_track" ]; then
+    FILL_MAX=$((NEXT_LEVEL + 8))
+    TRACK_LABEL="barony marche"
+fi
+
 echo "Setting $MINI_GAME march progress for character $CHARACTER_ID ($DISPLAY_NAME, phase: $PHASE)..."
-echo "  Next level to play: $NEXT_LEVEL (levels 1..$((NEXT_LEVEL - 1)) marked completed)"
+echo "  Next $TRACK_LABEL level to play: $NEXT_LEVEL (levels 1..$((NEXT_LEVEL - 1)) of the $TRACK_LABEL marked completed)"
+if [ "$PHASE" = "baron_track" ]; then
+    echo "  Regular marche levels 1-9 also marked completed (idempotent)"
+fi
 
 NOW=$(date +%s)
 
-# Reset progress for this (character_id, mini_game) pair, then mark 1..next_level-1 completed.
+# Reset progress for this (character_id, mini_game) pair, then mark 1..FILL_MAX completed.
 {
     echo "BEGIN;"
     echo "DELETE FROM mini_game_progress WHERE character_id = $CHARACTER_ID AND mini_game = '$MINI_GAME';"
-    for ((i = 1; i < NEXT_LEVEL; i++)); do
+    for ((i = 1; i <= FILL_MAX; i++)); do
         echo "INSERT INTO mini_game_progress (character_id, mini_game, level_id, completed, best_score, times_played, last_played) VALUES ($CHARACTER_ID, '$MINI_GAME', $i, 1, 0, 1, $NOW);"
     done
     echo "COMMIT;"

@@ -5,15 +5,22 @@
   import Book from '../../components/Book.svelte';
 
   interface Props {
+    campaignId: string;
     gridSize: number;
     minLevelId: number;
     onStartLevel: (levelId: number) => void;
     onBack: () => void;
   }
 
-  let { gridSize, minLevelId, onStartLevel, onBack }: Props = $props();
+  let { campaignId, gridSize, minLevelId, onStartLevel, onBack }: Props = $props();
 
   let infoText = $state('');
+
+  let infoTextId = $derived(
+    campaignId === 'great_wildlands_marche'
+      ? 'wd_weeding_great_wildlands_marche'
+      : 'wd_weeding_marche'
+  );
 
   const mapImageUrl = '/images/tower_defense/wolf_warden_map1.jpg';
 
@@ -59,8 +66,8 @@
   }
 
   $effect(() => {
-    loadTexts(['wd_weeding_marche']).then(texts => {
-      infoText = texts['wd_weeding_marche'] ?? '';
+    loadTexts([infoTextId]).then(texts => {
+      infoText = texts[infoTextId] ?? '';
     }).catch(() => {
       infoText = '';
     });

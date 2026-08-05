@@ -1090,9 +1090,9 @@ ApiResponse handleGetPlayerState(GameConfigCache& config_cache, const json& body
             if (phase == "land_patent")
                 return {"tasks", "land_patent", "chat"};
             if (phase == "baron_track")
-                return {"tasks", "manor", "chat"};
+                return {"tasks", "chat"};
             if (phase == "baron_right")
-                return {"tasks", "manor", "chat", "tournament"};
+                return {"tasks", "chat", "tournament"};
             if (phase == "sandbox")
                 return {"tasks", "manor", "chat", "tournament", "adventure"};
             return {"tasks", "chat"};  // fallback

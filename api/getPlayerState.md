@@ -81,14 +81,17 @@ Retrieves the current player's game state including phase, active mini-game, and
 The server controls which activities the hub grid exposes. During the `land_patent`
 phase the `land_patent` activity replaces `manor`; the client renders it as the
 land-patent decision panel (join a dukedom or start the duke track) instead of a
-generic activity card.
+generic activity card. The `manor` activity is only exposed once the character
+owns a fiefdom (i.e. in `sandbox`); during `baron_track` and `baron_right` the
+character has chosen to found a barony but does not have a manor yet, so no
+manor card is shown.
 
 | Phase | Activities |
 |-------|------------|
 | `initial_mission` | `tasks`, `chat` |
 | `land_patent` | `tasks`, `land_patent`, `chat` |
-| `baron_track` | `tasks`, `manor`, `chat` |
-| `baron_right` | `tasks`, `manor`, `chat`, `tournament` |
+| `baron_track` | `tasks`, `chat` |
+| `baron_right` | `tasks`, `chat`, `tournament` |
 | `sandbox` | `tasks`, `manor`, `chat`, `tournament`, `adventure` |
 
 ### MiniGameProgress Fields

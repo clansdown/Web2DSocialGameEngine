@@ -23,6 +23,7 @@
   let isBaronTrack = $derived($playerGameState?.game_phase === 'baron_track');
   let gridSize = $derived(isBaronTrack ? (config?.baron_grid_size ?? 4) : (config?.grid_size ?? 3));
   let minLevelId = $derived(isBaronTrack ? 10 : 1);
+  let campaignId = $derived(isBaronTrack ? 'great_wildlands_marche' : 'wildlands_marche');
 
   async function loadConfig(): Promise<void> {
     loading = true;
@@ -50,6 +51,7 @@
     </div>
   {:else}
     <WeedingCampaign
+      {campaignId}
       {gridSize}
       {minLevelId}
       {onStartLevel}
