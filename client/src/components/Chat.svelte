@@ -1,6 +1,12 @@
 <script lang="ts">
   interface Props {
     onBack: () => void;
+    /**
+     * Nested route segments after the activity id — e.g. ['thread', '42'] for
+     * #/activity/chat/thread/42. Reserved for future thread navigation; the
+     * router passes it through, but chat is not implemented yet.
+     */
+    rest?: string[];
   }
 
   let { onBack }: Props = $props();

@@ -556,6 +556,24 @@ The server enforces these rules with specific error codes:
 
 See `api/Build.md` for complete building API documentation including home_base rules.
 
+### Current Building Prerequisite Chains
+
+The build palette shows buildings whose `prerequisites[0].manor_level` is met (level-locked buildings stay hidden until the manor levels up); within that set, buttons grey out while costs are unaffordable, `max_per_fiefdom` is reached, or a non-level prerequisite is unmet. The current config's level-1 (`build`) prerequisites are:
+
+| Building | Prerequisite to build |
+|----------|-----------------------|
+| home_base | none (auto-built at (0,0)) |
+| woodcutter | none |
+| wood_hewer | woodcutter at level ≥ 1 |
+| peasant | none |
+| miller | manor_level ≥ 2 |
+| blacksmith | none (buildable immediately; economy gates it) |
+| chapel | none (max 1 per fiefdom) |
+| collier | woodcutter at level ≥ 1 |
+| bloomery | manor_level ≥ 2 |
+
+`house` is a legacy generic entry with no `display_name`/`image`; the client excludes it from the build palette (and it has no build requirements).
+
 ## Level 0 Clarification
 
 Level 0 represents a building **under construction**. During this level:

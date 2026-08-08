@@ -18,12 +18,60 @@ client/
 ├── src/
 │   ├── App.svelte            # Main Svelte component
 │   ├── main.ts               # Application entry point
+│   ├── combat/               # Realtime combat game (NOT a mini-game)
+│   │   ├── CombatScreen.svelte   # Top-level container: lobby → battle → results
+│   │   ├── CombatNetClient.ts    # WebSocket client (auth, reconnect, typed sends)
+│   │   ├── protocol.ts           # Wire protocol types + combat_codec interface
+│   │   ├── CombatGame.svelte     # SimpleGame canvas: entity store + interpolation
+│   │   ├── CombatHud.svelte      # Bootstrap battle bar (timer, counts, actions)
+│   │   ├── CombatChat.svelte     # Team text chat over the WS
+│   │   ├── CombatVoice.svelte    # WebRTC mesh voice (WS-relayed signaling)
+│   │   └── MatchLobby.svelte     # PvE create/join-by-code
 │   └── lib/
+│       ├── router.ts         # Hash-based in-app router (hub/activity/game routes)
 │       └── storage.ts        # OPFS storage utilities
 ├── index.html                # Bootstrap 5.3.8 CDN (dark mode enabled)
 ├── package.json              # References simplegame via "file:./SimpleGame/ui"
-└── vite.config.ts            # Vite configuration
+└── vite.config.ts            # Vite configuration (proxies /api, /images, /ws)
 ```
+
+## Realtime Combat
+
+The combat game is a server-authoritative RTS (see `docs/combat_protocol.md`).
+It is **not** a mini-game: it mounts from `App.svelte` as its own activity
+(there is no hub card — it will be reached through game flow later) and
+communicates over WebSocket `/ws/combat` instead of REST turns.
+
+- **Networking**: `CombatNetClient` opens the socket, authenticates with the
+  REST session token in its first message, and auto-reconnects with backoff.
+  The vite dev server proxies `/ws` → `localhost:2290` (`ws: true`); nginx
+  needs the upgrade headers in production.
+- **State**: 10 Hz `match_state`/`match_update` messages; `CombatGame`
+  maintains a local entity store (entity-level overwrite — no merge) and
+  interpolates positions at rAF speed. Tick gaps trigger `request_state`.
+- **Rendering**: the battle canvas uses SimpleGame's engine loop and
+  `afterDraw` for custom unit rendering (no engine classes needed — units are
+  server-simulated). Do not modify files under `SimpleGame/`.
+- **Voice**: WebRTC mesh (browser standard) — the server only relays
+  signaling; media flows peer-to-peer. STUN is a placeholder; configure TURN
+  in `CombatVoice.svelte` for production.
+
+## Navigation (hash router)
+
+In-app navigation uses a small hash router (`src/lib/router.ts`), so the
+browser Back/Forward buttons and reload work naturally:
+
+- `#/` → hub grid
+- `#/activity/<id>[/…]` → hub activity (manor, tasks, chat, …); trailing
+  segments are nested sub-routes (e.g. `#/activity/chat/thread/42`)
+- `#/game/<game>/<level>` → mini-game level
+
+Components read `route_store` and navigate with `navigate()` / `replace_route()`
+(redirects) / `go_back()` (in-app Back buttons). Entering an activity or game
+from an empty/foreign URL pushes a `#/` hub entry first, so the browser Back
+button always returns to the hub grid before leaving the app. Reloading
+restores the current screen from the URL; mobile app-switching fires no hash
+events and never disturbs the open screen.
 
 ## Getting Started
 

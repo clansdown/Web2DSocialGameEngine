@@ -11,13 +11,14 @@
     initEngine, setBoardSize, getMousePosition,
     setBackground, setBackgroundMode,
     setCameraFollowsPlayer, setBoardPanEnabled, destroyEngine,
-    everyTick, whenLoaded
+    setViewportSize, setCameraPosition, setBackgroundTileSize,
+    onKeyDown, everyTick
   } from '../../SimpleGame/ui/src/lib/simplegame';
   import {
-    GameObject, GameObjectClass, createText
+    ItemClass, createText
   } from '../../SimpleGame/ui/src/lib/gameclasses';
-  import type { Text } from '../../SimpleGame/ui/src/lib/gameclasses';
-  import { ButtonClass } from '../../SimpleGame/ui/src/lib/button';
+  import type { GameObject, Text } from '../../SimpleGame/ui/src/lib/gameclasses';
+  import { ButtonClass, type Button } from '../../SimpleGame/ui/src/lib/button';
   import { Column, LayoutJustify } from '../../SimpleGame/ui/src/lib/layout';
 
   interface Props {
@@ -28,9 +29,21 @@
 
   const BW = 20000;
   const BH = 20000;
-  const CELL = 64;
+  // Grid cells are NOT 1:1 with board units. One building cell = 64 board units.
+  const CELL_TO_BOARD_UNITS = 64;
+  const BOARD_TO_CELL = 1 / CELL_TO_BOARD_UNITS;
+  const GRASS_TILE = 1800;
   const CX = BW / 2;
   const CY = BH / 2;
+
+  // Shared HUD button look: like Bootstrap btn-outline-light but with a
+  // semi-opaque dark fill (the engine only fades the background layer, so
+  // icons and label text stay fully opaque).
+  const MANOR_BTN_COLOR = '#212529';
+  const MANOR_BTN_FG = '#f8f9fa';
+  const MANOR_BTN_OPACITY = 0.55;
+  const MANOR_BTN_RADIUS = 6;
+  const MANOR_BTN_ACTIVE_COLOR = '#0d6efd';
 
   let canvasEl: HTMLCanvasElement;
   let debugDiv: HTMLDivElement;
@@ -38,9 +51,10 @@
   let errorMsg = $state<string | null>(null);
   let fiefdomData: FiefdomResponse | null = $state(null);
   let buildingConfigs: Record<string, BuildingTypeConfig> = $state({});
+  let buildingOrder: string[] = [];
 
   let buildingGameObjMap = new Map<number, GameObject>();
-  let buildingClasses = new Map<string, GameObjectClass>();
+  let buildingClasses = new Map<string, ItemClass>();
   let underConstructionSet = new Set<number>();
 
   let placementMode = $state(false);
@@ -51,14 +65,22 @@
   let ghostTooltip: Text | null = null;
   let ghostPos = { gx: 0, gy: 0 };
   let ghostValid = $state(false);
-  let validOverlayClass: GameObjectClass | null = null;
-  let invalidOverlayClass: GameObjectClass | null = null;
+  let validOverlayClass: ItemClass | null = null;
+  let invalidOverlayClass: ItemClass | null = null;
 
   let buildCol: Column | null = null;
-  let cancelBtn: GameObject | null = null;
+  let actionCol: Column | null = null;
+  let mainBtn: Button | null = null;
+  let buildBtn: Button | null = null;
+  let economyBtn: Button | null = null;
+  let productionBtn: Button | null = null;
+  let panelTop = $state(220);
+  let manorTexts = $state<Record<string, string>>({});
+  let buildableIds: string[] = [];
+  let buildButtons = new Map<string, Button>();
 
-  let resText: Text | null = null;
-  let mlText: Text | null = null;
+  let constructionRefreshInFlight = false;
+  let completionPollRequested = new Set<number>();
 
   let showIntro = $state(false);
   let introHtml = $state('');
@@ -74,27 +96,54 @@
   };
   let reserveInputs = $state<Record<string, number>>({});
 
-  function createOverlayClass(color: string, id: string): GameObjectClass {
+  function createOverlayClass(color: string, id: string): ItemClass {
     const c = document.createElement('canvas');
     c.width = 1;
     c.height = 1;
     const ctx = c.getContext('2d')!;
     ctx.fillStyle = color;
     ctx.fillRect(0, 0, 1, 1);
-    return new GameObjectClass(id, c.toDataURL(), null);
+    return new ItemClass(id, c.toDataURL());
+  }
+
+  /**
+   * Sets a button's icon to a fixed height while preserving the source image's
+   * aspect ratio (reads naturalWidth/naturalHeight once loaded), so non-square
+   * building art is never squashed into a square.
+   *
+   * @param btn - The button whose icon to size
+   * @param height - Desired icon height in screen pixels (width scales to match)
+   */
+  function setAspectIconSize(btn: Button, height: number): void {
+    const img = btn.icon;
+    if (!img) return;
+    const apply = () => {
+      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+        btn.setIconHeight(height);
+        btn.setIconWidth(Math.round(height * (img.naturalWidth / img.naturalHeight)));
+      }
+    };
+    if (img.complete && img.naturalWidth > 0) apply();
+    else img.onload = apply;
   }
 
   function g2b(gx: number, gy: number, w: number, h: number): { x: number; y: number } {
-    return { x: CX + gx * CELL + (w * CELL) / 2, y: CY + gy * CELL + (h * CELL) / 2 };
+    return { x: CX + gx * CELL_TO_BOARD_UNITS, y: CY + gy * CELL_TO_BOARD_UNITS };
   }
 
   function b2g(bx: number, by: number): { gx: number; gy: number } {
-    return { gx: Math.round((bx - CX) / CELL), gy: Math.round((by - CY) / CELL) };
+    return { gx: Math.round((bx - CX) * BOARD_TO_CELL), gy: Math.round((by - CY) * BOARD_TO_CELL) };
   }
 
   function getRect(gx: number, gy: number, w: number, h: number):
     { l: number; t: number; r: number; b: number } {
-    return { l: CX + gx * CELL, t: CY + gy * CELL, r: CX + (gx + w) * CELL, b: CY + (gy + h) * CELL };
+    const c = g2b(gx, gy, w, h);
+    return {
+      l: c.x - (w * CELL_TO_BOARD_UNITS) / 2,
+      t: c.y - (h * CELL_TO_BOARD_UNITS) / 2,
+      r: c.x + (w * CELL_TO_BOARD_UNITS) / 2,
+      b: c.y + (h * CELL_TO_BOARD_UNITS) / 2
+    };
   }
 
   function overlap(a: { l: number; t: number; r: number; b: number },
@@ -113,6 +162,21 @@
     if (fiefdomData.manor_level < cfg.min_manor_level) {
       return { valid: false, reason: `Need manor level ${cfg.min_manor_level}` };
     }
+    const maxCount = cfg.max_per_fiefdom as number | undefined;
+    if (maxCount != null) {
+      const count = (fiefdomData.buildings ?? []).filter(b => b.name === typeId).length;
+      if (count >= maxCount) {
+        return { valid: false, reason: 'Already built (max reached)' };
+      }
+    }
+    const prereq = ((cfg.prerequisites as Array<Record<string, number>> | undefined)?.[0]) ?? {};
+    for (const [key, reqLevel] of Object.entries(prereq)) {
+      if (key === 'manor_level') continue;
+      const have = (fiefdomData.buildings ?? []).find(b => b.name === key)?.level ?? 0;
+      if (have < reqLevel) {
+        return { valid: false, reason: `Need ${key} level ${reqLevel}` };
+      }
+    }
     const ghostRect = getRect(gx, gy, cfg.width, cfg.height);
     for (const b of fiefdomData.buildings || []) {
       const existing = getCfg(b.name);
@@ -130,6 +194,89 @@
     return { valid: true, reason: '' };
   }
 
+  /**
+   * Formats a gold amount as shillings and (if non-zero) pence, so monetary
+   * build costs are never shown as fractional gold. 1 gold = 20 shillings =
+   * 240 pence; 1 shilling = 12 pence.
+   *
+   * @param gold - Gold amount (fractional allowed; rounded to the nearest penny)
+   * @returns String like "12s" or "10s 6d"; pence-only ("6d") if under 1 shilling
+   */
+  function formatShillingsPence(gold: number): string {
+    const totalPence = Math.round(gold * 240);
+    const s = Math.floor(totalPence / 12);
+    const d = totalPence % 12;
+    const sPart = s > 0 ? `${s}s` : '';
+    const dPart = d > 0 ? `${d}d` : '';
+    return sPart + (sPart && dPart ? ' ' : '') + dPart;
+  }
+
+  /**
+   * Formats a building's level-1 costs as a compact price string.
+   *
+   * @param costs - Map of resource name -> level-1 cost amount
+   * @returns String like "10s 10w" (gold in shillings/pence, wood= w, stone= st);
+   *          empty if no costs
+   */
+  function formatCost(costs: Record<string, number>): string {
+    const units: Record<string, string> = { wood: 'w', stone: 'st' };
+    const parts: string[] = [];
+    for (const [res, amt] of Object.entries(costs)) {
+      if (amt <= 0) continue;
+      if (res === 'gold') {
+        parts.push(formatShillingsPence(amt));
+      } else {
+        const unit = units[res];
+        if (!unit) continue;
+        parts.push(`${Number.isInteger(amt) ? amt : amt.toFixed(1)}${unit}`);
+      }
+    }
+    return parts.join(' ');
+  }
+
+  /**
+   * Whether the player can currently build a new instance of the given type,
+   * mirroring the server's build checks: manor level, max_per_fiefdom,
+   * level-1 prerequisites (non-manor_level keys = required buildings), and
+   * level-1 cost affordability.
+   *
+   * @param typeId - Building type id from the config
+   * @returns True if buildable right now
+   */
+  function canBuild(typeId: string): boolean {
+    if (!fiefdomData) return false;
+    const cfg = getCfg(typeId);
+    if (!cfg) return false;
+    if (fiefdomData.manor_level < (cfg.min_manor_level ?? 1)) return false;
+    const maxCount = cfg.max_per_fiefdom as number | undefined;
+    if (maxCount != null) {
+      const count = (fiefdomData.buildings ?? []).filter(b => b.name === typeId).length;
+      if (count >= maxCount) return false;
+    }
+    const prereq = ((cfg.prerequisites as Array<Record<string, number>> | undefined)?.[0]) ?? {};
+    for (const [key, reqLevel] of Object.entries(prereq)) {
+      if (key === 'manor_level') continue;
+      const have = (fiefdomData.buildings ?? []).find(b => b.name === key)?.level ?? 0;
+      if (have < reqLevel) return false;
+    }
+    for (const [res, amt] of Object.entries(cfg.costs)) {
+      const have = (fiefdomData as unknown as Record<string, number>)[res] ?? 0;
+      if (have < amt) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Re-evaluates every build-palette button's enabled state and applies
+   * SimpleGame's disabled (grey overlay + click suppression) when the building
+   * cannot currently be built.
+   */
+  function updateBuildButtonStates(): void {
+    for (const [typeId, btn] of buildButtons) {
+      btn.setDisabled(!canBuild(typeId));
+    }
+  }
+
   function clearBuildings() {
     for (const obj of buildingGameObjMap.values()) obj.destroy();
     buildingGameObjMap.clear();
@@ -140,7 +287,6 @@
   function renderBuildings() {
     if (!fiefdomData) return;
     const homeBasePlaced = fiefdomData.buildings?.some(b => b.name === 'home_base');
-    const now = Date.now() / 1000;
 
     for (const b of fiefdomData.buildings || []) {
       if (b.name === 'home_base') continue;
@@ -153,22 +299,24 @@
 
       let cls = buildingClasses.get(classKey);
       if (!cls) {
-        cls = new GameObjectClass(classKey, imgUrl, null);
+        cls = new ItemClass(classKey, imgUrl);
         buildingClasses.set(classKey, cls);
       }
 
       const pos = g2b(b.x, b.y, cfg.width, cfg.height);
-      const obj = new GameObject(cls, pos.x, pos.y);
-      obj.width = cfg.width * CELL;
-      obj.height = cfg.height * CELL;
+      const obj = cls.spawn(pos.x, pos.y);
+      obj.width = cfg.width * CELL_TO_BOARD_UNITS;
+      obj.height = cfg.height * CELL_TO_BOARD_UNITS;
 
       if (underConstruction) {
         underConstructionSet.add(b.id);
         const totalSec = cfg.construction_times[b.level] || cfg.construction_times[0] || 60;
         obj.var.construction_start = b.construction_start_ts;
         obj.var.construction_duration = totalSec;
-        obj.var.progress = Math.min((now - b.construction_start_ts) / totalSec, 1);
-        obj.setProgressBar(() => obj.var.progress, '#4caf50', '#333333', 0.9);
+        obj.setProgressBar(
+          () => (Date.now() / 1000 - obj.var.construction_start) / obj.var.construction_duration,
+          '#4caf50', '#333333', 0.9
+        );
       }
 
       buildingGameObjMap.set(b.id, obj);
@@ -184,44 +332,67 @@
       const manorKey = 'home_base' + (manorUnderConstruction ? '_con' : '');
       let manorCls = buildingClasses.get(manorKey);
       if (!manorCls) {
-        manorCls = new GameObjectClass(manorKey, manorImg, null);
+        manorCls = new ItemClass(manorKey, manorImg);
         buildingClasses.set(manorKey, manorCls);
       }
-      const mPos = g2b(0, 0, 5, 5);
-      const manorObj = new GameObject(manorCls, mPos.x, mPos.y);
-      manorObj.width = 5 * CELL;
-      manorObj.height = 5 * CELL;
+      const mPos = g2b(0, 0, manorCfg.width, manorCfg.height);
+      const manorObj = manorCls.spawn(mPos.x, mPos.y);
+      manorObj.width = manorCfg.width * CELL_TO_BOARD_UNITS;
+      manorObj.height = manorCfg.height * CELL_TO_BOARD_UNITS;
       manorObj.opacity = homeBasePlaced ? 1.0 : 0.4;
-      buildingGameObjMap.set(-1, manorObj);
 
       if (manorUnderConstruction) {
         const b = (fiefdomData.buildings || []).find(b => b.name === 'home_base')!;
+        // Key by the home_base row id so the everyTick completion poll finds it.
+        buildingGameObjMap.set(b.id, manorObj);
         underConstructionSet.add(b.id);
         const totalSec = manorCfg.construction_times[b.level] || manorCfg.construction_times[0] || 60;
         manorObj.var.construction_start = b.construction_start_ts;
         manorObj.var.construction_duration = totalSec;
-        manorObj.var.progress = Math.min((now - b.construction_start_ts) / totalSec, 1);
-        manorObj.setProgressBar(() => manorObj.var.progress, '#4caf50', '#333333', 0.9);
+        manorObj.setProgressBar(
+          () => (Date.now() / 1000 - manorObj.var.construction_start) / manorObj.var.construction_duration,
+          '#4caf50', '#333333', 0.9
+        );
+      } else {
+        buildingGameObjMap.set(-1, manorObj);
       }
     }
   }
 
   function enterPlacement(typeId: string) {
     if (!fiefdomData) return;
+    if (placementMode && placementType === typeId) {
+      exitPlacement();
+      return;
+    }
+    exitPlacement();
+
     placementMode = true;
     placementType = typeId;
 
     const cfg = getCfg(typeId);
     if (!cfg) return;
-
-    const ghostCls = new GameObjectClass('ghost_' + typeId, cfg.image, null);
+    const ghostCls = new ItemClass('ghost_' + typeId, cfg.image);
     const pos = g2b(0, 0, cfg.width, cfg.height);
-    ghostBuilding = new GameObject(ghostCls, pos.x, pos.y);
-    ghostBuilding.width = cfg.width * CELL;
-    ghostBuilding.height = cfg.height * CELL;
+
+    ghostBuilding = ghostCls.spawn(pos.x, pos.y);
+    ghostBuilding.width = cfg.width * CELL_TO_BOARD_UNITS;
+    ghostBuilding.height = cfg.height * CELL_TO_BOARD_UNITS;
+    // Hitbox is copied from the class at spawn time, before its image loads, so
+    // it is 0 — set it to the building footprint or the engine never hits the
+    // ghost (mousedown falls through to board panning, suppressing clicks).
+    ghostBuilding.hitboxWidth = cfg.width * CELL_TO_BOARD_UNITS;
+    ghostBuilding.hitboxHeight = cfg.height * CELL_TO_BOARD_UNITS;
+    ghostBuilding.hitboxXOffset = 0;
+    ghostBuilding.hitboxYOffset = 0;
     ghostBuilding.opacity = 0.5;
     ghostBuilding.draggable = true;
-    ghostBuilding.onDragMap.set(0, () => {
+    ghostBuilding.onClick(0, () => {
+      if (ghostValid) {
+        placeBuilding(ghostPos.gx, ghostPos.gy, typeId);
+      }
+    });
+    ghostBuilding.onDragEnd(0, () => {
       if (ghostValid) {
         placeBuilding(ghostPos.gx, ghostPos.gy, typeId);
       }
@@ -235,25 +406,22 @@
     const vCls = validOverlayClass!;
     const iCls = invalidOverlayClass!;
 
-    ghostOverlayValid = new GameObject(vCls, pos.x, pos.y);
-    ghostOverlayValid.width = cfg.width * CELL;
-    ghostOverlayValid.height = cfg.height * CELL;
+    ghostOverlayValid = vCls.spawn(pos.x, pos.y);
+    ghostOverlayValid.width = cfg.width * CELL_TO_BOARD_UNITS;
+    ghostOverlayValid.height = cfg.height * CELL_TO_BOARD_UNITS;
     ghostOverlayValid.opacity = 0.6;
     ghostOverlayValid.visible = true;
 
-    ghostOverlayInvalid = new GameObject(iCls, pos.x, pos.y);
-    ghostOverlayInvalid.width = cfg.width * CELL;
-    ghostOverlayInvalid.height = cfg.height * CELL;
+    ghostOverlayInvalid = iCls.spawn(pos.x, pos.y);
+    ghostOverlayInvalid.width = cfg.width * CELL_TO_BOARD_UNITS;
+    ghostOverlayInvalid.height = cfg.height * CELL_TO_BOARD_UNITS;
     ghostOverlayInvalid.opacity = 0.6;
     ghostOverlayInvalid.visible = false;
 
-    ghostTooltip = createText('', { x: pos.x, y: pos.y - cfg.height * CELL / 2 - 30 });
+    ghostTooltip = createText('', { x: pos.x, y: pos.y - cfg.height * CELL_TO_BOARD_UNITS / 2 - 30 });
 
     ghostPos = { gx: 0, gy: 0 };
     ghostValid = false;
-
-    if (buildCol) buildCol.visible = false;
-    if (cancelBtn) cancelBtn.visible = true;
   }
 
   function exitPlacement() {
@@ -263,20 +431,19 @@
     if (ghostOverlayValid) { ghostOverlayValid.destroy(); ghostOverlayValid = null; }
     if (ghostOverlayInvalid) { ghostOverlayInvalid.destroy(); ghostOverlayInvalid = null; }
     if (ghostTooltip) { ghostTooltip.destroy(); ghostTooltip = null; }
-    if (buildCol) buildCol.visible = true;
-    if (cancelBtn) cancelBtn.visible = false;
   }
 
   async function placeBuilding(gx: number, gy: number, typeId: string) {
     if (!fiefdomData) return;
     const token = getSessionToken();
     const creds = getInMemoryCredentials();
-    if (!token || !creds) return;
+    if (!token || !creds || !$currentCharacter) return;
     try {
       await buildRequest({
         fiefdom_id: fiefdomData.id,
         building_type: typeId,
-        x: gx, y: gy
+        x: gx, y: gy,
+        character_id: $currentCharacter.id
       }, { username: creds.username, token });
       await loadFiefdomData();
       clearBuildings();
@@ -300,6 +467,7 @@
       if (data.id && !fid) await setConfigKV('fiefdom_id', data.id);
       fiefdomData = data;
       economyReport = data.economy_report || null;
+      updateBuildButtonStates();
       if (data.reserves) {
         const next: Record<string, number> = {};
         for (const res of IMPORT_RESOURCES) {
@@ -312,12 +480,63 @@
     }
   }
 
+  /**
+   * Formats a gold amount as a medieval breakdown: 240 pence = 1 gold,
+   * 12 pence = 1 shilling, 20 shillings = 1 pound.
+   *
+   * @param gold - Gold amount (fractional allowed; rounded to the nearest penny)
+   * @returns String like "12g 3s 6d"
+   */
+  function formatGold(gold: number): string {
+    const totalPence = Math.round(gold * 240);
+    const g = Math.floor(totalPence / 240);
+    const rem = totalPence % 240;
+    const s = Math.floor(rem / 12);
+    const d = rem % 12;
+    return `${g}g ${s}s ${d}d`;
+  }
+
+  function constructionSignature(): string {
+    return (fiefdomData?.buildings ?? [])
+      .map(b => `${b.id}:${b.level}:${b.construction_start_ts}`).join('|');
+  }
+
+  async function pollConstruction(): Promise<void> {
+    if (constructionRefreshInFlight) return;
+    constructionRefreshInFlight = true;
+    try {
+      const before = constructionSignature();
+      await loadFiefdomData();
+      if (constructionSignature() !== before) {
+        clearBuildings();
+        renderBuildings();
+      }
+      const stillUnder = new Set((fiefdomData?.buildings ?? [])
+        .filter(b => b.construction_start_ts > 0).map(b => b.id));
+      for (const id of completionPollRequested) {
+        if (!stillUnder.has(id)) completionPollRequested.delete(id);
+      }
+    } finally {
+      constructionRefreshInFlight = false;
+    }
+  }
+
+  /**
+   * Highlights whichever panel toggle is currently open (Bootstrap-primary
+   * fill) and restores the glassy fill for the other.
+   */
+  function updateToggleButtonStates(): void {
+    if (economyBtn) economyBtn.setBackgroundColor(showEconomy ? MANOR_BTN_ACTIVE_COLOR : MANOR_BTN_COLOR);
+    if (productionBtn) productionBtn.setBackgroundColor(showProduction ? MANOR_BTN_ACTIVE_COLOR : MANOR_BTN_COLOR);
+  }
+
   async function toggleEconomy() {
     showEconomy = !showEconomy;
     if (showEconomy) {
       showProduction = false;
       await loadFiefdomData();
     }
+    updateToggleButtonStates();
   }
 
   async function toggleProduction() {
@@ -326,6 +545,7 @@
       showEconomy = false;
       await loadFiefdomData();
     }
+    updateToggleButtonStates();
   }
 
   /**
@@ -375,42 +595,119 @@
   function setupGame() {
     renderBuildings();
 
-    resText = createText('', { x: 20, y: 20 });
-    mlText = createText('', { x: 20, y: 50 });
+    buildCol = new Column(0, 0);
+    buildCol.hud = true;
+    buildCol.visible = false;
 
-    buildCol = new Column(BW - 120, 80);
-
-    const homeBasePlaced = fiefdomData?.buildings?.some(b => b.name === 'home_base');
-    const available = Object.entries(buildingConfigs).filter(([id, cfg]) => {
-      if (id === 'home_base' && homeBasePlaced) return false;
-      return fiefdomData && fiefdomData.manor_level >= cfg.min_manor_level;
-    });
-
-    for (const [typeId, cfg] of available) {
+    for (const typeId of buildableIds) {
+      const cfg = getCfg(typeId);
+      if (!cfg) continue;
       const bc = new ButtonClass('b_' + typeId);
-      const btn = bc.spawn(0, 0, cfg.display_name, cfg.image, {
-        width: 200, height: 100, backgroundOpacity: 0.85
+      const costStr = formatCost(cfg.costs);
+      const label = (manorTexts['ui_building_' + typeId] ?? '') + (costStr ? '  ' + costStr : '');
+      const btn = bc.spawn(0, 0, label, cfg.image, {
+        width: 280, height: 56,
+        color: MANOR_BTN_COLOR, foregroundColor: MANOR_BTN_FG,
+        backgroundOpacity: MANOR_BTN_OPACITY, cornerRadius: MANOR_BTN_RADIUS,
+        iconLayout: 'left', iconPadding: 10
       });
+      btn.hud = true;
       btn.visible = true;
       btn.zIndex = 100;
       btn.onClick(0, () => enterPlacement(typeId));
+      setAspectIconSize(btn, 32);
       buildCol.addChild(btn);
+      buildButtons.set(typeId, btn);
     }
-
-    const cc = new ButtonClass('cancel_manor');
-    cancelBtn = cc.spawn(0, 0, 'Cancel', null, {
-      width: 200, height: 50, color: '#666666', backgroundOpacity: 0.85
-    });
-    cancelBtn.visible = false;
-    cancelBtn.zIndex = 100;
-    cancelBtn.onClick(0, () => exitPlacement());
 
     buildCol.setGutter(10);
     buildCol.setPadding(0);
     buildCol.setJustify(LayoutJustify.START);
     buildCol.layout();
 
+    updateBuildButtonStates();
+
+    // Top-right action stack: all four HUD buttons as SimpleGame buttons so
+    // they share one coordinate space and one glassy style.
+    actionCol = new Column(0, 0);
+    actionCol.hud = true;
+    actionCol.visible = true;
+
+    const toggleStyle = {
+      width: 140, height: 40,
+      color: MANOR_BTN_COLOR, foregroundColor: MANOR_BTN_FG,
+      backgroundOpacity: MANOR_BTN_OPACITY, cornerRadius: MANOR_BTN_RADIUS
+    };
+
+    const eb = new ButtonClass('manor_economy');
+    economyBtn = eb.spawn(0, 0, manorTexts['ui_manor_economy'], null, toggleStyle);
+    economyBtn.hud = true;
+    economyBtn.visible = true;
+    economyBtn.zIndex = 100;
+    economyBtn.onClick(0, () => toggleEconomy());
+    actionCol.addChild(economyBtn);
+
+    const pb = new ButtonClass('manor_production');
+    productionBtn = pb.spawn(0, 0, manorTexts['ui_manor_production'], null, toggleStyle);
+    productionBtn.hud = true;
+    productionBtn.visible = true;
+    productionBtn.zIndex = 100;
+    productionBtn.onClick(0, () => toggleProduction());
+    actionCol.addChild(productionBtn);
+
+    const bb = new ButtonClass('manor_build');
+    buildBtn = bb.spawn(0, 0, manorTexts['ui_manor_build_btn'], null, toggleStyle);
+    buildBtn.hud = true;
+    buildBtn.visible = true;
+    buildBtn.zIndex = 100;
+    buildBtn.onClick(0, () => {
+      if (buildCol) buildCol.visible = !buildCol.visible;
+    });
+    actionCol.addChild(buildBtn);
+
+    const mb = new ButtonClass('manor_main');
+    mainBtn = mb.spawn(0, 0, manorTexts['manor_main_btn'], null, toggleStyle);
+    mainBtn.hud = true;
+    mainBtn.visible = true;
+    mainBtn.zIndex = 100;
+    mainBtn.onClick(0, () => {
+      exitPlacement();
+      onBack();
+    });
+    actionCol.addChild(mainBtn);
+
+    actionCol.setGutter(10);
+    actionCol.setPadding(0);
+    actionCol.setJustify(LayoutJustify.START);
+    actionCol.layout();
+
+    updateToggleButtonStates();
     loading = false;
+  }
+
+  /**
+   * Re-applies the engine viewport to the canvas's displayed size and
+   * re-anchors the on-screen HUD. Called once at init and on window resize.
+   * The camera is intentionally NOT re-centered here so a panned position
+   * survives a resize (the engine re-clamps it to the board bounds).
+   */
+  function apply_viewport() {
+    if (!canvasEl) return;
+    const w = Math.max(1, canvasEl.clientWidth);
+    const h = Math.max(1, canvasEl.clientHeight);
+    setViewportSize(w, h);
+    if (buildCol) {
+      buildCol.x = buildCol.getContentWidth() / 2 + 20;
+      buildCol.y = buildCol.getContentHeight() / 2 + 20;
+      buildCol.layout();
+    }
+    if (actionCol) {
+      actionCol.layout();
+      actionCol.x = w - 12 - actionCol.width / 2;
+      actionCol.y = 12 + actionCol.height / 2;
+      actionCol.layout();
+      panelTop = actionCol.y + actionCol.height / 2 + 10;
+    }
   }
 
   async function initialize() {
@@ -427,9 +724,19 @@
 
     loading = true;
 
+    const token = getSessionToken();
+    const creds = getInMemoryCredentials();
+    if (!token || !creds || !$currentCharacter) {
+      errorMsg = 'Not authenticated';
+      loading = false;
+      return;
+    }
+
     // Fetch building configs from server
     try {
-      buildingConfigs = await getBuildingConfigsRequest();
+      const { configs, build_order } = await getBuildingConfigsRequest({ username: creds.username, token });
+      buildingConfigs = configs;
+      buildingOrder = build_order;
     } catch (e) {
       errorMsg = 'Failed to load building configs';
       loading = false;
@@ -438,50 +745,64 @@
 
     await loadFiefdomData();
 
-    const token = getSessionToken();
-    const creds = getInMemoryCredentials();
-    if (!token || !creds || !$currentCharacter) {
-      if (!errorMsg) errorMsg = 'Not authenticated';
-      loading = false;
-      return;
-    }
     if (errorMsg) {
       loading = false;
       return;
     }
 
-    // Auto-place manor house if not already placed
+    // Auto-place manor house if not already placed (zero cost, construction starts now)
     if (fiefdomData && !fiefdomData.buildings?.some(b => b.name === 'home_base')) {
       try {
         await buildRequest({
           fiefdom_id: fiefdomData.id,
           building_type: 'home_base',
-          x: 0, y: 0
+          x: 0, y: 0,
+          character_id: $currentCharacter.id
         }, { username: creds.username, token });
         await loadFiefdomData();
       } catch (e) {
-        // Silently continue — manor may already exist or be in progress
+        console.log('[ManorMenu] Auto-build manor house failed:', e);
       }
     }
 
+    // home_base is auto-built at start and there can be only one — never buildable.
+    // Level-locked buildings stay hidden (they appear when the manor levels up).
+    // house is a leftover generic entry with no display_name/image, so the
+    // display_name && image guard keeps it (and any placeholder) out of the palette.
+    // Order comes from manor_ui.json build_order; ids not listed sort last (stable).
+    buildableIds = Object.entries(buildingConfigs)
+      .filter(([id, cfg]) => id !== 'home_base' && cfg.display_name && cfg.image
+        && fiefdomData && fiefdomData.manor_level >= (cfg.min_manor_level ?? 1))
+      .map(([id]) => id)
+      .sort((a, b) => {
+        const ia = buildingOrder.indexOf(a);
+        const ib = buildingOrder.indexOf(b);
+        return (ia === -1 ? Number.MAX_SAFE_INTEGER : ia) - (ib === -1 ? Number.MAX_SAFE_INTEGER : ib);
+      });
+
+    const textIds = [
+      'manor_main_btn', 'ui_manor_build_btn',
+      'ui_manor_economy', 'ui_manor_production',
+      'ui_manor_stockpiles', 'ui_manor_treasury', 'ui_manor_peasants',
+      ...buildableIds.map(id => 'ui_building_' + id)
+    ];
+    manorTexts = await loadTexts(textIds);
+
     debugDiv = document.createElement('div');
-    initEngine(canvasEl, debugDiv, false, () => {});
+    initEngine(canvasEl, debugDiv, false, setupGame);
     setBoardSize(BW, BH);
     setBackground(['/images/manor/ground/grass.jpg']);
     setBackgroundMode('tile');
+    setBackgroundTileSize(GRASS_TILE, GRASS_TILE);
     setCameraFollowsPlayer(false);
     setBoardPanEnabled(true);
 
-    whenLoaded(setupGame);
+    apply_viewport();
+    setCameraPosition(CX, CY);
+    window.addEventListener('resize', apply_viewport);
+    onKeyDown('Escape', () => exitPlacement());
 
     everyTick(() => {
-      if (resText && fiefdomData) {
-        resText.text = `Gold: ${fiefdomData.gold}  Silver: ${fiefdomData.silver_pence}d  Wood: ${fiefdomData.wood}  Stone: ${fiefdomData.stone}  Grain: ${fiefdomData.grain}`;
-      }
-      if (mlText && fiefdomData) {
-        mlText.text = `Manor Level ${fiefdomData.manor_level}`;
-      }
-
       if (ghostBuilding && placementType) {
         const cfg = getCfg(placementType);
         if (!cfg) return;
@@ -505,7 +826,7 @@
           if (ghostOverlayInvalid) ghostOverlayInvalid.visible = true;
           if (ghostTooltip) {
             ghostTooltip.x = pos.x;
-            ghostTooltip.y = pos.y - cfg.height * CELL / 2 - 30;
+            ghostTooltip.y = pos.y - cfg.height * CELL_TO_BOARD_UNITS / 2 - 30;
             ghostTooltip.text = result.reason;
             ghostTooltip.opacity = 1;
           }
@@ -516,18 +837,16 @@
         }
       }
 
-      // Update progress bars for construction buildings
+      // Detect construction completion → refresh the fiefdom so the server
+      // advances construction and the building flips to its built state.
       const now = Date.now() / 1000;
       for (const id of underConstructionSet) {
         const obj = buildingGameObjMap.get(id);
         if (obj && obj.var.construction_duration) {
-          obj.var.progress = Math.min(
-            (now - obj.var.construction_start) / obj.var.construction_duration,
-            1
-          );
-          if (obj.var.progress > 0.999) {
-            underConstructionSet.delete(id);
-            obj.setProgressBar(null, '#4caf50', '#333333', 0.9);
+          const progress = (now - obj.var.construction_start) / obj.var.construction_duration;
+          if (progress >= 1 && !completionPollRequested.has(id)) {
+            completionPollRequested.add(id);
+            pollConstruction();
           }
         }
       }
@@ -545,59 +864,62 @@
   });
 
   onDestroy(() => {
+    window.removeEventListener('resize', apply_viewport);
     destroyEngine();
   });
 </script>
 
 <div class="manor-container position-relative">
+  <canvas bind:this={canvasEl} class="w-100" style="height: 100vh; display: block;"></canvas>
+
   {#if loading && !showIntro && !errorMsg}
-    <div class="d-flex justify-content-center align-items-center" style="height: 80vh;">
+    <div class="position-absolute top-0 start-0 w-100 h-100 d-flex justify-content-center align-items-center">
       <div class="text-center">
         <div class="spinner-border mb-3" role="status">
           <span class="visually-hidden">Loading...</span>
         </div>
         <p class="text-muted">Loading Manor...</p>
+        <button class="btn btn-outline-secondary" onclick={onBack}>&larr; Back</button>
       </div>
     </div>
   {:else if showIntro}
-    <div class="container py-5">
-      <div class="card">
-        <div class="card-body text-center p-5">
-          <h3 class="card-title">Your Manor</h3>
-          <p class="text-muted mt-3">{introHtml}</p>
-          <button class="btn btn-primary mt-4" onclick={dismissIntro}>Begin</button>
+    <div class="position-absolute top-0 start-0 w-100 h-100 d-flex justify-content-center align-items-center">
+      <div class="container py-5">
+        <div class="card">
+          <div class="card-body text-center p-5">
+            <h3 class="card-title">Your Manor</h3>
+            <p class="text-muted mt-3">{introHtml}</p>
+            <button class="btn btn-primary mt-4" onclick={dismissIntro}>Begin</button>
+          </div>
         </div>
       </div>
     </div>
   {:else if errorMsg}
-    <div class="container py-5">
-      <button class="btn btn-outline-secondary mb-4" onclick={onBack}>&larr; Back</button>
-      <div class="alert alert-danger">{errorMsg}</div>
+    <div class="position-absolute top-0 start-0 w-100 h-100 d-flex justify-content-center align-items-center">
+      <div class="container py-5">
+        <button class="btn btn-outline-secondary mb-4" onclick={onBack}>&larr; Back</button>
+        <div class="alert alert-danger">{errorMsg}</div>
+      </div>
     </div>
   {/if}
 
-  <canvas bind:this={canvasEl} class="w-100" style="display: {loading || showIntro || errorMsg ? 'none' : 'block'}; height: calc(100vh - 60px);"></canvas>
-
   {#if !loading && !showIntro && !errorMsg}
-    <div class="position-absolute top-0 end-0 m-3 d-flex flex-column gap-2">
-      <button
-        class="btn btn-outline-light"
-        onclick={toggleEconomy}
-      >
-        {showEconomy ? 'Close Economy' : 'Economy'}
-      </button>
-      <button
-        class="btn btn-outline-light"
-        onclick={toggleProduction}
-      >
-        {showProduction ? 'Close Production' : 'Production'}
-      </button>
-    </div>
-
     {#if showEconomy}
-      <div class="card position-absolute end-0 m-3" style="width: 420px; max-height: 80vh; overflow-y: auto; top: 7rem;">
+      <div class="card position-absolute end-0 m-3" style="width: 420px; max-height: 80vh; overflow-y: auto; top: {panelTop}px;">
         <div class="card-body">
           <h6 class="card-title">Manor Economy</h6>
+
+          <div class="small mb-2">{manorTexts['ui_manor_peasants']}: {fiefdomData?.peasants ?? 0}</div>
+          <div class="mb-3">
+            <div class="fw-semibold">{manorTexts['ui_manor_stockpiles']}</div>
+            <div class="small">{manorTexts['ui_manor_treasury']}: {formatGold(fiefdomData?.gold ?? 0)}, {fiefdomData?.silver_pence ?? 0} silver pence</div>
+            <div class="d-flex flex-wrap gap-1">
+              {#each IMPORT_RESOURCES as res}
+                {@const amount = ((fiefdomData ?? {}) as unknown as Record<string, number>)[res] ?? 0}
+                <span class="badge text-bg-secondary">{RESOURCE_DISPLAY[res] ?? res}: {amount}</span>
+              {/each}
+            </div>
+          </div>
 
           {#if economyReport}
             <div class="mb-3">
@@ -689,7 +1011,7 @@
     {/if}
 
     {#if showProduction}
-      <div class="card position-absolute end-0 m-3" style="width: 420px; max-height: 80vh; overflow-y: auto; top: 7rem;">
+      <div class="card position-absolute end-0 m-3" style="width: 420px; max-height: 80vh; overflow-y: auto; top: {panelTop}px;">
         <div class="card-body">
           <h6 class="card-title">Production Rates</h6>
           {#each fiefdomData?.buildings ?? [] as building}

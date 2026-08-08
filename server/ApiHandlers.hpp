@@ -213,6 +213,36 @@ ApiResponse handleGetBuildingConfigs(GameConfigCache& config_cache, const nlohma
                                       const ClientInfo& client,
                                       const std::optional<std::string>& new_token);
 
+ApiResponse handleCombatCreate(GameConfigCache& config_cache, const nlohmann::json& body,
+                               const std::optional<std::string>& username,
+                               const ClientInfo& client,
+                               const std::optional<std::string>& new_token);
+
+ApiResponse handleCombatJoin(GameConfigCache& config_cache, const nlohmann::json& body,
+                             const std::optional<std::string>& username,
+                             const ClientInfo& client,
+                             const std::optional<std::string>& new_token);
+
+ApiResponse handleCombatList(GameConfigCache& config_cache, const nlohmann::json& body,
+                             const std::optional<std::string>& username,
+                             const ClientInfo& client,
+                             const std::optional<std::string>& new_token);
+
+ApiResponse handleCombatMatchmaking(GameConfigCache& config_cache, const nlohmann::json& body,
+                                    const std::optional<std::string>& username,
+                                    const ClientInfo& client,
+                                    const std::optional<std::string>& new_token);
+
+ApiResponse handleCombatGetConfigs(GameConfigCache& config_cache, const nlohmann::json& body,
+                                   const std::optional<std::string>& username,
+                                   const ClientInfo& client,
+                                   const std::optional<std::string>& new_token);
+
+ApiResponse handleGetRetinue(GameConfigCache& config_cache, const nlohmann::json& body,
+                             const std::optional<std::string>& username,
+                             const ClientInfo& client,
+                             const std::optional<std::string>& new_token);
+
 inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfigCache& config_cache) {
     using Json = const nlohmann::json&;
     using Username = const std::optional<std::string>&;
@@ -255,5 +285,11 @@ inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfi
     add("getBuildingConfigs",     [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetBuildingConfigs(c, b, u, cl, t); });
     add("acknowledgeLandPatent",  [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleAcknowledgeLandPatent(c, b, u, cl, t); });
     add("estimateOngoingRewards", [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleEstimateOngoingRewards(c, b, u, cl, t); });
+    add("combatCreate",          [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleCombatCreate(c, b, u, cl, t); });
+    add("combatJoin",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleCombatJoin(c, b, u, cl, t); });
+    add("combatList",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleCombatList(c, b, u, cl, t); });
+    add("combatMatchmaking",     [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleCombatMatchmaking(c, b, u, cl, t); });
+    add("combatGetConfigs",      [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleCombatGetConfigs(c, b, u, cl, t); });
+    add("getRetinue",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetRetinue(c, b, u, cl, t); });
     return handlers;
 }

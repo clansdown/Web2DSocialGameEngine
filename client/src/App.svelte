@@ -18,13 +18,15 @@
   import { loginRequest, refreshToken, setCharacterArchetypeRequest, setCharacterSexRequest, acknowledgeLandPatentRequest } from './lib/api';
   import { loadTexts, loadText } from './lib/text';
   import { fetchPlayerState } from './lib/game_state';
+  import { route_store, navigate, replace_route } from './lib/router';
   import type { EndMiniGameResponse } from './lib/api';
   import { handleError } from './lib/errors';
 
   let needsAuth = $state(false);
   let initialized = $state(false);
-  let activeMiniGame = $state<string | null>(null);
-  let selectedLevelId = $state<number>(0);
+
+  // Mini-game launch is driven by the hash route (#/game/<game>/<level>)
+  let gameRoute = $derived($route_store.type === 'game' ? $route_store : null);
 
   // Language selection state
   let languageLoading = $state(true);
@@ -134,8 +136,6 @@
   async function loadGameState() {
     if (!$currentCharacter) return;
 
-    activeMiniGame = null;
-
     try {
       await fetchPlayerState($currentCharacter.id);
     } catch (e) {
@@ -189,16 +189,14 @@
   }
 
   function handleStartLevel(gameId: string, levelId: number) {
-    activeMiniGame = gameId;
-    selectedLevelId = levelId;
-  }
-
-  function handleGameComplete(_results: EndMiniGameResponse) {
-    activeMiniGame = null;
+    navigate({ type: 'game', game_id: gameId, level_id: levelId, rest: [] });
   }
 
   function handleGameError(error: string) {
     handleError('Mini-game error', new Error(error));
+    // Return to the tasks page — the game entry is replaced so browser Back
+    // does not re-enter the failed game.
+    replace_route({ type: 'activity', id: 'tasks', rest: [] });
   }
 
   // ── Barony flow handlers ──────────────────────────────────────
@@ -207,9 +205,10 @@
     showBaronyList = true;
   }
 
-  function handleBaronyJoined(): void {
+  async function handleBaronyJoined(): Promise<void> {
     showBaronyList = false;
-    // Fetch game state to update phase to sandbox
+    // Land on the hub grid. Fetch game state to update phase to sandbox.
+    navigate({ type: 'hub', rest: [] });
     if ($currentCharacter) {
       fetchPlayerState($currentCharacter.id);
     }
@@ -220,15 +219,18 @@
   }
 
   function handleBaronTrackStarted(): void {
-    // Game phase is now baron_track — the routing will show MiniGameSelect
-    // Fetch game state to refresh
+    // Game phase is now baron_track — go straight to the campaign page.
+    // Fetch game state to refresh.
+    navigate({ type: 'activity', id: 'tasks', rest: [] });
     if ($currentCharacter) {
       fetchPlayerState($currentCharacter.id);
     }
   }
 
   function handleGameCompleteFromGrid(results: EndMiniGameResponse) {
-    activeMiniGame = null;
+    // Replace the game history entry with the tasks page so browser Back
+    // from the tasks page does not re-enter the finished game.
+    replace_route({ type: 'activity', id: 'tasks', rest: [] });
     if ($currentCharacter) {
       fetchPlayerState($currentCharacter.id);
     }
@@ -287,6 +289,8 @@
 
   function handleBaronyCreated(): void {
     showBaronyCreate = false;
+    // Land on the hub grid.
+    navigate({ type: 'hub', rest: [] });
     if ($currentCharacter) {
       fetchPlayerState($currentCharacter.id);
     }
@@ -381,14 +385,14 @@
     onCreated={handleBaronyCreated}
     onBack={handleBackFromBaronyCreate}
   />
-{:else if activeMiniGame}
+  {:else if gameRoute}
   <MiniGameContainer
-    miniGame={activeMiniGame}
-    levelId={selectedLevelId}
+    miniGame={gameRoute.game_id}
+    levelId={gameRoute.level_id}
     onComplete={handleGameCompleteFromGrid}
     onError={handleGameError}
   />
-{:else if !$playerGameState}
+  {:else if !$playerGameState}
   <div class="container d-flex justify-content-center align-items-center min-vh-50 py-5">
     <div class="spinner-border" role="status">
       <span class="visually-hidden">Loading game state...</span>
@@ -399,14 +403,14 @@
     activities={$playerGameState.available_activities}
     onStartLevel={handleStartLevel}
   />
-{:else if $playerGameState.game_phase === 'land_patent' || $playerGameState.game_phase === 'baron_track'}
+  {:else if $playerGameState.game_phase === 'land_patent' || $playerGameState.game_phase === 'baron_track'}
   <HubScreen
     activities={$playerGameState.available_activities}
     onStartLevel={handleStartLevel}
     onJoinBarony={handleGoToJoinBarony}
     onBaronTrackStarted={handleBaronTrackStarted}
   />
-{:else if $playerGameState.game_phase === 'baron_right'}
+  {:else if $playerGameState.game_phase === 'baron_right'}
   <BaronyCreate
     onCreated={handleBaronyCreated}
     onBack={handleBackFromBaronyCreate}

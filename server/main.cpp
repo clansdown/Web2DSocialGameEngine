@@ -39,12 +39,19 @@
 #include "TDGoldCalculator.hpp"
 #include "WeedingGameLogic.hpp"
 #include "OngoingRewards.hpp"
+#include "combat/CombatTypes.hpp"
+#include "combat/CombatCodec.hpp"
+#include "combat/CombatMatch.hpp"
+#include "combat/CombatMatchManager.hpp"
+#include "combat/CombatMapCache.hpp"
+#include "RetinueDB.hpp"
 #include <sqlite_modern_cpp/errors.h>
 
 using json = nlohmann::json;
 
 static const bool login_debug = false;
 static MiniGames* g_mini_games = nullptr;
+static combat::combat_match_manager g_combat_manager;
 
 void log_error(const std::string& context, const std::string& message) {
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
@@ -4433,10 +4440,290 @@ ApiResponse handleGetBuildingConfigs(GameConfigCache& config_cache, const nlohma
 
     response.data = result;
 
+    // Build-palette ordering is config-driven via manor_ui.json (governs order
+    // only; the client still applies its own display/level filters).
+    json build_order = json::array();
+    const json& manor_ui = config_cache.getManorUi();
+    if (manor_ui.is_object() && manor_ui.contains("build_order") && manor_ui["build_order"].is_array()) {
+        build_order = manor_ui["build_order"];
+    }
+    response.data["build_order"] = build_order;
+
     if (new_token) {
         response.data["token"] = *new_token;
     }
 
+    return response;
+}
+
+// ─────────────────────── Combat (realtime) REST ───────────────────────
+// The combat game itself runs over the WebSocket route /ws/combat — see
+// docs/combat_protocol.md. These REST endpoints handle the lobby phase only.
+
+namespace {
+
+// Verifies the request's character belongs to the authenticated user.
+// Returns true on success, filling in user_id/display_name.
+bool verify_character_ownership(const json& body,
+                                const std::optional<std::string>& username,
+                                int64_t& character_id, std::string& display_name) {
+    if (!username) return false;
+    character_id = body.value("character_id", 0);
+    if (character_id == 0) return false;
+
+    auto& db = Database::getInstance().gameDB();
+    int owner_id = 0;
+    int user_id = 0;
+    db << "SELECT user_id FROM characters WHERE id = ?;" << character_id >> [&](int uid) { owner_id = uid; };
+    db << "SELECT id FROM users WHERE username = ?;" << *username >> [&](int id) { user_id = id; };
+    if (owner_id == 0 || owner_id != user_id) return false;
+
+    db << "SELECT display_name FROM characters WHERE id = ?;"
+       << character_id >> [&](std::string dn) { display_name = dn; };
+    return true;
+}
+
+std::vector<combat::retinue_member_snapshot> load_retinue_snapshot(int64_t character_id) {
+    auto& db = Database::getInstance().gameDB();
+    std::vector<combat::retinue_member_snapshot> snapshot;
+    for (const auto& m : retinue_db::load_active_retinue(db, character_id)) {
+        combat::retinue_member_snapshot s;
+        s.member_id = m.id;
+        s.display_name = m.display_name;
+        s.unit_class = m.unit_class;
+        s.level = m.level;
+        s.is_knight = m.is_knight;
+        snapshot.push_back(std::move(s));
+    }
+    return snapshot;
+}
+
+} // namespace
+
+ApiResponse handleCombatCreate(GameConfigCache& config_cache, const json& body,
+                               const std::optional<std::string>& username,
+                               const ClientInfo& client,
+                               const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+
+    int64_t character_id = 0;
+    std::string display_name;
+    if (!verify_character_ownership(body, username, character_id, display_name)) {
+        response.error = "Character does not belong to this user";
+        return response;
+    }
+
+    const std::string mode = body.value("mode", "pve");
+    if (mode != "pve") {
+        response.error = "Only pve matches are available yet — pvp matchmaking is not implemented";
+        return response;
+    }
+
+    const std::string ruleset_id = body.value("ruleset_id", "");
+    if (ruleset_id.empty()) {
+        response.error = "ruleset_id required";
+        return response;
+    }
+    const std::string map_id = body.value("map_id", "");
+    if (map_id.empty()) {
+        response.error = "map_id required";
+        return response;
+    }
+
+    // Look up the ruleset config (hot-reloadable).
+    nlohmann::json ruleset;
+    const auto& rulesets = config_cache.getCombatRulesets();
+    if (rulesets.contains("rulesets") && rulesets["rulesets"].is_array()) {
+        for (const auto& rs : rulesets["rulesets"]) {
+            if (rs.value("id", "") == ruleset_id) {
+                ruleset = rs;
+                break;
+            }
+        }
+    }
+    if (ruleset.is_null()) {
+        response.error = "unknown ruleset: " + ruleset_id;
+        return response;
+    }
+
+    // Look up the map (hot-reloadable; format_version gate is in the cache).
+    const std::string map_filename = map_id + ".json";
+    const nlohmann::json map_metadata = CombatMapCache::get_instance().get_map(map_filename);
+    if (map_metadata.is_null()) {
+        response.error = "unknown map: " + map_id;
+        return response;
+    }
+
+    std::string error;
+    const std::string match_id = g_combat_manager.create_pve_match(
+        ruleset_id, ruleset, map_metadata, character_id, display_name,
+        load_retinue_snapshot(character_id), error);
+    if (match_id.empty()) {
+        response.error = error.empty() ? "could not create match" : error;
+        return response;
+    }
+
+    auto match = g_combat_manager.get_match(match_id);
+    response.data["match_id"] = match_id;
+    response.data["match_code"] = match->code();
+    response.data["mode"] = "pve";
+    response.data["ruleset_id"] = ruleset_id;
+    response.data["map_id"] = map_id;
+
+    if (new_token) {
+        response.data["token"] = *new_token;
+    }
+    return response;
+}
+
+ApiResponse handleCombatJoin(GameConfigCache& config_cache, const json& body,
+                             const std::optional<std::string>& username,
+                             const ClientInfo& client,
+                             const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+
+    int64_t character_id = 0;
+    std::string display_name;
+    if (!verify_character_ownership(body, username, character_id, display_name)) {
+        response.error = "Character does not belong to this user";
+        return response;
+    }
+
+    const std::string match_code = body.value("match_code", "");
+    if (match_code.empty()) {
+        response.error = "match_code required";
+        return response;
+    }
+
+    std::string error;
+    auto match = g_combat_manager.join_match(match_code, character_id, display_name,
+                                             load_retinue_snapshot(character_id), error);
+    if (!match) {
+        response.error = error.empty() ? "could not join match" : error;
+        return response;
+    }
+
+    response.data["match_id"] = match->id();
+    response.data["match_code"] = match->code();
+    response.data["mode"] = match->mode();
+
+    if (new_token) {
+        response.data["token"] = *new_token;
+    }
+    return response;
+}
+
+ApiResponse handleCombatList(GameConfigCache& config_cache, const json& body,
+                             const std::optional<std::string>& username,
+                             const ClientInfo& client,
+                             const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+    response.data["matches"] = g_combat_manager.list_lobby_matches();
+    if (new_token) {
+        response.data["token"] = *new_token;
+    }
+    return response;
+}
+
+ApiResponse handleCombatMatchmaking(GameConfigCache& config_cache, const json& body,
+                                    const std::optional<std::string>& username,
+                                    const ClientInfo& client,
+                                    const std::optional<std::string>& new_token)
+{
+    // PvP matchmaking (challenges/acceptances/handicaps) is a later milestone.
+    ApiResponse response;
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+    response.error = "PvP matchmaking is not yet implemented";
+    return response;
+}
+
+ApiResponse handleCombatGetConfigs(GameConfigCache& config_cache, const json& body,
+                                   const std::optional<std::string>& username,
+                                   const ClientInfo& client,
+                                   const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+
+    nlohmann::json rulesets = nlohmann::json::array();
+    const auto& ruleset_config = config_cache.getCombatRulesets();
+    if (ruleset_config.contains("rulesets") && ruleset_config["rulesets"].is_array()) {
+        for (const auto& rs : ruleset_config["rulesets"]) {
+            nlohmann::json entry;
+            entry["id"] = rs.value("id", "");
+            entry["name"] = rs.value("name", "");
+            entry["mode"] = rs.value("mode", "");
+            rulesets.push_back(std::move(entry));
+        }
+    }
+
+    nlohmann::json maps = nlohmann::json::array();
+    for (const std::string& filename : CombatMapCache::get_instance().list_maps()) {
+        const nlohmann::json map = CombatMapCache::get_instance().get_map(filename);
+        nlohmann::json entry;
+        entry["id"] = map.value("name", filename.substr(0, filename.size() - 5));
+        entry["file"] = filename;
+        maps.push_back(std::move(entry));
+    }
+
+    response.data["rulesets"] = rulesets;
+    response.data["maps"] = maps;
+
+    if (new_token) {
+        response.data["token"] = *new_token;
+    }
+    return response;
+}
+
+ApiResponse handleGetRetinue(GameConfigCache& config_cache, const json& body,
+                             const std::optional<std::string>& username,
+                             const ClientInfo& client,
+                             const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+
+    int64_t character_id = 0;
+    std::string display_name;
+    if (!verify_character_ownership(body, username, character_id, display_name)) {
+        response.error = "Character does not belong to this user";
+        return response;
+    }
+
+    auto& db = Database::getInstance().gameDB();
+    nlohmann::json members = nlohmann::json::array();
+    for (const auto& m : retinue_db::load_retinue(db, character_id)) {
+        members.push_back(m.to_json());
+    }
+    response.data["members"] = members;
+
+    if (new_token) {
+        response.data["token"] = *new_token;
+    }
     return response;
 }
 
@@ -4543,6 +4830,7 @@ void print_usage(const char* program_name) {
     std::cout << "  --db-dir PATH              Database directory (default: current)" << std::endl;
     std::cout << "  --text-dir PATH            Text directory (default: ./text)" << std::endl;
     std::cout << "  --port PORT                Port to bind (default: 2290)" << std::endl;
+    std::cout << "  --combat-sim-threads N     Realtime combat simulation worker threads (default: CPU count, capped 64)" << std::endl;
     std::cout << "  --init-db                  Initialize all database tables and indexes, then exit" << std::endl;
     std::cout << "  --create-tables            Create all database tables, then exit" << std::endl;
     std::cout << "  --ensure-indexes           Ensure all indexes exist, then exit" << std::endl;
@@ -4560,6 +4848,7 @@ int main(int argc, char* argv[]) {
     bool init_db_mode = false;
     bool create_tables_mode = false;
     bool ensure_indexes_mode = false;
+    int combat_sim_threads = std::clamp(static_cast<int>(std::thread::hardware_concurrency()), 1, 64);
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -4576,6 +4865,10 @@ int main(int argc, char* argv[]) {
         } else if (strcmp(argv[i], "--port") == 0) {
             if (i + 1 < argc) {
                 port = std::atoi(argv[++i]);
+            }
+        } else if (strcmp(argv[i], "--combat-sim-threads") == 0) {
+            if (i + 1 < argc) {
+                combat_sim_threads = std::max(1, std::atoi(argv[++i]));
             }
         } else if (strcmp(argv[i], "--init-db") == 0) {
             init_db_mode = true;
@@ -4618,6 +4911,7 @@ int main(int argc, char* argv[]) {
     }
 
     TowerDefenseMapCache::get_instance().initialize("config/tower_defense/maps");
+    CombatMapCache::get_instance().initialize("config/combat/maps");
 
     if (!ImageCache::getInstance().initialize("images")) {
         std::cerr << "Warning: Failed to initialize image cache" << std::endl;
@@ -4704,9 +4998,253 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Register all manor action handlers (build, demolish, move, upgrade, walls,
+    // train, research) into the registry used by /api/Build and friends.
+    GameLogic::registerAllActionHandlers(GameLogic::ActionRegistry::getInstance());
+
     uWS::App app;
 
     check_test_limits(app);
+
+    // ── Realtime combat: in-RAM match manager + WebSocket route ────────────
+    // Broadcasts go through uWS topic publish (thread-safe from the match
+    // worker threads); SQLite writes are deferred back to this loop thread so
+    // the Database singleton stays single-owner. See docs/combat_protocol.md.
+    uWS::Loop* main_loop = uWS::Loop::get();
+    g_combat_manager.initialize(
+        std::make_shared<combat::json_codec>(),
+        combat_sim_threads,
+        [&app](const std::string& topic, const std::string& message) {
+            app.publish(topic, message, uWS::OpCode::TEXT);
+        },
+        [main_loop](std::function<void()> fn) {
+            main_loop->defer(std::move(fn));
+        }
+    );
+
+    struct ws_combat_user_data {
+        int64_t character_id = -1;
+        std::string match_id;
+        std::string username;
+        bool authed = false;
+    };
+
+    auto send_ws_error = [](auto* ws, const std::string& match_id, const std::string& message) {
+        combat::combat_message msg;
+        msg.type = "error";
+        msg.match_id = match_id;
+        msg.json_payload = {{"error", message}};
+        ws->send(g_combat_manager.codec()->serialize_message(msg), uWS::OpCode::TEXT);
+    };
+
+    // First message must be auth; on success the socket is subscribed to the
+    // match topics and receives welcome + a full state snapshot.
+    auto handle_ws_auth = [&send_ws_error](auto* ws, ws_combat_user_data* ud, std::string_view message) {
+        json j;
+        try {
+            j = json::parse(message, nullptr, true, true);
+        } catch (...) {
+            send_ws_error(ws, "", "malformed auth message");
+            ws->close();
+            return;
+        }
+        if (j.value("type", "") != "auth") {
+            send_ws_error(ws, "", "first message must be auth");
+            ws->close();
+            return;
+        }
+        const json payload = j.value("payload", json::object());
+        const std::string username = payload.value("username", "");
+        const std::string token = payload.value("token", "");
+        const int64_t character_id = payload.value("character_id", static_cast<int64_t>(0));
+        const std::string match_id = payload.value("match_id", "");
+        if (username.empty() || token.empty() || character_id == 0 || match_id.empty()) {
+            send_ws_error(ws, match_id, "auth requires username, token, character_id, match_id");
+            ws->close();
+            return;
+        }
+        if (!AuthManager::getInstance().authenticateWithToken(username, token)) {
+            send_ws_error(ws, match_id, "authentication failed");
+            ws->close();
+            return;
+        }
+        auto& db = Database::getInstance().gameDB();
+        int owner_id = 0;
+        int user_id = 0;
+        db << "SELECT user_id FROM characters WHERE id = ?;" << character_id >> [&](int uid) { owner_id = uid; };
+        db << "SELECT id FROM users WHERE username = ?;" << username >> [&](int id) { user_id = id; };
+        if (owner_id == 0 || owner_id != user_id) {
+            send_ws_error(ws, match_id, "character does not belong to this user");
+            ws->close();
+            return;
+        }
+        auto match = g_combat_manager.get_match(match_id);
+        if (!match || !match->contains_player(character_id)) {
+            send_ws_error(ws, match_id, "not a member of this match");
+            ws->close();
+            return;
+        }
+        if (!g_combat_manager.connect_player(match_id, character_id)) {
+            send_ws_error(ws, match_id, "player already connected");
+            ws->close();
+            return;
+        }
+        ud->authed = true;
+        ud->username = username;
+        ud->character_id = character_id;
+        ud->match_id = match_id;
+        const int team = match->player_team(character_id);
+        ws->subscribe("match:" + match_id);
+        ws->subscribe("match:" + match_id + ":team:" + std::to_string(team));
+        ws->subscribe("match:" + match_id + ":player:" + std::to_string(character_id));
+
+        combat::combat_message welcome;
+        welcome.type = "welcome";
+        welcome.match_id = match_id;
+        welcome.json_payload["player_id"] = character_id;
+        welcome.json_payload["team"] = team;
+        welcome.json_payload["mode"] = match->mode();
+        welcome.json_payload["match_code"] = match->code();
+        welcome.json_payload["ruleset_id"] = match->ruleset_id();
+        welcome.json_payload["ruleset"] = match->ruleset();
+        welcome.json_payload["map"] = match->map_metadata();
+        json players = json::array();
+        for (const auto& p : match->players_snapshot()) {
+            players.push_back({{"player_id", p.player_id}, {"team", p.team},
+                               {"display_name", p.display_name}, {"ready", p.ready},
+                               {"connected", p.connected}});
+        }
+        welcome.json_payload["players"] = players;
+        json retinue = json::array();
+        for (const auto& m : load_retinue_snapshot(character_id)) {
+            retinue.push_back({{"member_id", m.member_id}, {"display_name", m.display_name},
+                               {"unit_class", m.unit_class}, {"level", m.level},
+                               {"is_knight", m.is_knight}});
+        }
+        welcome.json_payload["retinue"] = retinue;
+        ws->send(g_combat_manager.codec()->serialize_message(welcome), uWS::OpCode::TEXT);
+        // Full state immediately so the client starts from a consistent snapshot.
+        ws->send(g_combat_manager.codec()->serialize_message(match->build_full_state()),
+                 uWS::OpCode::TEXT);
+    };
+
+    // Post-auth messages: chat/voice are relayed on the loop thread; game
+    // commands go through the match's command queue.
+    auto handle_ws_message = [&app, &send_ws_error](auto* ws, ws_combat_user_data* ud,
+                                                    std::string_view message) {
+        combat::combat_message msg;
+        try {
+            msg = g_combat_manager.codec()->deserialize_message(message);
+        } catch (...) {
+            send_ws_error(ws, ud->match_id, "malformed message");
+            return;
+        }
+        auto match = g_combat_manager.get_match(ud->match_id);
+        if (!match) {
+            send_ws_error(ws, ud->match_id, "match not found");
+            ws->close();
+            return;
+        }
+
+        if (msg.type == "chat") {
+            std::string text = msg.json_payload.value("text", "");
+            if (text.empty() || text.size() > 500) {
+                send_ws_error(ws, ud->match_id, "invalid chat message");
+                return;
+            }
+            combat::combat_message out;
+            out.type = "chat";
+            out.match_id = ud->match_id;
+            out.json_payload["from"] = ud->character_id;
+            out.json_payload["from_name"] = match->player_display_name(ud->character_id);
+            out.json_payload["team"] = match->player_team(ud->character_id);
+            out.json_payload["text"] = text;
+            out.json_payload["timestamp"] = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+            app.publish("match:" + ud->match_id + ":team:" + std::to_string(out.json_payload["team"].get<int>()),
+                        g_combat_manager.codec()->serialize_message(out), uWS::OpCode::TEXT);
+            return;
+        }
+        if (msg.type == "voice") {
+            const int64_t to_player = msg.json_payload.value("to_player", static_cast<int64_t>(0));
+            const std::string signal_type = msg.json_payload.value("signal_type", "");
+            if (to_player <= 0 || to_player == ud->character_id || signal_type.empty()) {
+                send_ws_error(ws, ud->match_id, "invalid voice message");
+                return;
+            }
+            if (match->player_team(to_player) != match->player_team(ud->character_id)) {
+                send_ws_error(ws, ud->match_id, "voice is only allowed within a team");
+                return;
+            }
+            combat::combat_message out;
+            out.type = "voice";
+            out.match_id = ud->match_id;
+            out.json_payload["from"] = ud->character_id;
+            out.json_payload["from_name"] = match->player_display_name(ud->character_id);
+            out.json_payload["signal_type"] = signal_type;
+            out.json_payload["data"] = msg.json_payload.value("data", json::object());
+            app.publish("match:" + ud->match_id + ":player:" + std::to_string(to_player),
+                        g_combat_manager.codec()->serialize_message(out), uWS::OpCode::TEXT);
+            return;
+        }
+        if (msg.type == "command") {
+            if (match->phase() != combat::match_phase::countdown &&
+                match->phase() != combat::match_phase::battle) {
+                send_ws_error(ws, ud->match_id, "match is not in battle");
+                return;
+            }
+            const json& payload = msg.json_payload;
+            const std::string cmd = payload.value("cmd", "");
+            if (cmd != "move" && cmd != "attack" && cmd != "ability") {
+                send_ws_error(ws, ud->match_id, "unknown command: " + cmd);
+                return;
+            }
+            combat::combat_command c;
+            c.player_id = ud->character_id;
+            c.type = cmd;
+            c.payload = payload;
+            match->enqueue_command(c);
+            return;
+        }
+        if (msg.type == "ready") {
+            g_combat_manager.mark_ready(ud->match_id, ud->character_id, true);
+            return;
+        }
+        if (msg.type == "request_state") {
+            ws->send(g_combat_manager.codec()->serialize_message(match->build_full_state()),
+                     uWS::OpCode::TEXT);
+            return;
+        }
+        if (msg.type == "leave") {
+            g_combat_manager.handle_disconnect(ud->match_id, ud->character_id);
+            ud->authed = false;
+            ws->close();
+            return;
+        }
+        send_ws_error(ws, ud->match_id, "unknown message type: " + msg.type);
+    };
+
+    app.ws<ws_combat_user_data>("/ws/combat", {
+        .maxPayloadLength = 64 * 1024,
+        .idleTimeout = 600,
+        .sendPingsAutomatically = true,
+        .open = [](auto* /*ws*/) {},
+        .message = [&handle_ws_auth, &handle_ws_message](auto* ws, std::string_view message,
+                                                         uWS::OpCode /*opCode*/) {
+            auto* ud = ws->getUserData();
+            if (!ud->authed) {
+                handle_ws_auth(ws, ud, message);
+            } else {
+                handle_ws_message(ws, ud, message);
+            }
+        },
+        .close = [](auto* ws, int /*code*/, std::string_view /*message*/) {
+            auto* ud = ws->getUserData();
+            if (ud->authed) {
+                g_combat_manager.handle_disconnect(ud->match_id, ud->character_id);
+                ud->authed = false;
+            }
+        }
+    });
 
     app.get("/images/ui/*", [](auto *res, auto *req) {
         std::string url(req->getUrl());
@@ -4774,6 +5312,34 @@ int main(int argc, char* argv[]) {
         }
 
         std::string filepath = "images/weeding/" + relative;
+        std::ifstream file(filepath, std::ios::binary);
+        if (!file) {
+            res->writeStatus("404 Not Found")->end("Not found");
+            return;
+        }
+
+        std::string content((std::istreambuf_iterator<char>(file)),
+                            std::istreambuf_iterator<char>());
+
+        if (relative.size() >= 4) {
+            std::string ext = relative.substr(relative.size() - 4);
+            if (ext == ".png") res->writeHeader("Content-Type", "image/png");
+            else if (ext == ".jpg") res->writeHeader("Content-Type", "image/jpeg");
+        }
+
+        res->end(content);
+    });
+
+    app.get("/images/manor/*", [](auto *res, auto *req) {
+        std::string url(req->getUrl());
+        std::string relative = url.substr(std::string("/images/manor/").length());
+
+        if (relative.empty() || relative.find("..") != std::string::npos) {
+            res->writeStatus("404 Not Found")->end("Not found");
+            return;
+        }
+
+        std::string filepath = "images/manor/" + relative;
         std::ifstream file(filepath, std::ios::binary);
         if (!file) {
             res->writeStatus("404 Not Found")->end("Not found");

@@ -35,6 +35,7 @@ namespace {
     ensureIndex(db, "idx_barony_members_character", "barony_members", "character_id");
     ensureIndex(db, "idx_game_sessions_character", "game_sessions", "character_id");
     ensureIndex(db, "idx_weeding_sessions_character", "weeding_sessions", "character_id");
+    ensureIndex(db, "idx_retinue_members_character", "retinue_members", "character_id");
     }
 
     void ensureMessagesDBIndexes_private(sqlite::database& db) {
@@ -249,6 +250,21 @@ void migrate_baron_character_id(sqlite::database& db) {
             "combatant_config_id TEXT NOT NULL,"
             "level INTEGER NOT NULL DEFAULT 1,"
             "FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id)"
+        );
+
+        createTable(db, "retinue_members",
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "character_id INTEGER NOT NULL,"
+            "display_name TEXT NOT NULL,"
+            "unit_class TEXT NOT NULL,"
+            "is_knight INTEGER NOT NULL DEFAULT 0,"
+            "level INTEGER NOT NULL DEFAULT 1,"
+            "weapons TEXT NOT NULL DEFAULT '{}',"
+            "armor TEXT NOT NULL DEFAULT '{}',"
+            "abilities TEXT NOT NULL DEFAULT '[]',"
+            "status TEXT NOT NULL DEFAULT 'active',"
+            "created_at INTEGER NOT NULL,"
+            "FOREIGN KEY(character_id) REFERENCES characters(id)"
         );
 
         createTable(db, "fiefdom_walls",

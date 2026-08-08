@@ -1421,8 +1421,13 @@ std::optional<nlohmann::json> getPrerequisitesForLevel(
         return nlohmann::json::object();
     }
     
-    if (target_level < arr_size) {
-        return prerequisites[target_level];
+    if (target_level <= 0) {
+        return nlohmann::json::object();
+    }
+    // Indexed by level - 1: prerequisites[0] = Level 1 (build), etc.
+    int index = target_level - 1;
+    if (index < arr_size) {
+        return prerequisites[index];
     }
     
     if (arr_size == 1) {
@@ -1441,7 +1446,7 @@ std::optional<nlohmann::json> getPrerequisitesForLevel(
         int last_val = last_obj.value(key, 0);
         int prev_val = prev_obj.value(key, 0);
         int delta = last_val - prev_val;
-        int extrapolated = last_val + delta * (target_level - (arr_size - 1));
+        int extrapolated = last_val + delta * (index - (arr_size - 1));
         result[key] = extrapolated;
     }
     
@@ -1508,7 +1513,10 @@ nlohmann::json getDependenciesForLevel(
     int arr_size = static_cast<int>(deps.size());
 
     if (arr_size == 0) return nlohmann::json::array();
-    if (target_level < arr_size) return deps[target_level];
+    if (target_level <= 0) return nlohmann::json::array();
+    // Indexed by level - 1: deps[0] = Level 1 (build), deps[1] = Level 2, etc.
+    int index = target_level - 1;
+    if (index < arr_size) return deps[index];
     // Extrapolate: use last entry
     return deps[arr_size - 1];
 }
@@ -1538,7 +1546,7 @@ std::map<std::string, std::pair<int, int>> aggregateFiefdomDependencies(
     // Aggregate from existing buildings
     for (const auto& building : buildings) {
         if (building.level <= 0) continue;
-        nlohmann::json deps = getDependenciesForLevel(cache, building.name, building.level - 1);
+        nlohmann::json deps = getDependenciesForLevel(cache, building.name, building.level);
         if (deps.empty()) continue;
 
         for (const auto& dep : deps) {

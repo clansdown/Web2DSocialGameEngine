@@ -1,7 +1,7 @@
 <script lang="ts">
   import { playerGameState, currentCharacter } from '../lib/stores';
   import { loadTexts } from '../lib/text';
-  import { getConfig, setConfig } from '../lib/storage';
+  import { route_store, navigate, go_back } from '../lib/router';
   import MiniGameSelect from '../minigames/MiniGameSelect.svelte';
   import ManorMenu from './ManorMenu.svelte';
   import Chat from './Chat.svelte';
@@ -18,11 +18,21 @@
 
   let { activities = [], onStartLevel, onJoinBarony, onBaronTrackStarted }: Props = $props();
 
-  let selectedActivity = $state<string | null>(null);
   let displayNames = $state<Record<string, string>>({});
-  let resuming = $state(true);
 
   let gridActivities = $derived(activities.filter(id => id !== 'land_patent'));
+
+  // The open activity comes from the hash route (#/activity/<id>). A route
+  // whose id is not available in the current phase falls back to the hub grid.
+  let activity = $derived(
+    $route_store.type === 'activity' && gridActivities.includes($route_store.id)
+      ? $route_store.id
+      : null
+  );
+
+  // Nested route segments after the activity id (e.g. ['thread','42'] for
+  // #/activity/chat/thread/42) — passed to panels for sub-navigation.
+  let activityRest = $derived($route_store.type === 'activity' ? $route_store.rest : []);
 
   /**
    * Loads display names for all available activities from the text system.
@@ -46,50 +56,23 @@
     }
   }
 
-  /**
-   * Restores the last activity from OPFS on mount.
-   */
-  async function restoreLastActivity() {
-    try {
-      const last = await getConfig<string>('last_activity');
-      if (last && gridActivities.includes(last)) {
-        selectedActivity = last;
-      }
-    } catch {
-      // Ignore
-    } finally {
-      resuming = false;
-    }
-  }
-
   function selectActivity(id: string) {
-    selectedActivity = id;
-    setConfig('last_activity', id);
+    navigate({ type: 'activity', id, rest: [] });
   }
 
   function goBackToHub() {
-    selectedActivity = null;
-    setConfig('last_activity', null);
+    go_back();
   }
 
   $effect(() => {
     if (gridActivities.length > 0) {
       loadActivityNames();
-      restoreLastActivity();
-    } else {
-      resuming = false;
     }
   });
 </script>
 
-<div class="container py-4">
-  {#if resuming}
-    <div class="d-flex justify-content-center py-5">
-      <div class="spinner-border" role="status">
-        <span class="visually-hidden">Loading...</span>
-      </div>
-    </div>
-  {:else if selectedActivity === null}
+{#if activity === null}
+  <div class="container py-4">
     <!-- Activity grid -->
     <div class="text-center mb-5">
       <h1>Ravenest</h1>
@@ -128,25 +111,34 @@
         </div>
       {/each}
     </div>
-  {:else if selectedActivity === 'tasks'}
+  </div>
+{:else if activity === 'tasks'}
+  <div class="container py-4">
     <MiniGameSelect
       {onStartLevel}
       onBack={goBackToHub}
     />
-  {:else if selectedActivity === 'manor'}
-    <ManorMenu onBack={goBackToHub} />
-  {:else if selectedActivity === 'chat'}
-    <Chat onBack={goBackToHub} />
-  {:else if selectedActivity === 'tournament'}
+  </div>
+{:else if activity === 'manor'}
+  <!-- Full-bleed (no container) so the manor canvas fills the viewport -->
+  <ManorMenu onBack={goBackToHub} />
+{:else if activity === 'chat'}
+  <div class="container py-4">
+    <Chat onBack={goBackToHub} rest={activityRest} />
+  </div>
+{:else if activity === 'tournament'}
+  <div class="container py-4">
     <RoyalTournament onBack={goBackToHub} />
-  {:else if selectedActivity === 'adventure'}
+  </div>
+{:else if activity === 'adventure'}
+  <div class="container py-4">
     <Adventure onBack={goBackToHub} />
-  {:else}
-    <div class="container py-5">
-      <button class="btn btn-outline-secondary mb-4" onclick={goBackToHub}>
-        &larr; Back
-      </button>
-      <div class="alert alert-warning">Unknown activity: {selectedActivity}</div>
-    </div>
-  {/if}
-</div>
+  </div>
+{:else}
+  <div class="container py-4">
+    <button class="btn btn-outline-secondary mb-4" onclick={goBackToHub}>
+      &larr; Back
+    </button>
+    <div class="alert alert-warning">Unknown activity: {activity}</div>
+  </div>
+{/if}

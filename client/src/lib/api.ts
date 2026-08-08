@@ -904,7 +904,7 @@ export async function getFiefdomRequest(
  * Usage: Called when placing a building on the manor
  */
 export async function buildRequest(
-  params: { fiefdom_id: number; building_type: string; x: number; y: number },
+  params: { fiefdom_id: number; building_type: string; x: number; y: number; character_id: number },
   auth: { username: string; token: string }
 ): Promise<BuildResponse> {
   const res = await apiPost<BuildResponse>('Build', {
@@ -912,7 +912,8 @@ export async function buildRequest(
     fiefdom_id: params.fiefdom_id,
     building_type: params.building_type,
     x: params.x,
-    y: params.y
+    y: params.y,
+    character_id: params.character_id
   }, { username: auth.username, token: auth.token });
 
   if (res.error) {
@@ -1118,17 +1119,188 @@ export async function acknowledgeLandPatentRequest(
 
 /**
  * Fetches building type configurations from the server.
- * Public endpoint — no authentication required.
+ * Requires authentication.
  *
- * @returns Promise<Record<string, BuildingTypeConfig>> - Building configs keyed by type ID
+ * @param auth - Authentication object with username and token
+ * @returns Promise resolving to the building configs keyed by type ID plus the
+ *          config-driven build-palette ordering (see manor_ui.json)
  *
  * Usage: Called when opening the manor view to get building metadata
  */
-export async function getBuildingConfigsRequest(): Promise<Record<string, BuildingTypeConfig>> {
-  const res = await apiPost<Record<string, BuildingTypeConfig>>('getBuildingConfigs', {});
+export async function getBuildingConfigsRequest(
+  auth: { username: string; token: string }
+): Promise<{ configs: Record<string, BuildingTypeConfig>; build_order: string[] }> {
+  const res = await apiPost<Record<string, BuildingTypeConfig | string[]>>('getBuildingConfigs', {}, {
+    username: auth.username,
+    token: auth.token
+  });
 
-  if (res.error) {
-    throw new Error(res.error);
+  if (res.error || !res.data) {
+    throw new Error(res.error || 'Failed to load building configs');
   }
-  return res.data as Record<string, BuildingTypeConfig>;
+
+  const data = res.data;
+  const buildOrder = Array.isArray(data.build_order) ? (data.build_order as string[]) : [];
+  const configs: Record<string, BuildingTypeConfig> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (key === 'build_order' || key === 'token') continue;
+    configs[key] = value as BuildingTypeConfig;
+  }
+  return { configs, build_order: buildOrder };
+}
+
+// ── Realtime combat (lobby REST surface; battle runs over /ws/combat) ──
+
+export interface combat_ruleset_dto {
+  id: string;
+  name: string;
+  mode: string;
+}
+
+export interface combat_map_dto {
+  id: string;
+  file: string;
+}
+
+export interface combat_match_summary_dto {
+  match_id: string;
+  match_code: string;
+  mode: string;
+  ruleset_id: string;
+  map_id: string;
+  player_count: number;
+  max_players: number;
+  host_name?: string;
+}
+
+export interface combat_configs_dto {
+  rulesets: combat_ruleset_dto[];
+  maps: combat_map_dto[];
+}
+
+export interface combat_match_result_dto {
+  match_id: string;
+  match_code: string;
+  mode: string;
+}
+
+export interface retinue_member_dto {
+  id: number;
+  character_id: number;
+  display_name: string;
+  unit_class: string;
+  is_knight: boolean;
+  level: number;
+  weapons: unknown;
+  armor: unknown;
+  abilities: unknown[];
+  status: string;
+  created_at: number;
+}
+
+/**
+ * Creates a new PvE combat match (host is the creating character).
+ *
+ * @param characterId - Host character id
+ * @param options - Mode ('pve'), ruleset id, and map id
+ * @returns Promise<combat_match_result_dto> - Match id/code for the lobby
+ *
+ * Usage: Called from MatchLobby's create flow
+ */
+export async function combatCreateRequest(
+  characterId: number,
+  options: { mode: 'pve'; ruleset_id: string; map_id: string }
+): Promise<combat_match_result_dto> {
+  return await authenticatedPost<combat_match_result_dto>('combatCreate', {
+    character_id: characterId,
+    mode: options.mode,
+    ruleset_id: options.ruleset_id,
+    map_id: options.map_id
+  });
+}
+
+/**
+ * Joins a PvE lobby match by its shareable code.
+ *
+ * @param characterId - Joining character id
+ * @param matchCode - 6-character match code
+ * @returns Promise<combat_match_result_dto> - Match id/code
+ *
+ * Usage: Called from MatchLobby's join flow
+ */
+export async function combatJoinRequest(
+  characterId: number,
+  matchCode: string
+): Promise<combat_match_result_dto> {
+  return await authenticatedPost<combat_match_result_dto>('combatJoin', {
+    character_id: characterId,
+    match_code: matchCode
+  });
+}
+
+/**
+ * Lists open (lobby-phase) PvE matches.
+ *
+ * @param none
+ * @returns Promise<{ matches: combat_match_summary_dto[] }>
+ *
+ * Usage: Future barony-invite UI; not used by the current scaffold screens
+ */
+export async function combatListRequest(): Promise<{ matches: combat_match_summary_dto[] }> {
+  return await authenticatedPost<{ matches: combat_match_summary_dto[] }>('combatList', {});
+}
+
+/**
+ * PvP matchmaking — STUB endpoint; always throws 'not yet implemented'.
+ *
+ * @param none
+ * @returns Promise<never> - Throws; challenges/acceptances arrive later
+ *
+ * Usage: Placeholder for the future matchmaking queue UI
+ */
+export async function combatMatchmakingRequest(): Promise<never> {
+  return await authenticatedPost<never>('combatMatchmaking', {});
+}
+
+/**
+ * Fetches the available combat rulesets and maps.
+ *
+ * @param none
+ * @returns Promise<combat_configs_dto> - Ruleset and map lists
+ *
+ * Usage: Called by MatchLobby when it opens
+ */
+export async function combatGetConfigsRequest(): Promise<combat_configs_dto> {
+  return await authenticatedPost<combat_configs_dto>('combatGetConfigs', {});
+}
+
+/**
+ * Fetches the character's full retinue (knight + units).
+ *
+ * @param characterId - Character whose retinue to fetch
+ * @returns Promise<{ members: retinue_member_dto[] }>
+ *
+ * Usage: Retinue management UI (later); combat snapshots come via welcome
+ */
+export async function getRetinueRequest(
+  characterId: number
+): Promise<{ members: retinue_member_dto[] }> {
+  return await authenticatedPost<{ members: retinue_member_dto[] }>('getRetinue', {
+    character_id: characterId
+  });
+}
+
+/**
+ * Converts a caught error into a user-displayable message.
+ *
+ * @param error - The caught error
+ * @returns string - Displayable message
+ *
+ * Usage: Combat screens show this in alerts instead of raw errors
+ */
+export function handle_combat_error(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
 }

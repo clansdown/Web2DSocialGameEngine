@@ -210,8 +210,10 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                                         
                                         if (config.contains(cost_key) && config[cost_key].is_array()) {
                                             auto costs = config[cost_key];
-                                            int level_index = old_level > 0 ? old_level - 1 : 0;
-                                            if (level_index >= 0 && level_index < costs.size()) {
+                                            // Refund the cost actually paid for the failed step:
+                                            // create paid costs[0], upgrade from L charged costs[L].
+                                            int level_index = old_level;
+                                            if (level_index >= 0 && level_index < static_cast<int>(costs.size())) {
                                                 double refund_amount = costs[level_index].get<double>();
                                                 if (refund_amount > 0) refund[resource_key] = refund_amount;
                                             }

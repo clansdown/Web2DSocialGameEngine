@@ -1,11 +1,13 @@
 # POST /api/getBuildingConfigs
 
-Get building type configurations for the manor system. No authentication required. No parameters needed.
+Get building type configurations for the manor system. **Requires authentication.** No parameters other than `auth`.
 
 ## Request
 
 ```json
-{}
+{
+  "auth": { "username": "player_one", "token": "<session token>" }
+}
 ```
 
 No required or optional parameters.
@@ -40,7 +42,8 @@ No required or optional parameters.
       "construction_times": [30, 35, 50, 70, 90],
       "costs": { "gold": 40, "wood": 20 },
       "min_manor_level": 1
-    }
+    },
+    "build_order": ["woodcutter", "peasant", "wood_hewer", "collier", "blacksmith", "miller", "bloomery", "chapel"]
   }
 }
 ```
@@ -50,8 +53,10 @@ No required or optional parameters.
 - `construction_image` is always present: if the config defines it, that value is used; if not, it's copied from `image`
 - `costs` is an object with level-1 costs for `gold`, `wood`, `stone` keys (whichever exist)
 - `min_manor_level` is extracted from `prerequisites[0].manor_level`, defaults to 1
+- `build_order` is an array of building type IDs from `game/config/manor_ui.json`. It governs the **order** of the build-palette buttons in the UI only — the client still applies its own display filters (manor level, `display_name`/`image` presence, affordability, prerequisites, `max_per_fiefdom`). Type IDs not listed sort after every listed one (stable). Omitted/invalid `build_order` returns an empty array and the client falls back to alphabetical order.
 - The full building type config from `fiefdom_building_types.json` is included (per-day production fields, daily_cost, modifiers, etc.)
 
 ### Error
 
-None — this is a config query with no parameters.
+- Missing/invalid `auth` → `needs_auth` response (same as other authenticated endpoints).
+- No config-data errors — this is a config query with no parameters.

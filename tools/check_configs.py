@@ -1691,6 +1691,77 @@ class ConfigValidator:
 
         return valid
 
+    def validate_manor_ui(self, file: Path, content: str, buildings_file: Path) -> bool:
+        """Validate manor_ui.json (build-palette ordering).
+
+        `build_order` governs only the order the build buttons are shown in;
+        it does not override the client's display filters (manor level,
+        display_name/image presence, affordability, etc.).
+        """
+        data: JsonDataType = self._validate_json(content, file)
+        if data is None:
+            return False
+
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected an object", Severity.ERROR)
+            return False
+
+        if "build_order" not in data:
+            self._add_issue(file, 1, None, "Missing required field 'build_order'", Severity.ERROR)
+            return False
+
+        order = data["build_order"]
+        if not isinstance(order, list):
+            self._add_issue(file, 1, None, "'build_order' must be an array of building type IDs", Severity.ERROR)
+            return False
+
+        valid: bool = True
+        seen: set[str] = set()
+        for i, entry in enumerate(order):
+            if not isinstance(entry, str) or not entry:
+                self._add_issue(file, 1, None, f"'build_order'[{i}] must be a non-empty string", Severity.ERROR)
+                valid = False
+                continue
+            if entry in seen:
+                self._add_issue(file, 1, None, f"Duplicate building type in build_order: '{entry}'", Severity.ERROR)
+                valid = False
+                continue
+            seen.add(entry)
+            if entry not in self.validated_building_ids:
+                self._add_issue(
+                    file, 1, None,
+                    f"'build_order' references unknown building type '{entry}'",
+                    Severity.ERROR,
+                )
+                valid = False
+
+        # Warn about buildable buildings not listed — they still appear, just
+        # after every listed type (stable order).
+        buildable: set[str] = set()
+        if buildings_file.exists():
+            try:
+                building_data = json.loads(buildings_file.read_text(encoding="utf-8"))
+                if isinstance(building_data, list):
+                    for entry in building_data:
+                        if not isinstance(entry, dict):
+                            continue
+                        for building_id, cfg in entry.items():
+                            if (isinstance(cfg, dict) and building_id != "home_base"
+                                    and cfg.get("display_name") and cfg.get("image")):
+                                buildable.add(building_id)
+            except (json.JSONDecodeError, OSError):
+                buildable = set(self.validated_building_ids - {"home_base", "house"})
+
+        missing = sorted(buildable - seen)
+        if missing:
+            self._add_issue(
+                file, 1, None,
+                f"Buildable buildings missing from build_order (shown last): {', '.join(missing)}",
+                Severity.WARN,
+            )
+
+        return valid
+
     def _hero_id_is_valid(self, hero_id: str, line: int, file: Path) -> bool:
         """Check if hero ID follows naming conventions."""
         if not hero_id:
@@ -3487,6 +3558,224 @@ class ConfigValidator:
 
         self.validated_files.append(file)
 
+    def validate_combat_rulesets(self, file: Path) -> None:
+        """Validate game/config/combat/rulesets.json.
+
+        Each ruleset drives a combat mission: mode (pve/pvp), team sizes,
+        death handling (permanent / respawn_after_seconds / revive_resource),
+        unit caps, duration, and win conditions. Unknown fields are warnings
+        only — the format is intentionally flexible (see docs/combat_rulesets.md).
+        """
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+
+        data: object = self._validate_json(content, file)
+        if data is None:
+            return
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with 'format_version' and 'rulesets'", Severity.ERROR)
+            return
+
+        if not isinstance(data.get("format_version"), str):
+            self._add_issue(file, 1, None, "'format_version' must be a string", Severity.ERROR)
+        rulesets: object = data.get("rulesets")
+        if not isinstance(rulesets, list) or not rulesets:
+            self._add_issue(file, 1, None, "'rulesets' must be a non-empty array", Severity.ERROR)
+            return
+
+        seen_ids: set[str] = set()
+        for idx, ruleset in enumerate(rulesets, start=1):
+            if not isinstance(ruleset, dict):
+                self._add_issue(file, 1, None, f"rulesets[{idx}] must be an object", Severity.ERROR)
+                continue
+
+            ruleset_id: object = ruleset.get("id")
+            if not isinstance(ruleset_id, str) or not ruleset_id:
+                self._add_issue(file, 1, None, f"rulesets[{idx}].id must be a non-empty string", Severity.ERROR)
+            elif ruleset_id in seen_ids:
+                self._add_issue(file, 1, None, f"Duplicate ruleset id: {ruleset_id}", Severity.ERROR)
+            else:
+                seen_ids.add(ruleset_id)
+                if any(char.isupper() for char in ruleset_id):
+                    self._add_issue(file, 1, None, f"Ruleset id '{ruleset_id}' should be lowercase snake_case", Severity.WARN)
+
+            if not isinstance(ruleset.get("name"), str):
+                self._add_issue(file, 1, None, f"rulesets[{idx}].name must be a string", Severity.ERROR)
+
+            mode: object = ruleset.get("mode")
+            if mode not in ("pve", "pvp"):
+                self._add_issue(file, 1, None, f"rulesets[{idx}].mode must be 'pve' or 'pvp', got {mode!r}", Severity.ERROR)
+
+            players: object = ruleset.get("players")
+            if not isinstance(players, dict):
+                self._add_issue(file, 1, None, f"rulesets[{idx}].players must be an object with min/max", Severity.ERROR)
+            else:
+                for key in ("min", "max"):
+                    value: object = players.get(key)
+                    if not isinstance(value, int) or value < 1:
+                        self._add_issue(file, 1, None, f"rulesets[{idx}].players.{key} must be a positive integer", Severity.ERROR)
+                p_min: object = players.get("min")
+                p_max: object = players.get("max")
+                if isinstance(p_min, int) and isinstance(p_max, int) and p_min > p_max:
+                    self._add_issue(file, 1, None, f"rulesets[{idx}].players.min cannot exceed max", Severity.ERROR)
+
+            death_handling: object = ruleset.get("death_handling")
+            if death_handling not in ("permanent", "respawn_after_seconds", "revive_resource"):
+                self._add_issue(
+                    file, 1, None,
+                    f"rulesets[{idx}].death_handling must be 'permanent', 'respawn_after_seconds' or 'revive_resource', got {death_handling!r}",
+                    Severity.ERROR,
+                )
+            respawn_delay: object = ruleset.get("respawn_delay_seconds")
+            if respawn_delay is not None and (not isinstance(respawn_delay, int) or respawn_delay < 0):
+                self._add_issue(file, 1, None, f"rulesets[{idx}].respawn_delay_seconds must be a non-negative integer", Severity.ERROR)
+            if death_handling == "respawn_after_seconds" and not isinstance(respawn_delay, int):
+                self._add_issue(file, 1, None, f"rulesets[{idx}] uses respawn_after_seconds but has no respawn_delay_seconds", Severity.ERROR)
+
+            unit_caps: object = ruleset.get("unit_caps")
+            if not isinstance(unit_caps, dict):
+                self._add_issue(file, 1, None, f"rulesets[{idx}].unit_caps must be an object", Severity.ERROR)
+            else:
+                for key in ("per_player", "total"):
+                    value: object = unit_caps.get(key)
+                    if not isinstance(value, int) or value < 1:
+                        self._add_issue(file, 1, None, f"rulesets[{idx}].unit_caps.{key} must be a positive integer", Severity.ERROR)
+
+            duration: object = ruleset.get("match_duration_seconds")
+            if not isinstance(duration, int) or duration < 1:
+                self._add_issue(file, 1, None, f"rulesets[{idx}].match_duration_seconds must be a positive integer", Severity.ERROR)
+
+            win_conditions: object = ruleset.get("win_conditions")
+            if not isinstance(win_conditions, list) or not win_conditions:
+                self._add_issue(file, 1, None, f"rulesets[{idx}].win_conditions must be a non-empty array", Severity.ERROR)
+            elif any(not isinstance(wc, str) for wc in win_conditions):
+                self._add_issue(file, 1, None, f"rulesets[{idx}].win_conditions entries must be strings", Severity.ERROR)
+
+            for bool_key in ("fog_of_war", "chat_enabled", "voice_enabled"):
+                value: object = ruleset.get(bool_key)
+                if value is not None and not isinstance(value, bool):
+                    self._add_issue(file, 1, None, f"rulesets[{idx}].{bool_key} must be a boolean", Severity.ERROR)
+
+            # Unknown fields: warnings only (flexible format — see docs/combat_maps.md)
+            known_fields: Final[set[str]] = {
+                "id", "name", "mode", "players", "teams", "death_handling",
+                "respawn_delay_seconds", "revive_resource", "unit_caps",
+                "match_duration_seconds", "win_conditions", "fog_of_war",
+                "chat_enabled", "voice_enabled", "format_version",
+            }
+            unknown: set[str] = set(ruleset.keys()) - known_fields
+            if unknown:
+                self._add_issue(
+                    file, 1, None,
+                    f"rulesets[{idx}] has unknown fields (ignored): {', '.join(sorted(unknown))}",
+                    Severity.WARN,
+                )
+
+    def validate_combat_maps(self, file: Path) -> None:
+        """Validate game/config/combat/maps/*.json.
+
+        Required: format_version, name, width_tiles, height_tiles, tile_costs
+        (length must equal width x height). spawn_points/obstacles are
+        optional. Unknown fields are warnings only — the format is
+        intentionally flexible (see docs/combat_maps.md).
+        """
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+
+        data: object = self._validate_json(content, file)
+        if data is None:
+            return
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with combat map metadata", Severity.ERROR)
+            return
+
+        if not isinstance(data.get("format_version"), str):
+            self._add_issue(file, 1, None, "'format_version' must be a string", Severity.ERROR)
+        if not isinstance(data.get("name"), str) or not data.get("name"):
+            self._add_issue(file, 1, None, "'name' must be a non-empty string", Severity.ERROR)
+
+        width: object = data.get("width_tiles")
+        height: object = data.get("height_tiles")
+        if not isinstance(width, int) or width < 1:
+            self._add_issue(file, 1, None, "'width_tiles' must be a positive integer", Severity.ERROR)
+        if not isinstance(height, int) or height < 1:
+            self._add_issue(file, 1, None, "'height_tiles' must be a positive integer", Severity.ERROR)
+
+        tile_costs: object = data.get("tile_costs")
+        if not isinstance(tile_costs, list) or not tile_costs:
+            self._add_issue(file, 1, None, "'tile_costs' must be a non-empty array (0 = impassable, 1 = open, >1 = slow)", Severity.ERROR)
+        else:
+            if isinstance(width, int) and isinstance(height, int):
+                expected: int = width * height
+                if len(tile_costs) != expected:
+                    self._add_issue(
+                        file, 1, None,
+                        f"'tile_costs' has {len(tile_costs)} entries but width x height = {expected}",
+                        Severity.ERROR,
+                    )
+            passable: int = 0
+            for value in tile_costs:
+                if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+                    self._add_issue(file, 1, None, f"'tile_costs' entries must be non-negative numbers, got {value!r}", Severity.ERROR)
+                elif value > 0:
+                    passable += 1
+            if passable == 0:
+                self._add_issue(file, 1, None, "'tile_costs' must contain at least one passable tile", Severity.ERROR)
+
+        spawn_points: object = data.get("spawn_points")
+        if spawn_points is not None:
+            if not isinstance(spawn_points, list):
+                self._add_issue(file, 1, None, "'spawn_points' must be an array", Severity.ERROR)
+            else:
+                for idx, sp in enumerate(spawn_points, start=1):
+                    if not isinstance(sp, dict):
+                        self._add_issue(file, 1, None, f"spawn_points[{idx}] must be an object", Severity.ERROR)
+                        continue
+                    if not isinstance(sp.get("id"), str):
+                        self._add_issue(file, 1, None, f"spawn_points[{idx}].id must be a string", Severity.ERROR)
+                    for coord in ("x", "y"):
+                        value: object = sp.get(coord)
+                        if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 1:
+                            self._add_issue(file, 1, None, f"spawn_points[{idx}].{coord} must be a number in 0..1", Severity.ERROR)
+                    team: object = sp.get("team")
+                    if team is not None and (not isinstance(team, int) or team < 1):
+                        self._add_issue(file, 1, None, f"spawn_points[{idx}].team must be a positive integer", Severity.ERROR)
+
+        obstacles: object = data.get("obstacles")
+        if obstacles is not None:
+            if not isinstance(obstacles, list):
+                self._add_issue(file, 1, None, "'obstacles' must be an array", Severity.ERROR)
+            else:
+                for idx, obs in enumerate(obstacles, start=1):
+                    if not isinstance(obs, dict):
+                        self._add_issue(file, 1, None, f"obstacles[{idx}] must be an object", Severity.ERROR)
+                        continue
+                    if not isinstance(obs.get("id"), str):
+                        self._add_issue(file, 1, None, f"obstacles[{idx}].id must be a string", Severity.ERROR)
+                    radius: object = obs.get("radius")
+                    if not isinstance(radius, (int, float)) or isinstance(radius, bool) or radius <= 0:
+                        self._add_issue(file, 1, None, f"obstacles[{idx}].radius must be a positive number", Severity.ERROR)
+
+        # Unknown fields: warnings only (flexible format — see docs/combat_maps.md)
+        known_fields: Final[set[str]] = {
+            "format_version", "name", "image_filename", "width_tiles",
+            "height_tiles", "tile_size_px", "tile_costs", "spawn_points",
+            "start_positions", "obstacles",
+        }
+        unknown: set[str] = set(data.keys()) - known_fields
+        if unknown:
+            self._add_issue(
+                file, 1, None,
+                f"Unknown map fields (ignored): {', '.join(sorted(unknown))}",
+                Severity.WARN,
+            )
+
     def validate_all(
         self,
         config_dir: Path,
@@ -3554,6 +3843,16 @@ class ConfigValidator:
             except Exception as e:
                 self._add_issue(wall_config_file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
 
+        # Validate manor_ui.json (needs validated_building_ids, so it runs after
+        # the buildings loop above)
+        manor_ui_file: Path = config_dir / "manor_ui.json"
+        if manor_ui_file.exists():
+            try:
+                manor_ui_content: str = manor_ui_file.read_text(encoding="utf-8")
+                self.validate_manor_ui(manor_ui_file, manor_ui_content, buildings_file)
+            except Exception as e:
+                self._add_issue(manor_ui_file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+
         # Separate errors and warnings before image validation
         for issue in self.issues:
             if issue.severity == Severity.ERROR:
@@ -3610,6 +3909,21 @@ class ConfigValidator:
             economy_file: Path = game_config_dir / "economy.json"
             if economy_file.exists():
                 self.validate_economy(economy_file)
+
+            # Validate combat configs (rulesets + maps)
+            combat_rulesets_file: Path = game_config_dir / "combat" / "rulesets.json"
+            if combat_rulesets_file.exists():
+                self.validate_combat_rulesets(combat_rulesets_file)
+            else:
+                self._add_issue(combat_rulesets_file, 1, None, "Config file not found", Severity.ERROR)
+
+            combat_maps_dir: Path = game_config_dir / "combat" / "maps"
+            if combat_maps_dir.exists():
+                for map_file in sorted(combat_maps_dir.glob("*.json")):
+                    self.validate_combat_maps(map_file)
+                    self.validated_files.append(map_file)
+            else:
+                self._add_issue(combat_maps_dir, 1, None, "Combat maps directory not found", Severity.ERROR)
 
             mini_games_file: Path = game_config_dir / "mini_games.json"
             if mini_games_file.exists():

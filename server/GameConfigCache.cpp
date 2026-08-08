@@ -68,6 +68,8 @@ bool GameConfigCache::initialize(const std::string& config_dir) {
     add("weeding/specials.json");
     add("weeding/ongoing.json");
     add("economy.json");
+    add("manor_ui.json");
+    add("combat/rulesets.json");
 
     for (auto& [name, entry] : configs_) {
         struct stat st;
@@ -138,6 +140,8 @@ nlohmann::json& GameConfigCache::getWeedingTools() { return getConfig("weeding/t
 nlohmann::json& GameConfigCache::getWeedingSpecials() { return getConfig("weeding/specials.json"); }
 nlohmann::json& GameConfigCache::getWeedingOngoing() { return getConfig("weeding/ongoing.json"); }
 nlohmann::json& GameConfigCache::getEconomyConfig() { return getConfig("economy.json"); }
+nlohmann::json& GameConfigCache::getManorUi() { return getConfig("manor_ui.json"); }
+nlohmann::json& GameConfigCache::getCombatRulesets() { return getConfig("combat/rulesets.json"); }
 
 std::optional<nlohmann::json> GameConfigCache::getTowerDefenseSpawnSchedule(const std::string& filename) {
     nlohmann::json& data = getConfig("tower_defense/spawn_schedules/" + filename);
@@ -176,6 +180,7 @@ nlohmann::json GameConfigCache::getAllConfigs() const {
     result["tower_defense_mobs"] = get("tower_defense_mobs.json");
     result["tower_defense_towers"] = get("tower_defense_towers.json");
     result["tower_defense_units"] = get("tower_defense_units.json");
+    result["manor_ui"] = get("manor_ui.json");
     return result;
 }
 

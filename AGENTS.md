@@ -203,6 +203,12 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - See `api/getCharacterTexts.md` for `/api/getCharacterTexts` documentation
 - See `api/setFiefdomReserve.md` for `/api/setFiefdomReserve` documentation
 - See `api/setBuildingOutputRate.md` for `/api/setBuildingOutputRate` documentation
+- See `api/combatCreate.md` for `/api/combatCreate` documentation
+- See `api/combatJoin.md` for `/api/combatJoin` documentation
+- See `api/combatList.md` for `/api/combatList` documentation
+- See `api/combatGetConfigs.md` for `/api/combatGetConfigs` documentation
+- See `api/combatMatchmaking.md` for `/api/combatMatchmaking` documentation
+- See `api/getRetinue.md` for `/api/getRetinue` documentation
 
 #### Endpoint Overview
 
@@ -221,6 +227,31 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - **/api/getCharacterTexts**: Character-context text fetch (server applies gender + `{character_name}` substitution)
 - **/api/setFiefdomReserve**: Set per-resource stockpile reserves (excess above reserve is auto-sold at the resource's export price — explicit `export_prices`, else `export_sell_multipliers` ratio, else 50% of import price)
 - **/api/setBuildingOutputRate**: Set a building output's production rate (0..1) per building instance — scales that output and its inputs; validates the output exists and is unlocked at the building's level
+- **/api/combatCreate**: Create a realtime combat lobby (PvE) — returns a shareable match code
+- **/api/combatJoin**: Join a combat lobby by code
+- **/api/combatList**: List open combat lobbies
+- **/api/combatGetConfigs**: List combat rulesets and maps
+- **/api/combatMatchmaking**: PvP matchmaking (STUB — challenges/acceptances later)
+- **/api/getRetinue**: Fetch the character's retinue (knight + soldiers)
+
+### Realtime Combat
+
+The combat game (PvE 1–32; PvP 2–64 later) is a server-authoritative RTS over
+**WebSocket `/ws/combat`** on port 2290 — **not** a mini-game. Design and
+protocol: `docs/combat_protocol.md`; mission rules: `docs/combat_rulesets.md`;
+map format: `docs/combat_maps.md`.
+
+- Matches live **entirely in RAM** (`server/combat/`); SQLite is only touched
+  after a battle ends (casualty persistence deferred to the uWS loop thread).
+- One worker thread per battle from a bounded pool (`--combat-sim-threads`);
+  the loop thread only enqueues commands and relays chat/voice.
+- 10 ticks/s simulation; entity-level deltas + full snapshots every 25 ticks;
+  clients interpolate and can `request_state`.
+- Codec is pluggable (`combat_codec`); `json_codec` default, `binary_codec`
+  placeholder. Never build wire format inside game logic.
+- Retinue: `retinue_members` table (knight = character). Units are created by
+  the manor game's `train_troops` (stub). See `server/tables/retinue_members.md`.
+- Voice chat: WebRTC mesh; server relays signaling only. TURN required in prod.
 
 ### Building
 
@@ -539,6 +570,7 @@ Validates all JSON configuration files against their schema rules. Written in Py
 - `game/config/fiefdom_building_types.json` - Building type definitions
 - `game/config/heroes.json` - Hero definitions with equipment, skills, and status effects
 - `game/config/fiefdom_officials.json` - Fiefdom official templates with stats and roles
+- `game/config/manor_ui.json` - Manor UI config (`build_order` governs the build-palette button order only — it never overrides the client's display/level/affordability filters)
 
 **Image Directory Validation:**
 - `game/images/` - Game images (auto-detected from directory structure; only `combatants/`, `buildings/`, `heroes/`, `portraits/` entity directories are validated)
@@ -604,6 +636,12 @@ Build the full game progression and content system with a working tower defense 
 - **Per-commodity export pricing**: Export price resolves per resource with precedence `export_prices[resource]` (explicit gold/pence sell price) → `export_sell_multipliers[resource]` (ratio of import price) → global `export_sell_multiplier` (0.5). Engine resolves the unit sell value in the resource's market currency; linter validates both new maps in `economy.json`.
 - **Multi-output buildings + per-output rates**: A building may define an `outputs` array — each output with its own `inputs`, a `min_level` unlock, and a per-player rate (0..1). The blacksmith now produces `ironwork` (level 1+) and `fancy_ironwork` (level 2+, 2× iron input), both simultaneously at level 2+. Engine uses per-output plans: each output is gated by its own input-satisfaction ratio, rates scale output + inputs (0 = off). `fancy_ironwork` added as a real fiefdom resource (column + migration + full plumbing). Rates stored in `fiefdom_buildings.output_rates` (JSON), set via `/api/setBuildingOutputRate`; client has a Production Rates panel in `ManorMenu` with per-output sliders.
 - **Metalworking economy + household grain**: Every craft building (peasant, blacksmith, collier, woodcutter, wood_hewer) is a self-contained household — produces **18 grain/day** and consumes **36 grain/day** via `daily_cost`, plus a small `ironwork` tool upkeep (home_base 20, peasant 1, woodcutter 5, wood_hewer 5, miller 5, collier 2). Blacksmith output scaled to **100 ironwork/day** (inputs grain/charcoal/iron 100 each); collier charcoal 30 (wood 20 input), bloomery iron 20 (charcoal 30 input), woodcutter wood 20 — so ~5 bloomeries + ~9 colliers feed one full blacksmith, and one blacksmith covers ~50 peasants + 2 woodcutters + 2 woodhewers + a miller + a few colliers + the home base. **Prices deflate with production** (anchored to grain at 1 shilling ≈ 0.05 gold): wood 0.03, charcoal 0.03, iron 0.06, ironwork 0.02 import. **Ironwork exports sell at 25% of import** (`export_sell_multipliers.ironwork = 0.25`), other resources at 50%. `default_reserves` scaled up (grain 150, wood 100, steel 50, bronze 25, stone 60, leather 25, mana 10, charcoal/iron/ironwork 50, fancy_ironwork 10).
+- **Realtime combat scaffold**: Server-authoritative RTS over WebSocket `/ws/combat` (same port 2290) — matches live entirely in RAM (`server/combat/`), one worker thread per battle from a bounded pool (`--combat-sim-threads`), 10 ticks/s with entity-level deltas + full snapshots every 25 ticks, pluggable codec (`combat_codec`; `json_codec` default with hand-rolled fast serializer, `binary_codec` placeholder), uWS pub/sub topics for broadcast (`match:<id>`, team chat, per-player voice signaling), SQLite writes deferred to the loop thread (`Loop::defer`). REST surface: `combatCreate`/`combatJoin`/`combatList`/`combatGetConfigs`/`combatMatchmaking` (stub)/`getRetinue`. **Retinue defined now**: new `retinue_members` table (knight = character, auto-created; units come from the manor's `train_troops` stub later), casualties persisted after matches per ruleset death handling. Configs: `combat/rulesets.json` (skirmish PvE permanent-death + scrimmage PvP respawn) and `combat/maps/meadow.json` (16×16 with normalized spawn points, tile_costs cost grid for future pathfinding, lenient parse — unknown fields preserved, linter warns not errors). Client: `src/combat/` — CombatScreen (lobby→battle→results), CombatNetClient (first-message auth, backoff reconnect), CombatGame (SimpleGame canvas, entity store + interpolation, select/move), CombatHud, CombatChat (team), CombatVoice (WebRTC mesh, WS-relayed signaling, STUN placeholder), MatchLobby (create/join by code). No hub cards — combat is reached through game flow later (module kept for future integration). Vite proxies `/ws` (ws:true); nginx needs Upgrade headers + long timeouts (server README).
+
+- **Hash-based history routing**: In-app navigation is URL-driven via `client/src/lib/router.ts` — `#/` hub, `#/activity/<id>[/…]` (arbitrary-depth nested sub-routes, e.g. `#/activity/chat/thread/42`), `#/game/<game>/<level>`. Components read `route_store` and call `navigate()` / `replace_route()` (redirects: game complete/error replaces the game entry so Back doesn't re-enter it) / `go_back()` (in-app Back buttons). Entering an activity/game from an empty/foreign URL pushes a `#/` hub entry first so browser Back always lands on the hub grid. Reload restores the screen from the URL; mobile app-switch fires no hash events and never disturbs the open screen. The old OPFS `last_activity` restore is gone; barony create/join → hub, baron-track start → `#/activity/tasks`. Backing out of a mini-game mid-round leaves an active session that the server resumes on next kickoff (existing logic).
+- **Manor loading fixed**: Two bugs kept the manor at an infinite "Loading Manor…" spinner. (1) `/api/getBuildingConfigs` is authenticated; the client now sends `auth` (it previously called without credentials, got a `needs_auth` response with no `error`/`data`, silently returned `undefined`, and `Object.entries(undefined)` in `ManorMenu.setupGame` threw). (2) `whenLoaded(setupGame)` was registered *after* `initEngine(canvasEl, debugDiv, false, () => {})` — initEngine's synchronous first loop closes the one-shot "all classes loaded" gate, so a late-registered `whenLoaded` never fires and `loading` stays true. Fixed by passing `setupGame` as initEngine's 4th argument (the documented pattern in SimpleGame/Embedding.md, matching TowerDefense/WeedingGame/CombatGame) and removing the `whenLoaded` call. The server now also serves `/images/manor/*` (background + building sprites). `getBuildingConfigsRequest` takes `{ username, token }` and throws on missing data; the manor loading spinner has a Back button as an escape hatch.
+- **Manor auto-build + construction**: On first entry, `ManorMenu.initialize` checks the fiefdom state and, if no `home_base` building exists, auto-places one at (0,0) — free (config `*_cost[0] = 0`), with `construction_start_ts` set to now so the construction timer starts on first entry and the server auto-levels to 1 after `construction_times[0]` on the next fiefdom time-update. `/api/Build` requires `character_id` (ownership check against `fiefdoms.owner_id`); `buildRequest` sends `$currentCharacter.id` from both the auto-place and toolbar `placeBuilding`. Construction progress bars compute live time via the `setProgressBar` getter (re-evaluated every frame), so the manor house visibly builds over 60s. Auto-place failures are `console.log`-ed (not silent).
+- **Manor rendering fixed**: The manor now uses SimpleGame's newer `setViewportSize`/`setCameraPosition` (canvas = displayed size → no aspect distortion; camera centered on the board = manor house). `g2b`/`getRect` were changed so a building's **center** sits on its cell — `home_base` at cell (0,0) is exactly at the board center (was corner-at-center). The world-space `resText`/`mlText` HUD text was removed; the **Main** button (returns to hub; text id `manor_main_btn`), **Build** toolbar toggle (text id `ui_manor_build_btn`), and the **Economy**/**Production** panel toggles (text ids `ui_manor_economy`/`ui_manor_production`) are all SimpleGame **HUD** objects (`obj.hud = true`, screen-space, `simplegame.ts` commit 9df44fc) fixed to the viewport regardless of panning. All four live in one top-right `Column` (`actionCol`, 140×40 each, stack order Economy → Production → Build → Main), styled with the engine's newer button APIs to match Bootstrap `btn-outline-light` but with a **semi-opaque** fill — `color '#212529'` at `backgroundOpacity 0.55`, `foregroundColor '#f8f9fa'`, `cornerRadius 6`. The Economy/Production buttons highlight to Bootstrap primary `#0d6efd` while their panel is open (`setBackgroundColor`, which re-derives hover/click). The panel cards anchor below the stack via a `panelTop` bound to `apply_viewport()`. The build column is **hidden by default** and revealed by the Build toggle; its buttons are 280×56 with the icon **left** of the text, sized to a **fixed height of 32px preserving aspect ratio** (`setAspectIconSize` reads `naturalWidth`/`naturalHeight` — building art is not square), same glassy style, and labels come from the text system (`ui_building_<type_id>`, e.g. `ui_building_blacksmith`) with the **level-1 cost appended** (compact `10s 10w` via `formatCost`: gold in shillings + non-zero pence via `formatShillingsPence`, e.g. `12s`/`30s 6d` — never fractional gold; wood→`w`, stone→`st`). Buttons **grey out via `setDisabled`** when the building can't be built — `canBuild` mirrors the server: manor level (level-locked types are hidden from the palette entirely), `max_per_fiefdom` reached, level-1 `prerequisites[0]` non-`manor_level` keys unmet (e.g. `wood_hewer`/`collier` require a level-1 `woodcutter`), or costs unaffordable against the fiefdom's current resources. States refresh via `updateBuildButtonStates()` on every `loadFiefdomData`. The `house` type (no `display_name`/`image`) is excluded by the `display_name && image` guard in the `buildableIds` filter. Placement toggles via re-clicking the building button or Esc; the ghost places on a valid square via **click** or **drag-and-release** (`ghostBuilding.onClick(0, …)` + `onDragEnd(0, …)`, gated on `ghostValid` — never on mid-drag `onDragMap` moves); the loading/intro/error panels are absolute overlays so the canvas is always measurable. Board panning stays enabled; the viewport re-applies on window resize without re-centering (panned position survives). **Palette button order is config-driven** via `game/config/manor_ui.json` `build_order` (injected by `/api/getBuildingConfigs`; the client sorts `buildableIds` by it, unlisted ids sort last) — it governs order only and never overrides the display/disable logic; reordering is a one-file edit.
 
 #### In Progress
 - (none)
@@ -625,6 +663,12 @@ Build the full game progression and content system with a working tower defense 
 - Create arrow/bolt projectile images at `game/images/tower_defense/projectiles/`
 - Generate parchment background and path icon images
 - Add `rounds` field to baron_levels in `mini_games.json` if needed
+- Combat: implement real combat mechanics (damage, target selection, abilities) — currently attack/ability relay as events only
+- Combat: PvE enemy AI (flow-field pathfinding over `tile_costs`; enemies currently idle)
+- Combat: PvP matchmaking (challenges/acceptances/handicaps); per-user team selection
+- Combat: barony-invite UI via the messaging system; `combatList` browser
+- Combat: TURN relay for voice chat; WebRTC peers on late-joiners; per-player fog of war
+- Combat: `train_troops` manor integration (units with weapons/armor/abilities from `player_combatants.json`/`heroes.json`)
 
 ### Critical Context
 - **Server compiles** with `./compile_server.sh` (no arguments). Client `npm run check` passes with only pre-existing WeedingGame errors.
@@ -637,6 +681,9 @@ Build the full game progression and content system with a working tower defense 
 - **Login debug**: Conditional on `static const bool login_debug = false` in main.cpp (off by default).
 - **`rename_field` self-rename bug**: `rename_field(obj, "x", "x")` with `from == to` destroys the field. Fixed by removing these calls.
 - **Level ID** threaded through: `App.svelte → MiniGameContainer → TowerDefense` (not hardcoded 0).
+- **Combat is not a mini-game**: it never routes through `MiniGameContainer`/`startMiniGame`; the `client/src/combat/` module is kept for future game-flow entry (hub cards were removed — combat is no longer launched from `available_activities`).
+- **Combat threading**: match sim runs on its own worker thread; the uWS loop thread only enqueues commands and relays chat/voice; SQLite writes are `Loop::defer`-ed back to the loop thread.
+- **Combat maps are lenient**: `CombatMapCache` preserves unknown fields; the linter warns (not errors) on them so the format can evolve (see `docs/combat_maps.md`).
 
 ### Relevant Files
 - `game/config/tower_defense/projectiles.json` - Projectile config (width, height, speed, image_file, forward_vector)
@@ -650,3 +697,11 @@ Build the full game progression and content system with a working tower defense 
 - `server/TowerDefenseMapCache.cpp` - Map loading/normalization (fixed self-rename bug)
 - `client/src/minigames/tower_defense/TowerDefense.svelte` - Main TD game: engine collision, homing, mirroring, projTick cleanup
 - `client/SimpleGame/Embedding.md` - SimpleGame API docs (pause, mirroring, collision, movement)
+- `game/config/combat/rulesets.json` - Combat mission rules (skirmish PvE / scrimmage PvP)
+- `game/config/combat/maps/meadow.json` - First combat map (tile_costs grid + spawn points)
+- `server/combat/` - CombatTypes, CombatCodec (json/binary), CombatMatch, CombatMatchManager, CombatMapCache
+- `server/RetinueDB.hpp/.cpp` - Retinue persistence (knight auto-create, casualties)
+- `client/src/combat/` - CombatScreen, CombatNetClient, protocol.ts, CombatGame, CombatHud, CombatChat, CombatVoice, MatchLobby
+- `docs/combat_protocol.md` - WS protocol contract (envelope, messages, replication, topics)
+- `docs/combat_rulesets.md` / `docs/combat_maps.md` - Ruleset + map format specs
+- `server/tables/retinue_members.md` - Retinue table schema
