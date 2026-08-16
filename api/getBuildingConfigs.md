@@ -43,7 +43,7 @@ No required or optional parameters.
       "costs": { "gold": 40, "wood": 20 },
       "min_manor_level": 1
     },
-    "build_order": ["woodcutter", "peasant", "wood_hewer", "collier", "blacksmith", "miller", "bloomery", "chapel"]
+    "build_order": ["road", "woodcutter", "peasant", "wood_hewer", "collier", "blacksmith", "miller", "bloomery", "chapel"]
   }
 }
 ```
@@ -51,10 +51,24 @@ No required or optional parameters.
 ### Behavior
 
 - `construction_image` is always present: if the config defines it, that value is used; if not, it's copied from `image`
-- `costs` is an object with level-1 costs for `gold`, `wood`, `stone` keys (whichever exist)
+- `costs` is an object with level-1 costs for `gold`, `wood`, `stone`, `silver_pence` keys (whichever exist)
 - `min_manor_level` is extracted from `prerequisites[0].manor_level`, defaults to 1
 - `build_order` is an array of building type IDs from `game/config/manor_ui.json`. It governs the **order** of the build-palette buttons in the UI only — the client still applies its own display filters (manor level, `display_name`/`image` presence, affordability, prerequisites, `max_per_fiefdom`). Type IDs not listed sort after every listed one (stable). Omitted/invalid `build_order` returns an empty array and the client falls back to alphabetical order.
-- The full building type config from `fiefdom_building_types.json` is included (per-day production fields, daily_cost, modifiers, etc.)
+- The full building type config from `fiefdom_building_types.json` is included (per-day production fields, daily_cost, modifiers, etc.), including `road_tiles`/`road_tiles_canonical` for road auto-tiling and `road_morale` for morale sources.
+- Road config example:
+  ```json
+  "road": {
+    "width": 1, "height": 1, "max_level": 1,
+    "display_name": "Road",
+    "image": "/images/manor/buildings/road_four_way.png",
+    "silver_pence_cost": [1],
+    "construction_times": [0],
+    "costs": { "silver_pence": 1 },
+    "min_manor_level": 1,
+    "road_tiles": { "straight": "...", "corner": "...", "three_way": "...", "four_way": "..." },
+    "road_tiles_canonical": { "straight": ["e", "w"], "corner": ["n", "e"], "three_way": ["n", "e", "w"] }
+  }
+  ```
 
 ### Error
 

@@ -37,9 +37,31 @@ Create a new building at specified location.
 |-------|------|----------|-------------|
 | `fiefdom_id` | integer | Yes | ID of the fiefdom to build in |
 | `action` | string | No (default: "create") | Must be "create" |
-| `building_type` | string | Yes | Type of building (e.g., "farm", "barracks", "home_base") |
+| `building_type` | string | Yes | Type of building (e.g., "road", "peasant", "home_base") |
 | `x` | integer | Yes | X coordinate relative to fiefdom center |
 | `y` | integer | Yes | Y coordinate relative to fiefdom center |
+
+**Rules:**
+- Costs are deducted from the fiefdom's resources: `gold_cost` → `gold`, `wood_cost` → `wood`,
+  `stone_cost` → `stone`, `silver_pence_cost` → `silver_pence`.
+- **Instant construction:** if the building type's `construction_times[0] == 0` (e.g. `road`),
+  the building is created directly at **level 1 with no construction timer** instead of
+  level 0 under construction. Response `level` is `1` and `construction_start_ts` is `0`.
+
+**Response (create):**
+```json
+{
+  "status": "ok",
+  "data": {
+    "building_type": "road",
+    "fiefdom_id": 1,
+    "x": 2, "y": 3,
+    "construction_start_ts": 0,
+    "level": 1
+  }
+}
+```
+
 
 ### demolish
 

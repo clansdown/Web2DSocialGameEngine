@@ -573,6 +573,20 @@ ApiResponse handleGetFiefdom(GameConfigCache& config_cache, const json& body,
         response.data["economy_report"] = report_it->second;
     }
 
+    // Per-building road-morale points (for client display). Only populated when
+    // buildings were requested — the morale computation needs the footprints.
+    if (include_buildings) {
+        json road_morale = json::object();
+        auto building_types = config_cache.getFiefdomBuildingTypes();
+        auto road_points = Morale::computeRoadMoralePoints(building_types, fiefdom.buildings);
+        for (const auto& [bld_id, points] : road_points) {
+            if (points > 0.0) {
+                road_morale[std::to_string(bld_id)] = points;
+            }
+        }
+        response.data["road_morale"] = road_morale;
+    }
+
     if (new_token) {
         response.data["token"] = *new_token;
     }
@@ -4421,6 +4435,7 @@ ApiResponse handleGetBuildingConfigs(GameConfigCache& config_cache, const nlohma
             extract_cost("gold_cost", "gold");
             extract_cost("wood_cost", "wood");
             extract_cost("stone_cost", "stone");
+            extract_cost("silver_pence_cost", "silver_pence");
 
             cfg["costs"] = costs;
 

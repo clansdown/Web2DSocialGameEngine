@@ -230,7 +230,7 @@ VALID_BUILDING_PRODUCTION_FIELDS: Final[set[str]] = {
     "charcoal", "iron", "ironwork", "fancy_ironwork"
 }
 VALID_BUILDING_COST_FIELDS: Final[set[str]] = {
-    "gold_cost", "grain_cost", "wood_cost", "steel_cost", "bronze_cost",
+    "gold_cost", "silver_pence_cost", "grain_cost", "wood_cost", "steel_cost", "bronze_cost",
     "stone_cost", "leather_cost", "mana_cost", "charcoal_cost", "iron_cost", "ironwork_cost", "fancy_ironwork_cost"
 }
 VALID_STATUS_EFFECT_TYPES: Final[set[str]] = {"stun", "mute", "confuse"}
@@ -1052,6 +1052,7 @@ class ConfigValidator:
 
         self._validate_number_array(file, content, building_id, data, "construction_times", allow_negative=False)
         self._validate_money_cost_array(file, content, building_id, data, "gold_cost")
+        self._validate_number_array(file, content, building_id, data, "silver_pence_cost", allow_negative=False)
         self._validate_number_array(file, content, building_id, data, "grain_cost")
         self._validate_number_array(file, content, building_id, data, "wood_cost")
         self._validate_number_array(file, content, building_id, data, "steel_cost")
@@ -1109,6 +1110,77 @@ class ConfigValidator:
                     f"Building '{building_id}'.morale_effect_mode must be 'add', 'max', or 'multiply', got '{mode}'",
                     Severity.ERROR
                 )
+
+        if "road_morale" in data:
+            rm: Any = data["road_morale"]
+            if not isinstance(rm, dict):
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.road_morale must be an object",
+                    Severity.ERROR
+                )
+            else:
+                if "boost" not in rm or not isinstance(rm["boost"], (int, float)) or rm["boost"] <= 0:
+                    self._add_issue(
+                        file, 1, None,
+                        f"Building '{building_id}'.road_morale.boost must be a positive number",
+                        Severity.ERROR
+                    )
+                if "distance" not in rm or not isinstance(rm["distance"], int) or rm["distance"] < 1:
+                    self._add_issue(
+                        file, 1, None,
+                        f"Building '{building_id}'.road_morale.distance must be an integer >= 1",
+                        Severity.ERROR
+                    )
+
+        if "road_tiles" in data:
+            rt: Any = data["road_tiles"]
+            if not isinstance(rt, dict) or not rt:
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.road_tiles must be a non-empty object of tile-key -> image path",
+                    Severity.ERROR
+                )
+            else:
+                for tile_key, tile_path in rt.items():
+                    if not isinstance(tile_path, str) or not tile_path:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.road_tiles.{tile_key} must be a non-empty image path string",
+                            Severity.ERROR
+                        )
+
+        if "road_tiles_canonical" in data:
+            rtc: Any = data["road_tiles_canonical"]
+            if not isinstance(rtc, dict) or not rtc:
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.road_tiles_canonical must be a non-empty object of tile-key -> direction array",
+                    Severity.ERROR
+                )
+            else:
+                valid_dirs = {"n", "e", "s", "w"}
+                for tile_key, dirs in rtc.items():
+                    if not isinstance(dirs, list) or not dirs:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.road_tiles_canonical.{tile_key} must be a non-empty array of directions",
+                            Severity.ERROR
+                        )
+                        continue
+                    for d in dirs:
+                        if d not in valid_dirs:
+                            self._add_issue(
+                                file, 1, None,
+                                f"Building '{building_id}'.road_tiles_canonical.{tile_key} contains invalid direction '{d}' (must be n/e/s/w)",
+                                Severity.ERROR
+                            )
+                    if len(set(dirs)) != len(dirs):
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.road_tiles_canonical.{tile_key} contains duplicate directions",
+                            Severity.ERROR
+                        )
 
         self._validate_building_modifiers(file, building_id, data)
         self._validate_building_dependencies(file, building_id, data)

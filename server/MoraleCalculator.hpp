@@ -35,4 +35,10 @@ double calculateFiefdomMorale(
     const std::vector<StationedCombatant>& combatants
 );
 
+// Computes per-building morale points from the road network (see .cpp).
+std::unordered_map<int, double> computeRoadMoralePoints(
+    const nlohmann::json& building_types,
+    const std::vector<BuildingData>& buildings
+);
+
 } // namespace Morale

@@ -747,6 +747,8 @@ export interface FiefdomResponse {
   import_settings?: Record<string, boolean>;
   reserves?: Record<string, number>;
   economy_report?: EconomyReport;
+  /** Per-building road-morale points (building_id → points), only when include_buildings. */
+  road_morale?: Record<string, number>;
 }
 
 export interface EconomyExport {

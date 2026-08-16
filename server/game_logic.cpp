@@ -199,12 +199,12 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                                     }
                                 } else {
                                     nlohmann::json refund;
-                                    std::string cost_fields[] = {"gold_cost", "wood_cost", "stone_cost", "steel_cost", 
+                                    std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost", 
                                                                  "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
-                                    std::string resource_fields[] = {"gold", "wood", "stone", "steel", 
+                                    std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", 
                                                                      "bronze", "grain", "leather", "mana"};
                                     
-                                    for (size_t i = 0; i < 8; i++) {
+                                    for (size_t i = 0; i < 9; i++) {
                                         const auto& cost_key = cost_fields[i];
                                         const auto& resource_key = resource_fields[i];
                                         
@@ -360,6 +360,22 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                 // 1.0). Rate 0 disables the output entirely (no inputs consumed).
                 std::map<int, BuildingPlan> plans;
 
+                // Road-network morale: buildings connected to roads near a
+                // morale-source (e.g. chapel/miller) get a production boost.
+                // multiplier = 1 + morale_points * morale_production_multiplier.
+                std::unordered_map<int, double> road_morale_multipliers;
+                {
+                    auto road_points = Morale::computeRoadMoralePoints(building_types, fiefdom.buildings);
+                    double morale_per_point = economy_cfg.value("morale_production_multiplier", 0.0);
+                    if (morale_per_point > 0.0 && !road_points.empty()) {
+                        for (const auto& [bld_id, points] : road_points) {
+                            if (points > 0.0) {
+                                road_morale_multipliers[bld_id] = 1.0 + points * morale_per_point;
+                            }
+                        }
+                    }
+                }
+
                 for (const auto& building : fiefdom.buildings) {
                     if (building.level <= 0) continue;
                     for (const auto& type_obj : building_types) {
@@ -391,6 +407,12 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                             if (bm_it != modifier_map.end()) {
                                 auto rm_it = bm_it->second.find(res);
                                 if (rm_it != bm_it->second.end()) total_amount *= rm_it->second;
+                            }
+                            // Road-network morale boosts all outputs of a
+                            // connected building (multiplier >= 1).
+                            auto mm_it = road_morale_multipliers.find(building.id);
+                            if (mm_it != road_morale_multipliers.end()) {
+                                total_amount *= mm_it->second;
                             }
                             OutputPlan op;
                             op.resource = res;

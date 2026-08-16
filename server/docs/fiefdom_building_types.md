@@ -44,6 +44,7 @@ interface FiefdomBuildingType {
     // --- Construction Costs (all optional, defaults to empty array) ---
     peasants_cost?: number[];
     gold_cost?: (number | MoneyCost)[];
+    silver_pence_cost?: number[];
     grain_cost?: number[];
     wood_cost?: number[];
     steel_cost?: number[];
@@ -176,6 +177,7 @@ Cost arrays specify the resource cost per building level. Index corresponds to l
 |-------|------|-------------|
 | `*_cost` | number[] | Array of resource costs per level |
 | `gold_cost` | (number \| MoneyCost)[] | Gold cost per level — each element is either a plain number (gold) or a `{ gold, shillings, pence }` object (all keys optional, non-negative) |
+| `silver_pence_cost` | number[] | Silver-pence (penny-market) cost per level, deducted from `fiefdoms.silver_pence` (e.g. `[1]` for a 1-penny road) |
 
 A `MoneyCost` object is normalized to a gold double at config load:
 `gold + shillings/20 + pence/240` (1 gold = 20 shillings = 240 pence; 1 shilling = 12 pence).
@@ -224,6 +226,43 @@ The optional `max_per_fiefdom` field limits how many buildings of this type can 
 | Field | Type | Description |
 |-------|------|-------------|
 | `construction_times` | number[] | Seconds required for construction at each level |
+
+> **Instant construction:** if `construction_times[0] == 0`, the building (e.g. `road`) is
+> created directly at level 1 with no construction timer. The build action handles this
+> specially — the economy's normal completion gate only fires for `construction_seconds > 0`.
+
+### Roads & Road-Network Morale
+
+Roads are ordinary 1×1 buildings (`width`/`height` = 1, `max_level` = 1) named `road`,
+built paint-style anywhere (collision only blocks other buildings). They produce nothing
+themselves; instead they form a **road network** that carries morale from morale-source
+buildings to nearby buildings.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `road_tiles` | object | none | Map of tile key → image path (e.g. `straight`, `corner`, `three_way`, `four_way`) for client-side auto-tiling |
+| `road_tiles_canonical` | object | none | Map of tile key → array of connected sides (`"n"`/`"e"`/`"s"`/`"w"`) for the base (unrotated) art; the client rotates the base image via `setOrientation` to match each road's neighbors |
+| `road_morale` | `{ boost, distance }` | none | Marks the building as a **morale source**. `boost` = morale points radiated; `distance` = max road-tile path length. E.g. chapel `{ boost: 10, distance: 6 }`, miller `{ boost: 5, distance: 4 }` |
+
+**How the network works (server):**
+
+1. All `level >= 1` `road` buildings form orthogonal cells (server `Rect` convention `[x, x+w) × [y, y+h)`).
+2. Each morale-source building radiates its `boost` outward: BFS over orthogonally-connected
+   road tiles starting from road tiles touching the source's footprint, up to `distance`
+   road-steps. Every road tile reached is "in range".
+3. Every building whose footprint touches an in-range road tile receives the source's `boost`.
+   Multiple sources stack additively; a building with no adjacent road gets nothing. A source
+   **never boosts itself** — it can still receive boosts from other sources.
+4. The economy tick converts points to a per-building production multiplier:
+   `1 + points × economy.json.morale_production_multiplier` (default `0.02` = +2% per point).
+   The multiplier applies to **all outputs** of the building; inputs and `daily_cost` are
+   unaffected. Roads themselves produce nothing, so their own multiplier is moot.
+
+Example — a peasant cottage connected by roads to a chapel (10 morale) at distance ≤ 6 gets
+`+20%` on all its outputs (grain, peasants).
+
+The fiefdom's `morale` column is unrelated — road morale is a separate per-building effect
+computed fresh each economy tick.
 
 ### Prerequisites Field
 

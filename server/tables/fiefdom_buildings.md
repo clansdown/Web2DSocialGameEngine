@@ -84,6 +84,18 @@ When `/api/updateState` is called:
 - Up to 255 buildings per fiefdom (SQLite INTEGER range)
 - The `home_base` building must be at coordinates (0, 0) and only one can exist per fiefdom
 
+## Roads
+
+Roads are ordinary rows in this table with `name = 'road'`:
+- 1×1 tile (`width`/`height` 1, `max_level` 1), instant build (`construction_times[0] == 0`),
+  costing 1 silver pence (`silver_pence_cost: [1]`, deducted from `fiefdoms.silver_pence`).
+- Placed paint-style anywhere; collision only blocks other buildings. A 1×1 road at `(x, y)`
+  occupies exactly that cell.
+- They produce nothing; they carry road-network morale from morale-source buildings
+  (chapel/miller) to nearby buildings, boosting their production. See
+  `server/docs/fiefdom_building_types.md` → "Roads & Road-Network Morale".
+- Level is always ≥ 1 (instant build), so roads never appear under construction.
+
 ## Usage Examples
 
 Fetching buildings for a fiefdom:

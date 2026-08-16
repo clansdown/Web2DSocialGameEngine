@@ -161,13 +161,26 @@ ActionResult BuildActionHandler::execute(const json& payload, const ActionContex
         if (config->contains("gold_cost")) costs["gold"] = (*config)["gold_cost"][0];
         if (config->contains("wood_cost")) costs["wood"] = (*config)["wood_cost"][0];
         if (config->contains("stone_cost")) costs["stone"] = (*config)["stone_cost"][0];
+        if (config->contains("silver_pence_cost")) costs["silver_pence"] = (*config)["silver_pence_cost"][0];
         
         auto deduct_result = Validation::deductResources(fiefdom_id, costs, result);
         if (deduct_result.status != ActionStatus::OK) {
             return deduct_result;
         }
 
-        if (!FiefdomFetcher::createBuilding(fiefdom_id, building_type, 0, now, 0, "", x, y)) {
+        // Instant buildings (construction_times[0] == 0, e.g. roads) are created
+        // at level 1 with no construction timer — the economy's completion gate
+        // only fires for construction_seconds > 0, so a 0 build time would
+        // otherwise leave the building stuck at level 0 forever.
+        bool instant = false;
+        if (config->contains("construction_times") && (*config)["construction_times"].is_array() &&
+            !(*config)["construction_times"].empty()) {
+            instant = ((*config)["construction_times"][0].get<double>() == 0);
+        }
+        int create_level = instant ? 1 : 0;
+        int64_t construction_start = instant ? 0 : now;
+
+        if (!FiefdomFetcher::createBuilding(fiefdom_id, building_type, create_level, construction_start, 0, "", x, y)) {
             result.status = ActionStatus::FAIL;
             result.error_code = "database_error";
             result.error_message = "Failed to create building";
@@ -178,8 +191,8 @@ ActionResult BuildActionHandler::execute(const json& payload, const ActionContex
         result.result["fiefdom_id"] = fiefdom_id;
         result.result["x"] = x;
         result.result["y"] = y;
-        result.result["construction_start_ts"] = now;
-        result.result["level"] = 0;
+        result.result["construction_start_ts"] = construction_start;
+        result.result["level"] = create_level;
         
         tx.commit();
         result.status = ActionStatus::OK;
@@ -380,13 +393,13 @@ public:
             Validation::TransactionGuard tx(Database::getInstance().gameDB());
 
             nlohmann::json cost;
-            std::string cost_fields[] = {"gold_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
-            std::string resource_fields[] = {"gold", "wood", "stone", "steel", "bronze", "grain", "leather", "mana"};
+            std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
+            std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana"};
 
             auto config_opt = Validation::getBuildingConfig(*ctx.config_cache, building_name);
             if (config_opt) {
                 auto config = *config_opt;
-                for (size_t i = 0; i < 8; i++) {
+                for (size_t i = 0; i < 9; i++) {
                     std::string field = cost_fields[i];
                     if (config.contains(field) && config[field].is_array()) {
                         auto costs = config[field];
@@ -551,18 +564,20 @@ ActionResult deductResources(int fiefdom_id, const json& costs, ActionResult& re
     if (costs.empty()) return r;
     
     double gold = 0;
+    int silver_pence = 0;
     int wood = 0, stone = 0, steel = 0, bronze = 0, grain = 0, leather = 0, mana = 0;
-    db << "SELECT gold, wood, stone, steel, bronze, grain, leather, mana FROM fiefdoms WHERE id = ?;"
+    db << "SELECT gold, silver_pence, wood, stone, steel, bronze, grain, leather, mana FROM fiefdoms WHERE id = ?;"
        << fiefdom_id
-       >> [&](double g, int w, int st, int stl, int b, int gr, int l, int m) {
-           gold = g; wood = w; stone = st; steel = stl; bronze = b; grain = gr; leather = l; mana = m;
+       >> [&](double g, int sp, int w, int st, int stl, int b, int gr, int l, int m) {
+           gold = g; silver_pence = sp; wood = w; stone = st; steel = stl; bronze = b; grain = gr; leather = l; mana = m;
        };
     
-    std::string resource_fields[] = {"gold", "wood", "stone", "steel", "bronze", "grain", "leather", "mana"};
+    std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana"};
     double* gold_ptr = &gold;
-    int* resource_ptrs[] = {nullptr, &wood, &stone, &steel, &bronze, &grain, &leather, &mana};
+    int* silver_ptr = &silver_pence;
+    int* resource_ptrs[] = {nullptr, silver_ptr, &wood, &stone, &steel, &bronze, &grain, &leather, &mana};
     
-    for (size_t i = 0; i < 8; i++) {
+    for (size_t i = 0; i < 9; i++) {
         if (costs.contains(resource_fields[i])) {
             double before;
             double amount = costs[resource_fields[i]].get<double>();
@@ -586,8 +601,8 @@ ActionResult deductResources(int fiefdom_id, const json& costs, ActionResult& re
         }
     }
     
-    db << "UPDATE fiefdoms SET gold = ?, wood = ?, stone = ?, steel = ?, bronze = ?, grain = ?, leather = ?, mana = ? WHERE id = ?;"
-       << gold << wood << stone << steel << bronze << grain << leather << mana << fiefdom_id;
+    db << "UPDATE fiefdoms SET gold = ?, silver_pence = ?, wood = ?, stone = ?, steel = ?, bronze = ?, grain = ?, leather = ?, mana = ? WHERE id = ?;"
+       << gold << silver_pence << wood << stone << steel << bronze << grain << leather << mana << fiefdom_id;
     
     return r;
 }
@@ -671,10 +686,10 @@ nlohmann::json calculateCumulativeCost(GameConfigCache& cache, const std::string
 
     auto config = *config_opt;
     nlohmann::json cumulative;
-    std::string cost_fields[] = {"gold_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
-    std::string resource_fields[] = {"gold", "wood", "stone", "steel", "bronze", "grain", "leather", "mana"};
+    std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
+    std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana"};
 
-    for (size_t i = 0; i < 8; i++) {
+    for (size_t i = 0; i < 9; i++) {
         const auto& cost_key = cost_fields[i];
         const auto& resource_key = resource_fields[i];
 
@@ -708,18 +723,20 @@ ActionResult refundResources(int fiefdom_id, const nlohmann::json& amounts, Acti
     auto& db = Database::getInstance().gameDB();
 
     double gold = 0;
+    int silver_pence = 0;
     int wood = 0, stone = 0, steel = 0, bronze = 0, grain = 0, leather = 0, mana = 0;
-    db << "SELECT gold, wood, stone, steel, bronze, grain, leather, mana FROM fiefdoms WHERE id = ?;"
+    db << "SELECT gold, silver_pence, wood, stone, steel, bronze, grain, leather, mana FROM fiefdoms WHERE id = ?;"
        << fiefdom_id
-       >> [&](double g, int w, int st, int stl, int b, int gr, int l, int m) {
-           gold = g; wood = w; stone = st; steel = stl; bronze = b; grain = gr; leather = l; mana = m;
+       >> [&](double g, int sp, int w, int st, int stl, int b, int gr, int l, int m) {
+           gold = g; silver_pence = sp; wood = w; stone = st; steel = stl; bronze = b; grain = gr; leather = l; mana = m;
        };
 
-    std::string resource_fields[] = {"gold", "wood", "stone", "steel", "bronze", "grain", "leather", "mana"};
+    std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana"};
     double* gold_ptr = &gold;
-    int* resource_ptrs[] = {nullptr, &wood, &stone, &steel, &bronze, &grain, &leather, &mana};
+    int* silver_ptr = &silver_pence;
+    int* resource_ptrs[] = {nullptr, silver_ptr, &wood, &stone, &steel, &bronze, &grain, &leather, &mana};
 
-    for (size_t i = 0; i < 8; i++) {
+    for (size_t i = 0; i < 9; i++) {
         if (amounts.contains(resource_fields[i])) {
             double refund = amounts[resource_fields[i]].get<double>();
             double before;
@@ -743,8 +760,8 @@ ActionResult refundResources(int fiefdom_id, const nlohmann::json& amounts, Acti
         }
     }
 
-    db << "UPDATE fiefdoms SET gold = ?, wood = ?, stone = ?, steel = ?, bronze = ?, grain = ?, leather = ?, mana = ? WHERE id = ?;"
-       << gold << wood << stone << steel << bronze << grain << leather << mana << fiefdom_id;
+    db << "UPDATE fiefdoms SET gold = ?, silver_pence = ?, wood = ?, stone = ?, steel = ?, bronze = ?, grain = ?, leather = ?, mana = ? WHERE id = ?;"
+       << gold << silver_pence << wood << stone << steel << bronze << grain << leather << mana << fiefdom_id;
 
     return result;
 }
@@ -1173,7 +1190,7 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
         }
 
         nlohmann::json next_cost;
-        std::string cost_fields[] = {"gold_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
+        std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
         for (const auto& field : cost_fields) {
             if (config_opt->contains(field)) {
                 auto costs = (*config_opt)[field];
@@ -1289,7 +1306,7 @@ ActionResult UpgradeActionHandler::execute(const json& payload, const ActionCont
             }
 
             nlohmann::json next_cost;
-            std::string cost_fields[] = {"gold_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
+            std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
             for (const auto& field : cost_fields) {
                 if (config_opt->contains(field)) {
                     auto costs = (*config_opt)[field];

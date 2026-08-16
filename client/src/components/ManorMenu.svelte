@@ -106,6 +106,124 @@
     return new ItemClass(id, c.toDataURL());
   }
 
+  // ── Road tiles ────────────────────────────────────────────────────────────
+  // Roads auto-tile: each 1x1 tile picks a base image (straight/corner/
+  // three_way/four_way) from the config's `road_tiles_canonical` and is rotated
+  // via the engine's setOrientation to match its orthogonal road neighbors.
+  // The tile art is generated procedurally (canvas data URLs) so the network
+  // always renders with aligned seams; real art can later replace the PNGs
+  // referenced by `road_tiles` (see tools/generate_road_tiles.py).
+
+  const ROAD_DIRS = ['n', 'e', 's', 'w'] as const;
+
+  /** Rotates a set of road directions clockwise by k quarter-turns (n→e→s→w). */
+  function rotateRoadDirs(dirs: string[], k: number): string[] {
+    return dirs.map(d => ROAD_DIRS[(ROAD_DIRS.indexOf(d as (typeof ROAD_DIRS)[number]) + k) % 4]);
+  }
+
+  /** True if two direction arrays contain the same set. */
+  function sameRoadDirs(a: string[], b: string[]): boolean {
+    if (a.length !== b.length) return false;
+    const setB = new Set(b);
+    return a.every(d => setB.has(d));
+  }
+
+  /** Draws a dirt road tile with a path across the given screen directions. */
+  function makeRoadTileDataUrl(dirs: string[], size: number = 128): string {
+    const c = document.createElement('canvas');
+    c.width = size;
+    c.height = size;
+    const ctx = c.getContext('2d')!;
+    ctx.fillStyle = '#5d5340';
+    ctx.fillRect(0, 0, size, size);
+    // Speckled dirt
+    for (let i = 0; i < 400; i++) {
+      const shade = 60 + Math.floor(Math.random() * 40);
+      ctx.fillStyle = `rgb(${shade}, ${shade - 10}, ${shade - 28})`;
+      ctx.fillRect(Math.floor(Math.random() * size), Math.floor(Math.random() * size), 2, 2);
+    }
+    // Path band (gravel) across connected sides
+    const band = Math.round(size * 0.42);
+    const half = Math.round(band / 2);
+    const cx = Math.round(size / 2);
+    const cy = Math.round(size / 2);
+    ctx.fillStyle = '#8a7f6e';
+    if (dirs.includes('n')) ctx.fillRect(cx - half, 0, band, cy + half);
+    if (dirs.includes('s')) ctx.fillRect(cx - half, cy - half, band, size - cy + half);
+    if (dirs.includes('e')) ctx.fillRect(cx - half, cy - half, size - cx + half, band);
+    if (dirs.includes('w')) ctx.fillRect(0, cy - half, cx + half, band);
+    // Stone edge lines
+    ctx.strokeStyle = '#5b5044';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(cx - half, 0, band, cy + half);
+    ctx.strokeRect(cx - half, cy - half, band, size - cy + half);
+    ctx.strokeRect(cx - half, cy - half, size - cx + half, band);
+    ctx.strokeRect(0, cy - half, cx + half, band);
+    // A few lighter stones
+    ctx.fillStyle = '#a89c8a';
+    for (let i = 0; i < 30; i++) {
+      const sx = Math.floor(Math.random() * size);
+      const sy = Math.floor(Math.random() * size);
+      ctx.fillRect(sx, sy, 3, 3);
+    }
+    return c.toDataURL();
+  }
+
+  let roadTileClasses = new Map<string, ItemClass>();
+
+  /**
+   * Resolves which road base tile + rotation (degrees) to use for a road at the
+   * given grid cell, based on its orthogonal road neighbors.
+   *
+   * @param gx - Road cell x
+   * @param gy - Road cell y
+   * @param cfg - The road building config (road_tiles / road_tiles_canonical)
+   * @param buildings - All fiefdom buildings (for neighbor lookup)
+   * @returns The tile key and orientation; falls back to the straight tile
+   */
+  function resolveRoadTile(gx: number, gy: number, cfg: BuildingTypeConfig,
+                           buildings: Array<{ name: string; x: number; y: number }>):
+    { key: string; orientation: number } {
+    const actual: string[] = [];
+    if (buildings.some(b => b.name === 'road' && b.x === gx && b.y === gy - 1)) actual.push('n');
+    if (buildings.some(b => b.name === 'road' && b.x === gx + 1 && b.y === gy)) actual.push('e');
+    if (buildings.some(b => b.name === 'road' && b.x === gx && b.y === gy + 1)) actual.push('s');
+    if (buildings.some(b => b.name === 'road' && b.x === gx - 1 && b.y === gy)) actual.push('w');
+
+    const canonical = (cfg.road_tiles_canonical as Record<string, string[]> | undefined) ?? {};
+    for (const [key, dirs] of Object.entries(canonical)) {
+      if (!Array.isArray(dirs)) continue;
+      for (let k = 0; k < 4; k++) {
+        if (sameRoadDirs(rotateRoadDirs(dirs, k), actual)) {
+          return { key, orientation: k * 90 };
+        }
+      }
+    }
+    // Four-way (all sides) never appears in canonical — it needs no rotation.
+    if (actual.length === 4) return { key: 'four_way', orientation: 0 };
+    // Isolated / dead-ends reuse the straight tile (pass-through look).
+    let k = 0;
+    if (actual.length === 1) {
+      k = (actual[0] === 'n' || actual[0] === 's') ? 1 : 0;
+    }
+    return { key: 'straight', orientation: k * 90 };
+  }
+
+  /** Builds (and caches) ItemClasses for the four road tile base images. */
+  function ensureRoadTileClasses(cfg: BuildingTypeConfig): void {
+    if (roadTileClasses.size > 0) return;
+    const canonical = (cfg.road_tiles_canonical as Record<string, string[]> | undefined) ?? {};
+    const tileDirs: Record<string, string[]> = {
+      straight: canonical.straight ?? ['e', 'w'],
+      corner: canonical.corner ?? ['n', 'e'],
+      three_way: canonical.three_way ?? ['n', 'e', 'w'],
+      four_way: ['n', 'e', 's', 'w']
+    };
+    for (const [key, dirs] of Object.entries(tileDirs)) {
+      roadTileClasses.set(key, new ItemClass('road_' + key, makeRoadTileDataUrl(dirs)));
+    }
+  }
+
   /**
    * Sets a button's icon to a fixed height while preserving the source image's
    * aspect ratio (reads naturalWidth/naturalHeight once loaded), so non-square
@@ -225,6 +343,8 @@
       if (amt <= 0) continue;
       if (res === 'gold') {
         parts.push(formatShillingsPence(amt));
+      } else if (res === 'silver_pence') {
+        parts.push(`${Number.isInteger(amt) ? amt : amt.toFixed(1)}d`);
       } else {
         const unit = units[res];
         if (!unit) continue;
@@ -281,6 +401,7 @@
     for (const obj of buildingGameObjMap.values()) obj.destroy();
     buildingGameObjMap.clear();
     buildingClasses.clear();
+    roadTileClasses.clear();
     underConstructionSet.clear();
   }
 
@@ -294,6 +415,27 @@
       if (!cfg) continue;
 
       const underConstruction = b.construction_start_ts > 0;
+
+      // Roads auto-tile: pick the base image + rotation from orthogonal
+      // neighbors. Roads are always level >= 1 (instant build), so no
+      // construction variant exists.
+      if (b.name === 'road' && !underConstruction) {
+        ensureRoadTileClasses(cfg);
+        const resolved = resolveRoadTile(b.x, b.y, cfg, fiefdomData.buildings ?? []);
+        let cls = roadTileClasses.get(resolved.key);
+        if (!cls) {
+          cls = new ItemClass('road_' + resolved.key, makeRoadTileDataUrl(['e', 'w']));
+          roadTileClasses.set(resolved.key, cls);
+        }
+        const pos = g2b(b.x, b.y, 1, 1);
+        const obj = cls.spawn(pos.x, pos.y);
+        obj.width = 1 * CELL_TO_BOARD_UNITS;
+        obj.height = 1 * CELL_TO_BOARD_UNITS;
+        obj.setOrientation(resolved.orientation);
+        buildingGameObjMap.set(b.id, obj);
+        continue;
+      }
+
       const imgUrl = underConstruction ? cfg.construction_image : cfg.image;
       const classKey = b.name + (underConstruction ? '_con' : '');
 
@@ -743,6 +885,16 @@
       return;
     }
 
+    // Roads render procedurally (canvas data URLs) until real tile PNGs land,
+    // so point the ghost/palette art at a generated tile instead of the PNG path.
+    if (buildingConfigs['road']) {
+      buildingConfigs['road'] = {
+        ...buildingConfigs['road'],
+        image: makeRoadTileDataUrl(['n', 'e', 's', 'w']),
+        construction_image: makeRoadTileDataUrl(['n', 'e', 's', 'w'])
+      };
+    }
+
     await loadFiefdomData();
 
     if (errorMsg) {
@@ -1020,6 +1172,11 @@
             {#if outputs.length > 0}
               <div class="mb-3">
                 <div class="fw-semibold small">{cfg?.display_name ?? building.name} (L{building.level})</div>
+                {#if (fiefdomData?.road_morale?.[building.id] ?? 0) > 0}
+                  <div class="small text-success">
+                    Road morale: +{Math.round((fiefdomData?.road_morale?.[building.id] ?? 0) * 2)}% production
+                  </div>
+                {/if}
                 {#each outputs as output}
                   <div class="d-flex align-items-center gap-2 mb-1">
                     <span class="small flex-shrink-0" style="width: 110px;">{RESOURCE_DISPLAY[output.resource] ?? output.resource}</span>
