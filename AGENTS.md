@@ -53,6 +53,8 @@ The `server/tables/` directory contains detailed schema documentation for each S
 - `server/tables/users.md` - users table
 - `server/tables/characters.md` - characters table (renamed from players)
 - `server/tables/fiefdoms.md` - fiefdoms table
+- `server/tables/fiefdom_buildings.md` - fiefdom_buildings table (level, x/y, construction, `pond_type`, `output_rates`)
+- `server/tables/fiefdom_river.md` - fiefdom_river table (water-power river cells)
 - `server/tables/player_messages.md` - player_messages table
 - `server/tables/message_queues.md` - message_queues table
 - `server/tables/player_game_state.md` - player_game_state table (game phases, baron-track honor name)
@@ -181,6 +183,35 @@ CREATE TABLE game_sessions (
 
 Used for ongoing tower defense game sessions. Created on tdRound kickoff, updated on completion.
 
+```sql
+CREATE TABLE fiefdom_river (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fiefdom_id INTEGER NOT NULL,
+    x INTEGER NOT NULL,
+    y INTEGER NOT NULL,
+    FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id),
+    UNIQUE(fiefdom_id, x, y)
+);
+```
+
+Per-fiefdom river cells for the water-power system (mill pond + head/tail races
++ water-powered buildings). Seeded lazily from `manor_river.json` templates
+(rotated 0/90/180/270° per fiefdom) by `FiefdomFetcher::ensureFiefdomRiver`.
+Buildings may never overlap river cells. See `server/tables/fiefdom_river.md`.
+
+**Water-power model** (`Water::computeWaterPower`): a `water_source` building
+(the 8×8 `mill_pond`, types earthen/timber/stone with capacity 2/4/6) is active
+when its footprint touches a river cell; head races (wooden, `2w + 2d`, 10s
+build) BFS-reach water-powered buildings from the pond; tail races (`1d`,
+instant) must reach the river. A `water_powered` building is powered iff
+head-reached from a pond with spare capacity AND tail-reached from the river;
+unpowered water buildings produce nothing (daily_cost still applies).
+`fiefdom_buildings.pond_type`
+stores the pond's type; `level` is within the type (type upgrade = `/api/Build`
+action `upgrade_pond_type`). Pond cost/construction arrays resolve from
+`pond_types[pond_type]` via `Validation::getBuildingArrayField` /
+`getNextLevelCost` / `getBuildingMaxLevel`.
+
 ### API Endpoints
 
 All endpoints accept POST requests with JSON bodies and respond with:
@@ -216,9 +247,9 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - **/api/getCharacter**: Retrieve character information
 - **/api/updateUserProfile**: Update user account settings (adult flag)
 - **/api/updateCharacterProfile**: Update character profile (display names)
-- **/api/Build**: Building construction/management (STUB - TODO: implement)
+- **/api/Build**: Building construction/management (actions: `build`/`create`, `demolish`, `move`, `upgrade`, `upgrade_pond_type`; buildings may never overlap river cells)
 - **/api/getWorld**: Get world state (STUB - TODO: implement)
-- **/api/getFiefdom**: Get fiefdom information (STUB - TODO: implement)
+- **/api/getFiefdom**: Get fiefdom information (buildings, economy report, `river_cells`, `water_power`, `road_morale`)
 - **/api/sally**: Sally forth/battle actions (STUB - TODO: implement)
 - **/api/campaign**: Campaign management (STUB - TODO: implement)
 - **/api/hunt**: Hunting activities (STUB - TODO: implement)
@@ -565,6 +596,7 @@ Validates all JSON configuration files against their schema rules. Written in Py
 - Building `silver_pence_cost` must be a non-negative number array (penny-market cost, deducted from `fiefdoms.silver_pence`)
 - Building `road_morale` must be an object with a positive `boost` and integer `distance >= 1` (road-network morale source)
 - Building `road_tiles` must be a non-empty object of tile-key → image path; `road_tiles_canonical` a non-empty object of tile-key → `n`/`e`/`s`/`w` direction array (road auto-tiling)
+- Building `water_source`/`water_powered` must be booleans; `pond_types` a non-empty array of `{id, capacity, max_level, ...}` pond type definitions; `race_tiles`/`race_tiles_canonical` follow the same tile-key → path / direction-array shape as `road_tiles` (channel auto-tiling)
 
 **Config Files Validated:**
 - `game/config/damage_types.json` - Damage type definitions
@@ -574,6 +606,7 @@ Validates all JSON configuration files against their schema rules. Written in Py
 - `game/config/heroes.json` - Hero definitions with equipment, skills, and status effects
 - `game/config/fiefdom_officials.json` - Fiefdom official templates with stats and roles
 - `game/config/manor_ui.json` - Manor UI config (`build_order` governs the build-palette button order only — it never overrides the client's display/level/affordability filters)
+- `game/config/manor_river.json` - River templates (meandering polylines `points` + band `width`; seeded per-fiefdom with 0/90/180/270° rotation — see `server/tables/fiefdom_river.md`)
 
 **Image Directory Validation:**
 - `game/images/` - Game images (auto-detected from directory structure; only `combatants/`, `buildings/`, `heroes/`, `portraits/` entity directories are validated)
@@ -645,6 +678,7 @@ Build the full game progression and content system with a working tower defense 
 - **Manor loading fixed**: Two bugs kept the manor at an infinite "Loading Manor…" spinner. (1) `/api/getBuildingConfigs` is authenticated; the client now sends `auth` (it previously called without credentials, got a `needs_auth` response with no `error`/`data`, silently returned `undefined`, and `Object.entries(undefined)` in `ManorMenu.setupGame` threw). (2) `whenLoaded(setupGame)` was registered *after* `initEngine(canvasEl, debugDiv, false, () => {})` — initEngine's synchronous first loop closes the one-shot "all classes loaded" gate, so a late-registered `whenLoaded` never fires and `loading` stays true. Fixed by passing `setupGame` as initEngine's 4th argument (the documented pattern in SimpleGame/Embedding.md, matching TowerDefense/WeedingGame/CombatGame) and removing the `whenLoaded` call. The server now also serves `/images/manor/*` (background + building sprites). `getBuildingConfigsRequest` takes `{ username, token }` and throws on missing data; the manor loading spinner has a Back button as an escape hatch.
 - **Manor auto-build + construction**: On first entry, `ManorMenu.initialize` checks the fiefdom state and, if no `home_base` building exists, auto-places one at (0,0) — free (config `*_cost[0] = 0`), with `construction_start_ts` set to now so the construction timer starts on first entry and the server auto-levels to 1 after `construction_times[0]` on the next fiefdom time-update. `/api/Build` requires `character_id` (ownership check against `fiefdoms.owner_id`); `buildRequest` sends `$currentCharacter.id` from both the auto-place and toolbar `placeBuilding`. Construction progress bars compute live time via the `setProgressBar` getter (re-evaluated every frame), so the manor house visibly builds over 60s. Auto-place failures are `console.log`-ed (not silent).
 - **Manor roads**: `road` is a 1×1 building type (max_level 1, instant build via `construction_times[0] = 0`, costs 1 silver pence via `silver_pence_cost`). Roads auto-tile: the client picks a base image from `road_tiles` using the connectivity masks in `road_tiles_canonical` (n/e/s/w per side) and rotates it with `setOrientation` (procedural canvas tiles in `ManorMenu.svelte`; `tools/generate_road_tiles.py` can emit PNGs for real art later). Road-network morale: buildings with `road_morale` (`boost` + `distance`) radiate points along orthogonally-connected road tiles (BFS in `Morale::computeRoadMoralePoints`); each building touching an in-range road tile gets `boost` points, stacking additively (a source never boosts itself), and the economy tick multiplies that building's outputs by `1 + points × economy.json.morale_production_multiplier` (default 0.02). `getFiefdom` returns `road_morale` (building_id → points) when buildings are included; the Production panel shows the resulting "+X% production". Silver-pence build costs are deducted/refunded through the full build/demolish/move/upgrade cost paths.
+- **Water power scaffold**: Per-fiefdom rivers (lazy-seeded from `manor_river.json` templates — meandering polylines in a corner band, rotated 0/90/180/270° deterministically by fiefdom id; stored in `fiefdom_river`), the 8×8 **mill_pond** (water_source; `pond_types` earthen 2 / timber 4 / stone 6 capacity, each with levels; type upgrade via new `/api/Build` action `upgrade_pond_type`), **head_race** (wooden, 2w + 2d, 10s build) and **tail_race** (1d, instant) 1×1 auto-tiling connectors (`race_tiles`/`race_tiles_canonical`), the `water_powered` building flag + a sample **mill** (grain output gated on power). `Water::computeWaterPower` (new `server/WaterNetwork.cpp`): active pond = footprint touches river; head-reach BFS over head-race cells from the pond; tail-reach BFS over tail-race cells from the river; powered = drained ∧ fed by a pond with spare capacity (greedy by building id). Economy tick skips outputs of unpowered water buildings (daily_cost still applies); `getFiefdom` returns `river_cells`, `water_power`, `water_power_detail` (powered_by + pond_load). Buildings can't overlap river cells (build-time rejection). Pond cost/construction arrays resolve from `pond_types[pond_type]` (new `Validation::getBuildingArrayField`/`getNextLevelCost`/`getBuildingMaxLevel` used by upgrade, construction-completion, refund, and cumulative-cost paths — this also **fixes a latent bug** where `/api/Build` upgrade costs used `gold_cost`-style keys instead of resource names, so upgrades effectively never charged/deducted). Client: procedural water tiles + race auto-tiling (generalized channel tile helper), river-overlap rejection in the placement ghost, green/red powered dot on water-powered buildings, a `Type · load/capacity` label on ponds, and construction progress bars that resolve per-pond-type `construction_times` (`getConstructionTimes` in `ManorMenu.svelte`).
 - **Manor rendering fixed**: The manor now uses SimpleGame's newer `setViewportSize`/`setCameraPosition` (canvas = displayed size → no aspect distortion; camera centered on the board = manor house). `g2b`/`getRect` were changed so a building's **center** sits on its cell — `home_base` at cell (0,0) is exactly at the board center (was corner-at-center). The world-space `resText`/`mlText` HUD text was removed; the **Main** button (returns to hub; text id `manor_main_btn`), **Build** toolbar toggle (text id `ui_manor_build_btn`), and the **Economy**/**Production** panel toggles (text ids `ui_manor_economy`/`ui_manor_production`) are all SimpleGame **HUD** objects (`obj.hud = true`, screen-space, `simplegame.ts` commit 9df44fc) fixed to the viewport regardless of panning. All four live in one top-right `Column` (`actionCol`, 140×40 each, stack order Economy → Production → Build → Main), styled with the engine's newer button APIs to match Bootstrap `btn-outline-light` but with a **semi-opaque** fill — `color '#212529'` at `backgroundOpacity 0.55`, `foregroundColor '#f8f9fa'`, `cornerRadius 6`. The Economy/Production buttons highlight to Bootstrap primary `#0d6efd` while their panel is open (`setBackgroundColor`, which re-derives hover/click). The panel cards anchor below the stack via a `panelTop` bound to `apply_viewport()`. The build column is **hidden by default** and revealed by the Build toggle; its buttons are 280×56 with the icon **left** of the text, sized to a **fixed height of 32px preserving aspect ratio** (`setAspectIconSize` reads `naturalWidth`/`naturalHeight` — building art is not square), same glassy style, and labels come from the text system (`ui_building_<type_id>`, e.g. `ui_building_blacksmith`) with the **level-1 cost appended** (compact `10s 10w` via `formatCost`: gold in shillings + non-zero pence via `formatShillingsPence`, e.g. `12s`/`30s 6d` — never fractional gold; wood→`w`, stone→`st`). Buttons **grey out via `setDisabled`** when the building can't be built — `canBuild` mirrors the server: manor level (level-locked types are hidden from the palette entirely), `max_per_fiefdom` reached, level-1 `prerequisites[0]` non-`manor_level` keys unmet (e.g. `wood_hewer`/`collier` require a level-1 `woodcutter`), or costs unaffordable against the fiefdom's current resources. States refresh via `updateBuildButtonStates()` on every `loadFiefdomData`. The `house` type (no `display_name`/`image`) is excluded by the `display_name && image` guard in the `buildableIds` filter. Placement toggles via re-clicking the building button or Esc; the ghost places on a valid square via **click** or **drag-and-release** (`ghostBuilding.onClick(0, …)` + `onDragEnd(0, …)`, gated on `ghostValid` — never on mid-drag `onDragMap` moves); the loading/intro/error panels are absolute overlays so the canvas is always measurable. Board panning stays enabled; the viewport re-applies on window resize without re-centering (panned position survives). **Palette button order is config-driven** via `game/config/manor_ui.json` `build_order` (injected by `/api/getBuildingConfigs`; the client sorts `buildableIds` by it, unlisted ids sort last) — it governs order only and never overrides the display/disable logic; reordering is a one-file edit.
 
 #### In Progress
@@ -709,3 +743,7 @@ Build the full game progression and content system with a working tower defense 
 - `docs/combat_protocol.md` - WS protocol contract (envelope, messages, replication, topics)
 - `docs/combat_rulesets.md` / `docs/combat_maps.md` - Ruleset + map format specs
 - `server/tables/retinue_members.md` - Retinue table schema
+- `server/WaterNetwork.hpp/.cpp` - `Water::computeWaterPower` (pond activation, head/tail reach, capacity gating)
+- `game/config/manor_river.json` - River templates (meandering polyline `points` + band `width`)
+- `client/src/components/ManorMenu.svelte` - Manor board: roads, water power, construction, HUD, panels
+- `server/tables/fiefdom_river.md` - River table schema (lazy seeding, rotation)

@@ -1182,6 +1182,140 @@ class ConfigValidator:
                             Severity.ERROR
                         )
 
+        if "water_powered" in data:
+            if not isinstance(data["water_powered"], bool):
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.water_powered must be a boolean",
+                    Severity.ERROR
+                )
+
+        if "water_source" in data:
+            if not isinstance(data["water_source"], bool):
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.water_source must be a boolean",
+                    Severity.ERROR
+                )
+
+        if "pond_types" in data:
+            pts: Any = data["pond_types"]
+            if not isinstance(pts, list) or not pts:
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.pond_types must be a non-empty array",
+                    Severity.ERROR
+                )
+            else:
+                seen_pond_ids: set[str] = set()
+                for i, pt in enumerate(pts):
+                    if not isinstance(pt, dict):
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.pond_types[{i}] must be an object",
+                            Severity.ERROR
+                        )
+                        continue
+                    pid: Any = pt.get("id")
+                    if not isinstance(pid, str) or not pid:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.pond_types[{i}].id "
+                            "must be a non-empty string",
+                            Severity.ERROR
+                        )
+                    elif pid in seen_pond_ids:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.pond_types[{i}].id "
+                            f"'{pid}' is duplicated",
+                            Severity.ERROR
+                        )
+                    else:
+                        seen_pond_ids.add(pid)
+                    cap: Any = pt.get("capacity")
+                    if not isinstance(cap, int) or isinstance(cap, bool) or cap < 1:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.pond_types[{i}].capacity "
+                            "must be an integer >= 1",
+                            Severity.ERROR
+                        )
+                    ml: Any = pt.get("max_level")
+                    if not isinstance(ml, int) or isinstance(ml, bool) or ml < 1:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.pond_types[{i}].max_level "
+                            "must be an integer >= 1",
+                            Severity.ERROR
+                        )
+                    for cost_field in ("gold_cost", "silver_pence_cost", "wood_cost", "stone_cost",
+                                       "steel_cost", "bronze_cost", "grain_cost", "leather_cost",
+                                       "mana_cost"):
+                        if cost_field in pt:
+                            self._validate_number_array(
+                                file, content, building_id, pt, cost_field, allow_negative=False)
+                    if "construction_times" in pt:
+                        self._validate_number_array(
+                            file, content, building_id, pt,
+                            "construction_times", allow_negative=False)
+
+        if "race_tiles" in data:
+            rt: Any = data["race_tiles"]
+            if not isinstance(rt, dict) or not rt:
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.race_tiles must be a non-empty "
+                    "object of tile-key -> image path",
+                    Severity.ERROR
+                )
+            else:
+                for tile_key, tile_path in rt.items():
+                    if not isinstance(tile_path, str) or not tile_path:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.race_tiles.{tile_key} "
+                            "must be a non-empty image path string",
+                            Severity.ERROR
+                        )
+
+        if "race_tiles_canonical" in data:
+            rtc: Any = data["race_tiles_canonical"]
+            if not isinstance(rtc, dict) or not rtc:
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.race_tiles_canonical must be a "
+                    "non-empty object of tile-key -> direction array",
+                    Severity.ERROR
+                )
+            else:
+                valid_dirs: set[str] = {"n", "e", "s", "w"}
+                for tile_key, dirs in rtc.items():
+                    if not isinstance(dirs, list) or not dirs:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.race_tiles_canonical."
+                            f"{tile_key} must be a non-empty array of directions",
+                            Severity.ERROR
+                        )
+                        continue
+                    for d in dirs:
+                        if d not in valid_dirs:
+                            self._add_issue(
+                                file, 1, None,
+                                f"Building '{building_id}'.race_tiles_canonical."
+                                f"{tile_key} contains invalid direction "
+                                f"'{d}' (must be n/e/s/w)",
+                                Severity.ERROR
+                            )
+                    if len(set(dirs)) != len(dirs):
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.race_tiles_canonical."
+                            f"{tile_key} contains duplicate directions",
+                            Severity.ERROR
+                        )
+
         self._validate_building_modifiers(file, building_id, data)
         self._validate_building_dependencies(file, building_id, data)
         self._validate_building_daily_costs(file, building_id, data)
@@ -1831,6 +1965,68 @@ class ConfigValidator:
                 f"Buildable buildings missing from build_order (shown last): {', '.join(missing)}",
                 Severity.WARN,
             )
+
+        return valid
+
+    def validate_manor_river(self, file: Path, content: str) -> bool:
+        """Validate manor_river.json (per-fiefdom river templates).
+
+        Each template is a meandering polyline authored in a canonical corner:
+        `points` is a non-empty array of integer [x, y] pairs entering one board
+        edge and exiting an adjacent edge; `width` is the band thickness in
+        cells. The server rotates templates by 0/90/180/270 degrees per fiefdom.
+        """
+        data: JsonDataType = self._validate_json(content, file)
+        if data is None:
+            return False
+
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected an object", Severity.ERROR)
+            return False
+
+        templates = data.get("templates")
+        if not isinstance(templates, list) or not templates:
+            self._add_issue(file, 1, None, "'templates' must be a non-empty array", Severity.ERROR)
+            return False
+
+        valid: bool = True
+        seen_ids: set[str] = set()
+        for i, tmpl in enumerate(templates):
+            if not isinstance(tmpl, dict):
+                self._add_issue(file, 1, None, f"templates[{i}] must be an object", Severity.ERROR)
+                valid = False
+                continue
+
+            tid: Any = tmpl.get("id")
+            if not isinstance(tid, str) or not tid:
+                self._add_issue(file, 1, None, f"templates[{i}].id must be a "
+                                "non-empty string", Severity.ERROR)
+                valid = False
+            elif tid in seen_ids:
+                self._add_issue(file, 1, None, f"templates[{i}].id '{tid}' "
+                                "is duplicated", Severity.ERROR)
+                valid = False
+            else:
+                seen_ids.add(tid)
+
+            width: Any = tmpl.get("width", 1)
+            if not isinstance(width, int) or isinstance(width, bool) or width < 1:
+                self._add_issue(file, 1, None, f"templates[{i}].width must be "
+                                "an integer >= 1", Severity.ERROR)
+                valid = False
+
+            points: Any = tmpl.get("points")
+            if not isinstance(points, list) or not points:
+                self._add_issue(file, 1, None, f"templates[{i}].points must be "
+                                "a non-empty array of [x,y] pairs", Severity.ERROR)
+                valid = False
+            else:
+                for j, p in enumerate(points):
+                    if (not isinstance(p, list) or len(p) != 2
+                            or not all(isinstance(v, int) and not isinstance(v, bool) for v in p)):
+                        self._add_issue(file, 1, None, f"templates[{i}].points"
+                                        f"[{j}] must be an [x,y] integer pair", Severity.ERROR)
+                        valid = False
 
         return valid
 
@@ -3924,6 +4120,16 @@ class ConfigValidator:
                 self.validate_manor_ui(manor_ui_file, manor_ui_content, buildings_file)
             except Exception as e:
                 self._add_issue(manor_ui_file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+
+        # Validate manor_river.json (river templates)
+        manor_river_file: Path = config_dir / "manor_river.json"
+        if manor_river_file.exists():
+            try:
+                river_content: str = manor_river_file.read_text(encoding="utf-8")
+                self.validate_manor_river(manor_river_file, river_content)
+            except Exception as e:
+                self._add_issue(manor_river_file, 1, None,
+                                f"Failed to read file: {e}", Severity.ERROR)
 
         # Separate errors and warnings before image validation
         for issue in self.issues:

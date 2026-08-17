@@ -202,6 +202,9 @@ Get fiefdom information including resources, buildings, and officials.
 | officials | array | Official instances (when include_officials=true) |
 | heroes | array | Hero instances (when include_heroes=true) |
 | stationed_combatants | array | Combatant instances (when include_combatants=true) |
+| river_cells | array | River grid cells as [x, y] pairs (seeded lazily from manor_river.json templates; see server/tables/fiefdom_river.md) |
+| water_power | object | Map of water-powered building id → powered bool (when include_buildings=true) |
+| water_power_detail | object | `powered_by` (building id → pond id) and `pond_load` (pond id → powered-building count) |
 
 ### Building Object
 
@@ -211,6 +214,7 @@ Get fiefdom information including resources, buildings, and officials.
 | name | string | Building name |
 | level | integer | Building level (0 = under construction) |
 | construction_start_ts | integer | Epoch timestamp when construction started |
+| pond_type | string | Mill pond type ("earthen"/"timber"/"stone"; empty for non-ponds) |
 | output_rates | object | Map of output resource → player rate (0..1). Missing entries default to 1.0. |
 
 ### Official Object

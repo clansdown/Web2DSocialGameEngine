@@ -28,6 +28,8 @@
 #include "ActionHandler.hpp"
 #include "ActionHandlers.hpp"
 #include "GridCollision.hpp"
+#include "MoraleCalculator.hpp"
+#include "WaterNetwork.hpp"
 #include "DigitalCredentialsVerifier.hpp"
 #include "game_logic.hpp"
 #include "PlayerStateDB.hpp"
@@ -585,6 +587,46 @@ ApiResponse handleGetFiefdom(GameConfigCache& config_cache, const json& body,
             }
         }
         response.data["road_morale"] = road_morale;
+    }
+
+    // River cells + water power. The river is lazy-seeded from manor_river.json
+    // templates (rotated per fiefdom) so existing fiefdoms get one too.
+    {
+        FiefdomFetcher::ensureFiefdomRiver(fiefdom_id, config_cache.getManorRiver());
+        json river_cells = json::array();
+        for (const auto& [rx, ry] : FiefdomFetcher::fetchRiverCells(fiefdom_id)) {
+            json cell = json::array();
+            cell.push_back(rx);
+            cell.push_back(ry);
+            river_cells.push_back(std::move(cell));
+        }
+        response.data["river_cells"] = river_cells;
+
+        json water_power = json::object();
+        json water_power_detail = json::object();
+        if (include_buildings) {
+            std::set<std::pair<int, int>> river_set;
+            for (const auto& [rx, ry] : FiefdomFetcher::fetchRiverCells(fiefdom_id)) {
+                river_set.insert({rx, ry});
+            }
+            auto building_types = config_cache.getFiefdomBuildingTypes();
+            auto wp = Water::computeWaterPower(building_types, fiefdom.buildings, river_set);
+            for (const auto& [bld_id, ok] : wp.powered) {
+                water_power[std::to_string(bld_id)] = ok;
+            }
+            json powered_by = json::object();
+            for (const auto& [bld_id, pond_id] : wp.powered_by) {
+                powered_by[std::to_string(bld_id)] = pond_id;
+            }
+            json pond_load = json::object();
+            for (const auto& [pond_id, load] : wp.pond_load) {
+                pond_load[std::to_string(pond_id)] = load;
+            }
+            water_power_detail["powered_by"] = powered_by;
+            water_power_detail["pond_load"] = pond_load;
+        }
+        response.data["water_power"] = water_power;
+        response.data["water_power_detail"] = water_power_detail;
     }
 
     if (new_token) {

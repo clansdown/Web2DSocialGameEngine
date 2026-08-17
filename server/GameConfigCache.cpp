@@ -69,6 +69,7 @@ bool GameConfigCache::initialize(const std::string& config_dir) {
     add("weeding/ongoing.json");
     add("economy.json");
     add("manor_ui.json");
+    add("manor_river.json");
     add("combat/rulesets.json");
 
     for (auto& [name, entry] : configs_) {
@@ -141,6 +142,7 @@ nlohmann::json& GameConfigCache::getWeedingSpecials() { return getConfig("weedin
 nlohmann::json& GameConfigCache::getWeedingOngoing() { return getConfig("weeding/ongoing.json"); }
 nlohmann::json& GameConfigCache::getEconomyConfig() { return getConfig("economy.json"); }
 nlohmann::json& GameConfigCache::getManorUi() { return getConfig("manor_ui.json"); }
+nlohmann::json& GameConfigCache::getManorRiver() { return getConfig("manor_river.json"); }
 nlohmann::json& GameConfigCache::getCombatRulesets() { return getConfig("combat/rulesets.json"); }
 
 std::optional<nlohmann::json> GameConfigCache::getTowerDefenseSpawnSchedule(const std::string& filename) {

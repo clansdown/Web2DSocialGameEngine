@@ -27,11 +27,19 @@ std::optional<OfficialData> fetchOfficialById(int official_id);
 
 bool createBuilding(int fiefdom_id, const std::string& name, int level,
                     int64_t construction_start_ts, int64_t action_start_ts,
-                    const std::string& action_tag, int x, int y);
+                    const std::string& action_tag, int x, int y,
+                    const std::string& pond_type = "");
 
 bool updateBuildingLevel(int building_id, int new_level, int64_t timestamp);
 
 bool updateBuildingConstructionStart(int building_id, int64_t construction_start_ts, int64_t timestamp);
+
+bool updateBuildingPondType(int building_id, const std::string& pond_type, int new_level,
+                            int64_t construction_start_ts, int64_t timestamp);
+
+std::vector<std::pair<int, int>> fetchRiverCells(int fiefdom_id);
+
+bool ensureFiefdomRiver(int fiefdom_id, const nlohmann::json& river_config);
 
 bool createWall(int fiefdom_id, int generation, int level, int hp, int64_t construction_start_ts);
 

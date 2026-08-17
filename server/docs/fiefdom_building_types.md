@@ -264,6 +264,44 @@ Example — a peasant cottage connected by roads to a chapel (10 morale) at dist
 The fiefdom's `morale` column is unrelated — road morale is a separate per-building effect
 computed fresh each economy tick.
 
+### Water Power Fields
+
+Water power is the manor's mid/late-game production tier: a river, an upgradable
+mill pond, head races (wooden launders carrying elevated water), tail races
+(ground channels draining back to the river), and water-powered buildings.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `water_source` | boolean | false | Marks a building as a water source (e.g. the `mill_pond`). It powers the network only when its footprint **edge-touches** a river cell. |
+| `pond_types` | array | none | Mill-pond type definitions: each `{ id, capacity, max_level, construction_times, gold_cost, wood_cost, ... }`. Types upgrade earthen → timber → stone; `level` is within the current type. E.g. `[{id:"earthen",capacity:2,...},{id:"timber",capacity:4,...},{id:"stone",capacity:6,...}]`. |
+| `water_powered` | boolean | false | Marks a building as water-powered. It produces outputs only while *powered* by the water network; unpowered water buildings still pay `daily_cost`. |
+| `race_tiles` | object | none | Auto-tile image map for `head_race`/`tail_race` (same keys as `road_tiles`). |
+| `race_tiles_canonical` | object | none | Auto-tile canonical side sets for races (same shape as `road_tiles_canonical`). |
+
+**Connectivity model (server, `Water::computeWaterPower`):**
+
+```
+river → (adjacent) mill pond → head race → water building → tail race → river
+```
+
+1. **Active ponds** are `water_source` buildings (`level >= 1`) whose footprint
+   edge-touches a river cell. Each active pond's capacity comes from its current
+   type: earthen 2, timber 4, stone 6.
+2. **Head reach**: BFS over orthogonally-connected `head_race` cells
+   (`level >= 1`) seeded from each pond's footprint.
+3. **Tail reach**: BFS over `tail_race` cells seeded from cells touching a river
+   cell (the drain).
+4. A water-powered building is **powered** iff its footprint touches a
+   tail-reachable cell AND a head-reachable cell of a pond with spare capacity.
+   Assignment is greedy by building id (lowest-id pond first). Buildings beyond
+   a pond's capacity are unpowered.
+5. Powered state is recomputed fresh each economy tick; unpowered water-powered
+   buildings produce nothing (their `outputs` are skipped).
+
+The river itself is per-fiefdom (stored in `fiefdom_river`, seeded from
+`manor_river.json` templates — see `server/tables/fiefdom_river.md`). Buildings
+may never overlap river cells.
+
 ### Prerequisites Field
 
 The `prerequisites` field defines required buildings and their minimum levels for constructing or upgrading a building.

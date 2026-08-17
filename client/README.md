@@ -27,6 +27,15 @@ client/
 │   │   ├── CombatChat.svelte     # Team text chat over the WS
 │   │   ├── CombatVoice.svelte    # WebRTC mesh voice (WS-relayed signaling)
 │   │   └── MatchLobby.svelte     # PvE create/join-by-code
+│   ├── components/           # Shared UI + manor board
+│   │   ├── ManorMenu.svelte      # Manor board (roads, water power, construction)
+│   │   ├── LandPatentPanel.svelte # Baron-track patent/create UI
+│   │   ├── DialogOverlay.svelte  # Modal overlay shell
+│   │   ├── GameText.svelte       # Text-system markdown (vellum)
+│   │   └── StoryText.svelte      # Narrative markdown (silk)
+│   ├── minigames/            # Mini-game screens
+│   │   ├── tower_defense/
+│   │   └── weeding/
 │   └── lib/
 │       ├── router.ts         # Hash-based in-app router (hub/activity/game routes)
 │       └── storage.ts        # OPFS storage utilities
@@ -55,6 +64,35 @@ communicates over WebSocket `/ws/combat` instead of REST turns.
 - **Voice**: WebRTC mesh (browser standard) — the server only relays
   signaling; media flows peer-to-peer. STUN is a placeholder; configure TURN
   in `CombatVoice.svelte` for production.
+
+## Manor (ManorMenu)
+
+The manor is a SimpleGame canvas board reached as a hub activity
+(`#/activity/manor`). All logic lives in `src/components/ManorMenu.svelte`
+(the engine under `SimpleGame/` is never modified).
+
+- **Entry & construction**: on first entry the client auto-places `home_base`
+  at (0,0) and starts its construction timer. Building progress bars
+  re-evaluate live every frame (`setProgressBar` getter); mill-pond bars
+  resolve per-pond-type `construction_times` (`getConstructionTimes` —
+  timber/stone ponds have their own build times).
+- **HUD**: Main, Build, Economy, and Production are screen-space HUD objects
+  fixed to the viewport (top-right column) with text-system labels.
+- **Build palette**: buttons are ordered by `manor_ui.json` `build_order`
+  (config-driven; the client's display/level/affordability filters are never
+  overridden). Buttons grey out (`setDisabled`) when level-locked,
+  prerequisite-unmet, or unaffordable. Placement uses a ghost with click or
+  drag-and-release, and rejects river cells and occupied squares.
+- **Roads & morale**: roads auto-tile via `road_tiles_canonical` connectivity
+  masks (procedural canvas tiles); buildings with `road_morale` radiate bonus
+  points along connected road tiles, shown as "+X% production" in the
+  Production panel.
+- **Water power**: the river renders as procedural water tiles; head/tail
+  races auto-tile like roads (`race_tiles_canonical`); water-powered buildings
+  show a green (powered) / red (unpowered) dot; mill ponds show a
+  `Type · load/capacity` label (e.g. "Earthen · 1/2").
+- **Panels**: Economy (silver balance, imports/exports) and Production
+  (per-output rate sliders, reserves) are toggleable HUD panels.
 
 ## Navigation (hash router)
 

@@ -25,8 +25,9 @@ namespace {
         ensureIndex(db, "idx_officials_fiefdom", "officials", "fiefdom_id");
         ensureIndex(db, "idx_fiefdom_heroes_fiefdom", "fiefdom_heroes", "fiefdom_id");
         ensureIndex(db, "idx_stationed_combatants_fiefdom", "stationed_combatants", "fiefdom_id");
-        ensureIndex(db, "idx_fiefdom_walls_fiefdom", "fiefdom_walls", "fiefdom_id");
-        ensureIndex(db, "idx_fiefdom_walls_fiefdom_gen", "fiefdom_walls", "fiefdom_id, generation");
+ensureIndex(db, "idx_fiefdom_walls_fiefdom", "fiefdom_walls", "fiefdom_id");
+    ensureIndex(db, "idx_fiefdom_walls_fiefdom_gen", "fiefdom_walls", "fiefdom_id, generation");
+    ensureIndex(db, "idx_fiefdom_river_fiefdom", "fiefdom_river", "fiefdom_id");
     ensureIndex(db, "idx_player_game_state_character", "player_game_state", "character_id");
     ensureIndex(db, "idx_mini_game_progress_character", "mini_game_progress", "character_id, mini_game");
     ensureIndex(db, "idx_td_player_unlocks_character", "td_player_unlocks", "character_id");
@@ -113,6 +114,14 @@ void migrate_fancy_ironwork(sqlite::database& db) {
 void migrate_building_output_rates(sqlite::database& db) {
     try {
         db << "ALTER TABLE fiefdom_buildings ADD COLUMN output_rates TEXT NOT NULL DEFAULT '{}';";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+}
+
+void migrate_pond_type(sqlite::database& db) {
+    try {
+        db << "ALTER TABLE fiefdom_buildings ADD COLUMN pond_type TEXT NOT NULL DEFAULT '';";
     } catch (const std::exception&) {
         // Column already exists — ignore
     }
@@ -279,6 +288,15 @@ void migrate_baron_character_id(sqlite::database& db) {
             "UNIQUE(fiefdom_id, generation)"
         );
 
+        createTable(db, "fiefdom_river",
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "fiefdom_id INTEGER NOT NULL,"
+            "x INTEGER NOT NULL,"
+            "y INTEGER NOT NULL,"
+            "FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id),"
+            "UNIQUE(fiefdom_id, x, y)"
+        );
+
         createTable(db, "player_game_state",
             "character_id INTEGER PRIMARY KEY NOT NULL,"
             "game_phase TEXT NOT NULL DEFAULT 'initial_mission',"
@@ -424,6 +442,7 @@ void initializeGameDB(sqlite::database& db) {
     migrate_reserves(db);
     migrate_baron_character_id(db);
     migrate_building_output_rates(db);
+    migrate_pond_type(db);
     ensureGameDBIndexes_private(db);
 }
 

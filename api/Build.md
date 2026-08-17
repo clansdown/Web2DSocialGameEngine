@@ -17,6 +17,7 @@ The `action` field specifies the operation. Default is "create".
 | `move` | Move an existing building with 10% cost |
 | `wall` | Build a wall generation |
 | `upgrade` | Upgrade a building or wall to the next level |
+| `upgrade_pond_type` | Upgrade a mill pond's type (earthen → timber → stone) |
 
 ### create (default)
 
@@ -44,9 +45,13 @@ Create a new building at specified location.
 **Rules:**
 - Costs are deducted from the fiefdom's resources: `gold_cost` → `gold`, `wood_cost` → `wood`,
   `stone_cost` → `stone`, `silver_pence_cost` → `silver_pence`.
-- **Instant construction:** if the building type's `construction_times[0] == 0` (e.g. `road`),
-  the building is created directly at **level 1 with no construction timer** instead of
-  level 0 under construction. Response `level` is `1` and `construction_start_ts` is `0`.
+- **Instant construction:** if the building type's `construction_times[0] == 0` (e.g. `road`,
+  `tail_race`), the building is created directly at **level 1 with no construction timer**
+  instead of level 0 under construction. Response `level` is `1` and `construction_start_ts`
+  is `0`. `head_race` has a 10s construction time (wooden launder).
+- **River:** buildings may not be placed on any river cell (the fiefdom's river is seeded
+  from `manor_river.json` templates; see `server/tables/fiefdom_river.md`). The mill pond
+  must be *adjacent* to (touching) the river, never overlapping it.
 
 **Response (create):**
 ```json
@@ -324,7 +329,7 @@ Coordinates are relative to the fiefdom center (0, 0):
 | `home_base_exists` | A Manor House (home_base) already exists | Cannot build another home_base |
 | `home_base_immutable` | Manor House cannot be demolished or moved | home_base is permanent |
 | `prerequisites_not_met` | Building prerequisites not satisfied | Required buildings not at specified levels |
-| `invalid_location` | Cannot build at specified location | Invalid coordinates, overlaps with existing buildings, or out of bounds |
+| `invalid_location` | Cannot build at specified location | Invalid coordinates, overlaps with existing buildings or the river, or out of bounds |
 | `invalid_home_base_location` | Manor House (home_base) must be built at location (0, 0) | home_base not at center |
 | `invalid_config` | Building configuration not found | Building config missing |
 | `insufficient_resources` | Not enough resources | Cannot afford construction costs |
@@ -339,6 +344,9 @@ Coordinates are relative to the fiefdom center (0, 0):
 | `upgrade_id_required` | Either building_id or wall_id is required | Missing upgrade target |
 | `upgrade_in_progress` | Construction already in progress | Cannot upgrade while under construction |
 | `not_owner` | User does not own this wall | Character doesn't own this wall |
+| `not_mill_pond` | Only mill ponds can change type | upgrade_pond_type on a non-pond |
+| `max_pond_type` | Mill pond is already at its highest type | stone ponds cannot upgrade type |
+| `type_level_required` | Mill pond must be at max level of its current type before upgrading its type | earthen must reach max_level before timber |
 
 ## Building Construction
 
@@ -350,6 +358,47 @@ When a building is constructed:
 5. Once construction time elapses, the building automatically upgrades to level 1
 
 The `/api/updateState` endpoint handles construction completion during time progression.
+
+## Mill Pond Types (upgrade_pond_type)
+
+Mill ponds are 8×8 water reservoirs with a *type* (earthen → timber → stone) and a
+*level within the type*. Types are declared in the `mill_pond` building config's
+`pond_types` array:
+
+| Type | Capacity | Description |
+|------|----------|-------------|
+| `earthen` | 2 | Basic reservoir, powers 2 buildings |
+| `timber` | 4 | Timber-lined, powers 4 buildings |
+| `stone` | 6 | Stone-lined, powers 6 buildings |
+
+**Request:**
+```json
+{
+  "fiefdom_id": 1,
+  "action": "upgrade_pond_type",
+  "building_id": 42
+}
+```
+
+**Rules:**
+- Only `mill_pond` buildings can change type.
+- The pond must be at the **max level of its current type** before upgrading the type.
+- The next type's level-1 cost is deducted (e.g. timber's `gold_cost[0]`/`wood_cost[0]`/...).
+- The pond is **rebuilt**: `level` resets to 0 and construction restarts with the new
+  type's `construction_times[0]`.
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "data": {
+    "building_id": 42,
+    "pond_type": "timber",
+    "level": 0,
+    "cost": { "gold": 20, "wood": 100, "stone": 40 }
+  }
+}
+```
 
 ## Home Base Special Rules
 

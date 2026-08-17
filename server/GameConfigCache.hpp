@@ -36,6 +36,7 @@ public:
     nlohmann::json& getWeedingOngoing();
     nlohmann::json& getEconomyConfig();
     nlohmann::json& getManorUi();
+    nlohmann::json& getManorRiver();
     nlohmann::json& getCombatRulesets();
     std::optional<nlohmann::json> loadWeedingMap(const std::string& filename);
     std::optional<nlohmann::json> loadWeedingLevelConfig(const std::string& filename);

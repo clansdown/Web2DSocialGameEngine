@@ -714,6 +714,7 @@ export interface FiefdomBuilding {
   last_updated: number;
   action_start_ts: number;
   action_tag: string;
+  pond_type?: string;
   output_rates: Record<string, number>;
 }
 
@@ -749,6 +750,15 @@ export interface FiefdomResponse {
   economy_report?: EconomyReport;
   /** Per-building road-morale points (building_id → points), only when include_buildings. */
   road_morale?: Record<string, number>;
+  /** River cells (grid [x,y] pairs) for this fiefdom. */
+  river_cells?: Array<[number, number]>;
+  /** Per-building water-powered state (building_id → powered), only when include_buildings. */
+  water_power?: Record<string, boolean>;
+  /** Water-power detail: powered_by (building_id → pond id) + pond_load (pond id → count). */
+  water_power_detail?: {
+    powered_by?: Record<string, number>;
+    pond_load?: Record<string, number>;
+  };
 }
 
 export interface EconomyExport {
@@ -1091,6 +1101,13 @@ export interface BuildingOutputConfig {
   min_level?: number;
 }
 
+export interface PondTypeConfig {
+  id: string;
+  capacity: number;
+  max_level: number;
+  construction_times: number[];
+}
+
 export interface BuildingTypeConfig {
   display_name: string;
   image: string;
@@ -1101,6 +1118,11 @@ export interface BuildingTypeConfig {
   costs: Record<string, number>;
   min_manor_level: number;
   outputs?: BuildingOutputConfig[];
+  water_powered?: boolean;
+  water_source?: boolean;
+  pond_types?: PondTypeConfig[];
+  race_tiles?: Record<string, string>;
+  race_tiles_canonical?: Record<string, string[]>;
   [key: string]: unknown;
 }
 

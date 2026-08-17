@@ -41,10 +41,17 @@ namespace Validation {
     std::optional<nlohmann::json> getWallConfig(GameConfigCache& cache);
     bool validWallPlacement(GameConfigCache& cache, int fiefdom_id, const nlohmann::json& payload);
     nlohmann::json calculateCumulativeCost(GameConfigCache& cache, const std::string& building_type, int current_level);
+    nlohmann::json calculateCumulativeCost(GameConfigCache& cache, const std::string& building_type, const std::string& pond_type, int current_level);
     bool userOwnsBuilding(int building_id, const ActionContext& ctx);
     ActionResult refundResources(int fiefdom_id, const nlohmann::json& amounts, ActionResult& result);
     bool deleteBuilding(int building_id);
     bool updateBuildingPosition(int building_id, int x, int y);
+    nlohmann::json getBuildingArrayField(GameConfigCache& cache, const std::string& building_name,
+                                         const std::string& pond_type, const std::string& field);
+    nlohmann::json getNextLevelCost(GameConfigCache& cache, const std::string& building_name,
+                                    const std::string& pond_type, int current_level);
+    int getBuildingMaxLevel(GameConfigCache& cache, const std::string& building_name,
+                            const std::string& pond_type);
     std::optional<nlohmann::json> getPrerequisitesForLevel(GameConfigCache& cache, const std::string& building_type, int target_level);
     std::optional<nlohmann::json> getWallConfigByGeneration(GameConfigCache& cache, int generation);
     bool wallGenerationExists(int fiefdom_id, int generation);

@@ -127,6 +127,26 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
         return result;
     }
 
+    // Buildings may not be placed on the river. The mill pond must be adjacent
+    // to (touching) the river, never overlapping it.
+    {
+        auto river_cells = FiefdomFetcher::fetchRiverCells(fiefdom_id);
+        if (!river_cells.empty()) {
+            int bw = config.value("width", 1);
+            int bh = config.value("height", 1);
+            GameLogic::GridCollision::Rect bld_rect(x, y, bw, bh);
+            for (const auto& [rx, ry] : river_cells) {
+                GameLogic::GridCollision::Rect river_rect(rx, ry, 1, 1);
+                if (river_rect.overlaps(bld_rect)) {
+                    result.status = ActionStatus::FAIL;
+                    result.error_code = "invalid_location";
+                    result.error_message = "Cannot build on the river";
+                    return result;
+                }
+            }
+        }
+    }
+
     result.status = ActionStatus::OK;
     result.error_message = "OK";
     return result;
@@ -254,20 +274,22 @@ public:
         int building_id = payload["building_id"];
         std::string building_name;
         int level;
+        std::string pond_type;
         int fiefdom_id = ctx.requesting_fiefdom_id;
 
         auto& db = Database::getInstance().gameDB();
-        db << "SELECT name, level FROM fiefdom_buildings WHERE id = ?;"
+        db << "SELECT name, level, pond_type FROM fiefdom_buildings WHERE id = ?;"
            << building_id
-           >> [&](std::string name, int lvl) {
+           >> [&](std::string name, int lvl, std::string pt) {
                building_name = name;
                level = lvl;
+               pond_type = pt;
            };
 
         try {
             Validation::TransactionGuard tx(Database::getInstance().gameDB());
 
-            auto cumulative = Validation::calculateCumulativeCost(*ctx.config_cache, building_name, level);
+            auto cumulative = Validation::calculateCumulativeCost(*ctx.config_cache, building_name, pond_type, level);
             nlohmann::json refund;
 
             for (auto& [key, value] : cumulative.items()) {
@@ -623,6 +645,63 @@ std::optional<json> getBuildingConfig(GameConfigCache& cache, const std::string&
     return std::nullopt;
 }
 
+// Returns the array field (cost/construction arrays) for a building. Mill ponds
+// resolve arrays from their current pond type (`pond_types[pond_type]`); all
+// other buildings use the top-level config.
+nlohmann::json getBuildingArrayField(GameConfigCache& cache, const std::string& building_name,
+                                     const std::string& pond_type, const std::string& field) {
+    auto config_opt = getBuildingConfig(cache, building_name);
+    if (!config_opt) return nlohmann::json::array();
+    auto config = *config_opt;
+    const nlohmann::json* src = &config;
+    if (building_name == "mill_pond" && config.contains("pond_types") && config["pond_types"].is_array()) {
+        const nlohmann::json* found = nullptr;
+        for (const auto& pt : config["pond_types"]) {
+            if (pt.is_object() && pt.value("id", "") == pond_type) { found = &pt; break; }
+        }
+        if (found) src = found;
+    }
+    if (src->contains(field) && (*src)[field].is_array()) return (*src)[field];
+    return nlohmann::json::array();
+}
+
+// Returns the next level's cost for a building, keyed by resource name (gold,
+// wood, stone, ...). Pond buildings resolve costs from their pond type.
+nlohmann::json getNextLevelCost(GameConfigCache& cache, const std::string& building_name,
+                                const std::string& pond_type, int current_level) {
+    nlohmann::json next_cost;
+    std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
+    std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana"};
+    for (size_t i = 0; i < 9; i++) {
+        auto costs = getBuildingArrayField(cache, building_name, pond_type, cost_fields[i]);
+        if (costs.is_array() && current_level > 0 && current_level < static_cast<int>(costs.size())) {
+            double amount = costs[current_level].get<double>();
+            if (amount > 0) next_cost[resource_fields[i]] = amount;
+        }
+    }
+    return next_cost;
+}
+
+// Returns the max level for a building. Mill ponds use their current pond type's
+// max_level (falling back to the first type when the stored type is blank).
+int getBuildingMaxLevel(GameConfigCache& cache, const std::string& building_name,
+                        const std::string& pond_type) {
+    auto config_opt = getBuildingConfig(cache, building_name);
+    if (!config_opt) return 1;
+    auto config = *config_opt;
+    if (building_name == "mill_pond" && config.contains("pond_types") && config["pond_types"].is_array()) {
+        for (const auto& pt : config["pond_types"]) {
+            if (pt.is_object() && pt.value("id", "") == pond_type) {
+                return pt.value("max_level", config.value("max_level", 1));
+            }
+        }
+        if (!config["pond_types"].empty() && config["pond_types"][0].is_object()) {
+            return config["pond_types"][0].value("max_level", config.value("max_level", 1));
+        }
+    }
+    return config.value("max_level", 1);
+}
+
 bool canBuildBuildingHere(GameConfigCache& cache, const std::string& building_type, int fiefdom_id, int x, int y) {
     bool isHomeBase = (building_type == "home_base");
     auto result = GridCollision::checkPlacement(cache, fiefdom_id, building_type, x, y, isHomeBase);
@@ -681,6 +760,10 @@ void TransactionGuard::commit() {
 }
 
 nlohmann::json calculateCumulativeCost(GameConfigCache& cache, const std::string& building_type, int current_level) {
+    return calculateCumulativeCost(cache, building_type, "", current_level);
+}
+
+nlohmann::json calculateCumulativeCost(GameConfigCache& cache, const std::string& building_type, const std::string& pond_type, int current_level) {
     auto config_opt = getBuildingConfig(cache, building_type);
     if (!config_opt) return nlohmann::json::object();
 
@@ -690,16 +773,13 @@ nlohmann::json calculateCumulativeCost(GameConfigCache& cache, const std::string
     std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana"};
 
     for (size_t i = 0; i < 9; i++) {
-        const auto& cost_key = cost_fields[i];
-        const auto& resource_key = resource_fields[i];
-
-        if (config.contains(cost_key) && config[cost_key].is_array()) {
-            auto costs = config[cost_key];
+        auto costs = getBuildingArrayField(cache, building_type, pond_type, cost_fields[i]);
+        if (costs.is_array()) {
             double total = 0;
-            for (int j = 0; j < current_level && j < costs.size(); j++) {
+            for (int j = 0; j < current_level && j < static_cast<int>(costs.size()); j++) {
                 total += costs[j].get<double>();
             }
-            if (total > 0) cumulative[resource_key] = total;
+            if (total > 0) cumulative[resource_fields[i]] = total;
         }
     }
 
@@ -894,16 +974,18 @@ nlohmann::json getDemolishRefund(GameConfigCache& cache, int building_id) {
     auto& db = Database::getInstance().gameDB();
     std::string building_name;
     int level;
-    db << "SELECT name, level FROM fiefdom_buildings WHERE id = ?;"
+    std::string pond_type;
+    db << "SELECT name, level, pond_type FROM fiefdom_buildings WHERE id = ?;"
        << building_id
-       >> [&](std::string name, int lvl) {
+       >> [&](std::string name, int lvl, std::string pt) {
            building_name = name;
            level = lvl;
+           pond_type = pt;
        };
 
     if (building_name.empty()) return nlohmann::json::object();
 
-    auto cumulative = calculateCumulativeCost(cache, building_name, level);
+    auto cumulative = calculateCumulativeCost(cache, building_name, pond_type, level);
     nlohmann::json refund;
 
     for (auto& [key, value] : cumulative.items()) {
@@ -1130,11 +1212,13 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
 
         std::string building_name;
         int current_level;
-        db << "SELECT name, level FROM fiefdom_buildings WHERE id = ?;"
+        std::string pond_type;
+        db << "SELECT name, level, pond_type FROM fiefdom_buildings WHERE id = ?;"
            << building_id
-           >> [&](std::string name, int lvl) {
+           >> [&](std::string name, int lvl, std::string pt) {
                building_name = name;
                current_level = lvl;
+               pond_type = pt;
            };
 
         if (current_level == 0) {
@@ -1152,7 +1236,7 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
             return result;
         }
 
-        int max_level = config_opt->value("max_level", 1);
+        int max_level = Validation::getBuildingMaxLevel(*ctx.config_cache, building_name, pond_type);
         if (current_level >= max_level) {
             result.status = ActionStatus::FAIL;
             result.error_code = "max_level_reached";
@@ -1189,16 +1273,7 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
             }
         }
 
-        nlohmann::json next_cost;
-        std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
-        for (const auto& field : cost_fields) {
-            if (config_opt->contains(field)) {
-                auto costs = (*config_opt)[field];
-                if (costs.is_array() && current_level > 0 && current_level < static_cast<int>(costs.size())) {
-                    next_cost[field] = costs[current_level].get<double>();
-                }
-            }
-        }
+        nlohmann::json next_cost = Validation::getNextLevelCost(*ctx.config_cache, building_name, pond_type, current_level);
 
         if (!Validation::hasEnoughResources(fiefdom_id, next_cost)) {
             result.status = ActionStatus::FAIL;
@@ -1289,12 +1364,14 @@ ActionResult UpgradeActionHandler::execute(const json& payload, const ActionCont
 
             std::string building_name;
             int current_level;
+            std::string pond_type;
             auto& db = Database::getInstance().gameDB();
-            db << "SELECT name, level FROM fiefdom_buildings WHERE id = ?;"
+            db << "SELECT name, level, pond_type FROM fiefdom_buildings WHERE id = ?;"
                << building_id
-               >> [&](std::string name, int lvl) {
+               >> [&](std::string name, int lvl, std::string pt) {
                    building_name = name;
                    current_level = lvl;
+                   pond_type = pt;
                };
 
             auto config_opt = Validation::getBuildingConfig(*ctx.config_cache, building_name);
@@ -1305,16 +1382,7 @@ ActionResult UpgradeActionHandler::execute(const json& payload, const ActionCont
                 return result;
             }
 
-            nlohmann::json next_cost;
-            std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
-            for (const auto& field : cost_fields) {
-                if (config_opt->contains(field)) {
-                    auto costs = (*config_opt)[field];
-                    if (costs.is_array() && current_level > 0 && current_level < static_cast<int>(costs.size())) {
-                        next_cost[field] = costs[current_level].get<double>();
-                    }
-                }
-            }
+            nlohmann::json next_cost = Validation::getNextLevelCost(*ctx.config_cache, building_name, pond_type, current_level);
 
             auto deduct_result = Validation::deductResources(fiefdom_id, next_cost, result);
             if (deduct_result.status != ActionStatus::OK) return deduct_result;
@@ -1374,6 +1442,191 @@ ActionResult UpgradeActionHandler::execute(const json& payload, const ActionCont
     }
 }
 
+// === UpgradePondTypeActionHandler Implementation ===
+// Upgrades a mill pond from one type to the next (earthen -> timber -> stone),
+// rebuilding it (level 0 + construction timer) as the new type. Requires the
+// pond to be at its current type's max level first.
+
+namespace {
+// Shared helper: locates the pond_types array + current index + the next type
+// object. Returns false when the request is invalid (returns the failure in
+// `result`).
+bool resolvePondTypeUpgrade(const json& payload, const ActionContext& ctx,
+                            int& fiefdom_id, int& building_id,
+                            const json*& next_type, int& next_index, ActionResult& result) {
+    if (!payload.contains("building_id")) {
+        result.status = ActionStatus::FAIL;
+        result.error_code = "building_id_required";
+        result.error_message = "building_id is required";
+        return false;
+    }
+    building_id = payload["building_id"];
+
+    if (!Validation::userOwnsBuilding(building_id, ctx)) {
+        result.status = ActionStatus::FAIL;
+        result.error_code = "not_owner";
+        result.error_message = "User does not own this building";
+        return false;
+    }
+
+    auto& db = Database::getInstance().gameDB();
+    std::string building_name;
+    int current_level;
+    std::string pond_type;
+    db << "SELECT fiefdom_id, name, level, pond_type FROM fiefdom_buildings WHERE id = ?;"
+       << building_id
+       >> [&](int fid, std::string name, int lvl, std::string pt) {
+           fiefdom_id = fid;
+           building_name = name;
+           current_level = lvl;
+           pond_type = pt;
+       };
+
+    if (building_name != "mill_pond") {
+        result.status = ActionStatus::FAIL;
+        result.error_code = "not_mill_pond";
+        result.error_message = "Only mill ponds can change type";
+        return false;
+    }
+    if (current_level == 0) {
+        result.status = ActionStatus::FAIL;
+        result.error_code = "upgrade_in_progress";
+        result.error_message = "Mill pond is already under construction";
+        return false;
+    }
+
+    auto config_opt = Validation::getBuildingConfig(*ctx.config_cache, "mill_pond");
+    if (!config_opt || !config_opt->contains("pond_types") || !(*config_opt)["pond_types"].is_array()) {
+        result.status = ActionStatus::FAIL;
+        result.error_code = "invalid_config";
+        result.error_message = "Mill pond configuration not found";
+        return false;
+    }
+
+    auto types = (*config_opt)["pond_types"];
+    int current_idx = -1;
+    for (size_t i = 0; i < types.size(); i++) {
+        if (types[i].is_object() && types[i].value("id", "") == pond_type) { current_idx = static_cast<int>(i); break; }
+    }
+    if (current_idx < 0) current_idx = 0; // blank pond_type -> earthen
+    if (current_idx >= static_cast<int>(types.size()) - 1) {
+        result.status = ActionStatus::FAIL;
+        result.error_code = "max_pond_type";
+        result.error_message = "Mill pond is already at its highest type";
+        return false;
+    }
+
+    auto cur_type = types[current_idx];
+    int type_max_level = cur_type.is_object() ? cur_type.value("max_level", 1) : 1;
+    if (current_level < type_max_level) {
+        result.status = ActionStatus::FAIL;
+        result.error_code = "type_level_required";
+        result.error_message = "Mill pond must be at max level of its current type before upgrading its type";
+        return false;
+    }
+
+    next_index = current_idx + 1;
+    next_type = &types[next_index];
+    return true;
+}
+
+// Resource-keyed level-1 cost for a pond type object.
+json pondTypeLevel1Cost(const json& pt) {
+    json cost;
+    std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
+    std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana"};
+    for (size_t i = 0; i < 9; i++) {
+        if (pt.contains(cost_fields[i]) && pt[cost_fields[i]].is_array() && !pt[cost_fields[i]].empty()) {
+            double amount = pt[cost_fields[i]][0].get<double>();
+            if (amount > 0) cost[resource_fields[i]] = amount;
+        }
+    }
+    return cost;
+}
+} // namespace
+
+class UpgradePondTypeActionHandler : public ActionHandler {
+public:
+    ActionResult validate(const json& payload, const ActionContext& ctx) override {
+        ActionResult result;
+        int fiefdom_id, building_id, next_index;
+        const json* next_type = nullptr;
+        if (!resolvePondTypeUpgrade(payload, ctx, fiefdom_id, building_id, next_type, next_index, result)) {
+            return result;
+        }
+        auto cost = pondTypeLevel1Cost(*next_type);
+        if (!Validation::hasEnoughResources(fiefdom_id, cost)) {
+            result.status = ActionStatus::FAIL;
+            result.error_code = "insufficient_resources";
+            result.error_message = "Not enough resources to upgrade the mill pond type";
+            return result;
+        }
+        result.status = ActionStatus::OK;
+        return result;
+    }
+
+    ActionResult execute(const json& payload, const ActionContext& ctx) override {
+        ActionResult result;
+        int fiefdom_id, building_id, next_index;
+        const json* next_type = nullptr;
+        if (!resolvePondTypeUpgrade(payload, ctx, fiefdom_id, building_id, next_type, next_index, result)) {
+            return result;
+        }
+
+        auto cost = pondTypeLevel1Cost(*next_type);
+        if (!Validation::hasEnoughResources(fiefdom_id, cost)) {
+            result.status = ActionStatus::FAIL;
+            result.error_code = "insufficient_resources";
+            result.error_message = "Not enough resources to upgrade the mill pond type";
+            return result;
+        }
+
+        int64_t now = Validation::getCurrentTimestamp();
+        try {
+            Validation::TransactionGuard tx(Database::getInstance().gameDB());
+
+            auto deduct_result = Validation::deductResources(fiefdom_id, cost, result);
+            if (deduct_result.status != ActionStatus::OK) return deduct_result;
+
+            std::string next_id = next_type->value("id", "");
+            // Instant next type (construction_times[0] == 0) completes immediately.
+            bool instant = false;
+            if (next_type->contains("construction_times") && (*next_type)["construction_times"].is_array() &&
+                !(*next_type)["construction_times"].empty()) {
+                instant = ((*next_type)["construction_times"][0].get<double>() == 0);
+            }
+            int new_level = instant ? 1 : 0;
+            int64_t construction_start = instant ? 0 : now;
+
+            if (!FiefdomFetcher::updateBuildingPondType(building_id, next_id, new_level, construction_start, now)) {
+                result.status = ActionStatus::FAIL;
+                result.error_code = "database_error";
+                result.error_message = "Failed to upgrade mill pond type";
+                return result;
+            }
+
+            result.result["building_id"] = building_id;
+            result.result["pond_type"] = next_id;
+            result.result["cost"] = cost;
+            result.result["level"] = new_level;
+            result.action_timestamp = now;
+
+            tx.commit();
+            result.status = ActionStatus::OK;
+            return result;
+        } catch (const std::exception& e) {
+            result.status = ActionStatus::FAIL;
+            result.error_code = "database_error";
+            result.error_message = std::string(e.what());
+            return result;
+        }
+    }
+
+    std::string getDescription() const override {
+        return "Upgrade a mill pond's type (earthen -> timber -> stone)";
+    }
+};
+
 void registerAllActionHandlers(ActionRegistry& registry) {
     registry.registerHandler("build",
         [](const json& p, const ActionContext& ctx) { BuildActionHandler h; return h.validate(p, ctx); },
@@ -1399,6 +1652,11 @@ void registerAllActionHandlers(ActionRegistry& registry) {
         [](const json& p, const ActionContext& ctx) { UpgradeActionHandler h; return h.validate(p, ctx); },
         [](const json& p, const ActionContext& ctx) { UpgradeActionHandler h; return h.execute(p, ctx); },
         "Upgrade buildings and walls");
+
+    registry.registerHandler("upgrade_pond_type",
+        [](const json& p, const ActionContext& ctx) { UpgradePondTypeActionHandler h; return h.validate(p, ctx); },
+        [](const json& p, const ActionContext& ctx) { UpgradePondTypeActionHandler h; return h.execute(p, ctx); },
+        "Upgrade a mill pond's type");
 
     registry.registerHandler("train_troops",
         [](const json& p, const ActionContext& ctx) { TrainTroopsActionHandler h; return h.validate(p, ctx); },

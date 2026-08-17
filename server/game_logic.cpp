@@ -1,6 +1,7 @@
 #include "game_logic.hpp"
 #include "GameConfigCache.hpp"
 #include "MoraleCalculator.hpp"
+#include "WaterNetwork.hpp"
 #include "FiefdomFetcher.hpp"
 #include "ActionHandler.hpp"
 #include "ActionHandlers.hpp"
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <set>
 #include <unordered_set>
 
 using json = nlohmann::json;
@@ -161,8 +163,9 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                         auto config = *config_opt;
                         int construction_seconds = 0;
 
-                        if (config.contains("construction_times")) {
-                            construction_seconds = getIntForLevel(config["construction_times"], building.level, 0);
+                        auto ct_array = Validation::getBuildingArrayField(config_cache, building.name, building.pond_type, "construction_times");
+                        if (!ct_array.empty()) {
+                            construction_seconds = getIntForLevel(ct_array, building.level, 0);
                         }
 
                         if (construction_seconds > 0) {
@@ -208,8 +211,8 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                                         const auto& cost_key = cost_fields[i];
                                         const auto& resource_key = resource_fields[i];
                                         
-                                        if (config.contains(cost_key) && config[cost_key].is_array()) {
-                                            auto costs = config[cost_key];
+                                        auto costs = Validation::getBuildingArrayField(config_cache, building.name, building.pond_type, cost_key);
+                                        if (costs.is_array() && !costs.empty()) {
                                             // Refund the cost actually paid for the failed step:
                                             // create paid costs[0], upgrade from L charged costs[L].
                                             int level_index = old_level;
@@ -376,11 +379,31 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                     }
                 }
 
+                // Water power: water-powered buildings only produce while powered
+                // (river -> pond -> head race -> building -> tail race -> river).
+                std::unordered_map<int, bool> water_powered_ok;
+                {
+                    FiefdomFetcher::ensureFiefdomRiver(fiefdom.id, config_cache.getManorRiver());
+                    auto river_vec = FiefdomFetcher::fetchRiverCells(fiefdom.id);
+                    std::set<std::pair<int, int>> river_set(river_vec.begin(), river_vec.end());
+                    auto wp = Water::computeWaterPower(building_types, fiefdom.buildings, river_set);
+                    for (const auto& [bld_id, ok] : wp.powered) {
+                        if (ok) water_powered_ok[bld_id] = true;
+                    }
+                }
+
                 for (const auto& building : fiefdom.buildings) {
                     if (building.level <= 0) continue;
                     for (const auto& type_obj : building_types) {
                         if (!type_obj.contains(building.name)) continue;
                         auto type_config = type_obj[building.name];
+
+                        // Unpowered water-powered buildings produce nothing (they
+                        // still pay daily_cost like any other building).
+                        if (type_config.value("water_powered", false) && !water_powered_ok.count(building.id)) {
+                            break;
+                        }
+
                         auto& plan = plans[building.id];
 
                         // Per-building player rate for a given output resource.

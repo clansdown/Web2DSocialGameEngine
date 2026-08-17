@@ -2,7 +2,7 @@
   import { onDestroy } from 'svelte';
   import { currentCharacter } from '../lib/stores';
   import { getFiefdomRequest, buildRequest, getBuildingConfigsRequest, setFiefdomImportRequest, setFiefdomReserveRequest, setBuildingOutputRateRequest } from '../lib/api';
-  import type { FiefdomResponse, BuildingTypeConfig, EconomyReport } from '../lib/api';
+  import type { FiefdomResponse, FiefdomBuilding, BuildingTypeConfig, EconomyReport } from '../lib/api';
   import { loadTexts } from '../lib/text';
   import { getSessionToken, getInMemoryCredentials } from '../lib/auth';
   import { getConfigBoolean, setConfig as setConfigKV, getConfigNumber } from '../lib/storage';
@@ -56,6 +56,9 @@
   let buildingGameObjMap = new Map<number, GameObject>();
   let buildingClasses = new Map<string, ItemClass>();
   let underConstructionSet = new Set<number>();
+  let riverObjMap = new Map<string, GameObject>();
+  let waterBadgeMap = new Map<number, GameObject>();
+  let pondLabelMap = new Map<number, Text>();
 
   let placementMode = $state(false);
   let placementType = $state<string | null>(null);
@@ -106,13 +109,13 @@
     return new ItemClass(id, c.toDataURL());
   }
 
-  // ── Road tiles ────────────────────────────────────────────────────────────
-  // Roads auto-tile: each 1x1 tile picks a base image (straight/corner/
-  // three_way/four_way) from the config's `road_tiles_canonical` and is rotated
-  // via the engine's setOrientation to match its orthogonal road neighbors.
-  // The tile art is generated procedurally (canvas data URLs) so the network
-  // always renders with aligned seams; real art can later replace the PNGs
-  // referenced by `road_tiles` (see tools/generate_road_tiles.py).
+  // ── Channel tiles (roads / head races / tail races) ──────────────────────
+  // Roads and races auto-tile: each 1x1 tile picks a base image
+  // (straight/corner/three_way/four_way) from the config's `*_tiles_canonical`
+  // and is rotated via the engine's setOrientation to match its same-type
+  // neighbors. The tile art is generated procedurally (canvas data URLs) so the
+  // network always renders with aligned seams; real art can later replace the
+  // PNGs referenced by `*_tiles` (see tools/generate_road_tiles.py).
 
   const ROAD_DIRS = ['n', 'e', 's', 'w'] as const;
 
@@ -169,28 +172,116 @@
     return c.toDataURL();
   }
 
-  let roadTileClasses = new Map<string, ItemClass>();
+  /**
+   * Draws a race channel tile. Head races are wooden, elevated launders carrying
+   * water (blue channel over plank); tail races are ground channels (dry earth).
+   *
+   * @param dirs - Screen directions the channel runs across
+   * @param kind - 'head_race' (wooden, water) or 'tail_race' (earth channel)
+   * @param size - Tile pixel size
+   * @returns A canvas data URL
+   */
+  function makeRaceTileDataUrl(dirs: string[], kind: 'head_race' | 'tail_race', size: number = 128): string {
+    const c = document.createElement('canvas');
+    c.width = size;
+    c.height = size;
+    const ctx = c.getContext('2d')!;
+    const isHead = kind === 'head_race';
+    // Base: planks (head) vs dirt (tail)
+    ctx.fillStyle = isHead ? '#3a332a' : '#5d5340';
+    ctx.fillRect(0, 0, size, size);
+    for (let i = 0; i < 400; i++) {
+      const shade = 50 + Math.floor(Math.random() * 30);
+      ctx.fillStyle = isHead
+        ? `rgb(${shade}, ${shade - 6}, ${shade - 18})`
+        : `rgb(${shade + 10}, ${shade}, ${shade - 22})`;
+      ctx.fillRect(Math.floor(Math.random() * size), Math.floor(Math.random() * size), 2, 2);
+    }
+    // Channel band across connected sides (water for head, gravel for tail)
+    const band = Math.round(size * 0.42);
+    const half = Math.round(band / 2);
+    const cx = Math.round(size / 2);
+    const cy = Math.round(size / 2);
+    ctx.fillStyle = isHead ? '#5b7f9e' : '#8a7f6e';
+    if (dirs.includes('n')) ctx.fillRect(cx - half, 0, band, cy + half);
+    if (dirs.includes('s')) ctx.fillRect(cx - half, cy - half, band, size - cy + half);
+    if (dirs.includes('e')) ctx.fillRect(cx - half, cy - half, size - cx + half, band);
+    if (dirs.includes('w')) ctx.fillRect(0, cy - half, cx + half, band);
+    // Edge lines
+    ctx.strokeStyle = isHead ? '#2e2517' : '#5b5044';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(cx - half, 0, band, cy + half);
+    ctx.strokeRect(cx - half, cy - half, band, size - cy + half);
+    ctx.strokeRect(cx - half, cy - half, size - cx + half, band);
+    ctx.strokeRect(0, cy - half, cx + half, band);
+    return c.toDataURL();
+  }
+
+  /** Draws a procedural water tile for the river. */
+  function makeWaterTileDataUrl(size: number = 128): string {
+    const c = document.createElement('canvas');
+    c.width = size;
+    c.height = size;
+    const ctx = c.getContext('2d')!;
+    ctx.fillStyle = '#2f5d8c';
+    ctx.fillRect(0, 0, size, size);
+    for (let i = 0; i < 600; i++) {
+      const shade = 30 + Math.floor(Math.random() * 45);
+      const g = 70 + Math.floor(Math.random() * 30);
+      const b = 110 + Math.floor(Math.random() * 50);
+      ctx.fillStyle = `rgb(${shade}, ${g}, ${b})`;
+      ctx.fillRect(Math.floor(Math.random() * size), Math.floor(Math.random() * size), 3, 2);
+    }
+    ctx.fillStyle = 'rgba(255,255,255,0.22)';
+    for (let i = 0; i < 20; i++) {
+      ctx.fillRect(Math.floor(Math.random() * size), Math.floor(Math.random() * size), 2, 2);
+    }
+    return c.toDataURL();
+  }
+
+  /** Draws a small solid dot (used for the powered/unpowered badge). */
+  function makeDotDataUrl(color: string, size: number = 32): string {
+    const c = document.createElement('canvas');
+    c.width = size;
+    c.height = size;
+    const ctx = c.getContext('2d')!;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(size / 2, size / 2, size / 2 - 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#111111';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    return c.toDataURL();
+  }
+
+  let channelTileClasses = new Map<string, ItemClass>();
+  let riverTileClass: ItemClass | null = null;
+  let poweredDotClass: ItemClass | null = null;
+  let unpoweredDotClass: ItemClass | null = null;
 
   /**
-   * Resolves which road base tile + rotation (degrees) to use for a road at the
-   * given grid cell, based on its orthogonal road neighbors.
+   * Resolves which base tile + rotation (degrees) to use for a channel tile at
+   * the given grid cell, based on its orthogonal same-type neighbors.
    *
-   * @param gx - Road cell x
-   * @param gy - Road cell y
-   * @param cfg - The road building config (road_tiles / road_tiles_canonical)
+   * @param gx - Cell x
+   * @param gy - Cell y
+   * @param typeId - 'road' | 'head_race' | 'tail_race'
+   * @param cfg - The building config (*_tiles / *_tiles_canonical)
    * @param buildings - All fiefdom buildings (for neighbor lookup)
    * @returns The tile key and orientation; falls back to the straight tile
    */
-  function resolveRoadTile(gx: number, gy: number, cfg: BuildingTypeConfig,
-                           buildings: Array<{ name: string; x: number; y: number }>):
+  function resolveChannelTile(gx: number, gy: number, typeId: string, cfg: BuildingTypeConfig,
+                              buildings: Array<{ name: string; x: number; y: number }>):
     { key: string; orientation: number } {
     const actual: string[] = [];
-    if (buildings.some(b => b.name === 'road' && b.x === gx && b.y === gy - 1)) actual.push('n');
-    if (buildings.some(b => b.name === 'road' && b.x === gx + 1 && b.y === gy)) actual.push('e');
-    if (buildings.some(b => b.name === 'road' && b.x === gx && b.y === gy + 1)) actual.push('s');
-    if (buildings.some(b => b.name === 'road' && b.x === gx - 1 && b.y === gy)) actual.push('w');
+    if (buildings.some(b => b.name === typeId && b.x === gx && b.y === gy - 1)) actual.push('n');
+    if (buildings.some(b => b.name === typeId && b.x === gx + 1 && b.y === gy)) actual.push('e');
+    if (buildings.some(b => b.name === typeId && b.x === gx && b.y === gy + 1)) actual.push('s');
+    if (buildings.some(b => b.name === typeId && b.x === gx - 1 && b.y === gy)) actual.push('w');
 
-    const canonical = (cfg.road_tiles_canonical as Record<string, string[]> | undefined) ?? {};
+    const canonicalKey = typeId === 'road' ? 'road_tiles_canonical' : 'race_tiles_canonical';
+    const canonical = (cfg[canonicalKey] as Record<string, string[]> | undefined) ?? {};
     for (const [key, dirs] of Object.entries(canonical)) {
       if (!Array.isArray(dirs)) continue;
       for (let k = 0; k < 4; k++) {
@@ -209,10 +300,14 @@
     return { key: 'straight', orientation: k * 90 };
   }
 
-  /** Builds (and caches) ItemClasses for the four road tile base images. */
-  function ensureRoadTileClasses(cfg: BuildingTypeConfig): void {
-    if (roadTileClasses.size > 0) return;
-    const canonical = (cfg.road_tiles_canonical as Record<string, string[]> | undefined) ?? {};
+  /** Builds (and caches) ItemClasses for a channel type's four base tiles. */
+  function ensureChannelTileClasses(cfg: BuildingTypeConfig, typeId: string): void {
+    const prefix = typeId + ':';
+    for (const existing of channelTileClasses.keys()) {
+      if (existing.startsWith(prefix)) return;
+    }
+    const canonicalKey = typeId === 'road' ? 'road_tiles_canonical' : 'race_tiles_canonical';
+    const canonical = (cfg[canonicalKey] as Record<string, string[]> | undefined) ?? {};
     const tileDirs: Record<string, string[]> = {
       straight: canonical.straight ?? ['e', 'w'],
       corner: canonical.corner ?? ['n', 'e'],
@@ -220,7 +315,11 @@
       four_way: ['n', 'e', 's', 'w']
     };
     for (const [key, dirs] of Object.entries(tileDirs)) {
-      roadTileClasses.set(key, new ItemClass('road_' + key, makeRoadTileDataUrl(dirs)));
+      if (channelTileClasses.has(prefix + key)) continue;
+      const url = typeId === 'road'
+        ? makeRoadTileDataUrl(dirs)
+        : makeRaceTileDataUrl(dirs, typeId as 'head_race' | 'tail_race');
+      channelTileClasses.set(prefix + key, new ItemClass(typeId + '_' + key, url));
     }
   }
 
@@ -273,6 +372,25 @@
     return buildingConfigs[id];
   }
 
+  /**
+   * Returns the construction_times array to use for a building's progress bar.
+   * Mill ponds read from their current pond type (timber/stone have their own
+   * build times); all other buildings use the top-level array.
+   *
+   * @param b - The building instance (uses pond_type for mill ponds)
+   * @param cfg - The building type config
+   * @returns The construction_times array (falls back to the top-level array)
+   */
+  function getConstructionTimes(b: FiefdomBuilding, cfg: BuildingTypeConfig): number[] {
+    if (b.name === 'mill_pond' && cfg.pond_types?.length) {
+      const stored = b.pond_type && cfg.pond_types.some(t => t.id === b.pond_type)
+        ? b.pond_type : cfg.pond_types[0].id;
+      const typeCfg = cfg.pond_types.find(t => t.id === stored) ?? cfg.pond_types[0];
+      if (typeCfg.construction_times?.length) return typeCfg.construction_times;
+    }
+    return cfg.construction_times;
+  }
+
   function checkVal(gx: number, gy: number, typeId: string): { valid: boolean; reason: string } {
     if (!fiefdomData) return { valid: false, reason: 'No fiefdom data' };
     const cfg = getCfg(typeId);
@@ -301,6 +419,11 @@
       if (!existing) continue;
       if (overlap(ghostRect, getRect(b.x, b.y, existing.width, existing.height))) {
         return { valid: false, reason: `Overlaps ${existing.display_name}` };
+      }
+    }
+    for (const [rx, ry] of fiefdomData.river_cells ?? []) {
+      if (overlap(ghostRect, getRect(rx, ry, 1, 1))) {
+        return { valid: false, reason: 'On the river' };
       }
     }
     for (const [res, amt] of Object.entries(cfg.costs)) {
@@ -401,12 +524,34 @@
     for (const obj of buildingGameObjMap.values()) obj.destroy();
     buildingGameObjMap.clear();
     buildingClasses.clear();
-    roadTileClasses.clear();
+    channelTileClasses.clear();
+    for (const obj of riverObjMap.values()) obj.destroy();
+    riverObjMap.clear();
+    for (const obj of waterBadgeMap.values()) obj.destroy();
+    waterBadgeMap.clear();
+    for (const obj of pondLabelMap.values()) obj.destroy();
+    pondLabelMap.clear();
     underConstructionSet.clear();
+  }
+
+  /** Renders the fiefdom's river cells as static water tiles behind buildings. */
+  function renderRiver() {
+    if (!fiefdomData?.river_cells) return;
+    if (!riverTileClass) riverTileClass = new ItemClass('river_tile', makeWaterTileDataUrl());
+    for (const [x, y] of fiefdomData.river_cells) {
+      const key = x + ',' + y;
+      if (riverObjMap.has(key)) continue;
+      const pos = g2b(x, y, 1, 1);
+      const obj = riverTileClass.spawn(pos.x, pos.y);
+      obj.width = 1 * CELL_TO_BOARD_UNITS;
+      obj.height = 1 * CELL_TO_BOARD_UNITS;
+      riverObjMap.set(key, obj);
+    }
   }
 
   function renderBuildings() {
     if (!fiefdomData) return;
+    renderRiver();
     const homeBasePlaced = fiefdomData.buildings?.some(b => b.name === 'home_base');
 
     for (const b of fiefdomData.buildings || []) {
@@ -416,16 +561,20 @@
 
       const underConstruction = b.construction_start_ts > 0;
 
-      // Roads auto-tile: pick the base image + rotation from orthogonal
-      // neighbors. Roads are always level >= 1 (instant build), so no
-      // construction variant exists.
-      if (b.name === 'road' && !underConstruction) {
-        ensureRoadTileClasses(cfg);
-        const resolved = resolveRoadTile(b.x, b.y, cfg, fiefdomData.buildings ?? []);
-        let cls = roadTileClasses.get(resolved.key);
+      // Roads/races auto-tile: pick the base image + rotation from orthogonal
+      // same-type neighbors. Roads and tail races are instant (level >= 1);
+      // head races build over 10s and show their construction variant first.
+      if ((b.name === 'road' || b.name === 'head_race' || b.name === 'tail_race') && !underConstruction) {
+        ensureChannelTileClasses(cfg, b.name);
+        const resolved = resolveChannelTile(b.x, b.y, b.name, cfg, fiefdomData.buildings ?? []);
+        const tileKey = b.name + ':' + resolved.key;
+        let cls = channelTileClasses.get(tileKey);
         if (!cls) {
-          cls = new ItemClass('road_' + resolved.key, makeRoadTileDataUrl(['e', 'w']));
-          roadTileClasses.set(resolved.key, cls);
+          cls = new ItemClass(
+            b.name + '_' + resolved.key,
+            b.name === 'road' ? makeRoadTileDataUrl(['e', 'w']) : makeRaceTileDataUrl(['e', 'w'], b.name as 'head_race' | 'tail_race')
+          );
+          channelTileClasses.set(tileKey, cls);
         }
         const pos = g2b(b.x, b.y, 1, 1);
         const obj = cls.spawn(pos.x, pos.y);
@@ -452,13 +601,45 @@
 
       if (underConstruction) {
         underConstructionSet.add(b.id);
-        const totalSec = cfg.construction_times[b.level] || cfg.construction_times[0] || 60;
+        const times = getConstructionTimes(b, cfg);
+        const totalSec = times[b.level] || times[0] || 60;
         obj.var.construction_start = b.construction_start_ts;
         obj.var.construction_duration = totalSec;
         obj.setProgressBar(
           () => (Date.now() / 1000 - obj.var.construction_start) / obj.var.construction_duration,
           '#4caf50', '#333333', 0.9
         );
+      }
+
+      // Water-powered status badge: green dot = powered, red dot = unpowered.
+      if (cfg.water_powered && !underConstruction) {
+        const powered = !!(fiefdomData.water_power && fiefdomData.water_power[String(b.id)]);
+        if (!poweredDotClass) poweredDotClass = new ItemClass('powered_dot', makeDotDataUrl('#2ecc40'));
+        if (!unpoweredDotClass) unpoweredDotClass = new ItemClass('unpowered_dot', makeDotDataUrl('#ff4136'));
+        const badgeCls = powered ? poweredDotClass : unpoweredDotClass;
+        const center = g2b(b.x, b.y, cfg.width, cfg.height);
+        const badge = badgeCls.spawn(center.x - cfg.width * CELL_TO_BOARD_UNITS / 2 + 14, center.y - cfg.height * CELL_TO_BOARD_UNITS / 2 + 14);
+        badge.width = 24;
+        badge.height = 24;
+        badge.zIndex = 120;
+        waterBadgeMap.set(b.id, badge);
+      }
+
+      // Mill pond label: current type + load/capacity (e.g. "Earthen · 1/2").
+      if (b.name === 'mill_pond' && !underConstruction) {
+        const pondTypes = cfg.pond_types ?? [];
+        const storedType = b.pond_type && pondTypes.some(t => t.id === b.pond_type) ? b.pond_type : (pondTypes[0]?.id ?? 'earthen');
+        const typeCfg = pondTypes.find(t => t.id === storedType) ?? pondTypes[0];
+        const capacity = typeCfg?.capacity ?? 0;
+        const load = (fiefdomData.water_power_detail?.pond_load?.[String(b.id)] ?? 0);
+        const labelText = (storedType.charAt(0).toUpperCase() + storedType.slice(1)) + ' · ' + load + '/' + capacity;
+        const center = g2b(b.x, b.y, cfg.width, cfg.height);
+        const label = createText(labelText, { x: center.x, y: center.y + cfg.height * CELL_TO_BOARD_UNITS / 2 + 34 });
+        label.size = 30;
+        label.foreground = '#cfe8ff';
+        label.setTextAlign('center');
+        label.setShadow('#000000', 4, 1, 1);
+        pondLabelMap.set(b.id, label);
       }
 
       buildingGameObjMap.set(b.id, obj);
@@ -885,14 +1066,24 @@
       return;
     }
 
-    // Roads render procedurally (canvas data URLs) until real tile PNGs land,
-    // so point the ghost/palette art at a generated tile instead of the PNG path.
+    // Roads and races render procedurally (canvas data URLs) until real tile
+    // PNGs land, so point the ghost/palette art at a generated tile instead of
+    // the PNG path.
     if (buildingConfigs['road']) {
       buildingConfigs['road'] = {
         ...buildingConfigs['road'],
         image: makeRoadTileDataUrl(['n', 'e', 's', 'w']),
         construction_image: makeRoadTileDataUrl(['n', 'e', 's', 'w'])
       };
+    }
+    for (const raceType of ['head_race', 'tail_race'] as const) {
+      if (buildingConfigs[raceType]) {
+        buildingConfigs[raceType] = {
+          ...buildingConfigs[raceType],
+          image: makeRaceTileDataUrl(['n', 'e', 's', 'w'], raceType),
+          construction_image: makeRaceTileDataUrl(['n', 'e', 's', 'w'], raceType)
+        };
+      }
     }
 
     await loadFiefdomData();

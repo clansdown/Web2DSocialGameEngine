@@ -103,6 +103,7 @@ struct BuildingData {
     int64_t last_updated = 0;
     int64_t action_start_ts = 0;
     std::string action_tag;
+    std::string pond_type;
     nlohmann::json output_rates = nlohmann::json::object();
 
     inline nlohmann::json toJson() const {
@@ -116,6 +117,7 @@ struct BuildingData {
         json["last_updated"] = last_updated;
         json["action_start_ts"] = action_start_ts;
         json["action_tag"] = action_tag;
+        json["pond_type"] = pond_type;
         json["output_rates"] = output_rates;
         return json;
     }

@@ -3,6 +3,7 @@
 #include <iostream>
 #include <cctype>
 #include <algorithm>
+#include <set>
 
 namespace FiefdomFetcher {
 
@@ -101,10 +102,10 @@ std::vector<BuildingData> fetchFiefdomBuildings(int fiefdom_id) {
 
     std::vector<BuildingData> buildings;
 
-    db << "SELECT id, name, level, x, y, construction_start_ts, last_updated, action_start_ts, action_tag, output_rates FROM fiefdom_buildings WHERE fiefdom_id = ?;"
+    db << "SELECT id, name, level, x, y, construction_start_ts, last_updated, action_start_ts, action_tag, pond_type, output_rates FROM fiefdom_buildings WHERE fiefdom_id = ?;"
        << fiefdom_id
        >> [&](int id, std::string name, int level, int x, int y, int64_t construction_start_ts,
-              int64_t last_updated, int64_t action_start_ts, std::string action_tag, std::string output_rates_str) {
+              int64_t last_updated, int64_t action_start_ts, std::string action_tag, std::string pond_type, std::string output_rates_str) {
            BuildingData building;
            building.id = id;
            building.name = name;
@@ -115,6 +116,7 @@ std::vector<BuildingData> fetchFiefdomBuildings(int fiefdom_id) {
            building.last_updated = last_updated;
            building.action_start_ts = action_start_ts;
            building.action_tag = action_tag;
+           building.pond_type = pond_type;
            try { building.output_rates = nlohmann::json::parse(output_rates_str); }
            catch (...) { building.output_rates = nlohmann::json::object(); }
            buildings.push_back(building);
@@ -200,16 +202,17 @@ std::optional<OfficialData> fetchOfficialById(int official_id) {
 
 bool createBuilding(int fiefdom_id, const std::string& name, int level,
                     int64_t construction_start_ts, int64_t action_start_ts,
-                    const std::string& action_tag, int x, int y) {
+                    const std::string& action_tag, int x, int y,
+                    const std::string& pond_type) {
     auto& db = Database::getInstance().gameDB();
 
     try {
         db << R"(
             INSERT INTO fiefdom_buildings
-            (fiefdom_id, name, level, x, y, construction_start_ts, last_updated, action_start_ts, action_tag)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+            (fiefdom_id, name, level, x, y, construction_start_ts, last_updated, action_start_ts, action_tag, pond_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         )" << fiefdom_id << name << level << x << y << construction_start_ts
-           << construction_start_ts << action_start_ts << action_tag;
+           << construction_start_ts << action_start_ts << action_tag << pond_type;
         return true;
     } catch (const std::exception& e) {
         std::cerr << "Failed to create building: " << e.what() << std::endl;
@@ -247,6 +250,124 @@ bool updateBuildingConstructionStart(int building_id, int64_t construction_start
         std::cerr << "Failed to update building construction: " << e.what() << std::endl;
         return false;
     }
+}
+
+bool updateBuildingPondType(int building_id, const std::string& pond_type, int new_level,
+                            int64_t construction_start_ts, int64_t timestamp) {
+    auto& db = Database::getInstance().gameDB();
+
+    try {
+        db << R"(
+            UPDATE fiefdom_buildings
+            SET pond_type = ?, level = ?, construction_start_ts = ?, last_updated = ?
+            WHERE id = ?;
+        )" << pond_type << new_level << construction_start_ts << timestamp << building_id;
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to update building pond type: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+std::vector<std::pair<int, int>> fetchRiverCells(int fiefdom_id) {
+    auto& db = Database::getInstance().gameDB();
+
+    std::vector<std::pair<int, int>> cells;
+    db << "SELECT x, y FROM fiefdom_river WHERE fiefdom_id = ? ORDER BY x, y;"
+       << fiefdom_id
+       >> [&](int x, int y) { cells.push_back({x, y}); };
+
+    return cells;
+}
+
+namespace {
+
+// Traces the integer cells a line segment passes through (Bresenham).
+std::vector<std::pair<int, int>> traceSegment(int x0, int y0, int x1, int y1) {
+    std::vector<std::pair<int, int>> cells;
+    int dx = std::abs(x1 - x0), dy = std::abs(y1 - y0);
+    int sx = x0 < x1 ? 1 : -1;
+    int sy = y0 < y1 ? 1 : -1;
+    int err = dx - dy;
+    int x = x0, y = y0;
+    while (true) {
+        cells.push_back({x, y});
+        if (x == x1 && y == y1) break;
+        int e2 = 2 * err;
+        if (e2 > -dy) { err -= dy; x += sx; }
+        if (e2 < dx) { err += dx; y += sy; }
+    }
+    return cells;
+}
+
+} // namespace
+
+// Seeds a fiefdom's river from the manor_river.json templates if none exists
+// yet. Template and rotation are chosen deterministically from the fiefdom id:
+// template = fiefdom_id % N, rotation = (fiefdom_id / N) % 4 (0/90/180/270 deg
+// about the manor origin), so the same fiefdom always gets the same river while
+// different fiefdoms vary. Returns false if the config is unusable.
+bool ensureFiefdomRiver(int fiefdom_id, const nlohmann::json& river_config) {
+    if (!river_config.is_object() || !river_config.contains("templates") ||
+        !river_config["templates"].is_array() || river_config["templates"].empty()) {
+        return false;
+    }
+
+    auto& db = Database::getInstance().gameDB();
+    int count = 0;
+    db << "SELECT COUNT(*) FROM fiefdom_river WHERE fiefdom_id = ?;" << fiefdom_id
+       >> [&](int c) { count = c; };
+    if (count > 0) return true;
+
+    auto templates = river_config["templates"];
+    size_t template_index = static_cast<size_t>(fiefdom_id) % templates.size();
+    int rotation = static_cast<int>(static_cast<size_t>(fiefdom_id) / templates.size()) % 4;
+
+    auto tmpl = templates[template_index];
+    if (!tmpl.is_object() || !tmpl.contains("points") || !tmpl["points"].is_array()) return false;
+    int width = tmpl.value("width", 1);
+    if (width < 1) width = 1;
+
+    // Expand the polyline into a canonical cell band. Width thickens
+    // perpendicular to each segment's dominant axis.
+    std::vector<std::pair<int, int>> canonical;
+    auto add_band = [&](int x, int y, bool horizontal_flow) {
+        canonical.push_back({x, y});
+        for (int i = 1; i < width; i++) {
+            canonical.push_back(horizontal_flow ? std::pair<int, int>{x, y + i}
+                                                : std::pair<int, int>{x + i, y});
+        }
+    };
+
+    auto points = tmpl["points"];
+    for (size_t i = 0; i + 1 < points.size(); i++) {
+        auto a = points[i], b = points[i + 1];
+        if (!a.is_array() || a.size() < 2 || !b.is_array() || b.size() < 2) continue;
+        int x0 = a[0].get<int>(), y0 = a[1].get<int>();
+        int x1 = b[0].get<int>(), y1 = b[1].get<int>();
+        bool horizontal_flow = std::abs(x1 - x0) >= std::abs(y1 - y0);
+        for (const auto& [cx, cy] : traceSegment(x0, y0, x1, y1)) {
+            add_band(cx, cy, horizontal_flow);
+        }
+    }
+
+    // Rotate the canonical band about the origin and insert per-fiefdom cells.
+    std::set<std::pair<int, int>> seen;
+    for (const auto& [cx, cy] : canonical) {
+        int rx = cx, ry = cy;
+        switch (rotation) {
+            case 1: rx = -cy; ry = cx; break;
+            case 2: rx = -cx; ry = -cy; break;
+            case 3: rx = cy; ry = -cx; break;
+            default: break;
+        }
+        if (seen.insert({rx, ry}).second) {
+            db << "INSERT INTO fiefdom_river (fiefdom_id, x, y) VALUES (?, ?, ?);"
+               << fiefdom_id << rx << ry;
+        }
+    }
+
+    return true;
 }
 
 std::vector<WallData> fetchFiefdomWalls(int fiefdom_id) {

@@ -260,6 +260,37 @@ has its own Svelte screen and its own transport.
 
 Full protocol and message reference: `docs/combat_protocol.md`.
 
+## Manor (Build & Fiefdom)
+
+The manor is the player's fiefdom board (rendered client-side in
+`client/src/components/ManorMenu.svelte`). Building state lives in
+`fiefdom_buildings`; the economy tick (`GameLogic::updateStateSince`) runs
+production/consumption for the elapsed time whenever fiefdom state is read.
+
+- **`/api/Build`** actions: `build`/`create`, `demolish`, `move`, `upgrade`,
+  and `upgrade_pond_type` (mill-pond type upgrade earthen → timber → stone).
+  Buildings may never overlap river cells (build-time rejection). Pond
+  cost/construction arrays resolve from `pond_types[pond_type]` via
+  `Validation::getBuildingArrayField`/`getNextLevelCost`/`getBuildingMaxLevel`.
+  Upgrade costs are resource-keyed — a latent bug once built them with
+  `gold_cost`-style keys, so upgrades never actually charged/deducted.
+- **`/api/getFiefdom`** returns `buildings` (each with `level`, `pond_type`,
+  `output_rates`), `river_cells`, `water_power` (building_id → powered),
+  `water_power_detail` (`powered_by` + `pond_load`), `road_morale`
+  (building_id → points), and the economy report (incl. `net_silver` and
+  pence-aware `{amount, pence}` export entries).
+- **Water power**: per-fiefdom rivers in `fiefdom_river`, seeded lazily from
+  `manor_river.json` templates (rotated 0/90/180/270° deterministically by
+  fiefdom id). `Water::computeWaterPower` (`server/WaterNetwork.cpp`): a
+  `water_source` mill pond is active when its footprint touches a river cell;
+  head races BFS-reach water-powered buildings from the pond; tail races must
+  reach the river; a `water_powered` building is powered iff head-reached from
+  a pond with spare capacity AND tail-reached from the river. Unpowered water
+  buildings produce nothing but still pay `daily_cost`.
+- **Economy gating**: production scales by input satisfaction and per-output
+  rates (0..1 stored in `output_rates`); road-morale points multiply a
+  building's outputs by `1 + points × economy.json.morale_production_multiplier`.
+
 ## Database Architecture
 
 Two independent SQLite databases for maximum concurrency:
@@ -267,7 +298,9 @@ Two independent SQLite databases for maximum concurrency:
 ### game.db
 - `users`: User accounts (id, username, password_hash, created_at, adult)
 - `characters`: Character entities (id, user_id, display_name, safe_display_name, level)
-- `fiefdoms`: Character territories (id, owner_id, name, x, y)
+- `fiefdoms`: Character territories (id, owner_id, name, x, y) + resource/state columns
+- `fiefdom_buildings`: Building instances (level, x/y, construction, `output_rates`, `pond_type`)
+- `fiefdom_river`: Per-fiefdom water-power river cells
 
 ### messages.db
 - `player_messages`: Direct messages (id, from_character_id, to_character_id, message, timestamp, read)
@@ -312,6 +345,7 @@ CREATE TABLE fiefdoms (
     y INTEGER NOT NULL,
     peasants INTEGER NOT NULL DEFAULT 0,
     gold INTEGER NOT NULL DEFAULT 0,
+    silver_pence INTEGER NOT NULL DEFAULT 0,
     grain INTEGER NOT NULL DEFAULT 0,
     wood INTEGER NOT NULL DEFAULT 0,
     steel INTEGER NOT NULL DEFAULT 0,
@@ -322,7 +356,13 @@ CREATE TABLE fiefdoms (
     charcoal INTEGER NOT NULL DEFAULT 0,
     iron INTEGER NOT NULL DEFAULT 0,
     ironwork INTEGER NOT NULL DEFAULT 0,
+    fancy_ironwork INTEGER NOT NULL DEFAULT 0,
     wall_count INTEGER NOT NULL DEFAULT 0,
+    morale REAL NOT NULL DEFAULT 0,
+    last_update_time INTEGER NOT NULL DEFAULT 0,
+    manor_level INTEGER NOT NULL DEFAULT 1,
+    import_settings TEXT NOT NULL DEFAULT '{}',
+    reserves TEXT NOT NULL DEFAULT '{}',
     FOREIGN KEY(owner_id) REFERENCES characters(id)
 );
 
@@ -330,8 +370,33 @@ CREATE TABLE fiefdom_buildings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     fiefdom_id INTEGER NOT NULL,
     name TEXT NOT NULL,
+    level INTEGER NOT NULL DEFAULT 0,
+    x INTEGER NOT NULL DEFAULT 0,
+    y INTEGER NOT NULL DEFAULT 0,
+    construction_start_ts INTEGER NOT NULL DEFAULT 0,
+    last_updated INTEGER NOT NULL DEFAULT 0,
+    action_start_ts INTEGER NOT NULL DEFAULT 0,
+    action_tag TEXT NOT NULL DEFAULT '',
+    output_rates TEXT NOT NULL DEFAULT '{}',
+    pond_type TEXT NOT NULL DEFAULT '',
     FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id)
 );
+
+CREATE TABLE fiefdom_river (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fiefdom_id INTEGER NOT NULL,
+    x INTEGER NOT NULL,
+    y INTEGER NOT NULL,
+    FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id),
+    UNIQUE(fiefdom_id, x, y)
+);
+```
+
+`manor_level`/`import_settings` (fiefdoms) and `output_rates`/`pond_type`
+(fiefdom_buildings) are added by migrations in `init_db.cpp`; `fiefdom_river`
+holds the water-power river cells seeded from `manor_river.json`. See
+`server/tables/fiefdoms.md`, `server/tables/fiefdom_buildings.md`, and
+`server/tables/fiefdom_river.md` for the full reference.
 
 CREATE TABLE officials (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -449,6 +514,8 @@ On startup, the server loads game configuration and image data:
     - `tower_defense/maps/` - Tower defense map metadata JSON files (dynamic: directory is rescanned on each request, allowing hot-reload of new maps without server restart)
     - `combat/rulesets.json` - Realtime combat mission rules (mode, death handling, caps, duration — see `docs/combat_rulesets.md`)
     - `combat/maps/` - Realtime combat map files (CombatMapCache, stat()-based hot reload — see `docs/combat_maps.md`)
+    - `manor_river.json` - Per-fiefdom river templates (meandering polyline `points` + band `width`; seeded with 0/90/180/270° rotation per fiefdom — see `server/tables/fiefdom_river.md`)
+    - `manor_ui.json` - Manor UI config (`build_order` governs the build-palette button order only)
 
  2. **TowerDefenseMapCache**: Dynamically loads tower defense map metadata from `config/tower_defense/maps/`. Each `.json` file follows the map metadata format documented in `/tower_defense_map_metadata_format.md`. The directory is rescanned when its modification time changes, so new maps can be added at runtime without restarting the server. Maps are served to clients as `map_metadata` in `/api/startMiniGame` responses.
 
