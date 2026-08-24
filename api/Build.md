@@ -18,6 +18,7 @@ The `action` field specifies the operation. Default is "create".
 | `wall` | Build a wall generation |
 | `upgrade` | Upgrade a building or wall to the next level |
 | `upgrade_pond_type` | Upgrade a mill pond's type (earthen → timber → stone) |
+| `convert` | Convert a building to its next stage (see Stage Chains) |
 
 ### create (default)
 
@@ -38,13 +39,14 @@ Create a new building at specified location.
 |-------|------|----------|-------------|
 | `fiefdom_id` | integer | Yes | ID of the fiefdom to build in |
 | `action` | string | No (default: "create") | Must be "create" |
-| `building_type` | string | Yes | Type of building (e.g., "road", "peasant", "home_base") |
+| `building_type` | string | Yes | Type of building (e.g., "road", "villein", "home_base") |
 | `x` | integer | Yes | X coordinate relative to fiefdom center |
 | `y` | integer | Yes | Y coordinate relative to fiefdom center |
 
 **Rules:**
 - Costs are deducted from the fiefdom's resources: `gold_cost` → `gold`, `wood_cost` → `wood`,
-  `stone_cost` → `stone`, `silver_pence_cost` → `silver_pence`.
+  `beams_cost` → `beams`, `boards_cost` → `boards`, `iron_cost` → `iron`, `ironwork_cost` → `ironwork`,
+  `silver_pence_cost` → `silver_pence`.
 - **Instant construction:** if the building type's `construction_times[0] == 0` (e.g. `road`,
   `tail_race`), the building is created directly at **level 1 with no construction timer**
   instead of level 0 under construction. Response `level` is `1` and `construction_start_ts`
@@ -190,8 +192,7 @@ Build a wall generation around the fiefdom perimeter. Walls provide defense bonu
     "length": 40,
     "thickness": 4,
     "cost": {
-      "gold": 1000,
-      "stone": 500
+      "gold": 1000
     },
     "demolished_buildings": [
       {
@@ -267,8 +268,7 @@ Upgrade an existing building or wall to the next level.
     "upgrade_to_level": 2,
     "new_hp": 1200,
     "cost": {
-      "gold": 800,
-      "stone": 400
+      "gold": 800
     }
   }
 }
@@ -333,6 +333,8 @@ Coordinates are relative to the fiefdom center (0, 0):
 | `invalid_home_base_location` | Manor House (home_base) must be built at location (0, 0) | home_base not at center |
 | `invalid_config` | Building configuration not found | Building config missing |
 | `insufficient_resources` | Not enough resources | Cannot afford construction costs |
+| `insufficient_arable_land` | Not enough arable land to build a {type} | The fiefdom has fewer available acres than the building claims. Convert (stage upgrade) also returns this when the successor claims more acres than remain |
+| `insufficient_forest_land` | Not enough forest land to build a {type} | The fiefdom has fewer available forest acres than a wood producer claims (woodcutter 80 / coppicer 60 / timber_hauler 70). Convert also returns this when the successor claims more forest acres than remain |
 | `construction_in_progress` | Building is already under construction | Cannot start new construction while existing construction ongoing |
 | `cannot_move_under_construction` | Cannot move building under construction | Building must be completed first |
 | `move_location_invalid` | New location not valid for this building | Collision or bounds violation |
@@ -351,7 +353,12 @@ Coordinates are relative to the fiefdom center (0, 0):
 ## Building Construction
 
 When a building is constructed:
-1. Resources are deducted from the fiefdom
+1. Resources are deducted from the fiefdom. If the fiefdom lacks a required
+   physical material (wood, beams, boards, ironwork, etc.), the shortfall is
+   **auto-imported**: it is purchased at the resource's import price with money
+   (gold or `silver_pence`, which are fungible at 1 gold = 240 pence), subject
+   to the per-resource `import_settings` toggle. The same import-aware,
+   fungible logic applies to `upgrade` and `convert` costs.
 2. A building record is created at level 0 (under construction)
 3. `construction_start_ts` is set to the current timestamp
 4. Construction time is determined by the building's `construction_times` config array
@@ -369,7 +376,7 @@ Mill ponds are 8×8 water reservoirs with a *type* (earthen → timber → stone
 |------|----------|-------------|
 | `earthen` | 2 | Basic reservoir, powers 2 buildings |
 | `timber` | 4 | Timber-lined, powers 4 buildings |
-| `stone` | 6 | Stone-lined, powers 6 buildings |
+| `stone` | 6 | Stone-lined (lining descriptor only — no `stone` game resource; stone costs were removed), powers 6 buildings |
 
 **Request:**
 ```json
@@ -395,7 +402,48 @@ Mill ponds are 8×8 water reservoirs with a *type* (earthen → timber → stone
     "building_id": 42,
     "pond_type": "timber",
     "level": 0,
-    "cost": { "gold": 20, "wood": 100, "stone": 40 }
+    "cost": { "gold": 20, "wood": 100 }
+  }
+}
+```
+
+## Stage Conversion (convert)
+
+Production building lines are chains of independent building types linked by the
+config field `built_from` (see `server/docs/fiefdom_building_types.md`). A placed
+building can be converted **in place** into its successor stage.
+
+**Request:**
+```json
+{
+  "fiefdom_id": 1,
+  "action": "convert",
+  "building_id": 42
+}
+```
+
+**Rules:**
+- The building must be completed (level > 0) and have a successor (a building
+  whose config `built_from` equals its `name`).
+- The price per resource is `max(0, successor_lvl1_cost − 80% × old_cumulative_cost)`
+  (the 80% mirrors the demolish refund; works at any level 1–5).
+- The successor's level-1 prerequisites and dependencies must be met, and its
+  `max_per_fiefdom` (if any) must not be exceeded (the converted building itself
+  is excluded from the count).
+- The row's `name` becomes the successor, `level` resets to 0 (or 1 if the
+  successor builds instantly), `pond_type`/`output_rates` are cleared, x/y are
+  preserved, and construction restarts.
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "data": {
+    "building_id": 42,
+    "building_type": "advanced_smithy",
+    "level": 0,
+    "construction_start_ts": 1757520000,
+    "cost": { "gold": 3, "wood": 10 }
   }
 }
 ```
@@ -416,3 +464,7 @@ Implemented - Full building construction with position tracking, collision detec
 **Wall System:** Implemented - Wall generations 1, 2, 3 with configurable dimensions, HP, costs, and morale boosts. Walls are centered at fiefdom origin with automatic building collision resolution.
 
 **Upgrade System:** Implemented - Upgrade buildings and walls to higher levels. Construction starts immediately and completes after the configured time interval.
+
+**Stage Conversion (convert):** Implemented - Convert a building to its next stage in place, with a discount based on the old building's invested level.
+
+**Manor Level:** When the `home_base` (manor house) completes an upgrade, the fiefdom's `manor_level` is set to the manor house's level. This gates building-type prerequisites (`{"manor_level": N}`).

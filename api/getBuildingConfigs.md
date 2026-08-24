@@ -23,16 +23,16 @@ No required or optional parameters.
     "home_base": {
       "width": 5,
       "height": 5,
-      "max_level": 32,
+      "max_level": 10,
       "can_build_outside_wall": true,
       "display_name": "Manor House",
       "image": "/images/manor/buildings/manor_house_1.png",
       "construction_image": "/images/manor/buildings/manor_house_1-construction.png",
-      "construction_times": [60, 20, 40, 120, ...],
-      "costs": { "gold": 0, "wood": 0, "stone": 0 },
+      "construction_times": [60, 20, 40, 120, 300, 900, 1800, 3600, 7200, 14400],
+      "costs": { "gold": 0, "wood": 0 },
       "min_manor_level": 1
     },
-    "peasant": {
+    "villein": {
       "width": 3,
       "height": 3,
       "max_level": 5,
@@ -51,10 +51,14 @@ No required or optional parameters.
 ### Behavior
 
 - `construction_image` is always present: if the config defines it, that value is used; if not, it's copied from `image`
-- `costs` is an object with level-1 costs for `gold`, `wood`, `stone`, `silver_pence` keys (whichever exist)
+- `costs` is an object with level-1 costs for `gold`, `wood`, `beams`, `boards`, `iron`, `ironwork`, `silver_pence`, ... keys (whichever exist; `stone` was removed from the game)
 - `min_manor_level` is extracted from `prerequisites[0].manor_level`, defaults to 1
-- `build_order` is an array of building type IDs from `game/config/manor_ui.json`. It governs the **order** of the build-palette buttons in the UI only — the client still applies its own display filters (manor level, `display_name`/`image` presence, affordability, prerequisites, `max_per_fiefdom`). Type IDs not listed sort after every listed one (stable). Omitted/invalid `build_order` returns an empty array and the client falls back to alphabetical order.
+- `arable_acres` is present on every building type (the acres it claims; 0 if the config omits it). A building may only be placed when the fiefdom has ≥ this many acres available.
+- `forest_acres` is present on every building type (off-map forest acres claimed by the wood producers: woodcutter 80 / coppicer 60 / timber_hauler 70; 0 otherwise). A wood producer may only be placed when the fiefdom has ≥ this many forest acres available.
+- `class` is present on every building type (its definitive grouping — e.g. `peasant` for villein/freeholder/yeoman, `flourmill` for miller/windmill/watermill; empty string if unset).
+- `build_order` is an array of building type IDs from `game/config/manor_ui.json`. It governs the **order** of the build-palette buttons in the UI only — the client still applies its own display filters (manor level, `display_name`/`image` presence, affordability, prerequisites, `max_per_fiefdom`, arable land). Type IDs not listed sort after every listed one (stable). Omitted/invalid `build_order` returns an empty array and the client falls back to alphabetical order.
 - The full building type config from `fiefdom_building_types.json` is included (per-day production fields, daily_cost, modifiers, etc.), including `road_tiles`/`road_tiles_canonical` for road auto-tiling and `road_morale` for morale sources.
+- **`descriptions` internal notes are stripped** server-side — the config's `descriptions` arrays (formal in-config design notes) never appear in this response.
 - Road config example:
   ```json
   "road": {

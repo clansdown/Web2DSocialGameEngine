@@ -64,7 +64,6 @@ Buildings have the following states:
 | wood | Building material |
 | steel | Military equipment |
 | bronze | Artifacts |
-| stone | Fortification |
 | leather | Equipment |
 | mana | Magic research |
 

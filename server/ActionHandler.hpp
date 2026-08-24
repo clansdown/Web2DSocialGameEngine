@@ -3,6 +3,8 @@
 #include "FiefdomData.hpp"
 #include "MoraleCalculator.hpp"
 #include <nlohmann/json.hpp>
+#include <string>
+#include <vector>
 
 class GameConfigCache;
 
@@ -32,8 +34,8 @@ protected:
 namespace Validation {
     bool userOwnsFiefdom(const ActionContext& ctx, int fiefdom_id);
     bool fiefdomExists(int fiefdom_id);
-    bool hasEnoughResources(int fiefdom_id, const nlohmann::json& costs);
-    ActionResult deductResources(int fiefdom_id, const nlohmann::json& costs, ActionResult& result);
+    bool hasEnoughResources(GameConfigCache& cache, int fiefdom_id, const nlohmann::json& costs);
+    ActionResult deductResources(GameConfigCache& cache, int fiefdom_id, const nlohmann::json& costs, ActionResult& result);
     bool buildingTypeExists(GameConfigCache& cache, const std::string& building_type);
     std::optional<nlohmann::json> getBuildingConfig(GameConfigCache& cache, const std::string& building_type);
     bool canBuildBuildingHere(GameConfigCache& cache, const std::string& building_type, int fiefdom_id, int x, int y);
@@ -61,6 +63,17 @@ namespace Validation {
     double getWallMoraleBoost(GameConfigCache& cache, int generation, int level);
     nlohmann::json calculateWallUpgradeCost(GameConfigCache& cache, int generation, int current_level);
     nlohmann::json getDemolishRefund(GameConfigCache& cache, int building_id);
+
+    // Stage-chain helpers: a building's chain is the ordered list
+    // [root, ..., building] produced by walking `built_from` links. A building
+    // satisfies a prerequisite/dependency requirement for any stage in its own
+    // chain at or below its current stage (a villein counts as peasant; a plain
+    // peasant never counts as a villein). Chain depth is unbounded.
+    std::vector<std::string> getBuildingStageChain(GameConfigCache& cache, const std::string& building_name);
+    bool buildingSatisfiesRequirement(GameConfigCache& cache, const std::string& building_name, const std::string& required_id);
+    int getBuildingLevelInFiefdom(GameConfigCache& cache, int fiefdom_id, const std::string& building_name);
+    bool checkFiefdomPrerequisites(GameConfigCache& cache, int fiefdom_id, const nlohmann::json& prerequisites);
+    int countBuildingsByType(GameConfigCache& cache, int fiefdom_id, const std::string& target_building, int min_level);
 
     class TransactionGuard {
     public:

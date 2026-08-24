@@ -54,7 +54,7 @@ Ends an active mini-game session, records the outcome, and processes rewards.
     "game_phase": "sandbox",
     "next_level_id": null,
     "rewards": { "gold": 40, "grain": 20 },
-    "completion_bonus": { "gold": 100, "wood": 50, "grain": 50, "stone": 30 }
+    "completion_bonus": { "gold": 100, "wood": 50, "grain": 50 }
   },
   "token": "new-token-string"
 }

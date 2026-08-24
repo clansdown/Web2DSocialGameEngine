@@ -42,7 +42,6 @@ Get fiefdom information including resources, buildings, and officials.
     "wood": 300,
     "steel": 100,
     "bronze": 50,
-    "stone": 200,
     "leather": 150,
     "mana": 75,
     "charcoal": 40,
@@ -72,13 +71,14 @@ Get fiefdom information including resources, buildings, and officials.
     "wood": 300,
     "steel": 100,
     "bronze": 50,
-    "stone": 200,
     "leather": 150,
     "mana": 75,
     "charcoal": 40,
     "iron": 25,
     "ironwork": 10,
     "fancy_ironwork": 3,
+    "beams": 12,
+    "boards": 18,
     "wall_count": 3,
     "morale": 0,
     "manor_level": 1,
@@ -87,7 +87,6 @@ Get fiefdom information including resources, buildings, and officials.
       "wood": 100,
       "steel": 50,
       "bronze": 25,
-      "stone": 60,
       "leather": 25,
       "mana": 10,
       "charcoal": 50,
@@ -186,16 +185,20 @@ Get fiefdom information including resources, buildings, and officials.
 | wood | integer | Building material amount |
 | steel | integer | Military material amount |
 | bronze | integer | Alloy material amount |
-| stone | integer | Construction material amount |
+| stone | integer | **Retired** — stone costs were removed from the game; the field stays 0 |
 | leather | integer | Crafting material amount |
 | mana | integer | Magical resource amount |
 | charcoal | integer | Fuel resource amount (collier output, blacksmith input) |
 | iron | integer | Ore resource amount (blacksmith input) |
 | ironwork | integer | Refined military material (blacksmith output, unit upkeep) |
 | fancy_ironwork | integer | Fine tempered iron (blacksmith level 2+ output) |
+| beams | integer | Hewn structural timber (wood hewer chain output, build material) |
+| boards | integer | Sawn planks (sawyer chain output, build material) |
 | wall_count | integer | Defensive wall layers |
 | morale | number | Fiefdom morale score (-1000 to 1000) |
-| manor_level | integer | Manor house upgrade level (default 1) |
+| manor_level | integer | Manor house (home_base) upgrade level, 0–10 (0 = under construction) |
+| arable_land | object | Arable-land totals: `{ total, used, available }` in acres. Total scales with manor_level via `economy.json` `arable_land_by_level` (400 at level 1 → 1000 at level 10); used is the sum of each completed building's `arable_acres`. A building may only be placed when `available ≥` its acres. |
+| forest_land | object | Forest-land totals: `{ total, used, available }` in acres. Total scales with manor_level via `economy.json` `forest_land_by_level` (200 at level 1 → 600 at level 10); used is the sum of the wood producers' `forest_acres` (woodcutter 80 / coppicer 60 / timber_hauler 70). A wood producer may only be placed when `available ≥` its acres. |
 | reserves | object | Effective per-resource reserves (overrides merged with defaults) |
 | economy_report | object | Per-update economy ledger (produced/consumed/imported/exported, net_gold, recommendations) |
 | buildings | array | Building instances (when include_buildings=true) |

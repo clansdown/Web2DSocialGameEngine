@@ -724,13 +724,13 @@ export interface FiefdomResponse {
   name: string;
   x: number;
   y: number;
-  peasants: number;
   gold: number;
   silver_pence: number;
   grain: number;
   wood: number;
   steel: number;
   bronze: number;
+  /** Retired: stone costs were removed from the game; the server still returns it (always 0). */
   stone: number;
   leather: number;
   mana: number;
@@ -738,6 +738,8 @@ export interface FiefdomResponse {
   iron: number;
   ironwork: number;
   fancy_ironwork: number;
+  beams: number;
+  boards: number;
   wall_count: number;
   morale: number;
   manor_level: number;
@@ -758,6 +760,18 @@ export interface FiefdomResponse {
   water_power_detail?: {
     powered_by?: Record<string, number>;
     pond_load?: Record<string, number>;
+  };
+  /** Arable land (abstract resource limiting manor growth). */
+  arable_land?: {
+    total: number;
+    used: number;
+    available: number;
+  };
+  /** Forest land (off-map resource limiting the wood producers). */
+  forest_land?: {
+    total: number;
+    used: number;
+    available: number;
   };
 }
 
@@ -935,6 +949,142 @@ export async function buildRequest(
 }
 
 /**
+ * Upgrades a building to its next level via /api/Build (action 'upgrade').
+ *
+ * @param params - fiefdom_id, building_id, character_id
+ * @param auth - Authentication object with username and token
+ * @returns Promise<BuildResponse> - Upgrade response (cost, upgrade_to_level)
+ *
+ * Usage: Called from the manor building info card
+ */
+export async function upgradeBuildingRequest(
+  params: { fiefdom_id: number; building_id: number; character_id: number },
+  auth: { username: string; token: string }
+): Promise<BuildResponse> {
+  const res = await apiPost<BuildResponse>('Build', {
+    action: 'upgrade',
+    fiefdom_id: params.fiefdom_id,
+    building_id: params.building_id,
+    character_id: params.character_id
+  }, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return res.data as BuildResponse;
+}
+
+/**
+ * Converts a building to its next stage via /api/Build (action 'convert').
+ * Price = max(0, successor level-1 cost − 80% of the old building's cumulative
+ * cost); the old building's row is transformed in place to the successor.
+ *
+ * @param params - fiefdom_id, building_id, character_id
+ * @param auth - Authentication object with username and token
+ * @returns Promise<BuildResponse> - Convert response (building_type, level)
+ *
+ * Usage: Called from the manor building info card's "Convert to <next>" button
+ */
+export async function convertBuildingRequest(
+  params: { fiefdom_id: number; building_id: number; character_id: number },
+  auth: { username: string; token: string }
+): Promise<BuildResponse> {
+  const res = await apiPost<BuildResponse>('Build', {
+    action: 'convert',
+    fiefdom_id: params.fiefdom_id,
+    building_id: params.building_id,
+    character_id: params.character_id
+  }, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return res.data as BuildResponse;
+}
+
+/**
+ * Demolishes a building via /api/Build (action 'demolish'), refunding 80% of
+ * its cumulative cost.
+ *
+ * @param params - fiefdom_id, building_id, character_id
+ * @param auth - Authentication object with username and token
+ * @returns Promise<BuildResponse> - Demolish response (refund)
+ *
+ * Usage: Called from the manor building info card
+ */
+export async function demolishBuildingRequest(
+  params: { fiefdom_id: number; building_id: number; character_id: number },
+  auth: { username: string; token: string }
+): Promise<BuildResponse> {
+  const res = await apiPost<BuildResponse>('Build', {
+    action: 'demolish',
+    fiefdom_id: params.fiefdom_id,
+    building_id: params.building_id,
+    character_id: params.character_id
+  }, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return res.data as BuildResponse;
+}
+
+/**
+ * Moves a building to a new cell via /api/Build (action 'move'), costing 10%
+ * of the current level's cost.
+ *
+ * @param params - fiefdom_id, building_id, x, y, character_id
+ * @param auth - Authentication object with username and token
+ * @returns Promise<BuildResponse> - Move response (new_x, new_y, cost)
+ *
+ * Usage: Called from the manor building info card
+ */
+export async function moveBuildingRequest(
+  params: { fiefdom_id: number; building_id: number; x: number; y: number; character_id: number },
+  auth: { username: string; token: string }
+): Promise<BuildResponse> {
+  const res = await apiPost<BuildResponse>('Build', {
+    action: 'move',
+    fiefdom_id: params.fiefdom_id,
+    building_id: params.building_id,
+    x: params.x,
+    y: params.y,
+    character_id: params.character_id
+  }, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return res.data as BuildResponse;
+}
+
+/**
+ * Upgrades a mill pond's type (earthen → timber → stone) via /api/Build.
+ *
+ * @param params - fiefdom_id, building_id, character_id
+ * @param auth - Authentication object with username and token
+ * @returns Promise<BuildResponse> - Pond type upgrade response (pond_type)
+ *
+ * Usage: Called from the manor building info card for a mill_pond
+ */
+export async function upgradePondTypeRequest(
+  params: { fiefdom_id: number; building_id: number; character_id: number },
+  auth: { username: string; token: string }
+): Promise<BuildResponse> {
+  const res = await apiPost<BuildResponse>('Build', {
+    action: 'upgrade_pond_type',
+    fiefdom_id: params.fiefdom_id,
+    building_id: params.building_id,
+    character_id: params.character_id
+  }, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return res.data as BuildResponse;
+}
+
+/**
  * Sets auto-import preference for a resource in a fiefdom.
  *
  * @param fiefdomId - Fiefdom ID
@@ -1094,10 +1244,30 @@ export async function estimateOngoingRewards(
 
 // ── Building config types ──────────────────────────────────────────
 
+/**
+ * A {gold, shillings, pence} money amount — any subset of keys may be present.
+ * Used for money-form production outputs and prices.
+ */
+export interface MoneyObject {
+  gold?: number;
+  shillings?: number;
+  pence?: number;
+}
+
+/**
+ * A production/input amount. May be a plain number (gold-denominated for the
+ * gold resource), a money object ({gold, shillings, pence}), or a per-level
+ * array of either (each level adds 5% of the base, each stage +20%).
+ */
+export type AmountValue =
+  | number
+  | MoneyObject
+  | Array<number | MoneyObject>;
+
 export interface BuildingOutputConfig {
   resource: string;
-  amount: number;
-  inputs?: Record<string, { amount?: number } | number>;
+  amount: AmountValue;
+  inputs?: Record<string, { amount?: AmountValue } | AmountValue>;
   min_level?: number;
 }
 
@@ -1117,6 +1287,14 @@ export interface BuildingTypeConfig {
   construction_times: number[];
   costs: Record<string, number>;
   min_manor_level: number;
+  /** Arable acres this building type claims (0 = none). */
+  arable_acres: number;
+  /** Forest acres this building type claims (wood producers; 0 = none). */
+  forest_acres: number;
+  /** Class grouping, definitive and independent of the built_from chain. */
+  class: string;
+  /** The previous stage this building can be converted from (stage chains). */
+  built_from?: string;
   outputs?: BuildingOutputConfig[];
   water_powered?: boolean;
   water_source?: boolean;

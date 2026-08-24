@@ -120,33 +120,36 @@ class BuildingTypedDict(TypedDict, total=False):
     width: int
     height: int
     max_level: int
+    arable_acres: int
     can_build_outside_wall: bool
     display_name: str
+    descriptions: list[str]
     construction_times: list[float]
     construction_image: str
     construction_images: list[str]
     idle_images: list[str]
     harvest_images: list[str]
-    peasants: ResourceProductionTypedDict
     gold: ResourceProductionTypedDict
     grain: ResourceProductionTypedDict
     wood: ResourceProductionTypedDict
     steel: ResourceProductionTypedDict
     bronze: ResourceProductionTypedDict
-    stone: ResourceProductionTypedDict
     leather: ResourceProductionTypedDict
     mana: ResourceProductionTypedDict
     fancy_ironwork: ResourceProductionTypedDict
+    beams: ResourceProductionTypedDict
+    boards: ResourceProductionTypedDict
     outputs: list[BuildingOutputTypedDict]
     gold_cost: list[float | dict[str, float]]
     grain_cost: list[float]
     wood_cost: list[float]
     steel_cost: list[float]
     bronze_cost: list[float]
-    stone_cost: list[float]
     leather_cost: list[float]
     mana_cost: list[float]
     fancy_ironwork_cost: list[float]
+    beams_cost: list[float]
+    boards_cost: list[float]
 
 
 # Type definitions for hero configs
@@ -219,19 +222,25 @@ JsonDataType: TypeAlias = DamageTypesJson | CombatantsJson | BuildingsJson | Her
 # Valid field sets - use Final for constants
 VALID_DAMAGE_TYPES: Final[set[str]] = {"melee", "ranged", "magical"}
 VALID_RESOURCE_TYPES: Final[set[str]] = {
-    "gold", "grain", "wood", "steel", "bronze", "stone", "leather", "charcoal", "iron", "ironwork", "fancy_ironwork"
+    "gold", "grain", "wood", "steel", "bronze", "leather", "charcoal", "iron", "ironwork", "fancy_ironwork", "beams", "boards"
 }
 VALID_PRODUCTION_RESOURCES: Final[set[str]] = {
-    "peasants", "gold", "grain", "wood", "steel", "bronze", "stone", "leather", "mana",
-    "charcoal", "iron", "ironwork", "fancy_ironwork"
+    "gold", "grain", "wood", "steel", "bronze", "leather", "mana",
+    "charcoal", "iron", "ironwork", "fancy_ironwork", "beams", "boards"
 }
 VALID_BUILDING_PRODUCTION_FIELDS: Final[set[str]] = {
-    "peasants", "gold", "grain", "wood", "steel", "bronze", "stone", "leather", "mana",
-    "charcoal", "iron", "ironwork", "fancy_ironwork"
+    "gold", "grain", "wood", "steel", "bronze", "leather", "mana",
+    "charcoal", "iron", "ironwork", "fancy_ironwork", "beams", "boards"
 }
 VALID_BUILDING_COST_FIELDS: Final[set[str]] = {
     "gold_cost", "silver_pence_cost", "grain_cost", "wood_cost", "steel_cost", "bronze_cost",
-    "stone_cost", "leather_cost", "mana_cost", "charcoal_cost", "iron_cost", "ironwork_cost", "fancy_ironwork_cost"
+    "leather_cost", "mana_cost", "charcoal_cost", "iron_cost", "ironwork_cost", "fancy_ironwork_cost",
+    "beams_cost", "boards_cost"
+}
+# Fiefdom starting-resource stockpiles (economy.json "starting_resources").
+VALID_STARTING_RESOURCES: Final[set[str]] = {
+    "gold", "silver_pence", "grain", "wood", "steel", "bronze",
+    "leather", "mana", "charcoal", "iron", "ironwork", "fancy_ironwork", "beams", "boards"
 }
 VALID_STATUS_EFFECT_TYPES: Final[set[str]] = {"stun", "mute", "confuse"}
 VALID_HERO_SKILL_FIELDS: Final[set[str]] = {"damage", "defense", "healing"}
@@ -245,6 +254,22 @@ VALID_OFFICIAL_STAT_FIELDS: Final[set[str]] = {
 VALID_OFFICIAL_STAT_MAX_FIELDS: Final[set[str]] = {
     "intelligence_max", "charisma_max", "wisdom_max", "diligence_max"
 }
+
+
+def _amount_value_is_valid(value: object) -> bool:
+    """A production/input amount value may be a plain number (gold-denominated
+    for the gold resource), a money object ({gold, shillings, pence} — any
+    subset), or a per-level array of numbers or money objects."""
+    if isinstance(value, (int, float)):
+        return True
+    if isinstance(value, dict):
+        return set(value.keys()) <= {"gold", "shillings", "pence"}
+    if isinstance(value, list):
+        return all(
+            isinstance(e, (int, float)) or (isinstance(e, dict) and set(e.keys()) <= {"gold", "shillings", "pence"})
+            for e in value
+        )
+    return False
 
 
 class ConfigValidator:
@@ -805,10 +830,11 @@ class ConfigValidator:
         for key in expected_keys:
             if key in prod:
                 value: Any = prod[key]
-                if not isinstance(value, (int, float)):
+                if not _amount_value_is_valid(value):
                     self._add_issue(
                         file, line, None,
-                        f"Building '{building_id}'.{resource_name}.{key} must be a number",
+                        f"Building '{building_id}'.{resource_name}.{key} must be a number, a money object "
+                        "({gold, shillings, pence}), or a per-level array of either",
                         Severity.ERROR
                     )
 
@@ -1060,9 +1086,46 @@ class ConfigValidator:
         self._validate_number_array(file, content, building_id, data, "stone_cost")
         self._validate_number_array(file, content, building_id, data, "leather_cost")
         self._validate_number_array(file, content, building_id, data, "mana_cost")
+        self._validate_number_array(file, content, building_id, data, "charcoal_cost")
+        self._validate_number_array(file, content, building_id, data, "iron_cost")
+        self._validate_number_array(file, content, building_id, data, "ironwork_cost")
+        self._validate_number_array(file, content, building_id, data, "fancy_ironwork_cost")
+        self._validate_number_array(file, content, building_id, data, "beams_cost")
+        self._validate_number_array(file, content, building_id, data, "boards_cost")
 
+        # Internal notes: `descriptions` is an array of non-empty strings
+        # (formal in-config comments, never user-facing; the server strips it
+        # from client-facing building-config responses).
+        if "descriptions" in data:
+            desc_data: Any = data["descriptions"]
+            if not isinstance(desc_data, list):
+                self._add_issue(
+                    file, content.count('\n') + 1, None,
+                    f"Building '{building_id}'.descriptions must be an array",
+                    Severity.ERROR
+                )
+            else:
+                for di, entry in enumerate(desc_data):
+                    if not isinstance(entry, str) or not entry.strip():
+                        self._add_issue(
+                            file, content.count('\n') + 1, None,
+                            f"Building '{building_id}'.descriptions[{di}] must be a non-empty string",
+                            Severity.ERROR
+                        )
+
+        # The `outputs` array is the canonical production schema. Flat
+        # production resource fields (e.g. `charcoal: { amount: ... }`) are
+        # disallowed — put outputs (with their own per-output inputs) in the
+        # `outputs` array instead.
         for resource in VALID_BUILDING_PRODUCTION_FIELDS:
-            self._validate_resource_production(file, content, building_id, data, resource)
+            if resource in data:
+                self._add_issue(
+                    file, content.count('\n') + 1, None,
+                    f"Building '{building_id}' uses a flat production field "
+                    f"'{resource}'; define outputs in the 'outputs' array instead "
+                    "(each output declares its own inputs)",
+                    Severity.ERROR,
+                )
 
         self._validate_visual_description(file, building_id, data, "Building")
 
@@ -1079,6 +1142,51 @@ class ConfigValidator:
                     file, 1, None,
                     f"Building '{building_id}'.max_per_fiefdom must be >= 0, got {max_count}",
                     Severity.ERROR
+                )
+
+        if "arable_acres" in data:
+            arable_acres: Any = data["arable_acres"]
+            if not isinstance(arable_acres, int) or isinstance(arable_acres, bool):
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.arable_acres must be an integer, got {type(arable_acres).__name__}",
+                    Severity.ERROR
+                )
+            elif arable_acres < 0:
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.arable_acres must be >= 0, got {arable_acres}",
+                    Severity.ERROR
+                )
+
+        if "forest_acres" in data:
+            forest_acres: Any = data["forest_acres"]
+            if not isinstance(forest_acres, int) or isinstance(forest_acres, bool):
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.forest_acres must be an integer, got {type(forest_acres).__name__}",
+                    Severity.ERROR
+                )
+            elif forest_acres < 0:
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.forest_acres must be >= 0, got {forest_acres}",
+                    Severity.ERROR
+                )
+
+        if "class" in data:
+            cls: Any = data["class"]
+            if not isinstance(cls, str):
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.class must be a string, got {type(cls).__name__}",
+                    Severity.ERROR
+                )
+            elif cls != cls.lower() or not all(c.isalnum() or c == "_" for c in cls):
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.class should be lowercase snake_case, got {cls!r}",
+                    Severity.WARNING
                 )
 
         if "morale_boost" in data:
@@ -1329,31 +1437,15 @@ class ConfigValidator:
         building_id: str,
         data: dict[str, Any],
     ) -> None:
-        """Validate the multi-output `outputs` array. Each output has its own
-        resource, amount, optional per-output inputs, and optional min_level
-        (unlock). Mixing `outputs` with flat production fields or a
-        building-level `inputs` is an error."""
+        """Validate the `outputs` array — the canonical production schema. Each
+        output has its own resource, amount, optional per-output inputs, and
+        optional min_level (unlock). Flat production fields and building-level
+        `inputs` are disallowed (validated separately as errors)."""
         if "outputs" not in data:
             return
 
         outputs: Any = data["outputs"]
         line: int = content[:].count('\n') + 1
-
-        flat_prod_present: bool = any(res in data for res in VALID_BUILDING_PRODUCTION_FIELDS)
-        if flat_prod_present:
-            self._add_issue(
-                file, line, None,
-                f"Building '{building_id}' mixes 'outputs' with flat production fields; "
-                "use one schema or the other",
-                Severity.ERROR,
-            )
-        if "inputs" in data:
-            self._add_issue(
-                file, line, None,
-                f"Building '{building_id}' mixes 'outputs' with a building-level 'inputs'; "
-                "put inputs on each output instead",
-                Severity.ERROR,
-            )
 
         if not isinstance(outputs, list):
             self._add_issue(
@@ -1391,10 +1483,11 @@ class ConfigValidator:
                 seen_resources.add(res)
 
             amount: object = out.get("amount")
-            if not isinstance(amount, (int, float)) or amount <= 0:
+            if not _amount_value_is_valid(amount) or (isinstance(amount, (int, float)) and amount <= 0):
                 self._add_issue(
                     file, line, None,
-                    f"Building '{building_id}'.outputs[{i}].amount must be a positive number",
+                    f"Building '{building_id}'.outputs[{i}].amount must be a positive number, a money object, "
+                    "or a per-level array of either",
                     Severity.ERROR,
                 )
 
@@ -1423,10 +1516,11 @@ class ConfigValidator:
                                 f"Building '{building_id}'.outputs[{i}].inputs has unknown resource '{ires}'",
                                 Severity.WARN,
                             )
-                        if not isinstance(ispec, dict) or not isinstance(ispec.get("amount"), (int, float)):
+                        if not isinstance(ispec, dict) or not _amount_value_is_valid(ispec.get("amount")):
                             self._add_issue(
                                 file, line, None,
-                                f"Building '{building_id}'.outputs[{i}].inputs.{ires}.amount must be a number",
+                                f"Building '{building_id}'.outputs[{i}].inputs.{ires}.amount must be a number, "
+                                "a money object, or a per-level array of either",
                                 Severity.ERROR,
                             )
 
@@ -1647,7 +1741,7 @@ class ConfigValidator:
         legacy `hourly_cost` key is reported as an error (renamed to
         `daily_cost` as part of the 1-day period standardization).
         """
-        valid_resources = {"peasants", "gold", "grain", "wood", "steel", "bronze", "stone", "leather", "mana", "charcoal", "iron", "ironwork", "fancy_ironwork"}
+        valid_resources = {"gold", "grain", "wood", "steel", "bronze", "leather", "mana", "charcoal", "iron", "ironwork", "fancy_ironwork", "beams", "boards"}
 
         if "hourly_cost" in data:
             self._add_issue(
@@ -1695,66 +1789,19 @@ class ConfigValidator:
         building_id: str,
         data: dict[str, Any]
     ) -> None:
-        """Validate the optional inputs object for a building."""
+        """The building-level `inputs` map is deprecated/disallowed. Inputs must
+        be declared per-output inside the `outputs` array so it is unambiguous
+        what each output's inputs gate."""
         if "inputs" not in data:
             return
 
-        inputs: Any = data["inputs"]
         line: int = content[:].count('\n') + 1
-
-        if not isinstance(inputs, dict):
-            self._add_issue(
-                file, line, None,
-                f"Building '{building_id}'.inputs must be an object mapping resources to production specs",
-                Severity.ERROR
-            )
-            return
-
-        for res, spec in inputs.items():
-            if res not in VALID_BUILDING_PRODUCTION_FIELDS:
-                self._add_issue(
-                    file, line, None,
-                    f"Building '{building_id}'.inputs has unknown resource '{res}'",
-                    Severity.WARN
-                )
-            if not isinstance(spec, dict):
-                self._add_issue(
-                    file, line, None,
-                    f"Building '{building_id}'.inputs.{res} must be an object",
-                    Severity.ERROR
-                )
-                continue
-
-            expected_keys: set[str] = {"amount"}
-            actual_keys: set[str] = set(spec.keys())
-            unexpected: set[str] = actual_keys - expected_keys
-
-            if unexpected:
-                self._add_issue(
-                    file, line, None,
-                    f"Building '{building_id}'.inputs.{res} has unexpected keys: {sorted(unexpected)}",
-                    Severity.WARN
-                )
-
-            legacy_keys: set[str] = {"amount_multiplier", "periodicity", "periodicity_multiplier"}
-            present_legacy: set[str] = actual_keys & legacy_keys
-            if present_legacy:
-                self._add_issue(
-                    file, line, None,
-                    f"Building '{building_id}'.inputs.{res} uses removed keys "
-                    f"{sorted(present_legacy)} (inputs are now flat per-day amounts)",
-                    Severity.ERROR
-                )
-
-            for key in expected_keys:
-                if key in spec:
-                    value: Any = spec[key]
-                    if not isinstance(value, (int, float)):
-                        self._add_issue(
-                            file, line, None,
-                            f"Building '{building_id}'.inputs.{res}.{key} must be a number",
-                            Severity.ERROR
-                        )
+        self._add_issue(
+            file, line, None,
+            f"Building '{building_id}' uses a building-level 'inputs' map; "
+            "inputs must be declared on each output in the 'outputs' array instead",
+            Severity.ERROR,
+        )
 
     def _validate_building_prerequisites(
         self,
@@ -1831,6 +1878,67 @@ class ConfigValidator:
                                 Severity.ERROR
                             )
 
+    def _validate_built_from(self, file: Path, data: JsonDataType, valid_building_ids: set[str]) -> None:
+        """Validate the `built_from` stage-chain field for all building types.
+
+        `built_from` declares which building a stage can be converted from. Each
+        building may be the source of at most one successor, chains may not
+        reference themselves, and the `built_from` graph must be acyclic. Chain
+        depth is unbounded — "3 stages" is only a design default, not a limit.
+        """
+        successors: dict[str, str] = {}  # built_from value -> building that declares it
+        parents: dict[str, str] = {}     # building id -> its built_from value
+        for building_entry in data:
+            if not isinstance(building_entry, dict):
+                continue
+            for building_id, building_data in building_entry.items():
+                if not isinstance(building_data, dict) or "built_from" not in building_data:
+                    continue
+                source: Any = building_data["built_from"]
+                if not isinstance(source, str) or not source:
+                    self._add_issue(
+                        file, 1, None,
+                        f"Building '{building_id}'.built_from must be a non-empty string, got {type(source).__name__}",
+                        Severity.ERROR
+                    )
+                    continue
+                if source == building_id:
+                    self._add_issue(
+                        file, 1, None,
+                        f"Building '{building_id}'.built_from must not reference itself",
+                        Severity.ERROR
+                    )
+                if source not in valid_building_ids:
+                    self._add_issue(
+                        file, 1, None,
+                        f"Building '{building_id}'.built_from references unknown building type '{source}'",
+                        Severity.ERROR
+                    )
+                if source in successors:
+                    self._add_issue(
+                        file, 1, None,
+                        f"Building '{source}' is the built_from source of both '{successors[source]}' and "
+                        f"'{building_id}'; at most one successor is allowed",
+                        Severity.ERROR
+                    )
+                else:
+                    successors[source] = building_id
+                parents[building_id] = source
+
+        # Cycle detection over the built_from graph.
+        for building_id in parents:
+            visited: set[str] = set()
+            cur: str = building_id
+            while cur in parents and cur not in visited:
+                visited.add(cur)
+                cur = parents[cur]
+            if cur in visited:
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}' participates in a built_from cycle",
+                    Severity.ERROR
+                )
+
     def validate_buildings(self, file: Path, content: str) -> bool:
         """Validate fiefdom_building_types.json."""
         data: JsonDataType = self._validate_json(content, file)
@@ -1891,6 +1999,7 @@ class ConfigValidator:
                     self.external_image_building_ids.add(building_id)
 
         self._validate_building_prerequisites(file, content, data, seen_ids)
+        self._validate_built_from(file, data, seen_ids)
 
         # Track IDs for image validation
         self.validated_building_ids.update(seen_ids)
@@ -2461,6 +2570,121 @@ class ConfigValidator:
 
         return valid
 
+    def validate_manor_strategies(self, file: Path, content: str) -> bool:
+        """Validate analyzer_manor_strategies.json (analyzer-only).
+
+        Each heuristic defines a weighted build policy plus optional minimum
+        ratios between buildings. Weights must be non-negative with a positive
+        total; min_ratio counts must be non-negative integers. All referenced
+        building types must exist in the building registry.
+        """
+        data: JsonDataType = self._validate_json(content, file)
+        if data is None:
+            return False
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected an object", Severity.ERROR)
+            return False
+        if "heuristics" not in data:
+            self._add_issue(file, 1, None, "Missing required field 'heuristics'", Severity.ERROR)
+            return False
+        if not isinstance(data["heuristics"], list):
+            self._add_issue(file, 1, None, "'heuristics' must be an array", Severity.ERROR)
+            return False
+
+        valid: bool = True
+        seen_ids: set[str] = set()
+        for i, h in enumerate(data["heuristics"]):
+            if not isinstance(h, dict):
+                self._add_issue(file, 1, None, f"'heuristics'[{i}] must be an object", Severity.ERROR)
+                valid = False
+                continue
+
+            hid = h.get("id")
+            if not isinstance(hid, str) or not hid:
+                self._add_issue(file, 1, None, f"'heuristics'[{i}].id must be a non-empty string", Severity.ERROR)
+                valid = False
+                continue
+            if hid in seen_ids:
+                self._add_issue(file, 1, None, f"Duplicate heuristic id '{hid}'", Severity.ERROR)
+                valid = False
+            seen_ids.add(hid)
+
+            weights = h.get("weights", {})
+            if not isinstance(weights, dict):
+                self._add_issue(file, 1, None, f"Heuristic '{hid}'.weights must be an object", Severity.ERROR)
+                valid = False
+            else:
+                total = 0.0
+                for wid, w in weights.items():
+                    if wid not in self.validated_building_ids:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Heuristic '{hid}'.weights references unknown building type '{wid}'",
+                            Severity.ERROR,
+                        )
+                        valid = False
+                    if not isinstance(w, (int, float)):
+                        self._add_issue(
+                            file, 1, None,
+                            f"Heuristic '{hid}'.weights.{wid} must be a number",
+                            Severity.ERROR,
+                        )
+                        valid = False
+                    elif w < 0:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Heuristic '{hid}'.weights.{wid} must be >= 0, got {w}",
+                            Severity.ERROR,
+                        )
+                        valid = False
+                    else:
+                        total += float(w)
+                if total <= 0.0:
+                    self._add_issue(
+                        file, 1, None,
+                        f"Heuristic '{hid}' has no positive weights (total <= 0); it can never build anything",
+                        Severity.WARN,
+                    )
+
+            ratios = h.get("min_ratios", {})
+            if ratios is not None and not isinstance(ratios, dict):
+                self._add_issue(file, 1, None, f"Heuristic '{hid}'.min_ratios must be an object", Severity.ERROR)
+                valid = False
+            elif isinstance(ratios, dict):
+                for aid, spec in ratios.items():
+                    if aid not in self.validated_building_ids:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Heuristic '{hid}'.min_ratios references unknown building type '{aid}'",
+                            Severity.ERROR,
+                        )
+                        valid = False
+                    if not isinstance(spec, dict):
+                        self._add_issue(
+                            file, 1, None,
+                            f"Heuristic '{hid}'.min_ratios.{aid} must be an object of building -> count",
+                            Severity.ERROR,
+                        )
+                        valid = False
+                        continue
+                    for bid, n in spec.items():
+                        if bid not in self.validated_building_ids:
+                            self._add_issue(
+                                file, 1, None,
+                                f"Heuristic '{hid}'.min_ratios.{aid} references unknown building type '{bid}'",
+                                Severity.ERROR,
+                            )
+                            valid = False
+                        if not isinstance(n, int) or isinstance(n, bool) or n < 0:
+                            self._add_issue(
+                                file, 1, None,
+                                f"Heuristic '{hid}'.min_ratios.{aid}.{bid} must be a non-negative integer, got {n!r}",
+                                Severity.ERROR,
+                            )
+                            valid = False
+
+        return valid
+
     def validate_heroes(self, file: Path, content: str) -> bool:
         """Validate heroes.json."""
         data: JsonDataType = self._validate_json(content, file)
@@ -2894,7 +3118,7 @@ class ConfigValidator:
                         self._add_issue(file, 1, None, f"Wall {gen_key}: {field} must be positive", Severity.ERROR)
                         valid = False
 
-            for field in ["gold_cost", "stone_cost", "hp", "morale_boost", "construction_times"]:
+            for field in ["gold_cost", "hp", "morale_boost", "construction_times"]:
                 if field not in wall_data:
                     continue
                 if field == "gold_cost":
@@ -3824,6 +4048,94 @@ class ConfigValidator:
                     if not isinstance(val, (int, float)) or not (0 < val < 1):
                         self._add_issue(file, 1, None, f"'reward_pools.{field}' must be a number between 0 and 1", Severity.ERROR)
 
+        starting: object = data.get("starting_resources")
+        if starting is not None:
+            if not isinstance(starting, dict):
+                self._add_issue(file, 1, None, "'starting_resources' must be an object", Severity.ERROR)
+            else:
+                for res, amount in starting.items():
+                    if res not in VALID_STARTING_RESOURCES:
+                        self._add_issue(
+                            file, 1, None,
+                            f"'starting_resources.{res}' is not a valid fiefdom resource "
+                            f"(allowed: {', '.join(sorted(VALID_STARTING_RESOURCES))})",
+                            Severity.ERROR,
+                        )
+                    elif not isinstance(amount, (int, float)) or amount < 0:
+                        self._add_issue(
+                            file, 1, None,
+                            f"'starting_resources.{res}' must be a non-negative number, got {amount}",
+                            Severity.ERROR,
+                        )
+
+        arable: object = data.get("arable_land_by_level")
+        if arable is not None:
+            if not isinstance(arable, list):
+                self._add_issue(file, 1, None, "'arable_land_by_level' must be an array", Severity.ERROR)
+            elif len(arable) != 11:
+                self._add_issue(
+                    file, 1, None,
+                    f"'arable_land_by_level' must have exactly 11 entries (index 0-10 for manor levels), got {len(arable)}",
+                    Severity.ERROR,
+                )
+            else:
+                prev: float = -1.0
+                for i, val in enumerate(arable):
+                    if not isinstance(val, (int, float)) or isinstance(val, bool):
+                        self._add_issue(
+                            file, 1, None,
+                            f"'arable_land_by_level[{i}]' must be a number, got {val!r}",
+                            Severity.ERROR,
+                        )
+                    elif val < 0:
+                        self._add_issue(
+                            file, 1, None,
+                            f"'arable_land_by_level[{i}]' must be non-negative, got {val}",
+                            Severity.ERROR,
+                        )
+                    elif val < prev:
+                        self._add_issue(
+                            file, 1, None,
+                            f"'arable_land_by_level' must be non-decreasing; index {i} ({val}) < index {i-1} ({prev})",
+                            Severity.ERROR,
+                        )
+                    else:
+                        prev = val
+
+        forest: object = data.get("forest_land_by_level")
+        if forest is not None:
+            if not isinstance(forest, list):
+                self._add_issue(file, 1, None, "'forest_land_by_level' must be an array", Severity.ERROR)
+            elif len(forest) != 11:
+                self._add_issue(
+                    file, 1, None,
+                    f"'forest_land_by_level' must have exactly 11 entries (index 0-10 for manor levels), got {len(forest)}",
+                    Severity.ERROR,
+                )
+            else:
+                prev: float = -1.0
+                for i, val in enumerate(forest):
+                    if not isinstance(val, (int, float)) or isinstance(val, bool):
+                        self._add_issue(
+                            file, 1, None,
+                            f"'forest_land_by_level[{i}]' must be a number, got {val!r}",
+                            Severity.ERROR,
+                        )
+                    elif val < 0:
+                        self._add_issue(
+                            file, 1, None,
+                            f"'forest_land_by_level[{i}]' must be non-negative, got {val}",
+                            Severity.ERROR,
+                        )
+                    elif val < prev:
+                        self._add_issue(
+                            file, 1, None,
+                            f"'forest_land_by_level' must be non-decreasing; index {i} ({val}) < index {i-1} ({prev})",
+                            Severity.ERROR,
+                        )
+                    else:
+                        prev = val
+
         self.validated_files.append(file)
 
     def validate_combat_rulesets(self, file: Path) -> None:
@@ -4129,6 +4441,17 @@ class ConfigValidator:
                 self.validate_manor_river(manor_river_file, river_content)
             except Exception as e:
                 self._add_issue(manor_river_file, 1, None,
+                                f"Failed to read file: {e}", Severity.ERROR)
+
+        # Validate analyzer_manor_strategies.json (analyzer-only; needs
+        # validated_building_ids from the buildings loop above)
+        manor_strategies_file: Path = config_dir / "analyzer_manor_strategies.json"
+        if manor_strategies_file.exists():
+            try:
+                ms_content: str = manor_strategies_file.read_text(encoding="utf-8")
+                self.validate_manor_strategies(manor_strategies_file, ms_content)
+            except Exception as e:
+                self._add_issue(manor_strategies_file, 1, None,
                                 f"Failed to read file: {e}", Severity.ERROR)
 
         # Separate errors and warnings before image validation

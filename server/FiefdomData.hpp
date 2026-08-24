@@ -235,9 +235,8 @@ struct FiefdomData {
     std::string name;
     int x;
     int y;
-    int peasants;
     double gold;
-    int silver_pence = 0;
+    double silver_pence = 0.0;
     int grain;
     int wood;
     int steel;
@@ -249,10 +248,12 @@ struct FiefdomData {
     int iron = 0;
     int ironwork = 0;
     int fancy_ironwork = 0;
+    int beams = 0;
+    int boards = 0;
     int wall_count;
     double morale = 0.0;
     int64_t last_update_time = 0;
-    int manor_level = 1;
+    int manor_level = 0;
     nlohmann::json import_settings;
     nlohmann::json reserves = nlohmann::json::object();
     std::vector<BuildingData> buildings;
@@ -268,7 +269,6 @@ struct FiefdomData {
         json["name"] = name;
         json["x"] = x;
         json["y"] = y;
-        json["peasants"] = peasants;
         json["gold"] = gold;
         json["silver_pence"] = silver_pence;
         json["grain"] = grain;
@@ -282,6 +282,8 @@ struct FiefdomData {
         json["iron"] = iron;
         json["ironwork"] = ironwork;
         json["fancy_ironwork"] = fancy_ironwork;
+        json["beams"] = beams;
+        json["boards"] = boards;
         json["wall_count"] = wall_count;
         json["morale"] = morale;
         json["last_update_time"] = last_update_time;

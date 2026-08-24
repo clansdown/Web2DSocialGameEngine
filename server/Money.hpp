@@ -24,9 +24,10 @@ long gold_to_pence(double gold);
  *
  * @param gold - In/out: gold pieces (carries any silver overflow, discards the
  *               fractional pence remainder)
- * @param silver_pence - In/out: pence balance, normalized to 0..239
+ * @param silver_pence - In/out: pence balance (fractional-capable), normalized
+ *               to 0..239
  */
-void normalize(double& gold, int& silver_pence);
+void normalize(double& gold, double& silver_pence);
 
 /**
  * Converts any object-form money cost entry into a gold double, in place.

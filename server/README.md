@@ -268,12 +268,58 @@ The manor is the player's fiefdom board (rendered client-side in
 production/consumption for the elapsed time whenever fiefdom state is read.
 
 - **`/api/Build`** actions: `build`/`create`, `demolish`, `move`, `upgrade`,
-  and `upgrade_pond_type` (mill-pond type upgrade earthen → timber → stone).
-  Buildings may never overlap river cells (build-time rejection). Pond
-  cost/construction arrays resolve from `pond_types[pond_type]` via
-  `Validation::getBuildingArrayField`/`getNextLevelCost`/`getBuildingMaxLevel`.
-  Upgrade costs are resource-keyed — a latent bug once built them with
-  `gold_cost`-style keys, so upgrades never actually charged/deducted.
+  `upgrade_pond_type` (mill-pond type upgrade earthen → timber → stone), and
+  `convert` (stage-chain conversion). Buildings may never overlap river cells
+  (build-time rejection). Pond cost/construction arrays resolve from
+  `pond_types[pond_type]` via `Validation::getBuildingArrayField`/
+  `getNextLevelCost`/`getBuildingMaxLevel`. Upgrade costs are resource-keyed —
+  a latent bug once built them with `gold_cost`-style keys, so upgrades never
+  actually charged/deducted.
+- **Stage chains**: production lines are chains of building types linked by the
+  config field `built_from`. `convert` transforms a completed building in place
+  to its successor at `max(0, successor_lvl1_cost − 80% × old_cumulative_cost)`
+  per resource. Prerequisite/dependency/modifier-target counting is chain-aware
+  (a higher stage counts for itself and all lower stages). When the manor house
+  (`home_base`) completes an upgrade, the fiefdom's `manor_level` is set to the
+  manor house's level, gating `{"manor_level": N}` prerequisites. The manor
+  house's `max_level` is **10**, so `manor_level` ranges **0–10** (0 = fresh
+  fiefdom, home_base under construction; new fiefdoms default to 0).
+- **Arable land** is an abstract, un-rendered resource limiting manor growth
+  (no DB column — derived from `manor_level` + the building inventory). Total =
+  `economy.json` `arable_land_by_level[manor_level]` (400 at level 1 → 1000 at
+  level 10). Each building optionally claims `arable_acres` (15 villein, 30
+  freeholder/yeoman, 7 for the 18-grain craft households, 0 for
+  infra/industrial/modifier). `/api/Build` (and stage **convert**) rejects with
+  `insufficient_arable_land` when `available <` the claimed acres; demolishing
+  frees acres. `/api/getFiefdom` returns `arable_land: { total, used, available }`
+  and `/api/getBuildingConfigs` injects `arable_acres` per type.
+- **Forest land** is an off-map resource analogous to arable, limiting the wood
+  producers (no DB column). Total = `economy.json`
+  `forest_land_by_level[manor_level]` (200 at level 1 → 600 at level 10). Only
+  the woodcutter chain claims `forest_acres`: woodcutter **80**, coppicer **60**,
+  timber_hauler **70**. `/api/Build` (and stage **convert**) rejects with
+  `insufficient_forest_land` when `available <` the claimed acres; demolishing
+  frees acres. `/api/getFiefdom` returns `forest_land: { total, used, available }`
+  and `/api/getBuildingConfigs` injects `forest_acres` per type.
+- **Classes**: every building type carries a `class` string grouping it
+  definitively (independent of the `built_from` chain) — `peasant` covers
+  villein/freeholder/yeoman, `flourmill` covers miller/windmill/watermill, etc.
+  Modifiers and prerequisites match a `class` target in addition to chain
+  matching. `getBuildingConfigs` injects `class`.
+- **Build costs** support the production resources too — `charcoal_cost`,
+  `iron_cost`, `ironwork_cost`, `fancy_ironwork_cost`, `beams_cost`, and
+  `boards_cost` are deducted/refunded
+  through the full build/demolish/move/upgrade/convert/refund paths. Build,
+  upgrade, and convert **auto-import** material shortfalls: if the fiefdom
+  lacks the physical wood/beams/boards/ironwork/etc., the missing amount is
+  purchased at the resource's import price with money (respecting the
+  per-resource `import_settings` toggle).
+- **Money is fungible**: `gold` and `silver_pence` are one wallet at the
+  standard rate (1 gold = 240 pence, from the `currency` block). A cost or
+  import denominated in pence can be paid with gold (converting gold → pence)
+  and vice versa, so a fiefdom with gold but no silver can still buy
+  penny-market resources (grain, wood, beams, boards, ironwork). This applies
+  to build/upgrade/convert costs and the economy tick's penny-market imports.
 - **`/api/getFiefdom`** returns `buildings` (each with `level`, `pond_type`,
   `output_rates`), `river_cells`, `water_power` (building_id → powered),
   `water_power_detail` (`powered_by` + `pond_load`), `road_morale`
@@ -290,6 +336,10 @@ production/consumption for the elapsed time whenever fiefdom state is read.
 - **Economy gating**: production scales by input satisfaction and per-output
   rates (0..1 stored in `output_rates`); road-morale points multiply a
   building's outputs by `1 + points × economy.json.morale_production_multiplier`.
+  Production/input `amount`s are level-indexed arrays (+5%/level, +20%/stage)
+  and accept numbers, money objects `{gold, shillings, pence}`, or arrays of
+  either (money objects normalize to gold); `daily_cost` and the 18-grain
+  household outputs stay flat.
 
 ## Database Architecture
 
@@ -343,24 +393,25 @@ CREATE TABLE fiefdoms (
     name TEXT NOT NULL,
     x INTEGER NOT NULL,
     y INTEGER NOT NULL,
-    peasants INTEGER NOT NULL DEFAULT 0,
     gold INTEGER NOT NULL DEFAULT 0,
-    silver_pence INTEGER NOT NULL DEFAULT 0,
+    silver_pence REAL NOT NULL DEFAULT 0,
     grain INTEGER NOT NULL DEFAULT 0,
     wood INTEGER NOT NULL DEFAULT 0,
     steel INTEGER NOT NULL DEFAULT 0,
     bronze INTEGER NOT NULL DEFAULT 0,
-    stone INTEGER NOT NULL DEFAULT 0,
+    stone INTEGER NOT NULL DEFAULT 0,       -- retired: stone costs removed from the game (stays 0)
     leather INTEGER NOT NULL DEFAULT 0,
     mana INTEGER NOT NULL DEFAULT 0,
     charcoal INTEGER NOT NULL DEFAULT 0,
     iron INTEGER NOT NULL DEFAULT 0,
     ironwork INTEGER NOT NULL DEFAULT 0,
     fancy_ironwork INTEGER NOT NULL DEFAULT 0,
+    beams INTEGER NOT NULL DEFAULT 0,
+    boards INTEGER NOT NULL DEFAULT 0,
     wall_count INTEGER NOT NULL DEFAULT 0,
     morale REAL NOT NULL DEFAULT 0,
     last_update_time INTEGER NOT NULL DEFAULT 0,
-    manor_level INTEGER NOT NULL DEFAULT 1,
+    manor_level INTEGER NOT NULL DEFAULT 0,
     import_settings TEXT NOT NULL DEFAULT '{}',
     reserves TEXT NOT NULL DEFAULT '{}',
     FOREIGN KEY(owner_id) REFERENCES characters(id)
@@ -501,7 +552,7 @@ On startup, the server loads game configuration and image data:
 
 1. **GameConfigCache**: Loads all JSON config files from `config/` directory:
    - `damage_types.json` - Damage type definitions
-     - `fiefdom_building_types.json` - Building definitions (resource production + optional `inputs` for input-gated output scaling; a building may instead use an `outputs` array — each output with its own `inputs`, `min_level` unlock, and a per-player rate)
+      - `fiefdom_building_types.json` - Building definitions (production via the `outputs` array — each output with its own `inputs`, `min_level` unlock, and a per-player rate; the `outputs` array is the only production schema)
    - `player_combatants.json` - Player unit definitions
    - `enemy_combatants.json` - Enemy unit definitions
    - `heroes.json` - Hero character definitions
@@ -510,7 +561,7 @@ On startup, the server loads game configuration and image data:
     - `mini_games.json` - Mini-game definitions including level grids, rewards, replay config, and an optional `image` field (client-facing card image path)
     - `tower_defense/ongoing.json` - Ongoing-mode options for Tower Defense (difficulty/size availability + silver reward tables)
     - `weeding/ongoing.json` - Ongoing-mode options for Assarting (difficulty/size availability + silver reward tables)
-     - `economy.json` - Economy config including the `currency` block (old-English ratios: 12 pence/shillling, 20 shillings/pound, 240 pence/gold), `import_prices` (per-resource cost to buy shortfalls — plain numbers are gold prices, money objects `{gold, shillings, pence}` are paid from the silver-pence wallet, e.g. `grain: {"shillings": 1}`; prices deflate as production scales up, anchored to grain), `export_prices` (optional per-resource explicit sell prices, same money-form as import_prices), `export_sell_multipliers` (optional per-resource sell ratios of the import price — e.g. `ironwork: 0.25` sells at 25% of import), `export_sell_multiplier` (0.5 default; excess above reserve sells at `export_prices` → `export_sell_multipliers` → `export_sell_multiplier` × import price), `default_reserves` (per-resource stockpile minimums), `population_costs` (per-day per population unit), `combatant_upkeep_priority`, and `reward_pools` (diminishing-returns limits)
+     - `economy.json` - Economy config including the `currency` block (old-English ratios: 12 pence/shillling, 20 shillings/pound, 240 pence/gold), `import_prices` (per-resource cost to buy shortfalls — plain numbers are gold prices, money objects `{gold, shillings, pence}` are paid from the silver-pence wallet, e.g. `grain: {"shillings": 1}`; prices deflate as production scales up, anchored to grain), `export_prices` (optional per-resource explicit sell prices, same money-form as import_prices), `export_sell_multipliers` (optional per-resource sell ratios of the import price — e.g. `ironwork: 0.25` sells at 25% of import), `export_sell_multiplier` (0.5 default; excess above reserve sells at `export_prices` → `export_sell_multipliers` → `export_sell_multiplier` × import price), `default_reserves` (per-resource stockpile minimums), `starting_resources` (per-resource starting balances for a newly created fiefdom — currently gold 5, all others 0), `combatant_upkeep_priority`, and `reward_pools` (diminishing-returns limits)
     - `tower_defense/maps/` - Tower defense map metadata JSON files (dynamic: directory is rescanned on each request, allowing hot-reload of new maps without server restart)
     - `combat/rulesets.json` - Realtime combat mission rules (mode, death handling, caps, duration — see `docs/combat_rulesets.md`)
     - `combat/maps/` - Realtime combat map files (CombatMapCache, stat()-based hot reload — see `docs/combat_maps.md`)

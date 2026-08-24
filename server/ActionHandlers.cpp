@@ -3,6 +3,7 @@
 #include "Database.hpp"
 #include "GameConfigCache.hpp"
 #include "GridCollision.hpp"
+#include <algorithm>
 #include <map>
 #include <optional>
 #include <set>
@@ -75,7 +76,7 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
 
     if (config.contains("max_per_fiefdom") && config["max_per_fiefdom"].is_number()) {
         int max_count = config["max_per_fiefdom"].get<int>();
-        if (max_count >= 1 && Validation::countBuildingsByType(fiefdom_id, building_type, 1) >= max_count) {
+        if (max_count >= 1 && Validation::countBuildingsByType(*ctx.config_cache, fiefdom_id, building_type, 1) >= max_count) {
             result.status = ActionStatus::FAIL;
             result.error_code = "max_per_fiefdom_reached";
             result.error_message = "Only " + std::to_string(max_count) + " " + display_name + "(s) may be built in a fiefdom";
@@ -86,7 +87,7 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
     if (config.contains("prerequisites") && config["prerequisites"].is_array()) {
         auto prerequisites_opt = Validation::getPrerequisitesForLevel(*ctx.config_cache, building_type, 1);
         if (prerequisites_opt && !prerequisites_opt->empty()) {
-            if (!Validation::checkFiefdomPrerequisites(fiefdom_id, *prerequisites_opt)) {
+            if (!Validation::checkFiefdomPrerequisites(*ctx.config_cache, fiefdom_id, *prerequisites_opt)) {
                 result.status = ActionStatus::FAIL;
                 result.error_code = "prerequisites_not_met";
                 result.error_message = "Building prerequisites not satisfied";
@@ -105,6 +106,35 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
                 result.status = ActionStatus::FAIL;
                 result.error_code = "dependencies_not_met";
                 result.error_message = dep_result.second;
+                return result;
+            }
+        }
+    }
+
+    // Arable land: the building must fit within the manor's remaining arable acres.
+    {
+        int required_acres = ctx.config_cache->getBuildingArableAcres(building_type);
+        if (required_acres > 0) {
+            double available = Validation::getAvailableArableAcres(*ctx.config_cache, fiefdom_id);
+            if (available + 0.0001 < required_acres) {
+                result.status = ActionStatus::FAIL;
+                result.error_code = "insufficient_arable_land";
+                result.error_message = "Not enough arable land to build a " + display_name;
+                return result;
+            }
+        }
+    }
+
+    // Forest land: the wood producers (woodcutter chain) claim forest acres,
+    // an off-map resource scaling with manor level like arable land.
+    {
+        int required_acres = ctx.config_cache->getBuildingForestAcres(building_type);
+        if (required_acres > 0) {
+            double available = Validation::getAvailableForestAcres(*ctx.config_cache, fiefdom_id);
+            if (available + 0.0001 < required_acres) {
+                result.status = ActionStatus::FAIL;
+                result.error_code = "insufficient_forest_land";
+                result.error_message = "Not enough forest land to build a " + display_name;
                 return result;
             }
         }
@@ -182,8 +212,14 @@ ActionResult BuildActionHandler::execute(const json& payload, const ActionContex
         if (config->contains("wood_cost")) costs["wood"] = (*config)["wood_cost"][0];
         if (config->contains("stone_cost")) costs["stone"] = (*config)["stone_cost"][0];
         if (config->contains("silver_pence_cost")) costs["silver_pence"] = (*config)["silver_pence_cost"][0];
+        if (config->contains("charcoal_cost")) costs["charcoal"] = (*config)["charcoal_cost"][0];
+        if (config->contains("iron_cost")) costs["iron"] = (*config)["iron_cost"][0];
+        if (config->contains("ironwork_cost")) costs["ironwork"] = (*config)["ironwork_cost"][0];
+        if (config->contains("fancy_ironwork_cost")) costs["fancy_ironwork"] = (*config)["fancy_ironwork_cost"][0];
+        if (config->contains("beams_cost")) costs["beams"] = (*config)["beams_cost"][0];
+        if (config->contains("boards_cost")) costs["boards"] = (*config)["boards_cost"][0];
         
-        auto deduct_result = Validation::deductResources(fiefdom_id, costs, result);
+        auto deduct_result = Validation::deductResources(*ctx.config_cache, fiefdom_id, costs, result);
         if (deduct_result.status != ActionStatus::OK) {
             return deduct_result;
         }
@@ -415,13 +451,15 @@ public:
             Validation::TransactionGuard tx(Database::getInstance().gameDB());
 
             nlohmann::json cost;
-            std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
-            std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana"};
+            std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost",
+                                         "beams_cost", "boards_cost"};
+            std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana",
+                                             "beams", "boards"};
 
             auto config_opt = Validation::getBuildingConfig(*ctx.config_cache, building_name);
             if (config_opt) {
                 auto config = *config_opt;
-                for (size_t i = 0; i < 9; i++) {
+                for (size_t i = 0; i < 11; i++) {
                     std::string field = cost_fields[i];
                     if (config.contains(field) && config[field].is_array()) {
                         auto costs = config[field];
@@ -434,7 +472,7 @@ public:
                 }
             }
 
-            auto deduct_result = Validation::deductResources(ctx.requesting_fiefdom_id, cost, result);
+            auto deduct_result = Validation::deductResources(*ctx.config_cache, ctx.requesting_fiefdom_id, cost, result);
             if (deduct_result.status != ActionStatus::OK) return deduct_result;
 
             if (!Validation::updateBuildingPosition(building_id, x, y)) {
@@ -555,63 +593,202 @@ bool fiefdomExists(int fiefdom_id) {
     return count > 0;
 }
 
-bool hasEnoughResources(int fiefdom_id, const json& costs) {
+bool hasEnoughResources(GameConfigCache& cache, int fiefdom_id, const json& costs) {
     auto& db = Database::getInstance().gameDB();
     double gold = 0;
+    double silver_pence = 0;
     int wood = 0, stone = 0, steel = 0, bronze = 0, grain = 0, leather = 0, mana = 0;
-    db << "SELECT gold, wood, stone, steel, bronze, grain, leather, mana FROM fiefdoms WHERE id = ?;"
+    int charcoal = 0, iron = 0, ironwork = 0, fancy_ironwork = 0, beams = 0, boards = 0;
+    std::string import_settings_str;
+    db << "SELECT gold, silver_pence, wood, stone, steel, bronze, grain, leather, mana, charcoal, iron, ironwork, fancy_ironwork, beams, boards, import_settings FROM fiefdoms WHERE id = ?;"
        << fiefdom_id
-       >> [&](double g, int w, int st, int stl, int b, int gr, int l, int m) {
-           gold = g; wood = w; stone = st; steel = stl; bronze = b; grain = gr; leather = l; mana = m;
+       >> [&](double g, double sp, int w, int st, int stl, int b, int gr, int l, int m,
+              int ch, int ir, int iw, int fiw, int bm, int bd, std::string imp) {
+           gold = g; silver_pence = sp; wood = w; stone = st; steel = stl;
+           bronze = b; grain = gr; leather = l; mana = m;
+           charcoal = ch; iron = ir; ironwork = iw; fancy_ironwork = fiw;
+           beams = bm; boards = bd; import_settings_str = imp;
        };
-    
-    if (costs.contains("gold") && gold < costs["gold"].get<double>()) return false;
-    if (costs.contains("wood") && wood < costs["wood"]) return false;
-    if (costs.contains("stone") && stone < costs["stone"]) return false;
-    if (costs.contains("steel") && steel < costs["steel"]) return false;
-    if (costs.contains("bronze") && bronze < costs["bronze"]) return false;
-    if (costs.contains("grain") && grain < costs["grain"]) return false;
-    if (costs.contains("leather") && leather < costs["leather"]) return false;
-    if (costs.contains("mana") && mana < costs["mana"]) return false;
-    
-    return true;
+
+    json import_settings = json::object();
+    try { import_settings = json::parse(import_settings_str); } catch (...) { import_settings = json::object(); }
+
+    auto economy_cfg = cache.getEconomyConfig();
+    json import_prices = economy_cfg.value("import_prices", json::object());
+    auto currency_cfg = economy_cfg.value("currency", json::object());
+    double pence_per_shilling = currency_cfg.value("pence_per_shilling", 12.0);
+    double shillings_per_pound = currency_cfg.value("shillings_per_pound", 20.0);
+    double pence_per_gold = currency_cfg.value("pence_per_gold", pence_per_shilling * shillings_per_pound);
+
+    auto money_price_to_pence = [&](const json& price) -> double {
+        if (!price.is_object()) return 0.0;
+        return price.value("gold", 0.0) * pence_per_gold
+             + price.value("shillings", 0.0) * pence_per_shilling
+             + price.value("pence", 0.0);
+    };
+
+    std::map<std::string, double> stock = {
+        {"wood", (double)wood}, {"stone", (double)stone}, {"steel", (double)steel},
+        {"bronze", (double)bronze}, {"grain", (double)grain}, {"leather", (double)leather},
+        {"mana", (double)mana}, {"charcoal", (double)charcoal}, {"iron", (double)iron},
+        {"ironwork", (double)ironwork}, {"fancy_ironwork", (double)fancy_ironwork},
+        {"beams", (double)beams}, {"boards", (double)boards},
+    };
+
+    auto auto_import = [&](const std::string& res) -> bool {
+        if (import_settings.is_object() && import_settings.contains(res)) {
+            return import_settings[res].get<bool>();
+        }
+        return true;
+    };
+
+    double gold_demand = 0.0;
+    double silver_demand = 0.0;
+
+    for (auto& [res, cost] : costs.items()) {
+        double amount = cost.get<double>();
+        if (amount <= 0.0) continue;
+        if (res == "gold") { gold_demand += amount; continue; }
+        if (res == "silver_pence") { silver_demand += amount; continue; }
+        auto it = stock.find(res);
+        if (it == stock.end()) return false;
+        double shortfall = amount - it->second;
+        if (shortfall <= 0.0) continue;
+        // Cover the shortfall with money (auto-import) if enabled and priced.
+        if (auto_import(res) && import_prices.contains(res)) {
+            const json& price = import_prices[res];
+            if (price.is_object()) {
+                silver_demand += shortfall * money_price_to_pence(price);
+            } else if (price.is_number()) {
+                gold_demand += shortfall * price.get<double>();
+            } else {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+
+    // Money is fungible: gold and silver_pence are one wallet at pence_per_gold.
+    double total_gold_demand = gold_demand + silver_demand / pence_per_gold;
+    double total_gold_wealth = gold + silver_pence / pence_per_gold;
+    return total_gold_demand <= total_gold_wealth + 1e-9;
 }
 
-ActionResult deductResources(int fiefdom_id, const json& costs, ActionResult& result) {
+ActionResult deductResources(GameConfigCache& cache, int fiefdom_id, const json& costs, ActionResult& result) {
     ActionResult r;
     r.status = ActionStatus::OK;
     
-    auto& db = Database::getInstance().gameDB();
-    
     if (costs.empty()) return r;
     
+    auto& db = Database::getInstance().gameDB();
+    
     double gold = 0;
-    int silver_pence = 0;
+    double silver_pence = 0;
     int wood = 0, stone = 0, steel = 0, bronze = 0, grain = 0, leather = 0, mana = 0;
-    db << "SELECT gold, silver_pence, wood, stone, steel, bronze, grain, leather, mana FROM fiefdoms WHERE id = ?;"
+    int charcoal = 0, iron = 0, ironwork = 0, fancy_ironwork = 0, beams = 0, boards = 0;
+    std::string import_settings_str;
+    db << "SELECT gold, silver_pence, wood, stone, steel, bronze, grain, leather, mana, charcoal, iron, ironwork, fancy_ironwork, beams, boards, import_settings FROM fiefdoms WHERE id = ?;"
        << fiefdom_id
-       >> [&](double g, int sp, int w, int st, int stl, int b, int gr, int l, int m) {
-           gold = g; silver_pence = sp; wood = w; stone = st; steel = stl; bronze = b; grain = gr; leather = l; mana = m;
+       >> [&](double g, double sp, int w, int st, int stl, int b, int gr, int l, int m,
+              int ch, int ir, int iw, int fiw, int bm, int bd, std::string imp) {
+           gold = g; silver_pence = sp; wood = w; stone = st; steel = stl;
+           bronze = b; grain = gr; leather = l; mana = m;
+           charcoal = ch; iron = ir; ironwork = iw; fancy_ironwork = fiw;
+           beams = bm; boards = bd; import_settings_str = imp;
        };
-    
-    std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana"};
+
+    json import_settings = json::object();
+    try { import_settings = json::parse(import_settings_str); } catch (...) { import_settings = json::object(); }
+
+    auto economy_cfg = cache.getEconomyConfig();
+    json import_prices = economy_cfg.value("import_prices", json::object());
+    auto currency_cfg = economy_cfg.value("currency", json::object());
+    double pence_per_shilling = currency_cfg.value("pence_per_shilling", 12.0);
+    double shillings_per_pound = currency_cfg.value("shillings_per_pound", 20.0);
+    double pence_per_gold = currency_cfg.value("pence_per_gold", pence_per_shilling * shillings_per_pound);
+
+    auto money_price_to_pence = [&](const json& price) -> double {
+        if (!price.is_object()) return 0.0;
+        return price.value("gold", 0.0) * pence_per_gold
+             + price.value("shillings", 0.0) * pence_per_shilling
+             + price.value("pence", 0.0);
+    };
+
+    // Fungible money spending: gold and silver_pence are one wallet at
+    // pence_per_gold; on shortfall we convert across currencies.
+    auto spend_gold = [&](double gold_cost) {
+        if (gold_cost <= 0.0) return;
+        if (gold >= gold_cost) { gold -= gold_cost; return; }
+        double shortfall = gold_cost - gold;
+        gold = 0.0;
+        silver_pence -= shortfall * pence_per_gold;
+    };
+    auto spend_silver = [&](double pence_cost) {
+        if (pence_cost <= 0.0) return;
+        if (silver_pence >= pence_cost) { silver_pence -= pence_cost; return; }
+        double shortfall = pence_cost - silver_pence;
+        silver_pence = 0.0;
+        gold -= shortfall / pence_per_gold;
+    };
+
+    std::map<std::string, double> stock = {
+        {"wood", (double)wood}, {"stone", (double)stone}, {"steel", (double)steel},
+        {"bronze", (double)bronze}, {"grain", (double)grain}, {"leather", (double)leather},
+        {"mana", (double)mana}, {"charcoal", (double)charcoal}, {"iron", (double)iron},
+        {"ironwork", (double)ironwork}, {"fancy_ironwork", (double)fancy_ironwork},
+        {"beams", (double)beams}, {"boards", (double)boards},
+    };
+
+    for (auto& [res, cost] : costs.items()) {
+        double amount = cost.get<double>();
+        if (amount <= 0.0) continue;
+        if (res == "gold") { spend_gold(amount); continue; }
+        if (res == "silver_pence") { spend_silver(amount); continue; }
+        auto it = stock.find(res);
+        if (it == stock.end()) continue;
+        double from_stock = std::min(it->second, amount);
+        it->second -= from_stock;
+        double shortfall = amount - from_stock;
+        if (shortfall <= 0.0) continue;
+        // Import the shortfall with money (fungible). hasEnoughResources already
+        // verified affordability; here we just spend it.
+        const json& price = import_prices.value(res, json());
+        if (price.is_object()) {
+            spend_silver(shortfall * money_price_to_pence(price));
+        } else if (price.is_number()) {
+            spend_gold(shortfall * price.get<double>());
+        }
+    }
+
+    wood = (int)stock["wood"]; stone = (int)stock["stone"]; steel = (int)stock["steel"];
+    bronze = (int)stock["bronze"]; grain = (int)stock["grain"]; leather = (int)stock["leather"];
+    mana = (int)stock["mana"]; charcoal = (int)stock["charcoal"]; iron = (int)stock["iron"];
+    ironwork = (int)stock["ironwork"]; fancy_ironwork = (int)stock["fancy_ironwork"];
+    beams = (int)stock["beams"]; boards = (int)stock["boards"];
+
+    std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana",
+                                     "charcoal", "iron", "ironwork", "fancy_ironwork", "beams", "boards"};
     double* gold_ptr = &gold;
-    int* silver_ptr = &silver_pence;
-    int* resource_ptrs[] = {nullptr, silver_ptr, &wood, &stone, &steel, &bronze, &grain, &leather, &mana};
-    
-    for (size_t i = 0; i < 9; i++) {
+    double* silver_ptr = &silver_pence;
+    int* resource_ptrs[] = {&wood, &stone, &steel, &bronze, &grain, &leather, &mana,
+                            &charcoal, &iron, &ironwork, &fancy_ironwork, &beams, &boards};
+
+    for (size_t i = 0; i < 15; i++) {
         if (costs.contains(resource_fields[i])) {
-            double before;
             double amount = costs[resource_fields[i]].get<double>();
+            double before;
+            double after;
             if (i == 0) {
-                before = *gold_ptr;
-                *gold_ptr -= amount;
+                before = *gold_ptr + amount;
+                after = *gold_ptr;
+            } else if (i == 1) {
+                before = *silver_ptr + amount;
+                after = *silver_ptr;
             } else {
-                before = *resource_ptrs[i];
-                *resource_ptrs[i] -= static_cast<int>(amount);
+                before = *resource_ptrs[i - 2] + static_cast<int>(amount);
+                after = *resource_ptrs[i - 2];
             }
-            double after = (i == 0) ? *gold_ptr : static_cast<double>(*resource_ptrs[i]);
-            
             DiffValue diff;
             diff.field = resource_fields[i];
             diff.source_type = "fiefdom";
@@ -623,8 +800,9 @@ ActionResult deductResources(int fiefdom_id, const json& costs, ActionResult& re
         }
     }
     
-    db << "UPDATE fiefdoms SET gold = ?, silver_pence = ?, wood = ?, stone = ?, steel = ?, bronze = ?, grain = ?, leather = ?, mana = ? WHERE id = ?;"
-       << gold << silver_pence << wood << stone << steel << bronze << grain << leather << mana << fiefdom_id;
+    db << "UPDATE fiefdoms SET gold = ?, silver_pence = ?, wood = ?, stone = ?, steel = ?, bronze = ?, grain = ?, leather = ?, mana = ?, charcoal = ?, iron = ?, ironwork = ?, fancy_ironwork = ?, beams = ?, boards = ? WHERE id = ?;"
+       << gold << silver_pence << wood << stone << steel << bronze << grain << leather << mana
+       << charcoal << iron << ironwork << fancy_ironwork << beams << boards << fiefdom_id;
     
     return r;
 }
@@ -670,9 +848,11 @@ nlohmann::json getBuildingArrayField(GameConfigCache& cache, const std::string& 
 nlohmann::json getNextLevelCost(GameConfigCache& cache, const std::string& building_name,
                                 const std::string& pond_type, int current_level) {
     nlohmann::json next_cost;
-    std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
-    std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana"};
-    for (size_t i = 0; i < 9; i++) {
+    std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost",
+                                 "charcoal_cost", "iron_cost", "ironwork_cost", "fancy_ironwork_cost", "beams_cost", "boards_cost"};
+    std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana",
+                                     "charcoal", "iron", "ironwork", "fancy_ironwork", "beams", "boards"};
+    for (size_t i = 0; i < 15; i++) {
         auto costs = getBuildingArrayField(cache, building_name, pond_type, cost_fields[i]);
         if (costs.is_array() && current_level > 0 && current_level < static_cast<int>(costs.size())) {
             double amount = costs[current_level].get<double>();
@@ -769,10 +949,11 @@ nlohmann::json calculateCumulativeCost(GameConfigCache& cache, const std::string
 
     auto config = *config_opt;
     nlohmann::json cumulative;
-    std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
-    std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana"};
-
-    for (size_t i = 0; i < 9; i++) {
+            std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost",
+                                         "charcoal_cost", "iron_cost", "ironwork_cost", "fancy_ironwork_cost", "beams_cost", "boards_cost"};
+            std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana",
+                                             "charcoal", "iron", "ironwork", "fancy_ironwork", "beams", "boards"};
+                for (size_t i = 0; i < 15; i++) {
         auto costs = getBuildingArrayField(cache, building_type, pond_type, cost_fields[i]);
         if (costs.is_array()) {
             double total = 0;
@@ -803,31 +984,44 @@ ActionResult refundResources(int fiefdom_id, const nlohmann::json& amounts, Acti
     auto& db = Database::getInstance().gameDB();
 
     double gold = 0;
-    int silver_pence = 0;
+    double silver_pence = 0;
     int wood = 0, stone = 0, steel = 0, bronze = 0, grain = 0, leather = 0, mana = 0;
-    db << "SELECT gold, silver_pence, wood, stone, steel, bronze, grain, leather, mana FROM fiefdoms WHERE id = ?;"
+    int charcoal = 0, iron = 0, ironwork = 0, fancy_ironwork = 0, beams = 0, boards = 0;
+    db << "SELECT gold, silver_pence, wood, stone, steel, bronze, grain, leather, mana, charcoal, iron, ironwork, fancy_ironwork, beams, boards FROM fiefdoms WHERE id = ?;"
        << fiefdom_id
-       >> [&](double g, int sp, int w, int st, int stl, int b, int gr, int l, int m) {
-           gold = g; silver_pence = sp; wood = w; stone = st; steel = stl; bronze = b; grain = gr; leather = l; mana = m;
+       >> [&](double g, double sp, int w, int st, int stl, int b, int gr, int l, int m,
+              int ch, int ir, int iw, int fiw, int bm, int bd) {
+           gold = g; silver_pence = sp; wood = w; stone = st; steel = stl;
+           bronze = b; grain = gr; leather = l; mana = m;
+           charcoal = ch; iron = ir; ironwork = iw; fancy_ironwork = fiw;
+           beams = bm; boards = bd;
        };
 
-    std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana"};
+    std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana",
+                                     "charcoal", "iron", "ironwork", "fancy_ironwork", "beams", "boards"};
     double* gold_ptr = &gold;
-    int* silver_ptr = &silver_pence;
-    int* resource_ptrs[] = {nullptr, silver_ptr, &wood, &stone, &steel, &bronze, &grain, &leather, &mana};
+    double* silver_ptr = &silver_pence;
+    int* resource_ptrs[] = {&wood, &stone, &steel, &bronze, &grain, &leather, &mana,
+                            &charcoal, &iron, &ironwork, &fancy_ironwork, &beams, &boards};
 
-    for (size_t i = 0; i < 9; i++) {
+    for (size_t i = 0; i < 15; i++) {
         if (amounts.contains(resource_fields[i])) {
             double refund = amounts[resource_fields[i]].get<double>();
             double before;
+            double after;
             if (i == 0) {
                 before = *gold_ptr;
                 *gold_ptr += refund;
+                after = *gold_ptr;
+            } else if (i == 1) {
+                before = *silver_ptr;
+                *silver_ptr += refund;
+                after = *silver_ptr;
             } else {
-                before = *resource_ptrs[i];
-                *resource_ptrs[i] += static_cast<int>(refund);
+                before = *resource_ptrs[i - 2];
+                *resource_ptrs[i - 2] += static_cast<int>(refund);
+                after = *resource_ptrs[i - 2];
             }
-            double after = (i == 0) ? *gold_ptr : static_cast<double>(*resource_ptrs[i]);
 
             DiffValue diff;
             diff.field = resource_fields[i];
@@ -840,8 +1034,9 @@ ActionResult refundResources(int fiefdom_id, const nlohmann::json& amounts, Acti
         }
     }
 
-    db << "UPDATE fiefdoms SET gold = ?, silver_pence = ?, wood = ?, stone = ?, steel = ?, bronze = ?, grain = ?, leather = ?, mana = ? WHERE id = ?;"
-       << gold << silver_pence << wood << stone << steel << bronze << grain << leather << mana << fiefdom_id;
+    db << "UPDATE fiefdoms SET gold = ?, silver_pence = ?, wood = ?, stone = ?, steel = ?, bronze = ?, grain = ?, leather = ?, mana = ?, charcoal = ?, iron = ?, ironwork = ?, fancy_ironwork = ?, beams = ?, boards = ? WHERE id = ?;"
+       << gold << silver_pence << wood << stone << steel << bronze << grain << leather << mana
+       << charcoal << iron << ironwork << fancy_ironwork << beams << boards << fiefdom_id;
 
     return result;
 }
@@ -1085,7 +1280,7 @@ ActionResult BuildWallActionHandler::execute(const json& payload, const ActionCo
             cost["stone"] = config["stone_cost"][0].get<int>();
         }
 
-        auto deduct_result = Validation::deductResources(fiefdom_id, cost, result);
+        auto deduct_result = Validation::deductResources(*ctx.config_cache, fiefdom_id, cost, result);
         if (deduct_result.status != ActionStatus::OK) return deduct_result;
 
         std::vector<nlohmann::json> overlapping_buildings;
@@ -1248,7 +1443,7 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
             int next_level = current_level + 1;
             auto prerequisites_opt = Validation::getPrerequisitesForLevel(*ctx.config_cache, building_name, next_level);
             if (prerequisites_opt && !prerequisites_opt->empty()) {
-                if (!Validation::checkFiefdomPrerequisites(fiefdom_id, *prerequisites_opt)) {
+                if (!Validation::checkFiefdomPrerequisites(*ctx.config_cache, fiefdom_id, *prerequisites_opt)) {
                     result.status = ActionStatus::FAIL;
                     result.error_code = "prerequisites_not_met";
                     result.error_message = "Building prerequisites not satisfied for next level";
@@ -1275,7 +1470,7 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
 
         nlohmann::json next_cost = Validation::getNextLevelCost(*ctx.config_cache, building_name, pond_type, current_level);
 
-        if (!Validation::hasEnoughResources(fiefdom_id, next_cost)) {
+        if (!Validation::hasEnoughResources(*ctx.config_cache, fiefdom_id, next_cost)) {
             result.status = ActionStatus::FAIL;
             result.error_code = "insufficient_resources";
             result.error_message = "Not enough resources to upgrade";
@@ -1335,7 +1530,7 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
         }
 
         auto cost = Validation::calculateWallUpgradeCost(*ctx.config_cache, generation, current_level);
-        if (!Validation::hasEnoughResources(fiefdom_id, cost)) {
+        if (!Validation::hasEnoughResources(*ctx.config_cache, fiefdom_id, cost)) {
             result.status = ActionStatus::FAIL;
             result.error_code = "insufficient_resources";
             result.error_message = "Not enough resources to upgrade";
@@ -1384,7 +1579,7 @@ ActionResult UpgradeActionHandler::execute(const json& payload, const ActionCont
 
             nlohmann::json next_cost = Validation::getNextLevelCost(*ctx.config_cache, building_name, pond_type, current_level);
 
-            auto deduct_result = Validation::deductResources(fiefdom_id, next_cost, result);
+            auto deduct_result = Validation::deductResources(*ctx.config_cache, fiefdom_id, next_cost, result);
             if (deduct_result.status != ActionStatus::OK) return deduct_result;
 
             if (!FiefdomFetcher::updateBuildingConstructionStart(building_id, now, now)) {
@@ -1413,7 +1608,7 @@ ActionResult UpgradeActionHandler::execute(const json& payload, const ActionCont
                };
 
         auto cost = Validation::calculateWallUpgradeCost(*ctx.config_cache, generation, current_level);
-            auto deduct_result = Validation::deductResources(fiefdom_id, cost, result);
+            auto deduct_result = Validation::deductResources(*ctx.config_cache, fiefdom_id, cost, result);
             if (deduct_result.status != ActionStatus::OK) return deduct_result;
 
             int new_hp = Validation::getWallHP(*ctx.config_cache, generation, current_level + 1);
@@ -1533,9 +1728,11 @@ bool resolvePondTypeUpgrade(const json& payload, const ActionContext& ctx,
 // Resource-keyed level-1 cost for a pond type object.
 json pondTypeLevel1Cost(const json& pt) {
     json cost;
-    std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
-    std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana"};
-    for (size_t i = 0; i < 9; i++) {
+    std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost",
+                                 "charcoal_cost", "iron_cost", "ironwork_cost", "fancy_ironwork_cost", "beams_cost", "boards_cost"};
+    std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana",
+                                     "charcoal", "iron", "ironwork", "fancy_ironwork", "beams", "boards"};
+    for (size_t i = 0; i < 15; i++) {
         if (pt.contains(cost_fields[i]) && pt[cost_fields[i]].is_array() && !pt[cost_fields[i]].empty()) {
             double amount = pt[cost_fields[i]][0].get<double>();
             if (amount > 0) cost[resource_fields[i]] = amount;
@@ -1555,7 +1752,7 @@ public:
             return result;
         }
         auto cost = pondTypeLevel1Cost(*next_type);
-        if (!Validation::hasEnoughResources(fiefdom_id, cost)) {
+        if (!Validation::hasEnoughResources(*ctx.config_cache, fiefdom_id, cost)) {
             result.status = ActionStatus::FAIL;
             result.error_code = "insufficient_resources";
             result.error_message = "Not enough resources to upgrade the mill pond type";
@@ -1574,7 +1771,7 @@ public:
         }
 
         auto cost = pondTypeLevel1Cost(*next_type);
-        if (!Validation::hasEnoughResources(fiefdom_id, cost)) {
+        if (!Validation::hasEnoughResources(*ctx.config_cache, fiefdom_id, cost)) {
             result.status = ActionStatus::FAIL;
             result.error_code = "insufficient_resources";
             result.error_message = "Not enough resources to upgrade the mill pond type";
@@ -1585,7 +1782,7 @@ public:
         try {
             Validation::TransactionGuard tx(Database::getInstance().gameDB());
 
-            auto deduct_result = Validation::deductResources(fiefdom_id, cost, result);
+            auto deduct_result = Validation::deductResources(*ctx.config_cache, fiefdom_id, cost, result);
             if (deduct_result.status != ActionStatus::OK) return deduct_result;
 
             std::string next_id = next_type->value("id", "");
@@ -1627,6 +1824,288 @@ public:
     }
 };
 
+namespace {
+
+// Returns the unique successor building id whose `built_from` matches the given
+// building (or nullopt if the building has no stage upgrade).
+std::optional<std::string> findStageSuccessor(GameConfigCache& cache, const std::string& building_name) {
+    auto types = cache.getFiefdomBuildingTypes();
+    for (const auto& type_obj : types) {
+        for (auto it = type_obj.begin(); it != type_obj.end(); ++it) {
+            if (it.value().is_object() && it.value().value("built_from", "") == building_name) {
+                return it.key();
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+// Conversion price = max(0, successor level-1 cost − 80% × old building's
+// cumulative spent) per resource. The 80% matches the demolish refund, so the
+// discount scales with how much was invested in the old building.
+nlohmann::json computeConvertCost(GameConfigCache& cache, const std::string& old_name,
+                                  const std::string& successor_name, const std::string& pond_type,
+                                  int current_level) {
+    nlohmann::json result;
+    std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost",
+                                 "bronze_cost", "grain_cost", "leather_cost", "mana_cost",
+                                 "charcoal_cost", "iron_cost", "ironwork_cost", "fancy_ironwork_cost",
+                                 "beams_cost", "boards_cost"};
+    std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel",
+                                     "bronze", "grain", "leather", "mana",
+                                     "charcoal", "iron", "ironwork", "fancy_ironwork",
+                                     "beams", "boards"};
+    auto old_cumulative = Validation::calculateCumulativeCost(cache, old_name, pond_type, current_level);
+    for (size_t i = 0; i < 15; i++) {
+        auto costs = Validation::getBuildingArrayField(cache, successor_name, "", cost_fields[i]);
+        if (!costs.is_array() || costs.empty()) continue;
+        double successor_lvl1 = costs[0].get<double>();
+        if (successor_lvl1 <= 0) continue;
+        double old_credit = old_cumulative.value(resource_fields[i], 0.0) * 0.8;
+        double price = successor_lvl1 - old_credit;
+        if (price > 0) result[resource_fields[i]] = price;
+    }
+    return result;
+}
+
+} // namespace
+
+class ConvertBuildingActionHandler : public ActionHandler {
+public:
+    ActionResult validate(const json& payload, const ActionContext& ctx) override {
+        ActionResult result;
+
+        if (!payload.contains("fiefdom_id")) {
+            result.status = ActionStatus::FAIL;
+            result.error_code = "fiefdom_id_required";
+            result.error_message = "fiefdom_id is required";
+            return result;
+        }
+        if (!payload.contains("building_id")) {
+            result.status = ActionStatus::FAIL;
+            result.error_code = "building_id_required";
+            result.error_message = "building_id is required";
+            return result;
+        }
+
+        int fiefdom_id = payload["fiefdom_id"];
+        int building_id = payload["building_id"];
+
+        if (!Validation::userOwnsFiefdom(ctx, fiefdom_id)) {
+            result.status = ActionStatus::FAIL;
+            result.error_code = "not_owner";
+            result.error_message = "User does not own this fiefdom";
+            return result;
+        }
+
+        auto& db = Database::getInstance().gameDB();
+        std::string building_name;
+        int current_level;
+        std::string pond_type;
+        int owning_fiefdom = 0;
+        db << "SELECT fiefdom_id, name, level, pond_type FROM fiefdom_buildings WHERE id = ?;"
+           << building_id
+           >> [&](int fid, std::string name, int lvl, std::string pt) {
+               owning_fiefdom = fid;
+               building_name = name;
+               current_level = lvl;
+               pond_type = pt;
+           };
+
+        if (owning_fiefdom != fiefdom_id) {
+            result.status = ActionStatus::FAIL;
+            result.error_code = "not_owner";
+            result.error_message = "User does not own this building";
+            return result;
+        }
+        if (current_level == 0) {
+            result.status = ActionStatus::FAIL;
+            result.error_code = "upgrade_in_progress";
+            result.error_message = "Building is under construction";
+            return result;
+        }
+
+        auto successor_opt = findStageSuccessor(*ctx.config_cache, building_name);
+        if (!successor_opt) {
+            result.status = ActionStatus::FAIL;
+            result.error_code = "no_stage_upgrade";
+            result.error_message = "This building has no stage upgrade";
+            return result;
+        }
+        std::string successor = *successor_opt;
+
+        auto succ_cfg_opt = Validation::getBuildingConfig(*ctx.config_cache, successor);
+        if (!succ_cfg_opt) {
+            result.status = ActionStatus::FAIL;
+            result.error_code = "invalid_config";
+            result.error_message = "Successor building configuration not found";
+            return result;
+        }
+        auto succ_cfg = *succ_cfg_opt;
+
+        // max_per_fiefdom of the successor (exact-type count, excluding this row).
+        if (succ_cfg.contains("max_per_fiefdom") && succ_cfg["max_per_fiefdom"].is_number()) {
+            int max_count = succ_cfg["max_per_fiefdom"].get<int>();
+            if (max_count >= 1) {
+                int succ_count = 0;
+                db << "SELECT COUNT(*) FROM fiefdom_buildings WHERE fiefdom_id = ? AND name = ? AND id != ? AND level > 0;"
+                   << fiefdom_id << successor << building_id
+                   >> [&](int c) { succ_count = c; };
+                if (succ_count >= max_count) {
+                    result.status = ActionStatus::FAIL;
+                    result.error_code = "max_per_fiefdom_reached";
+                    result.error_message = "Only " + std::to_string(max_count) + " " + successor + "(s) may exist in a fiefdom";
+                    return result;
+                }
+            }
+        }
+
+        // Successor level-1 prerequisites + dependencies (chain-aware).
+        auto prereqs_opt = Validation::getPrerequisitesForLevel(*ctx.config_cache, successor, 1);
+        if (prereqs_opt && !prereqs_opt->empty()) {
+            if (!Validation::checkFiefdomPrerequisites(*ctx.config_cache, fiefdom_id, *prereqs_opt)) {
+                result.status = ActionStatus::FAIL;
+                result.error_code = "prerequisites_not_met";
+                result.error_message = "Successor building prerequisites not satisfied";
+                return result;
+            }
+        }
+        nlohmann::json deps = Validation::getDependenciesForLevel(*ctx.config_cache, successor, 1);
+        if (!deps.empty()) {
+            auto all_buildings = Validation::getFiefdomAllBuildings(fiefdom_id);
+            auto dep_result = Validation::checkBuildingDependencies(*ctx.config_cache, fiefdom_id, all_buildings, deps);
+            if (!dep_result.first) {
+                result.status = ActionStatus::FAIL;
+                result.error_code = "dependencies_not_met";
+                result.error_message = dep_result.second;
+                return result;
+            }
+        }
+
+        // Arable land: converting may claim more acres than the current stage.
+        // `getAvailableArableAcres` already reflects this building's current
+        // acres (they are freed on conversion), so only the delta must fit.
+        {
+            int current_acres = ctx.config_cache->getBuildingArableAcres(building_name);
+            int successor_acres = ctx.config_cache->getBuildingArableAcres(successor);
+            int delta = successor_acres - current_acres;
+            if (delta > 0) {
+                double available = Validation::getAvailableArableAcres(*ctx.config_cache, fiefdom_id);
+                if (available + 0.0001 < delta) {
+                    result.status = ActionStatus::FAIL;
+                    result.error_code = "insufficient_arable_land";
+                    result.error_message = "Not enough arable land to upgrade this building";
+                    return result;
+                }
+            }
+        }
+
+        // Forest land: same delta gating as arable for the woodcutter chain
+        // (woodcutter 80 -> coppicer 60 frees acres; coppicer 60 -> timber
+        // hauler 70 claims 10).
+        {
+            int current_acres = ctx.config_cache->getBuildingForestAcres(building_name);
+            int successor_acres = ctx.config_cache->getBuildingForestAcres(successor);
+            int delta = successor_acres - current_acres;
+            if (delta > 0) {
+                double available = Validation::getAvailableForestAcres(*ctx.config_cache, fiefdom_id);
+                if (available + 0.0001 < delta) {
+                    result.status = ActionStatus::FAIL;
+                    result.error_code = "insufficient_forest_land";
+                    result.error_message = "Not enough forest land to upgrade this building";
+                    return result;
+                }
+            }
+        }
+
+        nlohmann::json convert_cost = computeConvertCost(*ctx.config_cache, building_name, successor, pond_type, current_level);
+        if (!Validation::hasEnoughResources(*ctx.config_cache, fiefdom_id, convert_cost)) {
+            result.status = ActionStatus::FAIL;
+            result.error_code = "insufficient_resources";
+            result.error_message = "Not enough resources to convert this building";
+            return result;
+        }
+
+        result.status = ActionStatus::OK;
+        return result;
+    }
+
+    ActionResult execute(const json& payload, const ActionContext& ctx) override {
+        ActionResult result;
+        auto validate_result = validate(payload, ctx);
+        if (validate_result.status != ActionStatus::OK) return validate_result;
+
+        int fiefdom_id = payload["fiefdom_id"];
+        int building_id = payload["building_id"];
+
+        auto& db = Database::getInstance().gameDB();
+        std::string building_name;
+        int current_level;
+        std::string pond_type;
+        db << "SELECT name, level, pond_type FROM fiefdom_buildings WHERE id = ?;"
+           << building_id
+           >> [&](std::string name, int lvl, std::string pt) {
+               building_name = name;
+               current_level = lvl;
+               pond_type = pt;
+           };
+
+        auto successor = findStageSuccessor(*ctx.config_cache, building_name);
+        if (!successor) {
+            result.status = ActionStatus::FAIL;
+            result.error_code = "no_stage_upgrade";
+            result.error_message = "This building has no stage upgrade";
+            return result;
+        }
+
+        nlohmann::json convert_cost = computeConvertCost(*ctx.config_cache, building_name, *successor, pond_type, current_level);
+
+        int64_t now = Validation::getCurrentTimestamp();
+        try {
+            Validation::TransactionGuard tx(Database::getInstance().gameDB());
+
+            auto deduct_result = Validation::deductResources(*ctx.config_cache, fiefdom_id, convert_cost, result);
+            if (deduct_result.status != ActionStatus::OK) return deduct_result;
+
+            auto succ_cfg = Validation::getBuildingConfig(*ctx.config_cache, *successor);
+            bool instant = false;
+            if (succ_cfg && succ_cfg->contains("construction_times") && (*succ_cfg)["construction_times"].is_array() &&
+                !(*succ_cfg)["construction_times"].empty()) {
+                instant = ((*succ_cfg)["construction_times"][0].get<double>() == 0);
+            }
+            int new_level = instant ? 1 : 0;
+            int64_t construction_start = instant ? 0 : now;
+
+            if (!FiefdomFetcher::updateBuildingType(building_id, *successor, new_level, construction_start, now)) {
+                result.status = ActionStatus::FAIL;
+                result.error_code = "database_error";
+                result.error_message = "Failed to convert building";
+                return result;
+            }
+
+            result.result["building_id"] = building_id;
+            result.result["building_type"] = *successor;
+            result.result["level"] = new_level;
+            result.result["construction_start_ts"] = construction_start;
+            result.result["cost"] = convert_cost;
+            result.action_timestamp = now;
+
+            tx.commit();
+            result.status = ActionStatus::OK;
+            return result;
+        } catch (const std::exception& e) {
+            result.status = ActionStatus::FAIL;
+            result.error_code = "database_error";
+            result.error_message = std::string(e.what());
+            return result;
+        }
+    }
+
+    std::string getDescription() const override {
+        return "Convert a building to its next stage (discount based on invested level)";
+    }
+};
+
 void registerAllActionHandlers(ActionRegistry& registry) {
     registry.registerHandler("build",
         [](const json& p, const ActionContext& ctx) { BuildActionHandler h; return h.validate(p, ctx); },
@@ -1657,6 +2136,11 @@ void registerAllActionHandlers(ActionRegistry& registry) {
         [](const json& p, const ActionContext& ctx) { UpgradePondTypeActionHandler h; return h.validate(p, ctx); },
         [](const json& p, const ActionContext& ctx) { UpgradePondTypeActionHandler h; return h.execute(p, ctx); },
         "Upgrade a mill pond's type");
+
+    registry.registerHandler("convert",
+        [](const json& p, const ActionContext& ctx) { ConvertBuildingActionHandler h; return h.validate(p, ctx); },
+        [](const json& p, const ActionContext& ctx) { ConvertBuildingActionHandler h; return h.execute(p, ctx); },
+        "Convert a building to its next stage");
 
     registry.registerHandler("train_troops",
         [](const json& p, const ActionContext& ctx) { TrainTroopsActionHandler h; return h.validate(p, ctx); },
@@ -1728,12 +2212,52 @@ std::optional<nlohmann::json> getPrerequisitesForLevel(
     return result;
 }
 
-int getBuildingLevelInFiefdom(int fiefdom_id, const std::string& building_name) {
+// Resolves the ordered stage chain [root, ..., building_name] for a building by
+// walking `built_from` links. A building's chain includes itself and every
+// lower stage it could have been converted from. Chain depth is unbounded
+// ("3 stages" is only a design default, not a limit).
+std::vector<std::string> getBuildingStageChain(GameConfigCache& cache, const std::string& building_name) {
+    std::vector<std::string> path;
+    std::string cur = building_name;
+    std::set<std::string> seen;
+    while (!cur.empty()) {
+        if (seen.count(cur)) break;
+        seen.insert(cur);
+        path.push_back(cur);
+        auto config_opt = getBuildingConfig(cache, cur);
+        if (!config_opt) break;
+        std::string from = config_opt->value("built_from", "");
+        if (from.empty()) break;
+        cur = from;
+    }
+    std::reverse(path.begin(), path.end());
+    return path;
+}
+
+// A building satisfies a prerequisite/dependency requirement for any stage in
+// its own chain at or below its current stage (a villein counts as a peasant;
+// a plain peasant never counts as a villein), OR if the required id is the
+// building's `class` (a `class` groups types definitively, e.g. the "peasant"
+// class covers villein/freeholder/yeoman).
+bool buildingSatisfiesRequirement(GameConfigCache& cache, const std::string& building_name, const std::string& required_id) {
+    auto chain = getBuildingStageChain(cache, building_name);
+    if (std::find(chain.begin(), chain.end(), required_id) != chain.end()) {
+        return true;
+    }
+    const std::string cls = cache.getBuildingClass(building_name);
+    return !cls.empty() && cls == required_id;
+}
+
+int getBuildingLevelInFiefdom(GameConfigCache& cache, int fiefdom_id, const std::string& building_name) {
     auto& db = Database::getInstance().gameDB();
     int level = 0;
-    db << "SELECT MAX(level) FROM fiefdom_buildings WHERE fiefdom_id = ? AND name = ?;"
-       << fiefdom_id << building_name
-       >> [&](int lvl) { level = lvl; };
+    db << "SELECT name, level FROM fiefdom_buildings WHERE fiefdom_id = ? AND level > 0;"
+       << fiefdom_id
+       >> [&](std::string name, int lvl) {
+           if (buildingSatisfiesRequirement(cache, name, building_name)) {
+               level = std::max(level, lvl);
+           }
+       };
     return level;
 }
 
@@ -1746,7 +2270,55 @@ int getFiefdomManorLevel(int fiefdom_id) {
     return level;
 }
 
-bool checkFiefdomPrerequisites(int fiefdom_id, const nlohmann::json& prerequisites) {
+// Sums the arable acres claimed by every completed building in the fiefdom.
+// Acres are a per-building-type config field (`arable_acres`); a building
+// claims its current type's acres (stage chains claim their own current stage,
+// since each building's `name` reflects the type it was built/converted to).
+int getUsedArableAcres(GameConfigCache& cache, int fiefdom_id) {
+    auto& db = Database::getInstance().gameDB();
+    int used = 0;
+    db << "SELECT name FROM fiefdom_buildings WHERE fiefdom_id = ? AND level > 0;"
+       << fiefdom_id
+       >> [&](std::string name) {
+           used += cache.getBuildingArableAcres(name);
+       };
+    return used;
+}
+
+// Total arable acres the manor has, scaling with the home-base (manor) level.
+double getTotalArableAcres(GameConfigCache& cache, int fiefdom_id) {
+    return cache.getArableLandByLevel(getFiefdomManorLevel(fiefdom_id));
+}
+
+// Remaining buildable acres = total (from manor level) minus acres already used.
+double getAvailableArableAcres(GameConfigCache& cache, int fiefdom_id) {
+    return getTotalArableAcres(cache, fiefdom_id) - getUsedArableAcres(cache, fiefdom_id);
+}
+
+// Forest acres work exactly like arable acres but for the wood producers
+// (woodcutter/coppicer/timber_hauler). Forest is an off-map resource scaling
+// with manor level (`forest_land_by_level`), claimed per building type via the
+// `forest_acres` config field.
+int getUsedForestAcres(GameConfigCache& cache, int fiefdom_id) {
+    auto& db = Database::getInstance().gameDB();
+    int used = 0;
+    db << "SELECT name FROM fiefdom_buildings WHERE fiefdom_id = ? AND level > 0;"
+       << fiefdom_id
+       >> [&](std::string name) {
+           used += cache.getBuildingForestAcres(name);
+       };
+    return used;
+}
+
+double getTotalForestAcres(GameConfigCache& cache, int fiefdom_id) {
+    return cache.getForestLandByLevel(getFiefdomManorLevel(fiefdom_id));
+}
+
+double getAvailableForestAcres(GameConfigCache& cache, int fiefdom_id) {
+    return getTotalForestAcres(cache, fiefdom_id) - getUsedForestAcres(cache, fiefdom_id);
+}
+
+bool checkFiefdomPrerequisites(GameConfigCache& cache, int fiefdom_id, const nlohmann::json& prerequisites) {
     if (prerequisites.empty()) return true;
     
     for (auto& [building_id, required_level] : prerequisites.items()) {
@@ -1756,7 +2328,7 @@ bool checkFiefdomPrerequisites(int fiefdom_id, const nlohmann::json& prerequisit
                 return false;
             }
         } else {
-            int current_level = getBuildingLevelInFiefdom(fiefdom_id, building_id);
+            int current_level = getBuildingLevelInFiefdom(cache, fiefdom_id, building_id);
             if (current_level < required_level.get<int>()) {
                 return false;
             }
@@ -1796,14 +2368,17 @@ nlohmann::json getDependenciesForLevel(
     return deps[arr_size - 1];
 }
 
-/// Counts buildings of a given type in a fiefdom that meet the minimum level.
-int countBuildingsByType(int fiefdom_id, const std::string& target_building, int min_level) {
+/// Counts buildings in a fiefdom that satisfy a requirement (the building's
+/// stage chain includes `target_building`) and meet the minimum level.
+int countBuildingsByType(GameConfigCache& cache, int fiefdom_id, const std::string& target_building, int min_level) {
     auto& db = Database::getInstance().gameDB();
     int count = 0;
-    db << "SELECT COUNT(*) FROM fiefdom_buildings "
-          "WHERE fiefdom_id = ? AND name = ? AND level >= ? AND level > 0;"
-       << fiefdom_id << target_building << min_level
-       >> [&](int c) { count = c; };
+    db << "SELECT name, level FROM fiefdom_buildings "
+          "WHERE fiefdom_id = ? AND level >= ? AND level > 0;"
+       << fiefdom_id << min_level
+       >> [&](std::string name, int lvl) {
+           if (buildingSatisfiesRequirement(cache, name, target_building)) count++;
+       };
     return count;
 }
 
@@ -1884,7 +2459,7 @@ std::pair<bool, std::string> checkBuildingDependencies(
             }
         }
 
-        int total = countBuildingsByType(fiefdom_id, target_building, min_level);
+        int total = countBuildingsByType(cache, fiefdom_id, target_building, min_level);
         int needed = shared_needed + exclusive_needed;
 
         if (total < needed) {

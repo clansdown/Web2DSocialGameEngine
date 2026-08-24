@@ -21,17 +21,16 @@ std::optional<FiefdomData> fetchFiefdomById(
     
     bool found = false;
     db << R"(
-        SELECT owner_id, name, x, y, peasants, gold, silver_pence, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, fancy_ironwork, wall_count, morale, last_update_time, manor_level, import_settings, reserves
+        SELECT owner_id, name, x, y, gold, silver_pence, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, fancy_ironwork, beams, boards, wall_count, morale, last_update_time, manor_level, import_settings, reserves
         FROM fiefdoms WHERE id = ?;
     )" << fiefdom_id
     >> [&](int owner_id, std::string name, int x, int y,
-           int peasants, double gold, int silver_pence, int grain, int wood, int steel,
-           int bronze, int stone, int leather, int mana, int charcoal, int iron, int ironwork, int fancy_ironwork, int wall_count, double morale, int64_t last_update_time, int manor_level, std::string import_settings_str, std::string reserves_str) {
+           double gold, double silver_pence, int grain, int wood, int steel,
+           int bronze, int stone, int leather, int mana, int charcoal, int iron, int ironwork, int fancy_ironwork, int beams, int boards, int wall_count, double morale, int64_t last_update_time, int manor_level, std::string import_settings_str, std::string reserves_str) {
         fiefdom.owner_id = owner_id;
         fiefdom.name = name;
         fiefdom.x = x;
         fiefdom.y = y;
-        fiefdom.peasants = peasants;
         fiefdom.gold = gold;
         fiefdom.silver_pence = silver_pence;
         fiefdom.grain = grain;
@@ -45,6 +44,8 @@ std::optional<FiefdomData> fetchFiefdomById(
         fiefdom.iron = iron;
         fiefdom.ironwork = ironwork;
         fiefdom.fancy_ironwork = fancy_ironwork;
+        fiefdom.beams = beams;
+        fiefdom.boards = boards;
         fiefdom.wall_count = wall_count;
         fiefdom.morale = morale;
         fiefdom.last_update_time = last_update_time;
@@ -269,6 +270,24 @@ bool updateBuildingPondType(int building_id, const std::string& pond_type, int n
     }
 }
 
+bool updateBuildingType(int building_id, const std::string& new_name, int new_level,
+                        int64_t construction_start_ts, int64_t timestamp) {
+    auto& db = Database::getInstance().gameDB();
+
+    try {
+        db << R"(
+            UPDATE fiefdom_buildings
+            SET name = ?, level = ?, construction_start_ts = ?, last_updated = ?,
+                pond_type = '', output_rates = '{}'
+            WHERE id = ?;
+        )" << new_name << new_level << construction_start_ts << timestamp << building_id;
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to update building type: " << e.what() << std::endl;
+        return false;
+    }
+}
+
 std::vector<std::pair<int, int>> fetchRiverCells(int fiefdom_id) {
     auto& db = Database::getInstance().gameDB();
 
@@ -485,28 +504,18 @@ bool updateFiefdomResources(int fiefdom_id, const FiefdomResources& resources) {
                 charcoal = ?,
                 iron = ?,
                 ironwork = ?,
-                fancy_ironwork = ?
+                fancy_ironwork = ?,
+                beams = ?,
+                boards = ?
             WHERE id = ?;
         )" << resources.gold << resources.silver_pence << resources.grain << resources.wood << resources.steel
            << resources.bronze << resources.stone << resources.leather << resources.mana
            << resources.charcoal << resources.iron << resources.ironwork << resources.fancy_ironwork
+           << resources.beams << resources.boards
            << fiefdom_id;
         return true;
     } catch (const std::exception& e) {
         std::cerr << "Failed to update fiefdom resources: " << e.what() << std::endl;
-        return false;
-    }
-}
-
-bool updateFiefdomPeasants(int fiefdom_id, int peasants) {
-    auto& db = Database::getInstance().gameDB();
-    
-    try {
-        db << "UPDATE fiefdoms SET peasants = ? WHERE id = ?;"
-           << peasants << fiefdom_id;
-        return true;
-    } catch (const std::exception& e) {
-        std::cerr << "Failed to update fiefdom peasants: " << e.what() << std::endl;
         return false;
     }
 }

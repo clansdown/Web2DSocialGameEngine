@@ -23,13 +23,11 @@ interface PrerequisiteObject {
 
 interface FiefdomBuildingType {
     // --- Resource Production (all optional, defaults to 0) ---
-    peasants?: ResourceProduction;
     gold?: ResourceProduction;
     grain?: ResourceProduction;
     wood?: ResourceProduction;
     steel?: ResourceProduction;
     bronze?: ResourceProduction;
-    stone?: ResourceProduction;
     leather?: ResourceProduction;
     mana?: ResourceProduction;
     charcoal?: ResourceProduction;
@@ -42,14 +40,12 @@ interface FiefdomBuildingType {
     };
 
     // --- Construction Costs (all optional, defaults to empty array) ---
-    peasants_cost?: number[];
     gold_cost?: (number | MoneyCost)[];
     silver_pence_cost?: number[];
     grain_cost?: number[];
     wood_cost?: number[];
     steel_cost?: number[];
     bronze_cost?: number[];
-    stone_cost?: number[];
     leather_cost?: number[];
     mana_cost?: number[];
     charcoal_cost?: number[];
@@ -65,6 +61,7 @@ interface FiefdomBuildingType {
     can_build_outside_wall?: boolean;  // Defaults to false
     display_name?: string;              // User-facing name (e.g., "Manor House")
     image?: string;                     // Client-side sprite path (e.g., "/images/manor/buildings/blacksmith.png")
+    descriptions?: string[];            // Formal in-config design notes (never sent to clients)
 
     // --- Construction ---
     construction_times: number[];       // Seconds per level (index = level)
@@ -75,6 +72,15 @@ interface FiefdomBuildingType {
 ```
 
 ## Field Descriptions
+
+### Internal Notes (`descriptions`)
+
+Every building type may declare a `descriptions` array of non-empty strings.
+These are **formal in-config design notes** (JSON has no comments) — they are
+never user-facing, never read by game logic, and the server **strips them** from
+client-facing building-config responses (`/api/getBuildingConfigs` and the
+`getGameInfo` `fiefdom_building_types` branch). Use them to document design
+rationale, ledger mappings, economy hooks, or why a cost/resource was changed.
 
 ### Resource Production Fields
 
@@ -95,9 +101,12 @@ proportional amount — nothing is floored to whole cycles.
 
 ### Economic Inputs Field
 
-The optional `inputs` object defines the resources a building **consumes** to produce its outputs.
-Inputs use the same `ResourceProduction` structure as outputs, so they are expressed as **per-day**
-consumption on the same 1-day period the economy engine uses for production.
+Inputs are declared **per output** inside the `outputs` array, so it is explicit
+which output each input gates. A building-level `inputs` map is **not** used —
+inputs are simply what a building consumes (once per building per day, not
+multiplied by the number of outputs). Inputs use the same `ResourceProduction`
+structure as outputs, so they are expressed as **per-day** consumption on the
+same 1-day period the economy engine uses for production.
 
 ```json
 {
@@ -131,24 +140,37 @@ consumption on the same 1-day period the economy engine uses for production.
         ]
     },
     "collier": {
-        "charcoal": { "amount": 30 },
-        "grain":    { "amount": 18 },
-        "inputs": {
-            "wood": { "amount": 20 }
-        }
+        "outputs": [
+            {
+                "resource": "charcoal",
+                "amount": [120, 126, 132, 138, 144],
+                "inputs": { "wood": { "amount": [80, 84, 88, 92, 96] } },
+                "min_level": 1
+            },
+            {
+                "resource": "grain",
+                "amount": 18,
+                "min_level": 1
+            }
+        ]
     },
     "bloomery": {
-        "iron": { "amount": 20 },
-        "inputs": {
-            "charcoal": { "amount": 30 }
-        }
+        "outputs": [
+            {
+                "resource": "iron",
+                "amount": [20, 21, 22, 23, 24],
+                "inputs": { "charcoal": { "amount": [30, 31.5, 33, 34.5, 36] } },
+                "min_level": 1
+            }
+        ]
     }
 }
 ```
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `inputs` | object | omitted | Map of resource → `ResourceProduction` spec. Each entry is consumed per day. |
+Note: the collier consumes **80 wood/day** (its `charcoal` output's inputs) — it
+does not consume a separate 80 wood for its household `grain` output, which is
+un-gated. The building-level `inputs` map was removed from the schema; each
+output carries its own inputs.
 
 ### How Input Gating Works
 
@@ -158,13 +180,18 @@ consumption on the same 1-day period the economy engine uses for production.
    population costs, and combatant upkeep (`player_combatants.json` `upkeep` arrays for stationed
    units). Stock is drawn first; any shortfall is auto-imported with gold when that resource's
    import setting is enabled (full-buy default), and remaining unmet needs cause morale penalties.
-3. Each building's output is **scaled by its input-satisfaction ratio** — the minimum across its
-   inputs of (supplied ÷ required). A blacksmith with half its iron produces half its ironwork.
-4. Buildings without `inputs` produce at 100%.
+3. Each output is **scaled by its own input-satisfaction ratio** — the minimum across that
+   output's inputs of (supplied ÷ required). A blacksmith with half its iron produces half its
+   ironwork.
+4. Outputs without `inputs` produce at 100%.
 5. After production, consumption, and imports, any resource **above its reserve** is auto-sold at
    50% of the import price (`economy.json.export_sell_multiplier`); amounts at or below the reserve
-   are kept. Reserves default from `economy.json.default_reserves` and can be overridden per fiefdom
-   via `/api/setFiefdomReserve`.
+    are kept. Reserves default from `economy.json.default_reserves` and can be overridden per fiefdom
+    via `/api/setFiefdomReserve`.
+
+A new fiefdom starts with the per-resource balances in `economy.json.starting_resources`
+(single source of truth shared by the server's fiefdom creation and the balance analyzer —
+currently 5 gold and 0 of everything else).
 
 The per-update `economy_report` in `/api/getFiefdom` exposes the resulting produced/consumed/imported/
 exported amounts, `net_gold` (production minus imports), and advisor recommendations.
@@ -178,6 +205,69 @@ Cost arrays specify the resource cost per building level. Index corresponds to l
 | `*_cost` | number[] | Array of resource costs per level |
 | `gold_cost` | (number \| MoneyCost)[] | Gold cost per level — each element is either a plain number (gold) or a `{ gold, shillings, pence }` object (all keys optional, non-negative) |
 | `silver_pence_cost` | number[] | Silver-pence (penny-market) cost per level, deducted from `fiefdoms.silver_pence` (e.g. `[1]` for a 1-penny road) |
+
+Costs are also supported for the production resources: `charcoal_cost`,
+`iron_cost`, `ironwork_cost`, `fancy_ironwork_cost`, `beams_cost`, and
+`boards_cost` (each a per-level
+number[]). These deduct from the fiefdom's `charcoal`/`iron`/`ironwork`/
+`fancy_ironwork`/`beams`/`boards` columns — e.g. a Peasant Cottage costs `ironwork_cost: [10, ...]`
+for the tools its household needs plus `beams_cost: [16, ...]`/`boards_cost: [2, ...]`
+for its timber frame.
+
+### Arable Land (`arable_acres`)
+
+Each building type optionally claims arable land via a single `arable_acres`
+integer (flat per type, not per level; omit for 0). It is an **abstract
+resource** limiting manor growth — not rendered and not a DB column. A building
+may be placed (or a stage-chain **convert** performed to a stage claiming more
+acres) only when the fiefdom has that many acres available; demolishing frees
+them. Total acres scale with `manor_level` (home_base level, 0–10) via
+`economy.json` `arable_land_by_level` (400 at level 1 → 1000 at level 10).
+
+Current assignment (see `server/tables/fiefdoms.md` → Arable Land):
+
+| `arable_acres` | Building types |
+|----------------|----------------|
+| 15 | `villein` |
+| 30 | `freeholder`, `yeoman` |
+| 7  | The 18-grain self-contained craft households: `woodcutter`, `coppicer`, `timber_hauler`, `wood_hewer`, `hewing_shop`, `master_hewer`, `sawyer`, `saw_yard`, `saw_mill`, `blacksmith`, `advanced_smithy`, `water_smithy`, `collier`, `lined_hearth`, `masonry_beehive_kiln` |
+| 0  | `home_base`, `miller`, `windmill`, `baker`, `mill`, `bloomery`/`advanced_bloomery`/`hydraulic_bloomery`, `chapel`/`church`/`parish_church`, `road`, `mill_pond`, `head_race`, `tail_race` |
+
+### Forest Land (`forest_acres`)
+
+Forest is an **off-map resource analogous to arable land** limiting the wood
+producers. Only the woodcutter chain claims it — `woodcutter` **80** acres,
+`coppicer` **60**, `timber_hauler` **70** (a higher stage is more land-efficient
+even though it produces more wood). The `forest_acres` integer is flat per
+type (omit for 0), not a DB column, and gates build/convert exactly like arable
+(`insufficient_forest_land`); demolishing frees acres. Total forest scales with
+`manor_level` (0–10) via `economy.json` `forest_land_by_level`
+(**200** at level 1 → **600** at level 10). The wood_hewer/sawyer chains consume
+wood as an input and claim no forest.
+
+### Class (`class`)
+
+Every building type carries a `class` string grouping it **definitively**
+(independent of the `built_from` stage chain). Classes:
+
+| `class` | Building types |
+|---------|----------------|
+| `infrastructure` | `home_base`, `road`, `mill_pond`, `head_race`, `tail_race` |
+| `woodcutter` | `woodcutter`, `coppicer`, `timber_hauler` |
+| `woodhewer` | `wood_hewer`, `hewing_shop`, `master_hewer` |
+| `sawyer` | `sawyer`, `saw_yard`, `saw_mill` |
+| `peasant` | `villein`, `freeholder`, `yeoman` |
+| `flourmill` | `miller`, `windmill`, `mill` |
+| `bakery` | `baker` |
+| `blacksmith` | `blacksmith`, `advanced_smithy`, `water_smithy` |
+| `chapel` | `chapel`, `church`, `parish_church` |
+| `collier` | `collier`, `lined_hearth`, `masonry_beehive_kiln` |
+| `bloomery` | `bloomery`, `advanced_bloomery`, `hydraulic_bloomery` |
+
+A modifier or prerequisite whose `target_building` is a class matches every
+building of that class (e.g. `flour_milling` targets the `peasant` class, so it
+boosts `villein`/`freeholder`/`yeoman`). Class matching is checked **in addition
+to** chain matching (`built_from`). `getBuildingConfigs` injects `class`.
 
 A `MoneyCost` object is normalized to a gold double at config load:
 `gold + shillings/20 + pence/240` (1 gold = 20 shillings = 240 pence; 1 shilling = 12 pence).
@@ -259,7 +349,7 @@ buildings to nearby buildings.
    unaffected. Roads themselves produce nothing, so their own multiplier is moot.
 
 Example — a peasant cottage connected by roads to a chapel (10 morale) at distance ≤ 6 gets
-`+20%` on all its outputs (grain, peasants).
+`+20%` on all its outputs (grain).
 
 The fiefdom's `morale` column is unrelated — road morale is a separate per-building effect
 computed fresh each economy tick.
@@ -273,7 +363,7 @@ mill pond, head races (wooden launders carrying elevated water), tail races
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `water_source` | boolean | false | Marks a building as a water source (e.g. the `mill_pond`). It powers the network only when its footprint **edge-touches** a river cell. |
-| `pond_types` | array | none | Mill-pond type definitions: each `{ id, capacity, max_level, construction_times, gold_cost, wood_cost, ... }`. Types upgrade earthen → timber → stone; `level` is within the current type. E.g. `[{id:"earthen",capacity:2,...},{id:"timber",capacity:4,...},{id:"stone",capacity:6,...}]`. |
+| `pond_types` | array | none | Mill-pond type definitions: each `{ id, capacity, max_level, construction_times, gold_cost, wood_cost, ... }`. Types upgrade earthen → timber → stone; `level` is within the current type. E.g. `[{id:"earthen",capacity:2,...},{id:"timber",capacity:4,...},{id:"stone",capacity:6,...}]`. The type **names** are physical descriptors (how the pond is lined) — they do **not** reference a `stone` game resource, which was removed. |
 | `water_powered` | boolean | false | Marks a building as water-powered. It produces outputs only while *powered* by the water network; unpowered water buildings still pay `daily_cost`. |
 | `race_tiles` | object | none | Auto-tile image map for `head_race`/`tail_race` (same keys as `road_tiles`). |
 | `race_tiles_canonical` | object | none | Auto-tile canonical side sets for races (same shape as `road_tiles_canonical`). |
@@ -561,7 +651,6 @@ The `check_configs.py` tool validates the images directory:
                 "amount": 10
             },
             "wood_cost": [5, 6, 7, 8, 9],
-            "stone_cost": [10, 12, 14, 16, 18],
             "construction_times": [10, 15, 20, 25, 30]
         }
     }
@@ -590,19 +679,19 @@ Available resource types for both production and costs:
 
 | Resource | Type | Description |
 |----------|------|-------------|
-| `peasants` | production only | Population/labor |
 | `gold` | both | Currency |
 | `grain` | both | Food |
 | `wood` | both | Building material |
 | `steel` | both | Military material |
 | `bronze` | both | Alloy material |
-| `stone` | both | Construction material |
 | `leather` | both | Crafting material |
 | `mana` | production only | Magical resource |
 | `charcoal` | both | Fuel (collier output, blacksmith input) |
 | `iron` | both | Ore (blacksmith input; bloomery produces) |
 | `ironwork` | both | Forged metal tools (blacksmith output, building upkeep + combatant upkeep) |
 | `fancy_ironwork` | both | Fine tempered iron (blacksmith level 2+ output) |
+| `beams` | both | Hewn structural timber (wood hewer chain output, build material) |
+| `boards` | both | Sawn planks (sawyer chain output, build material) |
 
 ## Building IDs
 
@@ -616,6 +705,7 @@ The `home_base` building type (Manor House) is **mandatory** and has special gam
 |----------|-------------|-------------|
 | **ID key** | `home_base` | Must be present in config |
 | **Mandatory fields** | `width`, `height`, `max_level`, `construction_times` | Required structural fields for validation |
+| **Max level** | 10 | The manor house upgrades to level 10 (was 32); the fiefdom's `manor_level` equals the home_base's level, so it ranges **0–10** (0 = under construction) |
 | **Placement** | Coordinates (0, 0) | Fixed location in the center of fiefdom |
 | **Max per fiefdom** | 1 | Only one home_base allowed |
 | **Immutable** | Yes | Cannot be demolished or moved |
@@ -635,19 +725,39 @@ See `api/Build.md` for complete building API documentation including home_base r
 
 ### Current Building Prerequisite Chains
 
-The build palette shows buildings whose `prerequisites[0].manor_level` is met (level-locked buildings stay hidden until the manor levels up); within that set, buttons grey out while costs are unaffordable, `max_per_fiefdom` is reached, or a non-level prerequisite is unmet. The current config's level-1 (`build`) prerequisites are:
+The build palette shows buildings whose `prerequisites[0].manor_level` is met (level-locked buildings stay hidden until the manor levels up); within that set, buttons grey out while costs are unaffordable, `max_per_fiefdom` is reached, or a non-level prerequisite is unmet. **Stage chains gate later stages by manor level: stage 2 requires manor ≥ 3, stage 3 requires manor ≥ 6** (stage 1 stays gated by its own prerequisite). The current config's level-1 (`build`) prerequisites are:
 
 | Building | Prerequisite to build |
 |----------|-----------------------|
 | home_base | none (auto-built at (0,0)) |
 | woodcutter | none |
+| coppicer (stage 2) | manor_level ≥ 3 |
+| timber_hauler (stage 3) | manor_level ≥ 6 |
 | wood_hewer | woodcutter at level ≥ 1 |
-| peasant | none |
+| hewing_shop (stage 2) | manor_level ≥ 3 |
+| master_hewer (stage 3) | manor_level ≥ 6 |
+| sawyer | none |
+| saw_yard (stage 2) | manor_level ≥ 3 |
+| saw_mill (stage 3) | manor_level ≥ 6 |
+| villein | none |
+| freeholder (stage 2) | manor_level ≥ 3 |
+| yeoman (stage 3) | manor_level ≥ 6 |
 | miller | manor_level ≥ 2 |
+| windmill (stage 2) | manor_level ≥ 3 |
+| baker | manor_level ≥ 2 |
 | blacksmith | none (buildable immediately; economy gates it) |
+| advanced_smithy (stage 2) | manor_level ≥ 3 |
+| water_smithy (stage 3) | manor_level ≥ 6 and mill_pond ≥ 1 |
 | chapel | none (max 1 per fiefdom) |
+| church (stage 2) | manor_level ≥ 3 |
+| parish_church (stage 3) | manor_level ≥ 6 |
 | collier | woodcutter at level ≥ 1 |
+| lined_hearth (stage 2) | manor_level ≥ 3 |
+| masonry_beehive_kiln (stage 3) | manor_level ≥ 6 |
 | bloomery | manor_level ≥ 2 |
+| advanced_bloomery (stage 2) | manor_level ≥ 3 |
+| hydraulic_bloomery (stage 3) | manor_level ≥ 6 and mill_pond ≥ 1 |
+| watermill (`mill`) (stage 3) | manor_level ≥ 6 and mill_pond ≥ 1 |
 
 `house` is a legacy generic entry with no `display_name`/`image`; the client excludes it from the build palette (and it has no build requirements).
 
@@ -705,11 +815,14 @@ metal tools. Current per-building ironwork upkeep:
 | miller | 5 |
 | collier | 2 |
 
-One blacksmith produces **100 ironwork/day** (input-gated on grain 100 +
-charcoal 100 + iron 100 per day), which covers roughly 50 peasants, 2 woodcutters,
-2 woodhewers, a miller, a few colliers, and the home base (~100 ironwork/day).
-The blacksmith's own household produces grain 18/day and consumes grain
-36/day. Ironwork is **imported at 0.02 gold/unit** and **exports for 25% of the
+One blacksmith produces **100 ironwork/day**, input-gated on **100 charcoal +
+40 iron per day** (the ironwork output's inputs; it has no separate charcoal
+`daily_cost`). This covers roughly 50 peasants, 2 woodcutters, 2 woodhewers, a
+miller, a few colliers, and the home base (~100 ironwork/day). One collier
+(120 charcoal/day) plus the bloomeries supplying the 40 iron/day roughly feed
+a blacksmith, with a small charcoal surplus (~+20 vs one blacksmith). The
+blacksmith's own household produces grain 18/day and consumes grain 36/day.
+Ironwork is **imported at 0.02 gold/unit** and **exports for 25% of the
 import price** (0.005 gold — `economy.json.export_sell_multipliers.ironwork =
 0.25`), so it is meant to be produced, not sold.
 
@@ -727,12 +840,73 @@ import price** (0.005 gold — `economy.json.export_sell_multipliers.ironwork =
 5. Players can toggle auto-import per resource to fill deficits — gold for most
    resources, silver pence for penny-market resources (money-form import prices)
 
+### Stage Chains (`built_from`)
+
+Production building lines are modeled as **chains of independent building
+types** (unbounded depth — "3 stages" is only a design default). Each stage is a
+normal building with its own costs, construction, prerequisites, and production,
+plus an optional **`built_from`** field naming the previous stage it can be
+converted from:
+
+```json
+{
+    "blacksmith": {
+        "display_name": "Blacksmith"
+    },
+    "advanced_smithy": {
+        "display_name": "Advanced Smithy",
+        "built_from": "blacksmith"
+    },
+    "water_smithy": {
+        "display_name": "Water-Powered Smithy",
+        "built_from": "advanced_smithy",
+        "water_powered": true
+    }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `built_from` | string | optional | The building id this stage converts from. At most one building may reference any given source (single successor). Must not self-reference and must form an acyclic graph. |
+
+**Direct build**: every stage is independently placeable, gated only by its own
+`prerequisites[0]`. **Convert** (`/api/Build` action `convert`): a placed stage-N
+building can be transformed **in place** into its successor. The price per
+resource is `max(0, successor_lvl1_cost − 80% × old_cumulative_cost)` — the 80%
+mirrors the demolish refund, so the discount scales with how much was invested in
+the old building (works at any level 1–5). Conversion sets the row's `name` to
+the successor, resets level to 0 (or 1 if the successor builds instantly), clears
+`pond_type`/`output_rates`, keeps x/y, and starts a normal construction timer.
+
+**Chain-aware prerequisite counting**: a building satisfies prerequisites,
+dependencies, and modifier targets for **itself and every lower stage in its
+chain** (a `villein`/`yeoman` counts as a `peasant`; a plain `peasant` never
+counts as a `villein`). This keeps `home_base`'s peasant-count dependencies
+working after conversions.
+
+### Level-Scaled Production
+
+Every **productive output** and **input** `amount` may be a per-level array. The
+array is indexed by level−1 with linear extrapolation past its length. The
+authoring convention (not enforced by the linter) is:
+
+- Each level adds 5%: `[base, base×1.05, base×1.10, base×1.15, base×1.20]`.
+- Each stage adds 20%: stage N+1's `base` = stage N's `base` × 1.20. When a stage
+  **transitions its output mix** (e.g. blacksmith → advanced smithy shifting from
+  `ironwork` toward `fancy_ironwork`), the *total* output value scales ×1.2 while
+  individual amounts are authored for the mix.
+- **Stays flat**: `daily_cost`, household 18-grain/day outputs.
+  Inputs DO scale (higher-level blacksmiths/bloomeries consume more charcoal/iron).
+
+Example — woodcutter wood per level: `[100, 105, 110, 115, 120]`.
+
 ### Outputs (multi-output recipes)
 
-The optional `outputs` array defines a building's production as a set of
-recipes, each with its **own inputs** and an **unlock level**. This replaces the
-flat `<resource>: { amount }` fields + building-level `inputs` (a building may
-use one schema or the other — mixing them is a config error).
+The `outputs` array defines a building's production as a set of recipes, each
+with its **own inputs** and an **unlock level**. It is the **only** production
+schema: flat `<resource>: { amount }` fields and building-level `inputs` are
+disallowed (config lint enforces this). Every production building defines an
+`outputs` array.
 
 ```json
 {
@@ -758,8 +932,8 @@ use one schema or the other — mixing them is a config error).
 | Field | Type | Description |
 |-------|------|-------------|
 | `resource` | string | Produced resource (a valid production resource, e.g. `ironwork`, `fancy_ironwork`) |
-| `amount` | number | Maximum per-day output (scaled by fractional elapsed days, modifiers, and the player rate) |
-| `inputs` | object | This output's own per-day input requirements; each value is a `{ amount }` spec |
+| `amount` | number \| money \| array | Maximum per-day output. A plain number (gold for the `gold` resource), a money object `{gold, shillings, pence}` (normalized to gold), or a **per-level array** of either (index = level−1; see "Level-scaled production" below). Scaled by fractional elapsed days, modifiers, the player rate, and input satisfaction. |
+| `inputs` | object | This output's own per-day input requirements; each value is a `{ amount }` spec (also accepts level arrays) |
 | `min_level` | integer | Building level at which the output unlocks (default 1) |
 
 A building at level < `min_level` cannot produce that output and consumes none of
@@ -773,22 +947,6 @@ can keep forging `ironwork` while `fancy_ironwork` idles for want of iron.
 Example — blacksmith level 1 produces only `ironwork` (needs 100 iron/day);
 at level 2 it can also run `fancy_ironwork` (needs 2 iron/day) at the same time.
 
-### Population Costs
-
-Global population costs are defined in `economy.json` under `population_costs`. These consume resources based on the fiefdom's population count, scaled by fractional elapsed days:
-
-```json
-{
-    "population_costs": {
-        "peasants": { "grain": 0.5, "priority": 1 }
-    }
-}
-```
-
-This per-peasant grain cost is separate from the Peasant Cottage's own
-`daily_cost`; it represents the extra food each additional population unit eats
-on top of the cottage's 36-grain household upkeep.
-
 ## Modifiers Field
 
 The optional `modifiers` field defines building-to-building production boosts. One building can increase another building's resource production output.
@@ -798,7 +956,7 @@ The optional `modifiers` field defines building-to-building production boosts. O
 ```typescript
 interface BuildingModifier {
     modifier_id: string;         // Unique ID for stacking prevention
-    target_building: string;     // Building type ID to boost (e.g., "woodcutter")
+    target_building: string;     // Building type ID or `class` to boost (e.g. "peasant" class)
     target_resource: string;     // Resource to multiply (e.g., "wood", "grain")
     multiplier: number | number[];  // Production multiplier (5.0 = 500% = +400%)
     max_targets: number | number[]; // Max buildings this can boost
@@ -810,7 +968,7 @@ interface BuildingModifier {
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `modifier_id` | string | required | Unique identifier for this modifier. Two sources with the same ID cannot boost the same target (prevents stacking duplicates) |
-| `target_building` | string | required | Building type ID that receives the boost |
+| `target_building` | string | required | Building type ID **or class** that receives the boost (class matching is checked in addition to chain matching) |
 | `target_resource` | string | required | Resource production to multiply (e.g., `"wood"`, `"grain"`, `"gold"`) |
 | `multiplier` | number or number[] | required | Total production multiplier. `5.0` means the target produces `5×` their base. Can be an array indexed by level for per-level scaling |
 | `max_targets` | number or number[] | required | Maximum number of buildings this can simultaneously boost. Can be an array indexed by level. `1` = single-target, `[100, 150]` = 100 at level 1, 150 at level 2 |
@@ -823,8 +981,8 @@ Both `multiplier` and `max_targets` accept:
 
 ### Stacking Rules
 
-1. **Same `modifier_id`**: Only one source can boost a given target (e.g., two wood hewers with `sharpen_axes` cannot both boost the same woodcutter). Excess boosters distribute across unboosted targets, up to their `max_targets`.
-2. **Different `modifier_id`s**: Multipliers stack multiplicatively (e.g., wood hewer `5.0` + sawyer `1.5` → `7.5×` total)
+1. **Same `modifier_id`**: Only one source can boost a given target (e.g., two millers with `flour_milling` cannot both boost the same peasant). Excess boosters distribute across unboosted targets, up to their `max_targets`.
+2. **Different `modifier_id`s**: Multipliers stack multiplicatively (e.g., miller `5.0` + baker `1.5` → `7.5×` total)
 3. **Capacity resolution**: Higher-level boosters get priority when assigning to targets
 
 ### Assignment Algorithm
@@ -843,18 +1001,18 @@ For each modifier_id group:
 ### Example Configs
 
 ```json
-// Wood hewer boosts 1 woodcutter's wood production by 400% (5×)
+// Miller boosts peasant grain production by 400% (5×)
 "modifiers": [{
-    "modifier_id": "sharpen_axes",
-    "target_building": "woodcutter",
-    "target_resource": "wood",
+    "modifier_id": "flour_milling",
+    "target_building": "peasant",
+    "target_resource": "grain",
     "multiplier": 5.0,
     "max_targets": 1
 }]
 
-// Miller boosts peasant grain production, capacity scales with level
+// Baker boosts peasant grain production, capacity scales with level
 "modifiers": [{
-    "modifier_id": "flour_milling",
+    "modifier_id": "bread_baking",
     "target_building": "peasant",
     "target_resource": "grain",
     "multiplier": 3.0,

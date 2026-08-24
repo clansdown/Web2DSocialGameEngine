@@ -78,8 +78,7 @@ void log_sql(const std::string& context, const std::string& sql) {
  */
 static std::optional<std::pair<int, int>> fetch_ongoing_session_params(sqlite::database& db,
                                                                        int character_id,
-                                                                       const std::string& mini_game) {
-    try {
+                                                                       const std::string& mini_game) {    try {
         if (mini_game == "tower_defense") {
             int difficulty = 1;
             int rounds = 0;
@@ -109,6 +108,23 @@ static std::optional<std::pair<int, int>> fetch_ongoing_session_params(sqlite::d
         log_error("fetch_ongoing_session_params", e.what());
     }
     return std::nullopt;
+}
+
+/**
+ * Reads a fiefdom starting resource value from economy.json's
+ * "starting_resources" block (single source of truth for what a new fiefdom
+ * begins with — currently 5 gold and 0 of everything else). Missing resources
+ * default to 0. Values are whole units (matching the fiefdoms schema columns).
+ */
+static double starting_resource_value(GameConfigCache& config_cache, const char* resource) {
+    const auto& economy = config_cache.getEconomyConfig();
+    if (economy.contains("starting_resources") && economy["starting_resources"].is_object()) {
+        const auto& sr = economy["starting_resources"];
+        if (sr.contains(resource) && sr[resource].is_number()) {
+            return sr[resource].get<double>();
+        }
+    }
+    return 0.0;
 }
 
 /**
@@ -167,6 +183,8 @@ static json apply_ongoing_reward(GameConfigCache& config_cache, sqlite::database
             res.iron = fiefdom->iron;
             res.ironwork = fiefdom->ironwork;
             res.fancy_ironwork = fiefdom->fancy_ironwork;
+            res.beams = fiefdom->beams;
+            res.boards = fiefdom->boards;
             FiefdomFetcher::updateFiefdomResources(fiefdom_id, res);
         }
     }
@@ -471,7 +489,7 @@ ApiResponse handleBuild(GameConfigCache& config_cache, const json& body,
 
     auto& registry = GameLogic::ActionRegistry::getInstance();
     if (!registry.hasType(registry_type)) {
-        response.error = "Invalid action: must be 'create', 'demolish', or 'move'";
+        response.error = "Invalid action: must be 'create', 'upgrade', 'demolish', 'move', 'upgrade_pond_type', or 'convert'";
         return response;
     }
 
@@ -627,6 +645,26 @@ ApiResponse handleGetFiefdom(GameConfigCache& config_cache, const json& body,
         }
         response.data["water_power"] = water_power;
         response.data["water_power_detail"] = water_power_detail;
+    }
+
+    // Arable land (abstract resource limiting manor growth). Total scales with
+    // the manor (home-base) level; used is the sum of each building's acres.
+    {
+        json arable = json::object();
+        arable["total"] = GameLogic::Validation::getTotalArableAcres(config_cache, fiefdom_id);
+        arable["used"] = GameLogic::Validation::getUsedArableAcres(config_cache, fiefdom_id);
+        arable["available"] = GameLogic::Validation::getAvailableArableAcres(config_cache, fiefdom_id);
+        response.data["arable_land"] = std::move(arable);
+    }
+
+    // Forest land (off-map resource limiting the wood producers). Scales with
+    // manor level like arable; used is the sum of each wood producer's acres.
+    {
+        json forest = json::object();
+        forest["total"] = GameLogic::Validation::getTotalForestAcres(config_cache, fiefdom_id);
+        forest["used"] = GameLogic::Validation::getUsedForestAcres(config_cache, fiefdom_id);
+        forest["available"] = GameLogic::Validation::getAvailableForestAcres(config_cache, fiefdom_id);
+        response.data["forest_land"] = std::move(forest);
     }
 
     if (new_token) {
@@ -1059,7 +1097,21 @@ ApiResponse handleGetGameInfo(GameConfigCache& config_cache, const json& body,
                 if (asset_type == "damage_types") {
                     filtered_configs["damage_types"] = config_cache.getDamageTypes();
                 } else if (asset_type == "fiefdom_building_types") {
-                    filtered_configs["fiefdom_building_types"] = config_cache.getFiefdomBuildingTypes();
+                    // Strip internal design notes (`descriptions`) from the
+                    // building configs — they never reach the client.
+                    json bf_cfgs = json::array();
+                    for (const auto& entry : config_cache.getFiefdomBuildingTypes()) {
+                        json cfg = entry;
+                        if (cfg.is_object()) {
+                            for (auto b_it = cfg.begin(); b_it != cfg.end(); ++b_it) {
+                                if (b_it.value().is_object()) {
+                                    b_it.value().erase("descriptions");
+                                }
+                            }
+                        }
+                        bf_cfgs.push_back(std::move(cfg));
+                    }
+                    filtered_configs["fiefdom_building_types"] = std::move(bf_cfgs);
                 } else if (asset_type == "player_combatants") {
                     filtered_configs["player_combatants"] = config_cache.getPlayerCombatants();
                 } else if (asset_type == "enemy_combatants") {
@@ -3898,6 +3950,8 @@ ApiResponse handleSetBuildingOutputRate(GameConfigCache& config_cache, const jso
 
         bool output_found = false;
         int min_level = 1;
+        // The `outputs` array is the canonical production schema (config lint
+        // enforces it); every production building defines one.
         if (bld_cfg.contains("outputs") && bld_cfg["outputs"].is_array()) {
             for (const auto& out : bld_cfg["outputs"]) {
                 if (out.is_object() && out.value("resource", "") == output) {
@@ -3906,8 +3960,6 @@ ApiResponse handleSetBuildingOutputRate(GameConfigCache& config_cache, const jso
                     break;
                 }
             }
-        } else if (bld_cfg.contains(output)) {
-            output_found = true;
         }
         if (!output_found) {
             response.error = "That building does not produce " + output;
@@ -4213,9 +4265,21 @@ ApiResponse handleJoinBarony(GameConfigCache& config_cache, const json& body,
         int fx = (counter % 100) * 10;
         int fy = (counter / 100) * 10;
 
-        db << "INSERT INTO fiefdoms (owner_id, name, x, y, peasants, gold, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, wall_count, morale, last_update_time, manor_level) "
-              "VALUES (?, ?, ?, ?, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, ?, 1);"
-           << character_id << fiefdom_name << fx << fy << now;
+        db << "INSERT INTO fiefdoms (owner_id, name, x, y, gold, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, wall_count, morale, last_update_time, manor_level) "
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0.0, ?, 0);"
+           << character_id << fiefdom_name << fx << fy
+           << starting_resource_value(config_cache, "gold")
+           << starting_resource_value(config_cache, "grain")
+           << starting_resource_value(config_cache, "wood")
+           << starting_resource_value(config_cache, "steel")
+           << starting_resource_value(config_cache, "bronze")
+           << starting_resource_value(config_cache, "stone")
+           << starting_resource_value(config_cache, "leather")
+           << starting_resource_value(config_cache, "mana")
+           << starting_resource_value(config_cache, "charcoal")
+           << starting_resource_value(config_cache, "iron")
+           << starting_resource_value(config_cache, "ironwork")
+           << now;
 
         int fiefdom_id = db.last_insert_rowid();
 
@@ -4320,9 +4384,21 @@ ApiResponse handleCreateBarony(GameConfigCache& config_cache, const json& body,
         int fx = (counter % 100) * 10;
         int fy = (counter / 100) * 10;
 
-        db << "INSERT INTO fiefdoms (owner_id, name, x, y, peasants, gold, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, wall_count, morale, last_update_time, manor_level) "
-              "VALUES (?, ?, ?, ?, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, ?, 1);"
-           << character_id << fiefdom_name << fx << fy << now;
+        db << "INSERT INTO fiefdoms (owner_id, name, x, y, gold, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, wall_count, morale, last_update_time, manor_level) "
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0.0, ?, 0);"
+           << character_id << fiefdom_name << fx << fy
+           << starting_resource_value(config_cache, "gold")
+           << starting_resource_value(config_cache, "grain")
+           << starting_resource_value(config_cache, "wood")
+           << starting_resource_value(config_cache, "steel")
+           << starting_resource_value(config_cache, "bronze")
+           << starting_resource_value(config_cache, "stone")
+           << starting_resource_value(config_cache, "leather")
+           << starting_resource_value(config_cache, "mana")
+           << starting_resource_value(config_cache, "charcoal")
+           << starting_resource_value(config_cache, "iron")
+           << starting_resource_value(config_cache, "ironwork")
+           << now;
 
         int fiefdom_id = db.last_insert_rowid();
 
@@ -4460,6 +4536,9 @@ ApiResponse handleGetBuildingConfigs(GameConfigCache& config_cache, const nlohma
             const std::string& type_id = it.key();
             json cfg = it.value();
 
+            // Internal design notes (`descriptions`) never reach the client.
+            cfg.erase("descriptions");
+
             // Normalize construction_image: if absent, copy image
             if (!cfg.contains("construction_image") && cfg.contains("image")) {
                 cfg["construction_image"] = cfg["image"];
@@ -4478,6 +4557,12 @@ ApiResponse handleGetBuildingConfigs(GameConfigCache& config_cache, const nlohma
             extract_cost("wood_cost", "wood");
             extract_cost("stone_cost", "stone");
             extract_cost("silver_pence_cost", "silver_pence");
+            extract_cost("charcoal_cost", "charcoal");
+            extract_cost("iron_cost", "iron");
+            extract_cost("ironwork_cost", "ironwork");
+            extract_cost("fancy_ironwork_cost", "fancy_ironwork");
+            extract_cost("beams_cost", "beams");
+            extract_cost("boards_cost", "boards");
 
             cfg["costs"] = costs;
 
@@ -4490,6 +4575,15 @@ ApiResponse handleGetBuildingConfigs(GameConfigCache& config_cache, const nlohma
                 }
             }
             cfg["min_manor_level"] = min_level;
+
+            // Arable acres claimed by this building type (default 0).
+            cfg["arable_acres"] = cfg.value("arable_acres", 0);
+
+            // Forest acres claimed by this building type (wood producers only).
+            cfg["forest_acres"] = cfg.value("forest_acres", 0);
+
+            // Class grouping (definitive, independent of the built_from chain).
+            cfg["class"] = cfg.value("class", "");
 
             result[type_id] = cfg;
         }

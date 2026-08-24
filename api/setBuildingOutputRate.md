@@ -59,9 +59,8 @@ outputs left at their default of 1.0).
 ## Notes
 
 - Requires authentication; the character must own the fiefdom that owns the building.
-- The output must be produced by the building type's config (`outputs` array or
-  a flat production field), and must be unlocked at the building's level
-  (`building.level >= min_level`).
+- The output must be produced by the building type's config `outputs` array,
+  and must be unlocked at the building's level (`building.level >= min_level`).
 - Rates are stored per building instance in `fiefdom_buildings.output_rates`
   (JSON); missing entries default to 1.0, so a newly unlocked output (e.g.
   `fancy_ironwork` at blacksmith level 2) starts on.

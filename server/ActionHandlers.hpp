@@ -56,11 +56,19 @@ std::optional<nlohmann::json> getPrerequisitesForLevel(
     int target_level
 );
 
-int getBuildingLevelInFiefdom(int fiefdom_id, const std::string& building_name);
+int getBuildingLevelInFiefdom(GameConfigCache& cache, int fiefdom_id, const std::string& building_name);
 
 int getFiefdomManorLevel(int fiefdom_id);
 
-bool checkFiefdomPrerequisites(int fiefdom_id, const nlohmann::json& prerequisites);
+int getUsedArableAcres(GameConfigCache& cache, int fiefdom_id);
+double getTotalArableAcres(GameConfigCache& cache, int fiefdom_id);
+double getAvailableArableAcres(GameConfigCache& cache, int fiefdom_id);
+
+int getUsedForestAcres(GameConfigCache& cache, int fiefdom_id);
+double getTotalForestAcres(GameConfigCache& cache, int fiefdom_id);
+double getAvailableForestAcres(GameConfigCache& cache, int fiefdom_id);
+
+bool checkFiefdomPrerequisites(GameConfigCache& cache, int fiefdom_id, const nlohmann::json& prerequisites);
 
 bool hasCompletedHomeBase(int fiefdom_id);
 
@@ -70,7 +78,7 @@ nlohmann::json getDependenciesForLevel(
     int target_level
 );
 
-int countBuildingsByType(int fiefdom_id, const std::string& target_building, int min_level);
+int countBuildingsByType(GameConfigCache& cache, int fiefdom_id, const std::string& target_building, int min_level);
 
 std::map<std::string, std::pair<int, int>> aggregateFiefdomDependencies(
     GameConfigCache& cache,

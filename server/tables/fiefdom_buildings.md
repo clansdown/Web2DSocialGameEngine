@@ -28,7 +28,7 @@ CREATE TABLE fiefdom_buildings (
 |-------|------|-------------|---------|
 | id | INTEGER | PRIMARY KEY AUTOINCREMENT | Unique building identifier |
 | fiefdom_id | INTEGER | NOT NULL FK | Parent fiefdom (fiefdoms.id) |
-| name | TEXT | NOT NULL | Building type name (e.g., "farm", "home_base") |
+| name | TEXT | NOT NULL | Building type name (e.g., "farm", "home_base"). On a stage conversion (`/api/Build` action `convert`) this changes to the successor stage's id. |
 | level | INTEGER | NOT NULL DEFAULT 0 | Building level (0 = under construction, 1+ = active) |
 | x | INTEGER | NOT NULL DEFAULT 0 | X coordinate relative to fiefdom center |
 | y | INTEGER | NOT NULL DEFAULT 0 | Y coordinate relative to fiefdom center |
@@ -81,7 +81,13 @@ When `/api/updateState` is called:
 
 ## Notes
 
-- Building names correspond to types in `fiefdom_building_types.json`
+- Building names correspond to types in `fiefdom_building_types.json`. Production
+  lines are **stage chains** (`built_from`); a building's `name` identifies its
+  current stage. Prerequisite/dependency counting is chain-aware: a building
+  satisfies requirements for itself and every lower stage in its chain (a
+  `villein`/`yeoman` counts as a `peasant`). Converting in place changes `name`,
+  resets `level` (0 = re-constructing), clears `pond_type`/`output_rates`, and
+  preserves x/y.
 - Buildings are fetched alongside fiefdom data via `/api/getFiefdom`
 - Up to 255 buildings per fiefdom (SQLite INTEGER range)
 - The `home_base` building must be at coordinates (0, 0) and only one can exist per fiefdom

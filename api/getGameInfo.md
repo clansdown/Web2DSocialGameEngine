@@ -60,7 +60,6 @@ Retrieve all game configuration data including buildings, combatants, heroes, of
             "can_build_outside_wall": true,
             "grain": {...},
             "wood_cost": [5, 6, 7, 8, 9],
-            "stone_cost": [10, 12, 14, 16, 18],
             "construction_times": [10, 15, 20, 25, 30]
           }
         },

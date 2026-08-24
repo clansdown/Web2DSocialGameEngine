@@ -111,6 +111,19 @@ void migrate_fancy_ironwork(sqlite::database& db) {
     }
 }
 
+void migrate_beams_boards(sqlite::database& db) {
+    try {
+        db << "ALTER TABLE fiefdoms ADD COLUMN beams INTEGER NOT NULL DEFAULT 0;";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+    try {
+        db << "ALTER TABLE fiefdoms ADD COLUMN boards INTEGER NOT NULL DEFAULT 0;";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+}
+
 void migrate_building_output_rates(sqlite::database& db) {
     try {
         db << "ALTER TABLE fiefdom_buildings ADD COLUMN output_rates TEXT NOT NULL DEFAULT '{}';";
@@ -194,9 +207,8 @@ void migrate_baron_character_id(sqlite::database& db) {
             "name TEXT NOT NULL,"
             "x INTEGER NOT NULL,"
             "y INTEGER NOT NULL,"
-            "peasants INTEGER NOT NULL DEFAULT 0,"
             "gold INTEGER NOT NULL DEFAULT 0,"
-            "silver_pence INTEGER NOT NULL DEFAULT 0,"
+            "silver_pence REAL NOT NULL DEFAULT 0,"
             "grain INTEGER NOT NULL DEFAULT 0,"
             "wood INTEGER NOT NULL DEFAULT 0,"
             "steel INTEGER NOT NULL DEFAULT 0,"
@@ -208,6 +220,8 @@ void migrate_baron_character_id(sqlite::database& db) {
             "iron INTEGER NOT NULL DEFAULT 0,"
             "ironwork INTEGER NOT NULL DEFAULT 0,"
             "fancy_ironwork INTEGER NOT NULL DEFAULT 0,"
+            "beams INTEGER NOT NULL DEFAULT 0,"
+            "boards INTEGER NOT NULL DEFAULT 0,"
             "wall_count INTEGER NOT NULL DEFAULT 0,"
             "morale REAL NOT NULL DEFAULT 0,"
             "last_update_time INTEGER NOT NULL DEFAULT 0,"
@@ -425,6 +439,31 @@ void migrate_placements(sqlite::database& db) {
     }
 }
 
+// Drops a column from a table if it exists. Unlike the ADD-column migrations
+// (which rely on try/catch for idempotency), DROP COLUMN must be guarded by an
+// existence check because SQLite errors on a missing column.
+void drop_column_if_exists(sqlite::database& db, const std::string& table_name,
+                           const std::string& column) {
+    bool exists = false;
+    db << "PRAGMA table_info(" + table_name + ");"
+       >> [&](int cid, std::string name, std::string type, int notnull,
+              std::string dflt, int pk) {
+              (void)cid; (void)type; (void)notnull; (void)dflt; (void)pk;
+              if (name == column) {
+                  exists = true;
+              }
+          };
+    if (exists) {
+        db << "ALTER TABLE " + table_name + " DROP COLUMN " + column + ";";
+    }
+}
+
+// Removes the legacy population counter. Peasant is a building class/chain, not
+// a tracked population resource, so the fiefdoms.peasants column is dropped.
+void migrate_drop_peasants(sqlite::database& db) {
+    drop_column_if_exists(db, "fiefdoms", "peasants");
+}
+
 void initializeGameDB(sqlite::database& db) {
     migrate_barony_tables(db);
     createGameDBTables(db);
@@ -443,6 +482,8 @@ void initializeGameDB(sqlite::database& db) {
     migrate_baron_character_id(db);
     migrate_building_output_rates(db);
     migrate_pond_type(db);
+    migrate_drop_peasants(db);
+    migrate_beams_boards(db);
     ensureGameDBIndexes_private(db);
 }
 

@@ -37,6 +37,12 @@ bool updateBuildingConstructionStart(int building_id, int64_t construction_start
 bool updateBuildingPondType(int building_id, const std::string& pond_type, int new_level,
                             int64_t construction_start_ts, int64_t timestamp);
 
+// Converts a building in place to a new building type (stage upgrade). Resets
+// the level/construction timer and clears stage-specific state (pond_type,
+// output_rates) so the successor starts fresh.
+bool updateBuildingType(int building_id, const std::string& new_name, int new_level,
+                        int64_t construction_start_ts, int64_t timestamp);
+
 std::vector<std::pair<int, int>> fetchRiverCells(int fiefdom_id);
 
 bool ensureFiefdomRiver(int fiefdom_id, const nlohmann::json& river_config);
@@ -55,7 +61,7 @@ bool createOfficial(int fiefdom_id, fiefdom::OfficialRole role, const std::strin
 
 struct FiefdomResources {
     double gold = 0;
-    int silver_pence = 0;
+    double silver_pence = 0.0;
     int grain = 0;
     int wood = 0;
     int steel = 0;
@@ -67,11 +73,11 @@ struct FiefdomResources {
     int iron = 0;
     int ironwork = 0;
     int fancy_ironwork = 0;
+    int beams = 0;
+    int boards = 0;
 };
 
 bool updateFiefdomResources(int fiefdom_id, const FiefdomResources& resources);
-
-bool updateFiefdomPeasants(int fiefdom_id, int peasants);
 
 bool updateFiefdomWallCount(int fiefdom_id, int wall_count);
 

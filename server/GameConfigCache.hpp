@@ -35,6 +35,11 @@ public:
     nlohmann::json& getWeedingSpecials();
     nlohmann::json& getWeedingOngoing();
     nlohmann::json& getEconomyConfig();
+    int getBuildingArableAcres(const std::string& type_id);
+    double getArableLandByLevel(int manor_level);
+    int getBuildingForestAcres(const std::string& type_id);
+    double getForestLandByLevel(int manor_level);
+    std::string getBuildingClass(const std::string& type_id);
     nlohmann::json& getManorUi();
     nlohmann::json& getManorRiver();
     nlohmann::json& getCombatRulesets();

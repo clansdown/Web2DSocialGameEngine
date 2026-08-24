@@ -22,6 +22,14 @@ A building with `grain: { amount: 10 }`:
 | 1 day | 10.0 |
 | 2.5 days | 25.0 |
 
+## Starting Resources
+
+A newly created fiefdom begins with the per-resource balances defined in
+`economy.json` `starting_resources` (currently `gold: 5`, with every other
+resource `0`). This is the single source of truth shared by the server's fiefdom
+creation (`/api/joinBarony` / `/api/createBarony`) and the balance analyzer's
+`--sim`, so the simulation always starts from the same balances as a live game.
+
 ## Config File Format
 
 Buildings define production in `fiefdom_building_types.json`:
@@ -70,8 +78,27 @@ Buildings define production in `fiefdom_building_types.json`:
 Consumption shares the same 1-day period and fractional-day scaling:
 - Building `inputs` (`fiefdom_building_types.json`) — per-day, input-gated
 - Building `daily_cost` — per-day flat rate
-- `economy.json` `population_costs` — per-day per population unit
 - `player_combatants.json` `upkeep` — per-day per stationed combatant
+
+## Produce-First Order (dependency graph)
+
+The economy tick runs **production before upkeep**, driven by a dependency graph
+of the buildings so upstream producers run before downstream consumers:
+
+1. **Produce** — building outputs run in topological order (edge A→B when A
+   produces a resource B consumes as a production input; `priority` breaks ties,
+   then building id). Each output consumes its own inputs (stock first, then
+   imports if the resource's import is enabled and affordable) and is gated by
+   its `supplied/required` ratio. Imported inputs can feed same-tick production.
+2. **Upkeep** — `daily_cost` (and combatant upkeep) is consumed **after** all
+   production, so any building's output can feed any household the same day.
+3. **Export** — excess above each resource's reserve is auto-sold at the export
+   price (see below).
+
+This ordering is what makes multi-stage chains work: the woodcutter's wood is
+produced before the wood hewer (→ beams) and sawyer (→ boards) consume it as an
+input, and those beams/boards are in turn available the same day for any
+building's upkeep or (once built) for construction.
 
 ## Per-Output Gating
 
@@ -86,8 +113,10 @@ produced     = output.amount × days_elapsed × modifier × player_rate × outpu
 - `min_level`: outputs below the building's level are inactive (nothing consumed/produced).
 - `player_rate`: 0..1 per output, set via `/api/setBuildingOutputRate`; scales both the
   output amount and that output's inputs. Rate 0 disables the output.
-- Legacy flat `<resource>: { amount }` + building-level `inputs` is normalized to a single
-  output per resource with shared inputs, so existing buildings behave identically.
+
+The `outputs` array is the only production schema. Flat `<resource>: { amount }`
+fields and a building-level `inputs` map are disallowed (config lint enforces
+this); each output declares its own inputs, consumed once per building per day.
 
 ## Penny Market (imports & exports)
 
@@ -108,9 +137,12 @@ with precedence:
 Example — grain (money-form): imported at 1 shilling (12 pence), sold at 6 pence:
 
 ```
-import: silver_pence -= ceil-ish units × 12
-sell:   silver_pence += llround(excess × 12 × 0.5)   // 6 pence per unit
+import: silver_pence -= units × 12
+sell:   silver_pence += excess × 12 × 0.5   // 6 pence per unit
 ```
+
+`silver_pence` is fractional-capable (REAL), so half-penny prices settle exactly
+— beams import at 4d and sell at 1d; boards import at 1.5d and sell at 0.5d.
 
 The economy report exposes `net_silver` (pence exports − pence imports) and, for
 grain, an `exported["grain"] = { amount, pence }` entry instead of `gold`.

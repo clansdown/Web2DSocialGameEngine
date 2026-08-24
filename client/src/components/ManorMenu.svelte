@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { currentCharacter } from '../lib/stores';
-  import { getFiefdomRequest, buildRequest, getBuildingConfigsRequest, setFiefdomImportRequest, setFiefdomReserveRequest, setBuildingOutputRateRequest } from '../lib/api';
+  import { getFiefdomRequest, buildRequest, getBuildingConfigsRequest, setFiefdomImportRequest, setFiefdomReserveRequest, setBuildingOutputRateRequest, upgradeBuildingRequest, convertBuildingRequest, demolishBuildingRequest, upgradePondTypeRequest } from '../lib/api';
   import type { FiefdomResponse, FiefdomBuilding, BuildingTypeConfig, EconomyReport } from '../lib/api';
   import { loadTexts } from '../lib/text';
   import { getSessionToken, getInMemoryCredentials } from '../lib/auth';
@@ -91,11 +91,15 @@
   let showEconomy = $state(false);
   let showProduction = $state(false);
   let economyReport = $state<EconomyReport | null>(null);
-  const IMPORT_RESOURCES = ['grain', 'wood', 'steel', 'bronze', 'stone', 'leather', 'mana', 'charcoal', 'iron', 'ironwork', 'fancy_ironwork'];
+  let selectedBuildingId = $state<number | null>(null);
+  let buildingCardBusy = $state(false);
+  let buildingCardError = $state('');
+  const IMPORT_RESOURCES = ['grain', 'wood', 'steel', 'bronze', 'leather', 'mana', 'charcoal', 'iron', 'ironwork', 'fancy_ironwork', 'beams', 'boards'];
   const RESOURCE_DISPLAY: Record<string, string> = {
     grain: 'Grain', wood: 'Wood', steel: 'Steel', bronze: 'Bronze',
-    stone: 'Stone', leather: 'Leather', mana: 'Mana', charcoal: 'Charcoal',
-    iron: 'Iron', ironwork: 'Ironwork', fancy_ironwork: 'Fancy Ironwork'
+    leather: 'Leather', mana: 'Mana', charcoal: 'Charcoal',
+    iron: 'Iron', ironwork: 'Ironwork', fancy_ironwork: 'Fancy Ironwork',
+    beams: 'Beams', boards: 'Boards'
   };
   let reserveInputs = $state<Record<string, number>>({});
 
@@ -373,6 +377,143 @@
   }
 
   /**
+   * Resolves a building's stage chain [root, ..., building] by walking
+   * `built_from` links. A building's chain includes itself and every lower
+   * stage it could have been converted from. Chain depth is unbounded.
+   *
+   * @param typeId - Building type id from the config
+   * @returns Ordered chain from the root stage down to the given building
+   */
+  function stageChain(typeId: string): string[] {
+    const chain: string[] = [];
+    let cur: string | undefined = typeId;
+    const seen = new Set<string>();
+    while (cur && !seen.has(cur)) {
+      seen.add(cur);
+      chain.push(cur);
+      cur = getCfg(cur)?.built_from;
+    }
+    return chain.reverse();
+  }
+
+  /**
+   * Total length of a building's stage chain (all ancestors and all successors).
+   *
+   * @param typeId - Building type id from the config
+   * @returns The number of stages in the chain that includes typeId
+   */
+  function fullChainLength(typeId: string): number {
+    const chain = stageChain(typeId);
+    let len = chain.length;
+    let cur = chain[chain.length - 1];
+    while (true) {
+      const next = Object.keys(buildingConfigs).find(id => buildingConfigs[id]?.built_from === cur);
+      if (!next) break;
+      len++;
+      cur = next;
+    }
+    return len;
+  }
+
+  /**
+   * Highest level among the fiefdom's buildings whose stage chain includes the
+   * required stage at or below their own stage (a villein/yeoman counts as a
+   * peasant; a plain peasant never counts as a villein). Mirrors the server's
+   * chain-aware prerequisite resolution.
+   *
+   * @param requiredId - The building stage a prerequisite requires
+   * @returns Max level across eligible buildings (0 if none)
+   */
+  function satisfiedLevel(requiredId: string): number {
+    let best = 0;
+    for (const b of fiefdomData?.buildings ?? []) {
+      if (stageChain(b.name).includes(requiredId)) {
+        best = Math.max(best, b.level);
+      }
+    }
+    return best;
+  }
+
+  // Cost array field → resource name pairs (mirrors the server cost system).
+  const COST_FIELDS: Array<[string, string]> = [
+    ['gold_cost', 'gold'], ['silver_pence_cost', 'silver_pence'], ['wood_cost', 'wood'],
+    ['steel_cost', 'steel'], ['bronze_cost', 'bronze'],
+    ['grain_cost', 'grain'], ['leather_cost', 'leather'], ['mana_cost', 'mana'],
+    ['charcoal_cost', 'charcoal'], ['iron_cost', 'iron'], ['ironwork_cost', 'ironwork'],
+    ['fancy_ironwork_cost', 'fancy_ironwork'], ['beams_cost', 'beams'], ['boards_cost', 'boards']
+  ];
+
+  /**
+   * A building type's level cost (level-1 cost for a fresh build; costs[level]
+   * for an upgrade from level to level+1).
+   *
+   * @param typeId - Building type id from the config
+   * @param levelIndex - 0-based level index into the cost arrays
+   * @returns Map of resource name → cost amount for that step
+   */
+  function levelCost(typeId: string, levelIndex: number): Record<string, number> {
+    const cfg = getCfg(typeId);
+    const out: Record<string, number> = {};
+    if (!cfg) return out;
+    for (const [field, res] of COST_FIELDS) {
+      const arr = cfg[field];
+      if (Array.isArray(arr) && typeof arr[levelIndex] === 'number') {
+        out[res] = arr[levelIndex] as number;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Cumulative cost spent on a building up to (but not including) its current
+   * level — used for the convert discount (80% credit).
+   *
+   * @param typeId - Building type id from the config
+   * @param level - The building's current level
+   * @returns Map of resource name → cumulative spent
+   */
+  function cumulativeCost(typeId: string, level: number): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (let i = 0; i < level; i++) {
+      for (const [res, amt] of Object.entries(levelCost(typeId, i))) {
+        out[res] = (out[res] ?? 0) + amt;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * The successor building this building converts into (the config whose
+   * `built_from` matches), or undefined if the building is a chain's leaf.
+   *
+   * @param typeId - Building type id from the config
+   * @returns Successor type id, or undefined
+   */
+  function stageSuccessor(typeId: string): string | undefined {
+    return Object.keys(buildingConfigs).find(id => buildingConfigs[id]?.built_from === typeId);
+  }
+
+  /**
+   * Conversion price for turning a building into its successor, mirroring the
+   * server: max(0, successor level-1 cost − 80% × old cumulative spent).
+   *
+   * @param b - The building instance being converted
+   * @returns Map of resource name → convert price (may be empty = free)
+   */
+  function convertCost(b: FiefdomBuilding): Record<string, number> {
+    const successor = stageSuccessor(b.name);
+    const out: Record<string, number> = {};
+    if (!successor) return out;
+    const succLvl1 = levelCost(successor, 0);
+    const oldCum = cumulativeCost(b.name, b.level);
+    for (const [res, amt] of Object.entries(succLvl1)) {
+      const price = amt - (oldCum[res] ?? 0) * 0.8;
+      if (price > 0) out[res] = Math.round(price * 100) / 100;
+    }
+    return out;
+  }
+
+  /**
    * Returns the construction_times array to use for a building's progress bar.
    * Mill ponds read from their current pond type (timber/stone have their own
    * build times); all other buildings use the top-level array.
@@ -408,7 +549,7 @@
     const prereq = ((cfg.prerequisites as Array<Record<string, number>> | undefined)?.[0]) ?? {};
     for (const [key, reqLevel] of Object.entries(prereq)) {
       if (key === 'manor_level') continue;
-      const have = (fiefdomData.buildings ?? []).find(b => b.name === key)?.level ?? 0;
+      const have = satisfiedLevel(key);
       if (have < reqLevel) {
         return { valid: false, reason: `Need ${key} level ${reqLevel}` };
       }
@@ -431,6 +572,14 @@
       if (current < amt) {
         return { valid: false, reason: `Not enough ${res} (need ${amt})` };
       }
+    }
+    const acres = cfg.arable_acres ?? 0;
+    if (acres > 0 && (fiefdomData.arable_land?.available ?? 0) + 0.0001 < acres) {
+      return { valid: false, reason: `Not enough arable land (need ${acres} acres)` };
+    }
+    const forest = cfg.forest_acres ?? 0;
+    if (forest > 0 && (fiefdomData.forest_land?.available ?? 0) + 0.0001 < forest) {
+      return { valid: false, reason: `Not enough forest land (need ${forest} acres)` };
     }
     return { valid: true, reason: '' };
   }
@@ -456,11 +605,16 @@
    * Formats a building's level-1 costs as a compact price string.
    *
    * @param costs - Map of resource name -> level-1 cost amount
-   * @returns String like "10s 10w" (gold in shillings/pence, wood= w, stone= st);
+   * @returns String like "10s 10w" (gold in shillings/pence, wood= w, steel= stl);
    *          empty if no costs
    */
   function formatCost(costs: Record<string, number>): string {
-    const units: Record<string, string> = { wood: 'w', stone: 'st' };
+    const units: Record<string, string> = {
+      wood: 'w', steel: 'stl', bronze: 'brz',
+      grain: 'g', leather: 'lth', mana: 'ma',
+      charcoal: 'ch', iron: 'fe', ironwork: 'iw', fancy_ironwork: 'fi',
+      beams: 'bm', boards: 'bd'
+    };
     const parts: string[] = [];
     for (const [res, amt] of Object.entries(costs)) {
       if (amt <= 0) continue;
@@ -499,12 +653,24 @@
     const prereq = ((cfg.prerequisites as Array<Record<string, number>> | undefined)?.[0]) ?? {};
     for (const [key, reqLevel] of Object.entries(prereq)) {
       if (key === 'manor_level') continue;
-      const have = (fiefdomData.buildings ?? []).find(b => b.name === key)?.level ?? 0;
+      const have = satisfiedLevel(key);
       if (have < reqLevel) return false;
     }
     for (const [res, amt] of Object.entries(cfg.costs)) {
       const have = (fiefdomData as unknown as Record<string, number>)[res] ?? 0;
       if (have < amt) return false;
+    }
+    // Arable land: the new building must fit in the manor's remaining acres.
+    const acres = cfg.arable_acres ?? 0;
+    if (acres > 0) {
+      const available = fiefdomData.arable_land?.available ?? 0;
+      if (available + 0.0001 < acres) return false;
+    }
+    // Forest land: the wood producers claim off-map forest acres.
+    const forest = cfg.forest_acres ?? 0;
+    if (forest > 0) {
+      const available = fiefdomData.forest_land?.available ?? 0;
+      if (available + 0.0001 < forest) return false;
     }
     return true;
   }
@@ -599,6 +765,11 @@
       obj.width = cfg.width * CELL_TO_BOARD_UNITS;
       obj.height = cfg.height * CELL_TO_BOARD_UNITS;
 
+      // Completed buildings are clickable → building info card.
+      if (b.level >= 1) {
+        obj.onClick(0, () => openBuildingCard(b.id));
+      }
+
       if (underConstruction) {
         underConstructionSet.add(b.id);
         const times = getConstructionTimes(b, cfg);
@@ -678,6 +849,11 @@
         );
       } else {
         buildingGameObjMap.set(-1, manorObj);
+        // The manor house is the way to raise manor_level — make it clickable.
+        const homeBase = (fiefdomData.buildings || []).find(b => b.name === 'home_base');
+        if (homeBase) {
+          manorObj.onClick(0, () => openBuildingCard(homeBase.id));
+        }
       }
     }
   }
@@ -800,6 +976,143 @@
       }
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : 'Failed to load fiefdom';
+    }
+  }
+
+  /**
+   * Opens the building info card for a completed building.
+   *
+   * @param id - The fiefdom_buildings row id
+   */
+  function openBuildingCard(id: number): void {
+    selectedBuildingId = id;
+    buildingCardError = '';
+  }
+
+  function closeBuildingCard(): void {
+    selectedBuildingId = null;
+    buildingCardError = '';
+  }
+
+  /**
+   * The building currently shown on the info card (looked up from fiefdom data).
+   */
+  function selectedBuilding(): FiefdomBuilding | null {
+    if (selectedBuildingId == null) return null;
+    return (fiefdomData?.buildings ?? []).find(b => b.id === selectedBuildingId) ?? null;
+  }
+
+  /**
+   * Whether the selected building can upgrade to its next level (completed and
+   * below its max level).
+   *
+   * @param b - The building instance
+   * @returns True if the Upgrade button should be enabled
+   */
+  function canUpgradeSelected(b: FiefdomBuilding): boolean {
+    if (b.level <= 0) return false;
+    const maxLevel = (getCfg(b.name)?.max_level as number | undefined) ?? 1;
+    return b.level < maxLevel;
+  }
+
+  /**
+   * Refreshes the board after a building action.
+   */
+  async function refreshAfterAction(): Promise<void> {
+    await loadFiefdomData();
+    clearBuildings();
+    renderBuildings();
+  }
+
+  async function upgradeSelected(): Promise<void> {
+    const b = selectedBuilding();
+    if (!b || !fiefdomData) return;
+    const token = getSessionToken();
+    const creds = getInMemoryCredentials();
+    if (!token || !creds || !$currentCharacter) return;
+    buildingCardBusy = true;
+    buildingCardError = '';
+    try {
+      await upgradeBuildingRequest({
+        fiefdom_id: fiefdomData.id,
+        building_id: b.id,
+        character_id: $currentCharacter.id
+      }, { username: creds.username, token });
+      await refreshAfterAction();
+    } catch (e) {
+      buildingCardError = e instanceof Error ? e.message : 'Failed to upgrade';
+    } finally {
+      buildingCardBusy = false;
+    }
+  }
+
+  async function convertSelected(): Promise<void> {
+    const b = selectedBuilding();
+    if (!b || !fiefdomData) return;
+    const token = getSessionToken();
+    const creds = getInMemoryCredentials();
+    if (!token || !creds || !$currentCharacter) return;
+    buildingCardBusy = true;
+    buildingCardError = '';
+    try {
+      await convertBuildingRequest({
+        fiefdom_id: fiefdomData.id,
+        building_id: b.id,
+        character_id: $currentCharacter.id
+      }, { username: creds.username, token });
+      await refreshAfterAction();
+    } catch (e) {
+      buildingCardError = e instanceof Error ? e.message : 'Failed to convert';
+    } finally {
+      buildingCardBusy = false;
+    }
+  }
+
+  async function demolishSelected(): Promise<void> {
+    const b = selectedBuilding();
+    if (!b || !fiefdomData) return;
+    const confirmText = manorTexts['ui_manor_demolish_confirm']
+      .replace('{building_name}', getCfg(b.name)?.display_name ?? b.name);
+    if (!window.confirm(confirmText)) return;
+    const token = getSessionToken();
+    const creds = getInMemoryCredentials();
+    if (!token || !creds || !$currentCharacter) return;
+    buildingCardBusy = true;
+    buildingCardError = '';
+    try {
+      await demolishBuildingRequest({
+        fiefdom_id: fiefdomData.id,
+        building_id: b.id,
+        character_id: $currentCharacter.id
+      }, { username: creds.username, token });
+      closeBuildingCard();
+      await refreshAfterAction();
+    } catch (e) {
+      buildingCardError = e instanceof Error ? e.message : 'Failed to demolish';
+    } finally {
+      buildingCardBusy = false;
+    }
+  }
+
+  async function upgradePondSelected(): Promise<void> {
+    const b = selectedBuilding();
+    if (!b || !fiefdomData) return;
+    const token = getSessionToken();
+    const creds = getInMemoryCredentials();
+    if (!token || !creds || !$currentCharacter) return;
+    buildingCardBusy = true;
+    buildingCardError = '';
+    try {
+      await upgradePondTypeRequest({
+        fiefdom_id: fiefdomData.id,
+        building_id: b.id,
+        character_id: $currentCharacter.id
+      }, { username: creds.username, token });
+      await refreshAfterAction();
+    } catch (e) {
+      buildingCardError = e instanceof Error ? e.message : 'Failed to upgrade pond type';
+    } finally {
+      buildingCardBusy = false;
     }
   }
 
@@ -1126,7 +1439,10 @@
     const textIds = [
       'manor_main_btn', 'ui_manor_build_btn',
       'ui_manor_economy', 'ui_manor_production',
-      'ui_manor_stockpiles', 'ui_manor_treasury', 'ui_manor_peasants',
+      'ui_manor_stockpiles', 'ui_manor_treasury', 'ui_manor_arable',
+      'ui_manor_forest',
+      'ui_manor_stage', 'ui_manor_upgrade', 'ui_manor_convert',
+      'ui_manor_pond_type', 'ui_manor_demolish', 'ui_manor_demolish_confirm',
       ...buildableIds.map(id => 'ui_building_' + id)
     ];
     manorTexts = await loadTexts(textIds);
@@ -1249,13 +1565,14 @@
   {#if !loading && !showIntro && !errorMsg}
     {#if showEconomy}
       <div class="card position-absolute end-0 m-3" style="width: 420px; max-height: 80vh; overflow-y: auto; top: {panelTop}px;">
-        <div class="card-body">
-          <h6 class="card-title">Manor Economy</h6>
+          <div class="card-body">
+            <h6 class="card-title">Manor Economy</h6>
 
-          <div class="small mb-2">{manorTexts['ui_manor_peasants']}: {fiefdomData?.peasants ?? 0}</div>
           <div class="mb-3">
             <div class="fw-semibold">{manorTexts['ui_manor_stockpiles']}</div>
             <div class="small">{manorTexts['ui_manor_treasury']}: {formatGold(fiefdomData?.gold ?? 0)}, {fiefdomData?.silver_pence ?? 0} silver pence</div>
+            <div class="small">{manorTexts['ui_manor_arable']}: {Math.floor(fiefdomData?.arable_land?.used ?? 0)} / {Math.floor(fiefdomData?.arable_land?.total ?? 0)}</div>
+            <div class="small">{manorTexts['ui_manor_forest']}: {Math.floor(fiefdomData?.forest_land?.used ?? 0)} / {Math.floor(fiefdomData?.forest_land?.total ?? 0)}</div>
             <div class="d-flex flex-wrap gap-1">
               {#each IMPORT_RESOURCES as res}
                 {@const amount = ((fiefdomData ?? {}) as unknown as Record<string, number>)[res] ?? 0}
@@ -1394,6 +1711,58 @@
           {/if}
         </div>
       </div>
+    {/if}
+
+    {#if selectedBuildingId != null}
+      {@const sb = selectedBuilding()}
+      {@const sCfg = sb ? getCfg(sb.name) : undefined}
+      {@const sSucc = sb ? stageSuccessor(sb.name) : undefined}
+      {@const sSuccCfg = sSucc ? getCfg(sSucc) : undefined}
+      {@const sMax = (sCfg?.max_level as number | undefined) ?? 5}
+      {#if sb && sCfg}
+        <div class="card position-absolute end-0 m-3" style="width: 380px; top: {panelTop}px; z-index: 150;">
+          <div class="card-body">
+            <div class="d-flex justify-content-between align-items-start gap-2">
+              <div>
+                <h6 class="card-title mb-1">{sCfg.display_name}</h6>
+                <div class="small text-muted">
+                  {manorTexts['ui_manor_stage']}: {stageChain(sb.name).length}/{fullChainLength(sb.name)}
+                  &middot; Level {sb.level}/{sMax}
+                </div>
+              </div>
+              <button class="btn-close" onclick={closeBuildingCard} aria-label="Close"></button>
+            </div>
+
+            {#if buildingCardError}
+              <div class="alert alert-danger py-1 px-2 small mt-2 mb-2">{buildingCardError}</div>
+            {/if}
+
+            <div class="d-grid gap-2 mt-3">
+              {#if canUpgradeSelected(sb)}
+                <button class="btn btn-primary btn-sm" disabled={buildingCardBusy} onclick={upgradeSelected}>
+                  {manorTexts['ui_manor_upgrade']}
+                </button>
+              {/if}
+
+              {#if sSucc && sSuccCfg}
+                <button class="btn btn-warning btn-sm" disabled={buildingCardBusy} onclick={convertSelected}>
+                  {manorTexts['ui_manor_convert']}: {sSuccCfg.display_name} ({formatCost(convertCost(sb)) || 'free'})
+                </button>
+              {/if}
+
+              {#if sb.name === 'mill_pond'}
+                <button class="btn btn-info btn-sm" disabled={buildingCardBusy} onclick={upgradePondSelected}>
+                  {manorTexts['ui_manor_pond_type']}
+                </button>
+              {/if}
+
+              <button class="btn btn-outline-danger btn-sm" disabled={buildingCardBusy} onclick={demolishSelected}>
+                {manorTexts['ui_manor_demolish']}
+              </button>
+            </div>
+          </div>
+        </div>
+      {/if}
     {/if}
   {/if}
 </div>

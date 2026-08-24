@@ -82,7 +82,15 @@ The manor is a SimpleGame canvas board reached as a hub activity
   (config-driven; the client's display/level/affordability filters are never
   overridden). Buttons grey out (`setDisabled`) when level-locked,
   prerequisite-unmet, or unaffordable. Placement uses a ghost with click or
-  drag-and-release, and rejects river cells and occupied squares.
+  drag-and-release, and rejects river cells and occupied squares. Prerequisite
+  checks are **stage-chain-aware** (`stageChain`/`satisfiedLevel`) — a
+  villein/yeoman satisfies a `peasant` prerequisite.
+- **Building info card**: clicking a completed building (including the manor
+  house) opens a Bootstrap card showing its stage position, level, and actions —
+  **Upgrade** (within-stage), **Convert to <successor>** (with the computed
+  convert cost, mirroring the server's 80%-refund discount), **Upgrade Pond
+  Type** (mill ponds), and **Demolish** (with confirm). Wired to the
+  `upgrade`/`convert`/`demolish`/`upgrade_pond_type` Build actions.
 - **Roads & morale**: roads auto-tile via `road_tiles_canonical` connectivity
   masks (procedural canvas tiles); buildings with `road_morale` radiate bonus
   points along connected road tiles, shown as "+X% production" in the

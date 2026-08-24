@@ -153,9 +153,12 @@ using ModifierMap = std::unordered_map<int, std::unordered_map<std::string, doub
 /// Computes building-to-building modifier assignments for a fiefdom.
 /// Returns a map of (target_building_id) -> (resource -> total_multiplier).
 /// Modifiers are recomputed every cycle — no persistence needed.
+/// `water_powered_ok` holds building ids whose water-powered buildings are
+/// currently powered; an unpowered water-powered source contributes nothing.
 ModifierMap computeBuildingModifiers(
     const std::vector<BuildingData>& buildings,
-    const nlohmann::json& building_types
+    const nlohmann::json& building_types,
+    const std::unordered_map<int, bool>& water_powered_ok
 );
 
 } // namespace GameLogic

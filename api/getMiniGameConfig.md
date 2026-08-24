@@ -43,7 +43,7 @@ Returns mini-game configuration data. Can filter by specific mini-game or return
       ],
       "completion_bonus": {
         "base_unlock": true,
-        "resources": { "gold": 100, "wood": 50, "grain": 50, "stone": 30 }
+        "resources": { "gold": 100, "wood": 50, "grain": 50 }
       },
       "replay_config": {
         "random_generation": true,
@@ -75,7 +75,7 @@ Returns mini-game configuration data. Can filter by specific mini-game or return
       ],
       "completion_bonus": {
         "base_unlock": true,
-        "resources": { "gold": 100, "grain": 50, "wood": 50, "stone": 30 }
+        "resources": { "gold": 100, "grain": 50, "wood": 50 }
       },
       "replay_config": {
         "random_generation": true,

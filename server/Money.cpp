@@ -8,11 +8,11 @@ long gold_to_pence(double gold) {
     return static_cast<long>(std::llround(gold * pence_per_gold));
 }
 
-void normalize(double& gold, int& silver_pence) {
-    long total_pence = gold_to_pence(gold) + static_cast<long>(silver_pence);
+void normalize(double& gold, double& silver_pence) {
+    double total_pence = gold_to_pence(gold) + silver_pence;
     if (total_pence < 0) total_pence = 0;
-    gold = static_cast<double>(total_pence / static_cast<long>(pence_per_gold));
-    silver_pence = static_cast<int>(total_pence % static_cast<long>(pence_per_gold));
+    gold = std::floor(total_pence / pence_per_gold);
+    silver_pence = total_pence - gold * pence_per_gold;
 }
 
 // Convert a single gold_cost element (number or {gold, shillings, pence} object)

@@ -141,6 +141,81 @@ nlohmann::json& GameConfigCache::getWeedingTools() { return getConfig("weeding/t
 nlohmann::json& GameConfigCache::getWeedingSpecials() { return getConfig("weeding/specials.json"); }
 nlohmann::json& GameConfigCache::getWeedingOngoing() { return getConfig("weeding/ongoing.json"); }
 nlohmann::json& GameConfigCache::getEconomyConfig() { return getConfig("economy.json"); }
+
+int GameConfigCache::getBuildingArableAcres(const std::string& type_id) {
+    nlohmann::json& buildings = getFiefdomBuildingTypes();
+    if (buildings.is_array()) {
+        for (auto& obj : buildings) {
+            if (obj.is_object() && obj.contains(type_id)) {
+                const auto& cfg = obj[type_id];
+                if (cfg.is_object() && cfg.contains("arable_acres") && cfg["arable_acres"].is_number()) {
+                    return cfg["arable_acres"].get<int>();
+                }
+                return 0;
+            }
+        }
+    }
+    return 0;
+}
+
+double GameConfigCache::getArableLandByLevel(int manor_level) {
+    nlohmann::json& economy = getEconomyConfig();
+    if (economy.contains("arable_land_by_level") && economy["arable_land_by_level"].is_array()) {
+        const auto& arr = economy["arable_land_by_level"];
+        if (arr.empty()) return 0.0;
+        if (manor_level < 0) manor_level = 0;
+        size_t idx = static_cast<size_t>(manor_level);
+        if (idx >= arr.size()) idx = arr.size() - 1;
+        if (arr[idx].is_number()) return arr[idx].get<double>();
+    }
+    return 0.0;
+}
+
+int GameConfigCache::getBuildingForestAcres(const std::string& type_id) {
+    nlohmann::json& buildings = getFiefdomBuildingTypes();
+    if (buildings.is_array()) {
+        for (auto& obj : buildings) {
+            if (obj.is_object() && obj.contains(type_id)) {
+                const auto& cfg = obj[type_id];
+                if (cfg.is_object() && cfg.contains("forest_acres") && cfg["forest_acres"].is_number()) {
+                    return cfg["forest_acres"].get<int>();
+                }
+                return 0;
+            }
+        }
+    }
+    return 0;
+}
+
+double GameConfigCache::getForestLandByLevel(int manor_level) {
+    nlohmann::json& economy = getEconomyConfig();
+    if (economy.contains("forest_land_by_level") && economy["forest_land_by_level"].is_array()) {
+        const auto& arr = economy["forest_land_by_level"];
+        if (arr.empty()) return 0.0;
+        if (manor_level < 0) manor_level = 0;
+        size_t idx = static_cast<size_t>(manor_level);
+        if (idx >= arr.size()) idx = arr.size() - 1;
+        if (arr[idx].is_number()) return arr[idx].get<double>();
+    }
+    return 0.0;
+}
+
+std::string GameConfigCache::getBuildingClass(const std::string& type_id) {
+    nlohmann::json& buildings = getFiefdomBuildingTypes();
+    if (buildings.is_array()) {
+        for (auto& obj : buildings) {
+            if (obj.is_object() && obj.contains(type_id)) {
+                const auto& cfg = obj[type_id];
+                if (cfg.is_object() && cfg.contains("class") && cfg["class"].is_string()) {
+                    return cfg["class"].get<std::string>();
+                }
+                return "";
+            }
+        }
+    }
+    return "";
+}
+
 nlohmann::json& GameConfigCache::getManorUi() { return getConfig("manor_ui.json"); }
 nlohmann::json& GameConfigCache::getManorRiver() { return getConfig("manor_river.json"); }
 nlohmann::json& GameConfigCache::getCombatRulesets() { return getConfig("combat/rulesets.json"); }

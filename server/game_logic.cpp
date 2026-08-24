@@ -102,17 +102,16 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
         std::vector<FiefdomData> fiefdoms;
         
         auto read_fiefdom = [&](int id, int owner_id, std::string name, int x, int y,
-                                int peasants, double gold, int silver_pence, int grain, int wood, int steel,
+                                double gold, double silver_pence, int grain, int wood, int steel,
                                 int bronze, int stone, int leather, int mana, int charcoal,
-                                int iron, int ironwork, int fancy_ironwork, int wall_count,
-                                double morale, std::string import_settings_str, std::string reserves_str) {
+                                int iron, int ironwork, int fancy_ironwork, int beams, int boards,
+                                int wall_count, double morale, std::string import_settings_str, std::string reserves_str) {
             FiefdomData f;
             f.id = id;
             f.owner_id = owner_id;
             f.name = name;
             f.x = x;
             f.y = y;
-            f.peasants = peasants;
             f.gold = gold;
             f.silver_pence = silver_pence;
             f.grain = grain;
@@ -126,6 +125,8 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
             f.iron = iron;
             f.ironwork = ironwork;
             f.fancy_ironwork = fancy_ironwork;
+            f.beams = beams;
+            f.boards = boards;
             f.wall_count = wall_count;
             f.morale = morale;
             try { f.import_settings = nlohmann::json::parse(import_settings_str); }
@@ -136,11 +137,11 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
         };
 
         if (!fiefdom_filter_id.empty()) {
-            db << "SELECT id, owner_id, name, x, y, peasants, gold, silver_pence, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, fancy_ironwork, wall_count, morale, import_settings, reserves FROM fiefdoms WHERE id = ?;"
+            db << "SELECT id, owner_id, name, x, y, gold, silver_pence, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, fancy_ironwork, beams, boards, wall_count, morale, import_settings, reserves FROM fiefdoms WHERE id = ?;"
                << std::stoi(fiefdom_filter_id)
                >> read_fiefdom;
         } else {
-            db << "SELECT id, owner_id, name, x, y, peasants, gold, silver_pence, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, fancy_ironwork, wall_count, morale, import_settings, reserves FROM fiefdoms;"
+            db << "SELECT id, owner_id, name, x, y, gold, silver_pence, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, fancy_ironwork, beams, boards, wall_count, morale, import_settings, reserves FROM fiefdoms;"
                >> read_fiefdom;
         }
         
@@ -153,8 +154,23 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
 
             double time_factor = result.time_hours_elapsed;
 
+            // Water power: water-powered buildings only produce while powered
+            // (river -> pond -> head race -> building -> tail race -> river).
+            // Computed here so both the modifier map (a watermill's flour_milling
+            // boost only applies when powered) and the production loop gate on it.
+            std::unordered_map<int, bool> water_powered_ok;
+            {
+                FiefdomFetcher::ensureFiefdomRiver(fiefdom.id, config_cache.getManorRiver());
+                auto river_vec = FiefdomFetcher::fetchRiverCells(fiefdom.id);
+                std::set<std::pair<int, int>> river_set(river_vec.begin(), river_vec.end());
+                auto wp = Water::computeWaterPower(building_types, fiefdom.buildings, river_set);
+                for (const auto& [bld_id, ok] : wp.powered) {
+                    if (ok) water_powered_ok[bld_id] = true;
+                }
+            }
+
             // Pre-compute building-to-building modifiers for this fiefdom
-            auto modifier_map = computeBuildingModifiers(fiefdom.buildings, building_types);
+            auto modifier_map = computeBuildingModifiers(fiefdom.buildings, building_types, water_powered_ok);
 
             for (auto& building : fiefdom.buildings) {
                 if (building.construction_start_ts > 0) {
@@ -179,7 +195,7 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                                 if (config.contains("prerequisites") && config["prerequisites"].is_array()) {
                                     auto prerequisites_opt = Validation::getPrerequisitesForLevel(config_cache, building.name, new_level);
                                     if (prerequisites_opt && !prerequisites_opt->empty()) {
-                                        prerequisites_met = Validation::checkFiefdomPrerequisites(fiefdom.id, *prerequisites_opt);
+                                        prerequisites_met = Validation::checkFiefdomPrerequisites(config_cache, fiefdom.id, *prerequisites_opt);
                                     }
                                 }
 
@@ -198,16 +214,27 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                                     if (FiefdomFetcher::updateBuildingLevel(building.id, new_level, result.new_timestamp)) {
                                         building.level = new_level;
                                         building.construction_start_ts = 0;
+                                        // The manor house's level drives the fiefdom's manor_level,
+                                        // which gates building-type prerequisites ({"manor_level": N}).
+                                        if (building.name == "home_base") {
+                                            db << "UPDATE fiefdoms SET manor_level = ? WHERE id = ?;"
+                                               << new_level << fiefdom.id;
+                                            fiefdom.manor_level = new_level;
+                                        }
                                         result.completed_trainings.push_back({building.name, new_level});
                                     }
                                 } else {
                                     nlohmann::json refund;
-                                    std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost", 
-                                                                 "bronze_cost", "grain_cost", "leather_cost", "mana_cost"};
-                                    std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", 
-                                                                     "bronze", "grain", "leather", "mana"};
+                                    std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost",
+                                                                 "bronze_cost", "grain_cost", "leather_cost", "mana_cost",
+                                                                 "charcoal_cost", "iron_cost", "ironwork_cost", "fancy_ironwork_cost",
+                                                                 "beams_cost", "boards_cost"};
+                                    std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel",
+                                                                     "bronze", "grain", "leather", "mana",
+                                                                     "charcoal", "iron", "ironwork", "fancy_ironwork",
+                                                                     "beams", "boards"};
                                     
-                                    for (size_t i = 0; i < 9; i++) {
+                                    for (size_t i = 0; i < 15; i++) {
                                         const auto& cost_key = cost_fields[i];
                                         const auto& resource_key = resource_fields[i];
                                         
@@ -269,17 +296,15 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                 }
             }
 
-            // ---- Economy: input gating -> production -> consumption -> import -> exports ----
+            // ---- Economy: production (dependency graph) -> upkeep -> import -> exports ----
             {
                 auto economy_cfg = config_cache.getEconomyConfig();
                 double unmet_penalty = economy_cfg.value("unmet_need_morale_penalty", 0.5);
                 double export_sell_multiplier = economy_cfg.value("export_sell_multiplier", 0.5);
                 int default_prio = economy_cfg.value("default_priority", 50);
-                int upkeep_prio = economy_cfg.value("combatant_upkeep_priority", 10);
                 auto import_prices = economy_cfg.value("import_prices", json::object());
                 auto export_prices = economy_cfg.value("export_prices", json::object());
                 auto export_sell_multipliers = economy_cfg.value("export_sell_multipliers", json::object());
-                auto pop_costs = economy_cfg.value("population_costs", json::object());
                 auto default_reserves = economy_cfg.value("default_reserves", json::object());
 
                 // All production and consumption share a fixed 1-day period.
@@ -295,33 +320,37 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
 
                 // Silver-pence wallet (separate from gold). Used for penny-market
                 // resources like grain: imports deduct pence, exports credit pence.
-                int64_t cur_silver_pence = fiefdom.silver_pence;
+                // Fractional-capable (REAL) to support half-penny prices (e.g.
+                // boards at 0.5d/1.5d).
+                double cur_silver_pence = fiefdom.silver_pence;
 
                 // Convert a money-form import price ({gold, shillings, pence}) to
-                // whole pence. Returns 0 for plain-number (gold-denominated) prices.
-                auto money_price_to_pence = [&](const json& price) -> int64_t {
-                    if (!price.is_object()) return 0;
+                // pence (fractional-capable). Returns 0 for plain-number
+                // (gold-denominated) prices.
+                auto money_price_to_pence = [&](const json& price) -> double {
+                    if (!price.is_object()) return 0.0;
                     double gold = price.value("gold", 0.0);
                     double shillings = price.value("shillings", 0.0);
                     double pence = price.value("pence", 0.0);
-                    return static_cast<int64_t>(std::llround(
-                        gold * pence_per_gold + shillings * pence_per_shilling + pence));
+                    return gold * pence_per_gold + shillings * pence_per_shilling + pence;
                 };
 
                 // Current resource stock (gold is fractional-capable)
-                int cur_peasants = 0;
                 double cur_gold = 0, cur_grain = 0, cur_wood = 0, cur_steel = 0;
                 double cur_bronze = 0, cur_stone = 0, cur_leather = 0, cur_mana = 0;
                 double cur_charcoal = 0, cur_iron = 0, cur_ironwork = 0, cur_fancy_ironwork = 0;
-                db << "SELECT peasants, gold, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, fancy_ironwork "
+                double cur_beams = 0, cur_boards = 0;
+                db << "SELECT gold, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, fancy_ironwork, beams, boards "
                       "FROM fiefdoms WHERE id = ?;" << fiefdom.id
-                   >> [&](int p, double g, double gr, double w, double s,
-                          double b, double st, double l, double m, double ch, double ir, double iw, double fiw) {
-                       cur_peasants = p; cur_gold = g; cur_grain = gr;
+                   >> [&](double g, double gr, double w, double s,
+                          double b, double st, double l, double m, double ch, double ir, double iw, double fiw,
+                          double bm, double bd) {
+                       cur_gold = g; cur_grain = gr;
                        cur_wood = w; cur_steel = s; cur_bronze = b;
                        cur_stone = st; cur_leather = l; cur_mana = m;
                        cur_charcoal = ch; cur_iron = ir; cur_ironwork = iw;
                        cur_fancy_ironwork = fiw;
+                       cur_beams = bm; cur_boards = bd;
                    };
 
                 auto get_cur = [&](const std::string& r) -> double* {
@@ -337,24 +366,58 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                     if (r == "iron") return &cur_iron;
                     if (r == "ironwork") return &cur_ironwork;
                     if (r == "fancy_ironwork") return &cur_fancy_ironwork;
+                    if (r == "beams") return &cur_beams;
+                    if (r == "boards") return &cur_boards;
                     return nullptr;
                 };
 
-                // Flat per-day amount for a production/input spec over the
-                // elapsed period. All production and consumption share the same
-                // 1-day period; fractional elapsed days are used directly (no
+                // Per-day amount for a production/input spec over the elapsed
+                // period. All production and consumption share the same 1-day
+                // period; fractional elapsed days are used directly (no
                 // flooring) so any elapsed time beyond a tiny minimum computes
                 // a proportional amount.
-                auto compute_amount = [&](const json& spec) -> double {
-                    double amount = 0.0;
-                    if (spec.is_number()) {
-                        amount = spec.get<double>();
-                    } else {
-                        amount = spec.value("amount", 0.0);
+                //
+                // The spec's value may be:
+                //   - a plain number (gold-denominated for the "gold" resource)
+                //   - { "amount": <value> } (legacy wrapper)
+                //   - a money object { "gold", "shillings", "pence" } — normalized
+                //     to gold, matching the cost/import money-object convention
+                //   - a level-indexed array of numbers or money objects — resolved
+                //     by the building's level (index level-1, linear extrapolation)
+                auto to_gold_amount = [&](const json& v) -> double {
+                    if (v.is_object()) {
+                        return v.value("gold", 0.0)
+                             + v.value("shillings", 0.0) / shillings_per_pound
+                             + v.value("pence", 0.0) / pence_per_gold;
                     }
+                    return v.get<double>();
+                };
+                auto compute_amount = [&](const json& spec, int level) -> double {
                     double days = time_factor / 24.0;
                     if (days <= 0) return 0.0;
-                    return amount * days;
+                    json raw;
+                    if (spec.is_number()) {
+                        raw = spec;
+                    } else if (spec.is_object()) {
+                        raw = spec.value("amount", json(0.0));
+                    } else {
+                        return 0.0;
+                    }
+                    if (raw.is_array()) {
+                        if (raw.empty()) return 0.0;
+                        int idx = std::max(0, level - 1);
+                        int max_index = static_cast<int>(raw.size()) - 1;
+                        if (idx <= max_index) {
+                            return to_gold_amount(raw[idx]) * days;
+                        }
+                        if (max_index >= 1) {
+                            double last = to_gold_amount(raw[max_index]);
+                            double prev = to_gold_amount(raw[max_index - 1]);
+                            return (last + (last - prev) * (idx - max_index)) * days;
+                        }
+                        return to_gold_amount(raw[0]) * days;
+                    }
+                    return to_gold_amount(raw) * days;
                 };
 
                 // Per-building production/input plan. Each building produces one
@@ -379,18 +442,8 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                     }
                 }
 
-                // Water power: water-powered buildings only produce while powered
-                // (river -> pond -> head race -> building -> tail race -> river).
-                std::unordered_map<int, bool> water_powered_ok;
-                {
-                    FiefdomFetcher::ensureFiefdomRiver(fiefdom.id, config_cache.getManorRiver());
-                    auto river_vec = FiefdomFetcher::fetchRiverCells(fiefdom.id);
-                    std::set<std::pair<int, int>> river_set(river_vec.begin(), river_vec.end());
-                    auto wp = Water::computeWaterPower(building_types, fiefdom.buildings, river_set);
-                    for (const auto& [bld_id, ok] : wp.powered) {
-                        if (ok) water_powered_ok[bld_id] = true;
-                    }
-                }
+                // Water power gating is handled by `water_powered_ok`, computed
+                // once per fiefdom before the modifier map (see above).
 
                 for (const auto& building : fiefdom.buildings) {
                     if (building.level <= 0) continue;
@@ -425,7 +478,7 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                             if (building.level < min_level) return;
                             double rate = rate_for(res);
                             if (rate <= 0.0) return;
-                            double total_amount = compute_amount(amount_val) * rate;
+                            double total_amount = compute_amount(amount_val, building.level) * rate;
                             if (total_amount <= 0) return;
                             if (bm_it != modifier_map.end()) {
                                 auto rm_it = bm_it->second.find(res);
@@ -443,7 +496,7 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                             op.rate = rate;
                             if (inputs_obj.is_object()) {
                                 for (auto& [ir, ispec] : inputs_obj.items()) {
-                                    double required = compute_amount(ispec) * rate;
+                                    double required = compute_amount(ispec, building.level) * rate;
                                     if (required > 0) op.inputs[ir] += required;
                                 }
                             }
@@ -451,7 +504,10 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                         };
 
                         if (type_config.contains("outputs") && type_config["outputs"].is_array()) {
-                            // New multi-output schema: per-output inputs + min_level.
+                            // The `outputs` array is the canonical production schema:
+                            // per-output inputs + min_level. The legacy flat-schema
+                            // path was removed; every production building defines an
+                            // `outputs` array (config lint enforces this).
                             for (const auto& out : type_config["outputs"]) {
                                 if (!out.is_object()) continue;
                                 std::string res = out.value("resource", "");
@@ -461,97 +517,10 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                                 int min_level = out.value("min_level", 1);
                                 add_output(res, out["amount"], inputs_obj, min_level);
                             }
-                        } else {
-                            // Legacy flat schema: each production resource field is an
-                            // output; building-level `inputs` apply to every output.
-                            const std::vector<std::string> legacy_prod = {
-                                "peasants", "gold", "grain", "wood", "steel", "bronze",
-                                "stone", "leather", "mana", "charcoal", "iron", "ironwork", "fancy_ironwork"};
-                            for (const auto& resource : legacy_prod) {
-                                if (!type_config.contains(resource)) continue;
-                                json inputs_obj = json::object();
-                                if (type_config.contains("inputs")) inputs_obj = type_config["inputs"];
-                                add_output(resource, type_config[resource], inputs_obj, 1);
-                            }
                         }
                         break;
                     }
                 }
-
-                // Consumption entries: building inputs + daily costs + population costs
-                struct ConsEntry {
-                    std::string resource;
-                    double amount;
-                    int priority;
-                    int building_id;       // 0 = not tied to a building input
-                    std::string output_res; // output resource this input feeds ("" if not an input)
-                    bool is_input;         // counts toward input satisfaction
-                };
-                std::vector<ConsEntry> entries;
-
-                auto add_entry = [&](const std::string& res, double amount, int prio, int building_id,
-                                     const std::string& output_res, bool is_input) {
-                    if (amount > 0) entries.push_back({res, amount, prio, building_id, output_res, is_input});
-                };
-
-                for (const auto& building : fiefdom.buildings) {
-                    if (building.level <= 0) continue;
-                    json bld_cfg;
-                    for (const auto& obj : building_types) {
-                        if (obj.contains(building.name)) { bld_cfg = obj[building.name]; break; }
-                    }
-                    if (bld_cfg.is_null()) continue;
-                    int prio = bld_cfg.value("priority", default_prio);
-
-                    auto plan_it = plans.find(building.id);
-                    if (plan_it != plans.end()) {
-                        for (const auto& op : plan_it->second.outputs) {
-                            for (auto& [res, req] : op.inputs) {
-                                add_entry(res, req, prio, building.id, op.resource, true);
-                            }
-                        }
-                    }
-                    if (bld_cfg.contains("daily_cost")) {
-                        auto costs = bld_cfg["daily_cost"];
-                        for (auto& [res, rate] : costs.items()) {
-                            add_entry(res, rate.get<double>() * days_elapsed, prio, 0, "", false);
-                        }
-                    }
-                }
-
-                for (auto& [pop_type, costs] : pop_costs.items()) {
-                    int count = 0;
-                    if (pop_type == "peasants") count = cur_peasants;
-                    if (count <= 0) continue;
-                    int prio = costs.value("priority", 1);
-                    for (auto& [res, rate] : costs.items()) {
-                        if (res == "priority") continue;
-                        add_entry(res, rate.get<double>() * count * days_elapsed, prio, 0, "", false);
-                    }
-                }
-
-                // 3. Combatant upkeep (stationed units consume ironwork etc.)
-                {
-                    auto& combatant_registry = Combatants::CombatantRegistry::getInstance();
-                    for (const auto& combatant : fiefdom.stationed_combatants) {
-                        auto combatant_opt = combatant_registry.getPlayerCombatant(combatant.combatant_config_id);
-                        if (!combatant_opt) continue;
-                        auto upkeep = (*combatant_opt)->getUpkeep(combatant.level);
-                        if (upkeep.gold > 0) add_entry("gold", upkeep.gold * days_elapsed, upkeep_prio, 0, "", false);
-                        if (upkeep.grain > 0) add_entry("grain", upkeep.grain * days_elapsed, upkeep_prio, 0, "", false);
-                        if (upkeep.wood > 0) add_entry("wood", upkeep.wood * days_elapsed, upkeep_prio, 0, "", false);
-                        if (upkeep.steel > 0) add_entry("steel", upkeep.steel * days_elapsed, upkeep_prio, 0, "", false);
-                        if (upkeep.bronze > 0) add_entry("bronze", upkeep.bronze * days_elapsed, upkeep_prio, 0, "", false);
-                        if (upkeep.stone > 0) add_entry("stone", upkeep.stone * days_elapsed, upkeep_prio, 0, "", false);
-                        if (upkeep.leather > 0) add_entry("leather", upkeep.leather * days_elapsed, upkeep_prio, 0, "", false);
-                        if (upkeep.charcoal > 0) add_entry("charcoal", upkeep.charcoal * days_elapsed, upkeep_prio, 0, "", false);
-                        if (upkeep.iron > 0) add_entry("iron", upkeep.iron * days_elapsed, upkeep_prio, 0, "", false);
-                        if (upkeep.ironwork > 0) add_entry("ironwork", upkeep.ironwork * days_elapsed, upkeep_prio, 0, "", false);
-                    }
-                }
-
-                std::sort(entries.begin(), entries.end(),
-                    [](const ConsEntry& a, const ConsEntry& b) { return a.priority < b.priority; });
 
                 // Ledger
                 json ledger_produced = json::object();
@@ -560,64 +529,56 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                 json ledger_exported = json::object();
                 double import_spend = 0;
                 double gold_consumed = 0;
-                int64_t import_spend_pence = 0;
-                int64_t export_gain_pence = 0;
+                double import_spend_pence = 0;
+                double export_gain_pence = 0;
 
                 double morale_damage = 0;
 
-                // Record how much of an input was actually supplied to the output
-                // that consumes it (stock + imports).
-                auto record_supplied = [&](const ConsEntry& entry, double amount) {
-                    auto pit = plans.find(entry.building_id);
-                    if (pit == plans.end()) return;
-                    for (auto& op : pit->second.outputs) {
-                        if (op.resource == entry.output_res) {
-                            op.supplied[entry.resource] += amount;
-                            return;
-                        }
+                // Consumes a need (production input or upkeep) from stock,
+                // importing the deficit if the resource's import is enabled and
+                // affordable (gold for gold-market, silver_pence for penny-market).
+                // Records consumed/imported amounts and morale damage for unmet
+                // need. Returns the amount actually supplied (stock + imports).
+                auto supply_need = [&](const std::string& res, double need) -> double {
+                    if (res == "gold" || need <= 0.001) return 0.0;
+                    double* cur = get_cur(res);
+                    if (!cur) {
+                        if (need > 0.001) morale_damage += need * unmet_penalty;
+                        return 0.0;
                     }
-                };
-
-                for (const auto& entry : entries) {
-                    if (entry.resource == "gold") continue;
-                    double* avail = get_cur(entry.resource);
-                    if (!avail) continue;
-                    double effective = std::min(*avail, entry.amount);
-                    *avail -= effective;
-                    ledger_consumed[entry.resource] = ledger_consumed.value(entry.resource, 0.0) + effective;
-                    if (entry.is_input) {
-                        record_supplied(entry, effective);
-                    }
-                    double unmet = entry.amount - effective;
-
+                    double effective = std::min(*cur, need);
+                    *cur -= effective;
+                    ledger_consumed[res] = ledger_consumed.value(res, 0.0) + effective;
+                    double unmet = need - effective;
+                    double supplied = effective;
                     if (unmet > 0.001) {
                         bool auto_import = true;
                         if (fiefdom.import_settings.is_object() &&
-                            fiefdom.import_settings.contains(entry.resource)) {
-                            auto_import = fiefdom.import_settings[entry.resource].get<bool>();
+                            fiefdom.import_settings.contains(res)) {
+                            auto_import = fiefdom.import_settings[res].get<bool>();
                         }
                         if (auto_import) {
                             json price_entry;
-                            if (import_prices.contains(entry.resource)) {
-                                price_entry = import_prices[entry.resource];
-                            }
+                            if (import_prices.contains(res)) price_entry = import_prices[res];
                             if (price_entry.is_object()) {
                                 // Penny market (e.g. grain): imports are paid from
-                                // the silver_pence wallet instead of gold.
-                                int64_t pence_price = money_price_to_pence(price_entry);
-                                if (pence_price > 0 && cur_silver_pence > 0) {
-                                    double affordable = std::min(unmet, std::floor((double)cur_silver_pence / (double)pence_price));
+                                // the fungible silver+gold wallet (gold converts to
+                                // pence at pence_per_gold; silver spent first).
+                                double pence_price = money_price_to_pence(price_entry);
+                                double total_pence = cur_silver_pence + cur_gold * pence_per_gold;
+                                if (pence_price > 0 && total_pence > 0) {
+                                    double affordable = std::min(unmet, std::floor(total_pence / pence_price));
                                     if (affordable >= 1.0) {
-                                        int64_t cost_pence = static_cast<int64_t>(affordable) * pence_price;
-                                        cur_silver_pence -= cost_pence;
-                                        *avail += affordable;
+                                        double cost_pence = affordable * pence_price;
+                                        double from_silver = std::min(cur_silver_pence, cost_pence);
+                                        cur_silver_pence -= from_silver;
+                                        cur_gold -= (cost_pence - from_silver) / pence_per_gold;
+                                        *cur += affordable;
                                         unmet -= affordable;
+                                        supplied += affordable;
                                         import_spend_pence += cost_pence;
-                                        ledger_imported[entry.resource] = ledger_imported.value(entry.resource, 0.0) + affordable;
-                                        ledger_consumed[entry.resource] = ledger_consumed.value(entry.resource, 0.0) + affordable;
-                                        if (entry.is_input) {
-                                            record_supplied(entry, affordable);
-                                        }
+                                        ledger_imported[res] = ledger_imported.value(res, 0.0) + affordable;
+                                        ledger_consumed[res] = ledger_consumed.value(res, 0.0) + affordable;
                                     }
                                 }
                             } else {
@@ -625,29 +586,107 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                                 double affordable = std::min(unmet, std::floor(cur_gold / price));
                                 if (affordable >= 1.0) {
                                     cur_gold -= affordable * price;
-                                    *avail += affordable;
+                                    *cur += affordable;
                                     unmet -= affordable;
+                                    supplied += affordable;
                                     import_spend += affordable * price;
-                                    ledger_imported[entry.resource] = ledger_imported.value(entry.resource, 0.0) + affordable;
-                                    ledger_consumed[entry.resource] = ledger_consumed.value(entry.resource, 0.0) + affordable;
-                                    if (entry.is_input) {
-                                        record_supplied(entry, affordable);
-                                    }
+                                    ledger_imported[res] = ledger_imported.value(res, 0.0) + affordable;
+                                    ledger_consumed[res] = ledger_consumed.value(res, 0.0) + affordable;
                                 }
                             }
                         }
-                        if (unmet > 0.001) {
-                            morale_damage += unmet * unmet_penalty;
+                        if (unmet > 0.001) morale_damage += unmet * unmet_penalty;
+                    }
+                    return supplied;
+                };
+
+                // Building priorities (used as a deterministic tiebreak when
+                // several buildings are ready at the same time).
+                std::map<int, int> building_prio;
+                for (const auto& building : fiefdom.buildings) {
+                    if (building.level <= 0) continue;
+                    json bld_cfg;
+                    for (const auto& obj : building_types) {
+                        if (obj.contains(building.name)) { bld_cfg = obj[building.name]; break; }
+                    }
+                    if (!bld_cfg.is_null()) building_prio[building.id] = bld_cfg.value("priority", default_prio);
+                }
+
+                // Dependency graph over producing buildings. Edge A -> B means A
+                // produces a resource that B consumes as a production input, so A
+                // must run before B. daily_cost / population / combatant upkeep are
+                // NOT edges — they are consumed in the upkeep phase after all
+                // production. Resource flows are acyclic, so a topological order
+                // always exists.
+                std::map<std::string, std::set<int>> producers;
+                for (const auto& [bid, plan] : plans) {
+                    for (const auto& op : plan.outputs) producers[op.resource].insert(bid);
+                }
+                std::map<int, std::set<int>> deps;
+                std::map<int, int> indeg;
+                for (const auto& [bid, plan] : plans) { deps[bid] = {}; indeg[bid] = 0; }
+                for (const auto& [bid, plan] : plans) {
+                    std::set<int> upstream;
+                    for (const auto& op : plan.outputs) {
+                        for (const auto& [res, req] : op.inputs) {
+                            if (req <= 0.001) continue;
+                            auto pit = producers.find(res);
+                            if (pit == producers.end()) continue;
+                            for (int prod : pit->second) if (prod != bid) upstream.insert(prod);
+                        }
+                    }
+                    deps[bid] = upstream;
+                    indeg[bid] = static_cast<int>(upstream.size());
+                }
+
+                // Kahn's topological order with priority (then building id) tiebreak.
+                std::vector<int> order;
+                {
+                    std::set<int> remaining;
+                    for (const auto& [bid, plan] : plans) remaining.insert(bid);
+                    while (!remaining.empty()) {
+                        int chosen = -1;
+                        int chosen_prio = 0;
+                        for (int bid : remaining) {
+                            if (indeg[bid] != 0) continue;
+                            int p = building_prio.count(bid) ? building_prio[bid] : default_prio;
+                            if (chosen == -1 || p < chosen_prio || (p == chosen_prio && bid < chosen)) {
+                                chosen = bid;
+                                chosen_prio = p;
+                            }
+                        }
+                        if (chosen == -1) {
+                            // Cycle (shouldn't happen — resources are acyclic).
+                            // Break to avoid an infinite loop; the remaining
+                            // buildings simply do not produce this tick.
+                            break;
+                        }
+                        order.push_back(chosen);
+                        remaining.erase(chosen);
+                        for (int bid : remaining) {
+                            if (deps[bid].count(chosen)) indeg[bid]--;
                         }
                     }
                 }
 
-                // Apply production gated by each output's own input satisfaction
-                for (auto& [bld_id, plan] : plans) {
-                    for (auto& op : plan.outputs) {
+                // Produce phase: process buildings in dependency order so a
+                // building's inputs are available (from on-hand stock, upstream
+                // production this tick, or imports) before it runs.
+                for (int bid : order) {
+                    auto pit = plans.find(bid);
+                    if (pit == plans.end()) continue;
+                    // Consume production inputs and record what was supplied.
+                    for (auto& op : pit->second.outputs) {
+                        for (const auto& [res, req] : op.inputs) {
+                            if (req <= 0.001) continue;
+                            op.supplied[res] = supply_need(res, req);
+                        }
+                    }
+                    // Produce each output gated by its own input satisfaction.
+                    for (auto& op : pit->second.outputs) {
                         double ratio = 1.0;
                         if (!op.inputs.empty()) {
-                            for (auto& [res, req] : op.inputs) {
+                            for (const auto& [res, req] : op.inputs) {
                                 double supplied = op.supplied.count(res) ? op.supplied[res] : 0.0;
                                 double r = (req > 0) ? std::min(1.0, supplied / req) : 1.0;
                                 ratio = std::min(ratio, r);
@@ -656,21 +695,50 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                         const std::string& res = op.resource;
                         double produced = op.amount * ratio;
                         if (produced <= 0) continue;
-                        if (res == "peasants") {
-                            cur_peasants += static_cast<int>(produced);
-                        } else {
-                            double* target = get_cur(res);
-                            if (target) *target += produced;
-                        }
+                        double* target = get_cur(res);
+                        if (target) *target += produced;
                         ledger_produced[res] = ledger_produced.value(res, 0.0) + produced;
 
                         ProductionUpdate pu;
                         pu.resource_type = res;
                         pu.amount_produced = produced;
                         pu.source_type = "building";
-                        pu.source_id = bld_id;
+                        pu.source_id = bid;
                         pu.fiefdom_id = fiefdom.id;
                         result.productions.push_back(pu);
+                    }
+                }
+
+                // Upkeep phase: consume daily_cost, population costs, and
+                // combatant upkeep from stock AFTER all production, so a
+                // building's own (or any building's) output can feed it today.
+                for (const auto& building : fiefdom.buildings) {
+                    if (building.level <= 0) continue;
+                    json bld_cfg;
+                    for (const auto& obj : building_types) {
+                        if (obj.contains(building.name)) { bld_cfg = obj[building.name]; break; }
+                    }
+                    if (bld_cfg.is_null() || !bld_cfg.contains("daily_cost")) continue;
+                    for (auto& [res, rate] : bld_cfg["daily_cost"].items()) {
+                        supply_need(res, rate.get<double>() * days_elapsed);
+                    }
+                }
+                {
+                    auto& combatant_registry = Combatants::CombatantRegistry::getInstance();
+                    for (const auto& combatant : fiefdom.stationed_combatants) {
+                        auto combatant_opt = combatant_registry.getPlayerCombatant(combatant.combatant_config_id);
+                        if (!combatant_opt) continue;
+                        auto upkeep = (*combatant_opt)->getUpkeep(combatant.level);
+                        if (upkeep.gold > 0) supply_need("gold", upkeep.gold * days_elapsed);
+                        if (upkeep.grain > 0) supply_need("grain", upkeep.grain * days_elapsed);
+                        if (upkeep.wood > 0) supply_need("wood", upkeep.wood * days_elapsed);
+                        if (upkeep.steel > 0) supply_need("steel", upkeep.steel * days_elapsed);
+                        if (upkeep.bronze > 0) supply_need("bronze", upkeep.bronze * days_elapsed);
+                        if (upkeep.stone > 0) supply_need("stone", upkeep.stone * days_elapsed);
+                        if (upkeep.leather > 0) supply_need("leather", upkeep.leather * days_elapsed);
+                        if (upkeep.charcoal > 0) supply_need("charcoal", upkeep.charcoal * days_elapsed);
+                        if (upkeep.iron > 0) supply_need("iron", upkeep.iron * days_elapsed);
+                        if (upkeep.ironwork > 0) supply_need("ironwork", upkeep.ironwork * days_elapsed);
                     }
                 }
 
@@ -679,7 +747,7 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                 // export_sell_multipliers (per-resource ratio) → global
                 // export_sell_multiplier (default 0.5 × import price).
                 {
-                    const std::vector<std::string> sellable = {"grain", "wood", "steel", "bronze", "stone", "leather", "mana", "charcoal", "iron", "ironwork", "fancy_ironwork"};
+                    const std::vector<std::string> sellable = {"grain", "wood", "steel", "bronze", "stone", "leather", "mana", "charcoal", "iron", "ironwork", "fancy_ironwork", "beams", "boards"};
                     for (const auto& res : sellable) {
                         double reserve = 0;
                         if (fiefdom.reserves.is_object() && fiefdom.reserves.contains(res) && fiefdom.reserves[res].is_number()) {
@@ -723,7 +791,7 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                         }
 
                         if (pence_market) {
-                            int64_t pence_earned = static_cast<int64_t>(std::llround(excess * unit_value));
+                            double pence_earned = excess * unit_value;
                             *cur = reserve;
                             cur_silver_pence += pence_earned;
                             export_gain_pence += pence_earned;
@@ -790,11 +858,10 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                 wr("iron", cur_iron);
                 wr("ironwork", cur_ironwork);
                 wr("fancy_ironwork", cur_fancy_ironwork);
+                wr("beams", cur_beams);
+                wr("boards", cur_boards);
                 if (cur_silver_pence < 0) cur_silver_pence = 0;
                 db << "UPDATE fiefdoms SET silver_pence = ? WHERE id = ?;" << cur_silver_pence << fiefdom.id;
-                if (cur_peasants != fiefdom.peasants) {
-                    db << "UPDATE fiefdoms SET peasants = ? WHERE id = ?;" << cur_peasants << fiefdom.id;
-                }
 
                 // Economy report + advisor
                 json report;
@@ -976,7 +1043,8 @@ double getDoubleForLevel(const json& arr, int level, double default_val) {
 
 ModifierMap computeBuildingModifiers(
     const std::vector<BuildingData>& buildings,
-    const json& building_types
+    const json& building_types,
+    const std::unordered_map<int, bool>& water_powered_ok
 ) {
     ModifierMap result;
 
@@ -1000,6 +1068,12 @@ ModifierMap computeBuildingModifiers(
             }
         }
         if (type_config.is_null() || !type_config.contains("modifiers")) continue;
+
+        // Unpowered water-powered sources (e.g. a watermill) contribute no
+        // modifier until their water network is powered.
+        if (type_config.value("water_powered", false) && !water_powered_ok.count(building.id)) {
+            continue;
+        }
 
         auto modifiers = type_config["modifiers"];
         if (!modifiers.is_array()) continue;
@@ -1025,9 +1099,51 @@ ModifierMap computeBuildingModifiers(
         std::string target_building = first_mod["target_building"].get<std::string>();
         std::string target_resource = first_mod["target_resource"].get<std::string>();
 
+        // Chain-aware target resolution: a modifier targeting a building boosts
+        // any building whose stage chain includes the target (a sawyer/hewer
+        // boosts the whole woodcutter chain: woodcutter/coppicer/timber_hauler).
+        auto chain_of = [&](const std::string& name) -> std::vector<std::string> {
+            std::vector<std::string> chain;
+            std::string cur = name;
+            std::unordered_set<std::string> seen;
+            while (!cur.empty() && !seen.count(cur)) {
+                seen.insert(cur);
+                json cfg;
+                for (const auto& obj : building_types) {
+                    if (obj.contains(cur)) { cfg = obj[cur]; break; }
+                }
+                if (cfg.is_null()) break;
+                chain.push_back(cur);
+                std::string from = cfg.value("built_from", "");
+                if (from.empty()) break;
+                cur = from;
+            }
+            std::reverse(chain.begin(), chain.end());
+            return chain;
+        };
+        auto counts_as = [&](const std::string& bname, const std::string& target) -> bool {
+            for (const auto& c : chain_of(bname)) {
+                if (c == target) return true;
+            }
+            // A `class` group is a definitive grouping independent of the
+            // built_from chain (e.g. the "peasant" class covers villein/
+            // freeholder/yeoman; flour_milling targets that class).
+            for (const auto& type_obj : building_types) {
+                if (type_obj.contains(bname)) {
+                    const auto& tc = type_obj[bname];
+                    if (tc.is_object() && tc.contains("class") && tc["class"].is_string() &&
+                        tc["class"].get<std::string>() == target) {
+                        return true;
+                    }
+                    break;
+                }
+            }
+            return false;
+        };
+
         std::vector<int> all_targets;
         for (const auto& building : buildings) {
-            if (building.name == target_building && building.level > 0) {
+            if (building.level > 0 && counts_as(building.name, target_building)) {
                 all_targets.push_back(building.id);
             }
         }
