@@ -1,23 +1,9 @@
 #include "manor/manor_model.hpp"
+#include "money.hpp"
 
 #include <algorithm>
 
 using json = nlohmann::json;
-
-namespace {
-
-// Currency ratio from economy.json (240 pence/gold).
-constexpr double kPencePerGold = 240.0;
-
-// Resolves a money object {"gold": g, "shillings": s, "pence": p} to gold.
-double money_object_to_gold(const json& obj) {
-    double gold = obj.value("gold", 0.0);
-    double shillings = obj.value("shillings", 0.0);
-    double pence = obj.value("pence", 0.0);
-    return gold + shillings / 20.0 + pence / kPencePerGold;
-}
-
-} // namespace
 
 double amount_at_level(const json& amount, int level) {
     if (amount.is_number()) {
@@ -28,7 +14,7 @@ double amount_at_level(const json& amount, int level) {
         if (amount.contains("amount")) {
             return amount_at_level(amount["amount"], level);
         }
-        return money_object_to_gold(amount);
+        return money::money_object_to_gold(amount);
     }
     if (amount.is_array()) {
         if (amount.empty()) {
@@ -79,7 +65,7 @@ double building_type::cost(const std::string& resource) const {
         return amount_at_level(c, 1);
     }
     if (c.is_object()) {
-        return money_object_to_gold(c);
+        return money::money_object_to_gold(c);
     }
     return 0.0;
 }
@@ -102,7 +88,7 @@ double building_type::cost_at(const std::string& resource, int level) const {
         return 0.0;
     }
     if (c.is_object()) {
-        return money_object_to_gold(c);
+        return money::money_object_to_gold(c);
     }
     return 0.0;
 }
@@ -110,8 +96,8 @@ double building_type::cost_at(const std::string& resource, int level) const {
 double building_type::gold_normalized_cost(
     const std::unordered_map<std::string, double>& import_prices_gold) const {
     static const char* resources[] = {
-        "gold", "wood", "steel", "bronze", "grain", "leather", "mana",
-        "charcoal", "iron", "ironwork", "fancy_ironwork", "beams", "boards",
+        "gold", "silver_pence", "wood", "steel", "bronze", "grain", "leather",
+        "mana", "charcoal", "iron", "ironwork", "fancy_ironwork", "beams", "boards",
     };
     double total = 0.0;
     for (const char* res : resources) {
@@ -121,6 +107,11 @@ double building_type::gold_normalized_cost(
         }
         if (std::string(res) == "gold") {
             total += amount;
+            continue;
+        }
+        if (std::string(res) == "silver_pence") {
+            // Silver pence is the currency itself: 240 pence = 1 gold.
+            total += amount / money::pence_per_gold;
             continue;
         }
         // Penny-market resources pay in silver_pence; convert at the gold rate

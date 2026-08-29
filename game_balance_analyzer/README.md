@@ -305,18 +305,22 @@ assuming **all inputs and maintenance costs are imported** (nothing is supplied
 locally). It answers "what is this building worth per day if I buy everything
 and sell what it makes?".
 
-For each building × level it reports, in **gold** and **silver pence** (penny
-market vs gold market, at 240 pence/gold):
+For each building × level it reports a single combined **medieval money** value
+for every field (gold pieces, shillings, pence — `money::format_money`), because
+gold and silver_pence are fungible at 240 pence/gold (see `src/money.hpp`, which
+mirrors the server's `Money.hpp` conventions). The line is **net-first**:
 
-1. **Gross (saleable surplus)** — production beyond what the building consumes
+1. **Net** — gross − inputs − external upkeep, as one monetary unit. This is the
+   same gold-equivalent value the payback divides by, so `payback` reads
+   directly.
+2. **Gross (saleable surplus)** — production beyond what the building consumes
    for its own upkeep, valued at **export price**. Production is calculated
    before daily costs, so a building's own output first covers its own
    `daily_cost` (that portion nets to zero).
-2. **− Input cost** — production inputs at **import price**. Inputs gate
+3. **Input cost** — production inputs at **import price**. Inputs gate
    production: importing them enables full output.
-3. **− Upkeep (external daily cost)** — the `daily_cost` **not** covered by the
+4. **Upkeep (external daily cost)** — the `daily_cost` **not** covered by the
    building's own production, at **import price**.
-4. **Net** = gross − inputs − external upkeep.
 5. **Build cost** (separate) — cumulative gold-normalized cost to reach the
    level, and **payback days** = build cost / net (gold equivalent); "never"
    when net ≤ 0.

@@ -1,5 +1,6 @@
 #include "manor/network.hpp"
 #include "fmt.hpp"
+#include "money.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -14,8 +15,6 @@
 using json = nlohmann::json;
 
 namespace {
-
-constexpr double kPencePerGold = 240.0;
 
 // The production-network report is a steady-state model: it treats the manor
 // house as always present at full expansion, and its arable/forest land totals
@@ -474,9 +473,7 @@ std::string manor_network_analyzer::choose_anchor(
             if (it.value().is_number()) {
                 import_prices_gold[it.key()] = it.value().get<double>();
             } else if (it.value().is_object()) {
-                import_prices_gold[it.key()] = it.value().value("gold", 0.0)
-                                               + it.value().value("shillings", 0.0) / 20.0
-                                               + it.value().value("pence", 0.0) / 240.0;
+                import_prices_gold[it.key()] = money::money_object_to_gold(it.value());
             }
         }
     }
@@ -570,7 +567,7 @@ network_stage manor_network_analyzer::analyze_stage(int s) const {
                 double price = economy_.import_price_gold(res);
                 double value_gold = -net * price;
                 if (economy_.is_penny_market(res)) {
-                    sc.net_silver_per_day -= value_gold * kPencePerGold;
+                    sc.net_silver_per_day -= value_gold * money::pence_per_gold;
                 } else {
                     sc.net_gold_per_day -= value_gold;
                 }
@@ -579,13 +576,13 @@ network_stage manor_network_analyzer::analyze_stage(int s) const {
             double price = economy_.export_price_gold(res);
             double value_gold = net * price;
             if (economy_.is_penny_market(res)) {
-                sc.net_silver_per_day += value_gold * kPencePerGold;
+                sc.net_silver_per_day += value_gold * money::pence_per_gold;
             } else {
                 sc.net_gold_per_day += value_gold;
             }
         }
         // Net gold includes the silver-pence income converted to gold.
-        sc.net_gold_per_day += sc.net_silver_per_day / kPencePerGold;
+        sc.net_gold_per_day += sc.net_silver_per_day / money::pence_per_gold;
 
         // Total build cost per resource across the scaled set.
         static const char* build_resources[] = {
@@ -737,7 +734,8 @@ std::string manor_network_analyzer::render(
             out << "\n";
             out << "    net gold/day: " << fmt(sc.net_gold_per_day);
             if (sc.net_silver_per_day != 0.0) {
-                out << "  (+" << fmt(sc.net_silver_per_day) << " pence from penny-market exports)";
+                out << "  (+" << money::format_pence(sc.net_silver_per_day)
+                    << " from penny-market exports)";
             }
             out << "\n";
             out << "    arable land: " << fmt(sc.arable_acres) << " / "

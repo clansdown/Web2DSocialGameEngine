@@ -29,8 +29,9 @@ public:
     double cost_at(const std::string& resource, int level) const;
 
     // Total level-1 build cost normalized to gold using the given import prices.
-    // Penny-market resources (those with money-object import prices) are
-    // converted through the gold<->silver_pence rate.
+    // Gold adds directly; silver_pence converts at 240 pence/gold; penny-market
+    // resources (those with money-object import prices) convert through the
+    // gold<->silver_pence rate.
     double gold_normalized_cost(const std::unordered_map<std::string, double>& import_prices_gold) const;
 
     // Returns the production amount for the given resource at the given level.

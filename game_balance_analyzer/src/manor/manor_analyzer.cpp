@@ -1,5 +1,6 @@
 #include "manor/manor_analyzer.hpp"
 #include "fmt.hpp"
+#include "money.hpp"
 
 #include <algorithm>
 #include <unordered_map>
@@ -37,8 +38,7 @@ double export_price_gold(const std::string& res,
             return e.get<double>();
         }
         if (e.is_object()) {
-            return e.value("gold", 0.0) + e.value("shillings", 0.0) / 20.0
-                   + e.value("pence", 0.0) / 240.0;
+            return money::money_object_to_gold(e);
         }
     }
     double import = import_price_gold(res, import_prices_gold);
@@ -67,10 +67,7 @@ balance_report manor_analyzer::analyze() const {
             if (it.value().is_number()) {
                 import_prices_gold[it.key()] = it.value().get<double>();
             } else if (it.value().is_object()) {
-                double g = it.value().value("gold", 0.0);
-                double s = it.value().value("shillings", 0.0);
-                double p = it.value().value("pence", 0.0);
-                import_prices_gold[it.key()] = g + s / 20.0 + p / 240.0;
+                import_prices_gold[it.key()] = money::money_object_to_gold(it.value());
             }
         }
     }
@@ -129,7 +126,7 @@ balance_report manor_analyzer::analyze() const {
         det << "gold_cost=" << fmt(e.cost)
             << " daily_net(import)=" << fmt(e.daily_net_import)
             << " daily_net(export)=" << fmt(e.daily_net)
-            << " payback=" << (e.daily_net_import > 0.0 ? fmt(e.payback_days) : "inf") << "d";
+            << " payback=" << (e.daily_net_import > 0.0 ? fmt(e.payback_days) + "d" : "inf");
         report.add_info("Building " + b.id(), det.str(), b.id());
     }
 
@@ -163,15 +160,13 @@ balance_report manor_analyzer::analyze() const {
         if (it.value().is_number()) {
             import = it.value().get<double>();
         } else if (it.value().is_object()) {
-            import = it.value().value("gold", 0.0) + it.value().value("shillings", 0.0) / 20.0
-                     + it.value().value("pence", 0.0) / 240.0;
+            import = money::money_object_to_gold(it.value());
         }
         double export_price = 0.0;
         if (exports.is_object() && exports.contains(res)) {
             const auto& e = exports[res];
             export_price = e.is_number() ? e.get<double>()
-                                         : e.value("gold", 0.0) + e.value("shillings", 0.0) / 20.0
-                                               + e.value("pence", 0.0) / 240.0;
+                                         : money::money_object_to_gold(e);
         } else if (sell_mults.is_object() && sell_mults.contains(res)) {
             export_price = sell_mults[res].get<double>() * import;
         } else {

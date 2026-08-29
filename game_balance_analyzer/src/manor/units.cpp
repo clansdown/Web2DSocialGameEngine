@@ -1,5 +1,6 @@
 #include "manor/units.hpp"
 #include "fmt.hpp"
+#include "money.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -10,41 +11,8 @@ using json = nlohmann::json;
 
 namespace {
 
-constexpr double kPencePerGold = 240.0;
-
 // Shared number formatting (comma-grouped, never scientific).
 std::string fmt(double v) { return nfmt::format_number(v); }
-
-// Gold value of a money object {gold, shillings, pence}.
-double money_object_to_gold(const json& obj) {
-    return obj.value("gold", 0.0) + obj.value("shillings", 0.0) / 20.0
-           + obj.value("pence", 0.0) / kPencePerGold;
-}
-
-// Formats a silver-pence value compactly as shillings and pence
-// (12 pence/shillng, 20 shillings/pound, 240 pence/gold), e.g. 208 -> "17s 4d",
-// 12 -> "1s", 6 -> "6d", 0 -> "0s". Negatives get a "-" prefix.
-std::string fmt_silver(double pence) {
-    if (pence == 0.0) {
-        return "0s";
-    }
-    bool neg = pence < 0.0;
-    long long p = std::llround(std::fabs(pence));
-    long long sh = p / 12;
-    long long d = p % 12;
-    std::string out;
-    if (neg) {
-        out += "-";
-    }
-    if (sh > 0 && d > 0) {
-        out += nfmt::format_int(sh) + "s " + nfmt::format_int(d) + "d";
-    } else if (sh > 0) {
-        out += nfmt::format_int(sh) + "s";
-    } else {
-        out += nfmt::format_int(d) + "d";
-    }
-    return out;
-}
 
 }  // namespace
 
@@ -59,7 +27,7 @@ manor_units_analyzer::manor_units_analyzer(const config_loader& loader)
             if (it.value().is_number()) {
                 import_prices_gold_[it.key()] = it.value().get<double>();
             } else if (it.value().is_object()) {
-                import_prices_gold_[it.key()] = money_object_to_gold(it.value());
+                import_prices_gold_[it.key()] = money::money_object_to_gold(it.value());
             }
         }
     }
@@ -74,7 +42,7 @@ double manor_units_analyzer::export_price_gold(const std::string& res) const {
     const auto& exports = economy_.value("export_prices", json::object());
     if (exports.is_object() && exports.contains(res)) {
         const auto& e = exports[res];
-        return e.is_number() ? e.get<double>() : money_object_to_gold(e);
+        return e.is_number() ? e.get<double>() : money::money_object_to_gold(e);
     }
     double import = import_price_gold(res);
     const auto& mults = economy_.value("export_sell_multipliers", json::object());
@@ -98,7 +66,7 @@ std::pair<double, double> manor_units_analyzer::split_value(
         return {0.0, amount};
     }
     if (is_penny_market(res)) {
-        return {0.0, amount * price_gold * kPencePerGold};
+        return {0.0, amount * price_gold * money::pence_per_gold};
     }
     return {amount * price_gold, 0.0};
 }
@@ -133,7 +101,7 @@ double manor_units_analyzer::cumulative_build_cost(const building_type& b,
         if (std::string(rn) == "gold") {
             total += amount;
         } else if (std::string(rn) == "silver_pence") {
-            total += amount / kPencePerGold;
+            total += amount / money::pence_per_gold;
         } else {
             total += amount * import_price_gold(rn);
         }
@@ -216,7 +184,7 @@ std::vector<unit_building> manor_units_analyzer::analyze() const {
             r.net_silver = r.gross_silver - r.input_silver - r.cost_silver;
             r.build_cost_gold = cumulative_build_cost(b, level);
 
-            double net_equiv = r.net_gold + r.net_silver / kPencePerGold;
+            double net_equiv = r.net_gold + r.net_silver / money::pence_per_gold;
             if (net_equiv > 0.0 && r.build_cost_gold > 0.0) {
                 r.payback_days = r.build_cost_gold / net_equiv;
             } else {
@@ -248,13 +216,13 @@ std::string manor_units_analyzer::render(
         out << "\n" << ub.building_id << "  (" << ub.display_name << ")\n";
         for (const auto& r : ub.levels) {
             out << "  L=" << nfmt::format_int(r.level)
-                << "  gross(g=" << fmt(r.gross_gold) << ",s=" << fmt_silver(r.gross_silver) << ")"
-                << "  input(g=" << fmt(r.input_gold) << ",s=" << fmt_silver(r.input_silver) << ")"
-                << "  upkeep(g=" << fmt(r.cost_gold) << ",s=" << fmt_silver(r.cost_silver) << ")"
-                << "  net(g=" << fmt(r.net_gold) << ",s=" << fmt_silver(r.net_silver) << ")"
-                << "  build=" << fmt(r.build_cost_gold) << "g"
-                << "  payback=" << (r.payback_days >= 0.0 ? fmt(r.payback_days) : "never")
-                << "d\n";
+                << "  net=" << money::format_money(r.net_gold, r.net_silver)
+                << "  gross=" << money::format_money(r.gross_gold, r.gross_silver)
+                << "  input=" << money::format_money(r.input_gold, r.input_silver)
+                << "  upkeep=" << money::format_money(r.cost_gold, r.cost_silver)
+                << "  build=" << money::format_money(r.build_cost_gold)
+                << "  payback=" << (r.payback_days >= 0.0 ? fmt(r.payback_days) + "d" : "never")
+                << "\n";
         }
     }
 

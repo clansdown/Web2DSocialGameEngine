@@ -1,5 +1,6 @@
 #include "manor/manor_strategy.hpp"
 #include "fmt.hpp"
+#include "money.hpp"
 
 #include <algorithm>
 #include <initializer_list>
@@ -11,8 +12,6 @@
 using json = nlohmann::json;
 
 namespace {
-
-constexpr double kPencePerGold = 240.0;
 
 // Compact double formatting (comma-grouped, never scientific).
 std::string fmt(double v) { return nfmt::format_number(v); }
@@ -262,16 +261,16 @@ bool manor_strategy_sim::is_affordable(
             continue;
         }
         if (economy_.is_penny_market(res)) {
-            double pence_per_unit = economy_.import_price_gold(res) * kPencePerGold;
+            double pence_per_unit = economy_.import_price_gold(res) * money::pence_per_gold;
             silver_demand += shortfall * pence_per_unit;
         } else {
             gold_demand += shortfall * economy_.import_price_gold(res);
         }
     }
     // Money is fungible: gold and silver_pence are one wallet at the standard
-    // rate (kPencePerGold pence/gold). Affordable iff the total demand in
+    // rate (money::pence_per_gold). Affordable iff the total demand in
     // gold-equivalent fits within the total liquid wealth.
-    double total_gold_demand = gold_demand + silver_demand / kPencePerGold;
+    double total_gold_demand = gold_demand + silver_demand / money::pence_per_gold;
     return total_gold_demand <= state.total_gold_equivalent() + 1e-9;
 }
 
@@ -304,7 +303,7 @@ void manor_strategy_sim::spend_costs(
     const std::vector<std::pair<std::string, double>>& costs,
     resource_state& state) const {
     // Money is fungible: gold and silver_pence are one wallet at the standard
-    // rate (kPencePerGold pence/gold). These helpers pay a cost in the given
+    // rate (money::pence_per_gold). These helpers pay a cost in the given
     // currency, converting from the other on shortfall.
     auto spend_gold = [&](double gold_cost) {
         if (gold_cost <= 0.0) return;
@@ -314,7 +313,7 @@ void manor_strategy_sim::spend_costs(
         }
         double shortfall = gold_cost - state.gold();
         state.set("gold", 0.0);
-        state.add("silver_pence", -shortfall * kPencePerGold);
+        state.add("silver_pence", -shortfall * money::pence_per_gold);
     };
     auto spend_silver = [&](double pence_cost) {
         if (pence_cost <= 0.0) return;
@@ -324,7 +323,7 @@ void manor_strategy_sim::spend_costs(
         }
         double shortfall = pence_cost - state.silver_pence();
         state.set("silver_pence", 0.0);
-        state.add("gold", -shortfall / kPencePerGold);
+        state.add("gold", -shortfall / money::pence_per_gold);
     };
 
     for (const auto& [res, cost] : costs) {
@@ -348,7 +347,7 @@ void manor_strategy_sim::spend_costs(
             continue;
         }
         if (economy_.is_penny_market(res)) {
-            double pence_per_unit = economy_.import_price_gold(res) * kPencePerGold;
+            double pence_per_unit = economy_.import_price_gold(res) * money::pence_per_gold;
             spend_silver(shortfall * pence_per_unit);
         } else {
             spend_gold(shortfall * economy_.import_price_gold(res));
@@ -562,9 +561,7 @@ manor_sim_outcome manor_strategy_sim::evaluate(const std::string& label,
             if (it.value().is_number()) {
                 import_prices_gold[it.key()] = it.value().get<double>();
             } else if (it.value().is_object()) {
-                import_prices_gold[it.key()] = it.value().value("gold", 0.0)
-                                               + it.value().value("shillings", 0.0) / 20.0
-                                               + it.value().value("pence", 0.0) / 240.0;
+                import_prices_gold[it.key()] = money::money_object_to_gold(it.value());
             }
         }
     }
@@ -707,7 +704,7 @@ std::string manor_strategy_sim::render(
         const auto& o = sorted[i];
         out << "  #" << (i + 1) << " " << o.label
             << "  score=" << fmt(o.score)
-            << " (gold=" << fmt(o.net_gold) << ", silver=" << fmt(o.net_silver)
+            << " (money=" << money::format_money(o.net_gold, o.net_silver)
             << ", buildings=" << nfmt::format_int(static_cast<long long>(o.buildings.size())) << ")\n";
     }
 

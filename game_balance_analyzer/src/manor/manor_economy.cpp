@@ -1,4 +1,5 @@
 #include "manor/manor_economy.hpp"
+#include "money.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -8,33 +9,6 @@
 #include <tuple>
 
 using json = nlohmann::json;
-
-namespace {
-
-constexpr double kPencePerGold = 240.0;
-
-double money_object_to_gold(const json& obj) {
-    double gold = obj.value("gold", 0.0);
-    double shillings = obj.value("shillings", 0.0);
-    double pence = obj.value("pence", 0.0);
-    return gold + shillings / 20.0 + pence / kPencePerGold;
-}
-
-// Converts a money object {gold, shillings, pence} to a pence price,
-// mirroring the server's money_price_to_pence (12 pence/shillng,
-// 20 shillings/pound, 240 pence/gold). Fractional pence (e.g. 0.5) are
-// preserved so half-penny prices work. Returns 0 on malformed input.
-double money_price_to_pence(const json& obj) {
-    if (!obj.is_object()) {
-        return 0.0;
-    }
-    double gold = obj.value("gold", 0.0);
-    double shillings = obj.value("shillings", 0.0);
-    double pence = obj.value("pence", 0.0);
-    return gold * 240.0 + shillings * 12.0 + pence;
-}
-
-} // namespace
 
 double resource_state::get(const std::string& resource) const {
     auto it = data_.find(resource);
@@ -50,7 +24,7 @@ void resource_state::add(const std::string& resource, double delta) {
 }
 
 double resource_state::total_gold_equivalent() const {
-    return get("gold") + get("silver_pence") / kPencePerGold;
+    return get("gold") + get("silver_pence") / money::pence_per_gold;
 }
 
 manor_economy::manor_economy(const building_registry& registry,
@@ -66,7 +40,7 @@ double manor_economy::import_price_gold(const std::string& resource) const {
                 return p.get<double>();
             }
             if (p.is_object()) {
-                return money_object_to_gold(p);
+                return money::money_object_to_gold(p);
             }
         }
     }
@@ -82,7 +56,7 @@ double manor_economy::export_price_gold(const std::string& resource) const {
                 return p.get<double>();
             }
             if (p.is_object()) {
-                return money_object_to_gold(p);
+                return money::money_object_to_gold(p);
             }
         }
     }
@@ -325,11 +299,11 @@ economy_day_result manor_economy::run_day(
                 if (affordable >= 1) {
                     if (price.is_object()) {
                         // Penny market: pay from the fungible silver+gold wallet
-                        // (gold converts to pence at kPencePerGold; silver first).
-                        int64_t pence_price = money_price_to_pence(price);
+                        // (gold converts to pence at money::pence_per_gold; silver first).
+                        int64_t pence_price = money::money_price_to_pence(price);
                         if (pence_price > 0) {
                             double silver = state.get("silver_pence");
-                            double total_pence = silver + state.get("gold") * kPencePerGold;
+                            double total_pence = silver + state.get("gold") * money::pence_per_gold;
                             int64_t units = static_cast<int64_t>(
                                 std::floor(total_pence / static_cast<double>(pence_price)));
                             units = std::min(units, affordable);
@@ -337,7 +311,7 @@ economy_day_result manor_economy::run_day(
                                 double cost_pence = static_cast<double>(units * pence_price);
                                 double from_silver = std::min(silver, cost_pence);
                                 state.add("silver_pence", -from_silver);
-                                state.add("gold", -(cost_pence - from_silver) / kPencePerGold);
+                                state.add("gold", -(cost_pence - from_silver) / money::pence_per_gold);
                                 state.add(res, static_cast<double>(units));
                                 supplied += static_cast<double>(units);
                                 unmet -= static_cast<double>(units);
@@ -547,7 +521,7 @@ economy_day_result manor_economy::run_day(
             const auto& ep = exports[res];
             if (ep.is_object()) {
                 pence_market = true;
-                unit_value = static_cast<double>(money_price_to_pence(ep));
+                unit_value = static_cast<double>(money::money_price_to_pence(ep));
             } else {
                 pence_market = false;
                 unit_value = ep.get<double>();
@@ -560,7 +534,7 @@ economy_day_result manor_economy::run_day(
             }
             double import = import_price_gold(res);
             if (pence_market) {
-                unit_value = static_cast<double>(money_price_to_pence(economy_.value("import_prices", json::object()).value(res, json::object()))) * ratio;
+                unit_value = static_cast<double>(money::money_price_to_pence(economy_.value("import_prices", json::object()).value(res, json::object()))) * ratio;
             } else {
                 unit_value = import * ratio;
             }
@@ -572,7 +546,7 @@ economy_day_result manor_economy::run_day(
             // Fractional pence are preserved (e.g. boards sell at 0.5d each).
             double pence_earned = excess * unit_value;
             state.add("silver_pence", pence_earned);
-            result.sale_gold[res] = pence_earned / kPencePerGold;
+            result.sale_gold[res] = pence_earned / money::pence_per_gold;
         } else {
             double sale_gold = excess * unit_value;
             state.add("gold", sale_gold);
@@ -584,7 +558,7 @@ economy_day_result manor_economy::run_day(
     // commodity resource (imports count as consumption, so a resource bought
     // via imports more than produced shows a negative net). Currency is
     // normalized to a single decimal-gold figure: the day's net change in gold
-    // plus the silver_pence change converted at kPencePerGold.
+    // plus the silver_pence change converted at money::pence_per_gold.
     result.net = resource_state();
     static const char* all_resources[] = {
         "gold", "silver_pence", "grain", "wood", "steel", "bronze",
@@ -599,7 +573,7 @@ economy_day_result manor_economy::run_day(
     }
     result.net.set("gold", (state.get("gold") - start.get("gold"))
                                + (state.get("silver_pence") - start.get("silver_pence"))
-                                     / kPencePerGold);
+                                     / money::pence_per_gold);
     result.net.set("silver_pence", 0.0);
 
     return result;
