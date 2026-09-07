@@ -794,7 +794,11 @@ The optional `daily_cost` and `priority` fields define a building's ongoing reso
 
 The Peasant Cottage produces **74 grain/day** and costs **36 grain/day** in
 upkeep (its household's food), for a net food surplus of 38 grain/day once
-populated, plus **1 ironwork/day** for its tools. Grain is a penny-market
+populated, plus **1 ironwork/day** for its tools. Its successors `freeholder`
+and `yeoman` each produce **40 grain/day** (enough to cover their own
+36 grain/day food cost, leaving a +4 surplus) in addition to their gold
+output, so their net contribution to the manor is money plus a little extra
+food. Grain is a penny-market
 resource (`economy.json import_prices.grain` is a money object), so imports are
 paid in silver pence and surplus grain auto-sells for 6 pence each (50% of the
 1-shilling import price).
