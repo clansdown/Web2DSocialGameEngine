@@ -67,6 +67,13 @@ public:
     // Casualty records for persistence (any thread; called after battle ends).
     std::vector<casualty_record> casualties_snapshot() const;
 
+    // The ruleset's death-handling mode: "permanent" | "wounded" |
+    // "respawn_after_seconds" | "revive_resource".
+    std::string death_handling() const { return death_handling_; }
+
+    // The winning team id, or -1 if the match ended without a winner.
+    int winner_team() const { return winner_team_.load(); }
+
     int64_t ended_at_seconds() const { return ended_at_.load(); }
 
 private:

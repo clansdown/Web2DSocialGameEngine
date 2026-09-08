@@ -243,6 +243,71 @@ ApiResponse handleGetRetinue(GameConfigCache& config_cache, const nlohmann::json
                              const ClientInfo& client,
                              const std::optional<std::string>& new_token);
 
+ApiResponse handleListRecruitCandidates(GameConfigCache& config_cache, const nlohmann::json& body,
+                                        const std::optional<std::string>& username,
+                                        const ClientInfo& client,
+                                        const std::optional<std::string>& new_token);
+
+ApiResponse handleHireRecruit(GameConfigCache& config_cache, const nlohmann::json& body,
+                              const std::optional<std::string>& username,
+                              const ClientInfo& client,
+                              const std::optional<std::string>& new_token);
+
+ApiResponse handleSetRetinuePriority(GameConfigCache& config_cache, const nlohmann::json& body,
+                                     const std::optional<std::string>& username,
+                                     const ClientInfo& client,
+                                     const std::optional<std::string>& new_token);
+
+ApiResponse handleGetTechTrees(GameConfigCache& config_cache, const nlohmann::json& body,
+                               const std::optional<std::string>& username,
+                               const ClientInfo& client,
+                               const std::optional<std::string>& new_token);
+
+ApiResponse handleLearnTechNode(GameConfigCache& config_cache, const nlohmann::json& body,
+                                const std::optional<std::string>& username,
+                                const ClientInfo& client,
+                                const std::optional<std::string>& new_token);
+
+ApiResponse handleStartForgeOrder(GameConfigCache& config_cache, const nlohmann::json& body,
+                                  const std::optional<std::string>& username,
+                                  const ClientInfo& client,
+                                  const std::optional<std::string>& new_token);
+
+ApiResponse handleGetRetinueGear(GameConfigCache& config_cache, const nlohmann::json& body,
+                                 const std::optional<std::string>& username,
+                                 const ClientInfo& client,
+                                 const std::optional<std::string>& new_token);
+
+ApiResponse handleEquipGear(GameConfigCache& config_cache, const nlohmann::json& body,
+                            const std::optional<std::string>& username,
+                            const ClientInfo& client,
+                            const std::optional<std::string>& new_token);
+
+ApiResponse handleDeassignGear(GameConfigCache& config_cache, const nlohmann::json& body,
+                               const std::optional<std::string>& username,
+                               const ClientInfo& client,
+                               const std::optional<std::string>& new_token);
+
+ApiResponse handleSellItem(GameConfigCache& config_cache, const nlohmann::json& body,
+                           const std::optional<std::string>& username,
+                           const ClientInfo& client,
+                           const std::optional<std::string>& new_token);
+
+ApiResponse handleBuyGearCity(GameConfigCache& config_cache, const nlohmann::json& body,
+                              const std::optional<std::string>& username,
+                              const ClientInfo& client,
+                              const std::optional<std::string>& new_token);
+
+ApiResponse handleHireTeacher(GameConfigCache& config_cache, const nlohmann::json& body,
+                              const std::optional<std::string>& username,
+                              const ClientInfo& client,
+                              const std::optional<std::string>& new_token);
+
+ApiResponse handleApplyBookItem(GameConfigCache& config_cache, const nlohmann::json& body,
+                                const std::optional<std::string>& username,
+                                const ClientInfo& client,
+                                const std::optional<std::string>& new_token);
+
 inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfigCache& config_cache) {
     using Json = const nlohmann::json&;
     using Username = const std::optional<std::string>&;
@@ -291,5 +356,18 @@ inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfi
     add("combatMatchmaking",     [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleCombatMatchmaking(c, b, u, cl, t); });
     add("combatGetConfigs",      [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleCombatGetConfigs(c, b, u, cl, t); });
     add("getRetinue",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetRetinue(c, b, u, cl, t); });
+    add("listRecruitCandidates", [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleListRecruitCandidates(c, b, u, cl, t); });
+    add("hireRecruit",           [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleHireRecruit(c, b, u, cl, t); });
+    add("setRetinuePriority",    [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSetRetinuePriority(c, b, u, cl, t); });
+    add("getTechTrees",           [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetTechTrees(c, b, u, cl, t); });
+    add("learnTechNode",          [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleLearnTechNode(c, b, u, cl, t); });
+    add("startForgeOrder",        [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleStartForgeOrder(c, b, u, cl, t); });
+    add("getRetinueGear",         [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetRetinueGear(c, b, u, cl, t); });
+    add("equipGear",              [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleEquipGear(c, b, u, cl, t); });
+    add("deassignGear",           [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleDeassignGear(c, b, u, cl, t); });
+    add("sellItem",               [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSellItem(c, b, u, cl, t); });
+    add("buyGearCity",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleBuyGearCity(c, b, u, cl, t); });
+    add("hireTeacher",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleHireTeacher(c, b, u, cl, t); });
+    add("applyBookItem",          [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleApplyBookItem(c, b, u, cl, t); });
     return handlers;
 }

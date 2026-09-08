@@ -1,8 +1,5 @@
 #include "MoraleCalculator.hpp"
 #include "GameConfigCache.hpp"
-#include "heroes.hpp"
-#include "combatants.hpp"
-#include "fiefdom_officials.hpp"
 #include <algorithm>
 #include <cmath>
 #include <queue>
@@ -33,144 +30,6 @@ static bool roadCellAdjacentToRect(int rx, int ry, int x, int y, int w, int h) {
         return (rx >= x && rx < x + w);
     }
     return false;
-}
-
-EffectMode parseMode(const std::string& mode_str) {
-    if (mode_str == "add") return EffectMode::Add;
-    if (mode_str == "max") return EffectMode::Max;
-    if (mode_str == "multiply") return EffectMode::Multiply;
-    return EffectMode::Add;
-}
-
-double clampMorale(double value) {
-    if (value < -1000.0) return -1000.0;
-    if (value > 1000.0) return 1000.0;
-    return value;
-}
-
-double calculateBuildingMorale(
-    const std::string& building_name,
-    int building_count,
-    const nlohmann::json& building_config
-) {
-    if (!building_config.contains("morale_boost") || building_count == 0) {
-        return 0.0;
-    }
-
-    double boost = building_config["morale_boost"].get<double>();
-    std::string mode_str = building_config.value("morale_effect_mode", "add");
-    EffectMode mode = parseMode(mode_str);
-
-    switch (mode) {
-        case EffectMode::Add:
-            return boost * building_count;
-        case EffectMode::Max:
-            return boost;
-        case EffectMode::Multiply: {
-            double result = 1.0;
-            for (int i = 0; i < building_count; i++) {
-                result *= boost;
-            }
-            return result;
-        }
-    }
-}
-
-double calculateWallMorale(GameConfigCache& cache, const std::vector<WallData>& walls) {
-    double total_wall_morale = 0.0;
-
-    for (const auto& wall : walls) {
-        if (wall.level <= 0) continue;
-
-        auto config = cache.getAllConfigs();
-
-        if (config.contains("wall_config") && config["wall_config"].is_object()) {
-            auto wall_config = config["wall_config"];
-            if (wall_config.contains("walls") && wall_config["walls"].is_object()) {
-                auto walls_obj = wall_config["walls"];
-                std::string gen_key = std::to_string(wall.generation);
-                if (walls_obj.contains(gen_key)) {
-                    auto gen_config = walls_obj[gen_key];
-                    if (gen_config.contains("morale_boost") && gen_config["morale_boost"].is_array()) {
-                        auto morale_array = gen_config["morale_boost"];
-                        int idx = std::min(wall.level - 1, static_cast<int>(morale_array.size()) - 1);
-                        if (idx >= 0) {
-                            total_wall_morale += morale_array[idx].get<double>();
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    return total_wall_morale;
-}
-
-double calculateFiefdomMorale(
-    GameConfigCache& cache,
-    int fiefdom_id,
-    const std::vector<BuildingData>& buildings,
-    const std::vector<WallData>& walls,
-    const std::vector<OfficialData>& officials,
-    const std::vector<FiefdomHero>& heroes,
-    const std::vector<StationedCombatant>& combatants
-) {
-    double total_morale = 0.0;
-
-    auto& hero_registry = Heroes::HeroRegistry::getInstance();
-    auto& combatant_registry = Combatants::CombatantRegistry::getInstance();
-    auto& official_registry = Officials::OfficialRegistry::getInstance();
-
-    nlohmann::json building_types = cache.getFiefdomBuildingTypes();
-
-    std::unordered_map<std::string, int> building_counts;
-    for (const auto& building : buildings) {
-        building_counts[building.name]++;
-    }
-
-    for (const auto& [name, count] : building_counts) {
-        for (const auto& type_obj : building_types) {
-            if (type_obj.contains(name)) {
-                nlohmann::json type_config = type_obj[name];
-                total_morale += calculateBuildingMorale(name, count, type_config);
-                break;
-            }
-        }
-    }
-
-    total_morale += calculateWallMorale(cache, walls);
-
-    for (const auto& official : officials) {
-        auto official_opt = official_registry.getOfficial(official.template_id);
-        if (official_opt && !(*official_opt)->morale_boost.empty() && official.level > 0) {
-            int idx = std::min(official.level - 1, static_cast<int>((*official_opt)->morale_boost.size()) - 1);
-            if (idx >= 0) {
-                total_morale += (*official_opt)->morale_boost[idx];
-            }
-        }
-    }
-
-    for (const auto& hero : heroes) {
-        auto hero_opt = hero_registry.getHero(hero.hero_config_id);
-        if (hero_opt && !(*hero_opt)->morale_boost.empty() && hero.level > 0) {
-            int idx = std::min(hero.level - 1, static_cast<int>((*hero_opt)->morale_boost.size()) - 1);
-            if (idx >= 0) {
-                total_morale += (*hero_opt)->morale_boost[idx];
-            }
-        }
-    }
-
-    for (const auto& combatant : combatants) {
-        auto combatant_opt = combatant_registry.getPlayerCombatant(combatant.combatant_config_id);
-        if (combatant_opt && !(*combatant_opt)->morale_boost.empty() && combatant.level > 0) {
-            int idx = std::min(combatant.level - 1, static_cast<int>((*combatant_opt)->morale_boost.size()) - 1);
-            if (idx >= 0) {
-                total_morale += (*combatant_opt)->morale_boost[idx];
-            }
-        }
-    }
-
-    return clampMorale(total_morale);
 }
 
 // Builds a set of all road cells (orthogonally-connected 1x1 road tiles) from
@@ -277,6 +136,62 @@ std::unordered_map<int, double> computeRoadMoralePoints(
     }
 
     return morale_points;
+}
+
+household_morale_result computeHouseholdMorale(
+    const nlohmann::json& building_types,
+    const nlohmann::json& retinue_config,
+    const std::vector<BuildingData>& buildings,
+    int funded, int unfunded,
+    int64_t now, int64_t last_victory_ts, int64_t last_defeat_ts)
+{
+    household_morale_result result;
+
+    const nlohmann::json morale_cfg = retinue_config.value("morale", nlohmann::json::object());
+    const double funded_bonus = morale_cfg.value("funded_member_bonus", 1.0);
+    const double unfunded_penalty = morale_cfg.value("unfunded_member_penalty", 1.0);
+    const double max_percent = morale_cfg.value("max_bonus_percent", 10.0);
+    const double points_per_percent = morale_cfg.value("points_per_percent", 2.0);
+    const double victory_points = morale_cfg.value("victory_points", 12.0);
+    const double defeat_points = morale_cfg.value("defeat_points", 16.0);
+    const double decay_hours = morale_cfg.value("decay_hours", 24.0);
+
+    // Chapel/church buildings contribute their morale_boost (small, stable).
+    int chapel_points = 0;
+    for (const auto& building : buildings) {
+        if (building.level < 1 || building.name == "road") continue;
+        const nlohmann::json cfg = getBuildingConfigJson(building_types, building.name);
+        if (!cfg.is_object()) continue;
+        if (cfg.value("class", "") != "chapel") continue;
+        chapel_points += cfg.value("morale_boost", 0.0);
+    }
+
+    // Retinue funding state (persisted `maintained` flags from the last tick).
+    const double funded_score = funded * funded_bonus;
+    const double unfunded_score = unfunded * unfunded_penalty;
+
+    // Temporary terms decay from stored recent-battle timestamps.
+    auto decay = [&](int64_t ts, double pts) -> double {
+        if (ts <= 0) return 0.0;
+        const double hours = std::max(0.0, static_cast<double>(now - ts) / 3600.0);
+        if (decay_hours <= 0.0 || hours >= decay_hours) return 0.0;
+        return pts * (1.0 - hours / decay_hours);
+    };
+    result.victory_decay = decay(last_victory_ts, victory_points);
+    result.defeat_decay = decay(last_defeat_ts, defeat_points);
+
+    result.points = chapel_points + funded_score - unfunded_score
+                  + result.victory_decay - result.defeat_decay;
+
+    result.chapel_points = chapel_points;
+    result.funded_count = funded;
+    result.unfunded_count = unfunded;
+
+    // Clamp to 0..max: a low-morale household earns no bonus but is never
+    // penalized below baseline (no doom-spiral, per design).
+    double percent = (points_per_percent > 0.0) ? result.points / points_per_percent : 0.0;
+    result.percent = std::max(0.0, std::min(max_percent, percent));
+    return result;
 }
 
 } // namespace Morale

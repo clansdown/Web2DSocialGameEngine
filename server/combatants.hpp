@@ -45,8 +45,8 @@ struct Combatant {
     std::vector<CostStats> upkeep;
     
     DamageStats getDamage(int level) const {
-        if (damage.empty()) {
-            return DamageStats{};
+        if (damage.size() <= 1) {
+            return damage.empty() ? DamageStats{} : damage[0];
         }
         int idx = level - 1;
         if (idx < damage.size()) {
@@ -64,8 +64,8 @@ struct Combatant {
     }
     
     std::optional<DefenseStats> getDefense(int level) const {
-        if (defense.empty()) {
-            return std::nullopt;
+        if (defense.size() <= 1) {
+            return defense.empty() ? std::nullopt : defense[0];
         }
         int idx = level - 1;
         if (idx < defense.size()) {
@@ -93,8 +93,8 @@ struct Combatant {
     }
     
     double getMovementSpeed(int level) const {
-        if (movement_speed.empty()) {
-            return 0.0;
+        if (movement_speed.size() <= 1) {
+            return movement_speed.empty() ? 0.0 : movement_speed[0];
         }
         int idx = level - 1;
         if (idx < movement_speed.size()) {
@@ -106,8 +106,8 @@ struct Combatant {
     }
     
     CostStats getCosts(int level) const {
-        if (costs.empty()) {
-            return CostStats{};
+        if (costs.size() <= 1) {
+            return costs.empty() ? CostStats{} : costs[0];
         }
         int idx = level - 1;
         if (idx < costs.size()) {
@@ -133,8 +133,8 @@ struct Combatant {
     }
 
     CostStats getUpkeep(int level) const {
-        if (upkeep.empty()) {
-            return CostStats{};
+        if (upkeep.size() <= 1) {
+            return upkeep.empty() ? CostStats{} : upkeep[0];
         }
         int idx = level - 1;
         if (idx < upkeep.size()) {

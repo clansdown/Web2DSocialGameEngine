@@ -3,6 +3,7 @@
   import { currentCharacter } from '../lib/stores';
   import { getFiefdomRequest, buildRequest, getBuildingConfigsRequest, setFiefdomImportRequest, setFiefdomReserveRequest, setBuildingOutputRateRequest, upgradeBuildingRequest, convertBuildingRequest, demolishBuildingRequest, upgradePondTypeRequest } from '../lib/api';
   import type { FiefdomResponse, FiefdomBuilding, BuildingTypeConfig, EconomyReport } from '../lib/api';
+  import RetinuePanel from './RetinuePanel.svelte';
   import { loadTexts } from '../lib/text';
   import { getSessionToken, getInMemoryCredentials } from '../lib/auth';
   import { getConfigBoolean, setConfig as setConfigKV, getConfigNumber } from '../lib/storage';
@@ -90,6 +91,8 @@
 
   let showEconomy = $state(false);
   let showProduction = $state(false);
+  let showRetinue = $state(false);
+  let retinueBtn: Button | null = null;
   let economyReport = $state<EconomyReport | null>(null);
   let selectedBuildingId = $state<number | null>(null);
   let buildingCardBusy = $state(false);
@@ -1164,6 +1167,7 @@
   function updateToggleButtonStates(): void {
     if (economyBtn) economyBtn.setBackgroundColor(showEconomy ? MANOR_BTN_ACTIVE_COLOR : MANOR_BTN_COLOR);
     if (productionBtn) productionBtn.setBackgroundColor(showProduction ? MANOR_BTN_ACTIVE_COLOR : MANOR_BTN_COLOR);
+    if (retinueBtn) retinueBtn.setBackgroundColor(showRetinue ? MANOR_BTN_ACTIVE_COLOR : MANOR_BTN_COLOR);
   }
 
   async function toggleEconomy() {
@@ -1180,6 +1184,15 @@
     if (showProduction) {
       showEconomy = false;
       await loadFiefdomData();
+    }
+    updateToggleButtonStates();
+  }
+
+  async function toggleRetinue() {
+    showRetinue = !showRetinue;
+    if (showRetinue) {
+      showEconomy = false;
+      showProduction = false;
     }
     updateToggleButtonStates();
   }
@@ -1290,6 +1303,14 @@
     productionBtn.zIndex = 100;
     productionBtn.onClick(0, () => toggleProduction());
     actionCol.addChild(productionBtn);
+
+    const rb = new ButtonClass('manor_retinue');
+    retinueBtn = rb.spawn(0, 0, manorTexts['ui_manor_retinue'], null, toggleStyle);
+    retinueBtn.hud = true;
+    retinueBtn.visible = true;
+    retinueBtn.zIndex = 100;
+    retinueBtn.onClick(0, () => toggleRetinue());
+    actionCol.addChild(retinueBtn);
 
     const bb = new ButtonClass('manor_build');
     buildBtn = bb.spawn(0, 0, manorTexts['ui_manor_build_btn'], null, toggleStyle);
@@ -1438,7 +1459,7 @@
 
     const textIds = [
       'manor_main_btn', 'ui_manor_build_btn',
-      'ui_manor_economy', 'ui_manor_production',
+      'ui_manor_economy', 'ui_manor_production', 'ui_manor_retinue',
       'ui_manor_stockpiles', 'ui_manor_treasury', 'ui_manor_arable',
       'ui_manor_forest',
       'ui_manor_stage', 'ui_manor_upgrade', 'ui_manor_convert',
@@ -1563,6 +1584,16 @@
   {/if}
 
   {#if !loading && !showIntro && !errorMsg}
+    {#if showRetinue}
+      <div class="card position-absolute end-0 m-3" style="width: 420px; max-height: 80vh; overflow-y: auto; top: {panelTop}px;">
+        <div class="card-body">
+          <h6 class="card-title">{manorTexts['ui_manor_retinue']}</h6>
+          {#if $currentCharacter}
+            <RetinuePanel characterId={$currentCharacter.id} />
+          {/if}
+        </div>
+      </div>
+    {/if}
     {#if showEconomy}
       <div class="card position-absolute end-0 m-3" style="width: 420px; max-height: 80vh; overflow-y: auto; top: {panelTop}px;">
           <div class="card-body">

@@ -22,7 +22,7 @@ The file is an object:
 | `mode` | string | — | `pve` or `pvp` |
 | `players` | `{min, max}` | — | Lobby size bounds (PvE 1–8 default; PvP up to 64) |
 | `teams` | `{min, max}` | — | Team count bounds (informational for now; auto-balancing later) |
-| `death_handling` | string | `permanent` | `permanent` (lost forever), `respawn_after_seconds`, or `revive_resource` (revive via a future resource — treated as permanent until implemented) |
+| `death_handling` | string | `permanent` | `permanent` (lost forever), `wounded` (no-death: members drop to low health and recover), `respawn_after_seconds`, or `revive_resource` (revive via a future resource — treated as permanent until implemented) |
 | `respawn_delay_seconds` | int | 0 | Respawn delay when `death_handling` is `respawn_after_seconds` |
 | `revive_resource` | string \| null | null | Resource that powers revive-based rulesets (unimplemented) |
 | `unit_caps` | `{per_player, total}` | — | Army size limits |
@@ -38,8 +38,13 @@ The file is an object:
 
 - Up to 8 players on one team against the environment (enemy AI is a later
   milestone — currently the battle runs until the timer, and survival is victory).
-- **Permanent death**: units lost in battle become `casualty` in
-  `retinue_members` when the match ends.
+- **Wounded (no-death)**: units lost in battle are **wounded** — their
+  `retinue_members.health` drops to each unit's end-of-combat HP% (recovery
+  clock restarts) and they recover in the manor/infirmary; they never die. The
+  wound only applies when the end HP% is actually lower than the member's
+  current health (an already-worse injury keeps its recovery clock). Below
+  `retinue.json recovery.min_deploy_hp` (default 50%) they cannot deploy until
+  healed past it.
 
 ### `scrimmage` (PvP, engine-ready)
 

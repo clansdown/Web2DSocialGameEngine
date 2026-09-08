@@ -196,6 +196,7 @@ Get fiefdom information including resources, buildings, and officials.
 | boards | integer | Sawn planks (sawyer chain output, build material) |
 | wall_count | integer | Defensive wall layers |
 | morale | number | Fiefdom morale score (-1000 to 1000) |
+| household_morale | object | Derived (never-stored) morale bonus when `include_buildings=true`: `{ percent, points, chapel_points, funded_members, unfunded_members, victory_decay, defeat_decay }`. `percent` (0..`retinue.json morale.max_bonus_percent`) is the production/recovery bonus computed from chapel + funded/unfunded retinue + recent battle win/loss decay. |
 | manor_level | integer | Manor house (home_base) upgrade level, 0–10 (0 = under construction) |
 | arable_land | object | Arable-land totals: `{ total, used, available }` in acres. Total scales with manor_level via `economy.json` `arable_land_by_level` (400 at level 1 → 1000 at level 10); used is the sum of each completed building's `arable_acres`. A building may only be placed when `available ≥` its acres. |
 | forest_land | object | Forest-land totals: `{ total, used, available }` in acres. Total scales with manor_level via `economy.json` `forest_land_by_level` (200 at level 1 → 600 at level 10); used is the sum of the wood producers' `forest_acres` (woodcutter 80 / coppicer 60 / timber_hauler 70). A wood producer may only be placed when `available ≥` its acres. |

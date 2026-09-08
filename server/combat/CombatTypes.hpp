@@ -68,10 +68,13 @@ struct combat_event {
     nlohmann::json payload;
 };
 
-// A casualty record: which retinue member of which character was lost.
+// A casualty record: which retinue member of which character was lost, and
+// their HP% at the moment they fell (0..100). The end HP drives wound severity
+// under the `wounded` (no-death) ruleset — members heal from where they ended.
 struct casualty_record {
     int64_t member_id = 0;
     int64_t owner_player_id = 0;
+    double end_hp = 100.0;      // unit HP% when it fell (combat hp scale 0..100)
 };
 
 // Wire-neutral message. Game logic builds these structs; the active

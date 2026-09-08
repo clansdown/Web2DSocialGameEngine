@@ -6,6 +6,7 @@
 #include "ActionHandler.hpp"
 #include "ActionHandlers.hpp"
 #include "combatants.hpp"
+#include "Money.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -296,6 +297,84 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                 }
             }
 
+            // ---- Technology progression, training, and forge orders ----
+            // On completed buildings: passive tech XP accrues; finished training
+            // deposits its XP grant; finished forge orders mint an armory item.
+            {
+                const double days = result.time_hours_elapsed / 24.0;
+                for (const auto& building : fiefdom.buildings) {
+                    if (building.level < 1) continue;
+
+                    double tech_xp = 0;
+                    std::string tech_nodes;
+                    std::string forge_order;
+                    std::string training;
+                    db << "SELECT tech_xp, tech_nodes, forge_order, training FROM fiefdom_buildings WHERE id = ?;"
+                       << building.id
+                       >> [&](double xp, std::string nodes, std::string fo, std::string tr) {
+                           tech_xp = xp;
+                           tech_nodes = std::move(nodes);
+                           forge_order = std::move(fo);
+                           training = std::move(tr);
+                       };
+
+                    bool changed = false;
+
+                    // Passive XP accrual (tech_xp_per_day is level-indexed).
+                    if (days > 0.0) {
+                        auto xp_array = Validation::getBuildingArrayField(
+                            config_cache, building.name, building.pond_type, "tech_xp_per_day");
+                        if (!xp_array.empty()) {
+                            const int rate = getIntForLevel(xp_array, building.level, 0);
+                            if (rate > 0) {
+                                tech_xp += static_cast<double>(rate) * days;
+                                changed = true;
+                            }
+                        }
+                    }
+
+                    // Training completion (teacher/book grant lands).
+                    if (!training.empty()) {
+                        try {
+                            json tr = json::parse(training);
+                            double grant = tr.value("grant_xp", 0.0);
+                            double start_ts = tr.value("start_ts", 0.0);
+                            double duration_hours = tr.value("duration_hours", 0.0);
+                            if (start_ts > 0 && duration_hours > 0 &&
+                                result.new_timestamp - start_ts >= duration_hours * 3600.0) {
+                                tech_xp += grant;
+                                training.clear();
+                                changed = true;
+                            }
+                        } catch (...) {}
+                    }
+
+                    // Forge-order completion: mint the item into the armory.
+                    if (!forge_order.empty()) {
+                        try {
+                            json fo = json::parse(forge_order);
+                            std::string item_id = fo.value("item_id", "");
+                            double start_ts = fo.value("start_ts", 0.0);
+                            double duration_hours = fo.value("duration_hours", 0.0);
+                            if (!item_id.empty() && start_ts > 0 && duration_hours > 0 &&
+                                result.new_timestamp - start_ts >= duration_hours * 3600.0) {
+                                db << "INSERT INTO fiefdom_armory (fiefdom_id, item_id, member_id, created_at) "
+                                      "VALUES (?, ?, NULL, ?);"
+                                   << fiefdom.id << item_id << result.new_timestamp;
+                                forge_order.clear();
+                                changed = true;
+                            }
+                        } catch (...) {}
+                    }
+
+                    if (changed) {
+                        db << "UPDATE fiefdom_buildings SET tech_xp = ?, tech_nodes = ?, "
+                              "forge_order = ?, training = ? WHERE id = ?;"
+                           << tech_xp << tech_nodes << forge_order << training << building.id;
+                    }
+                }
+            }
+
             // ---- Economy: production (dependency graph) -> upkeep -> import -> exports ----
             {
                 auto economy_cfg = config_cache.getEconomyConfig();
@@ -312,27 +391,46 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                 // compute proportional amounts.
                 double days_elapsed = result.time_hours_elapsed / 24.0;
 
-                // Penny-market currency ratios (mirror economy.json "currency").
-                auto currency_cfg = economy_cfg.value("currency", json::object());
-                double pence_per_shilling = currency_cfg.value("pence_per_shilling", 12.0);
-                double shillings_per_pound = currency_cfg.value("shillings_per_pound", 20.0);
-                double pence_per_gold = currency_cfg.value("pence_per_gold", pence_per_shilling * shillings_per_pound);
+                // Household morale (derived, never stored): persisted funding
+                // flags (maintained) + recent battle results feed a capped
+                // general bonus applied to all production (general + individual
+                // road morale, per the design).
+                double general_morale_percent = 0.0;
+                {
+                    int64_t last_victory_ts = 0, last_defeat_ts = 0;
+                    db << "SELECT last_victory_ts, last_defeat_ts FROM fiefdoms WHERE id = ?;"
+                       << fiefdom.id
+                       >> [&](int64_t v, int64_t d) { last_victory_ts = v; last_defeat_ts = d; };
+                    int morale_funded = 0, morale_unfunded = 0;
+                    db << "SELECT COALESCE(SUM(maintained),0), "
+                          "COALESCE(SUM(CASE WHEN maintained = 0 THEN 1 ELSE 0 END),0) "
+                          "FROM retinue_members WHERE character_id = ? AND is_knight = 0 "
+                          "AND status = 'active';"
+                       << fiefdom.owner_id
+                       >> [&](int f, int u) { morale_funded = f; morale_unfunded = u; };
+                    auto hm = Morale::computeHouseholdMorale(
+                        building_types, config_cache.getRetinueConfig(),
+                        fiefdom.buildings, morale_funded, morale_unfunded,
+                        result.new_timestamp, last_victory_ts, last_defeat_ts);
+                    general_morale_percent = hm.percent;
+                }
 
-                // Silver-pence wallet (separate from gold). Used for penny-market
-                // resources like grain: imports deduct pence, exports credit pence.
-                // Fractional-capable (REAL) to support half-penny prices (e.g.
-                // boards at 0.5d/1.5d).
+                // Penny-market currency ratios (mirror economy.json "currency").
+                const money::currency money_currency = money::load_currency(economy_cfg);
+                const double shillings_per_pound = money_currency.shillings_per_pound;
+                const double pence_per_gold = money_currency.pence_per_gold;
+
+                // Silver-pence wallet (fungible with gold at pence_per_gold; see
+                // Money.hpp). Used for penny-market resources like grain: imports
+                // deduct pence, exports credit pence. Fractional-capable (REAL) to
+                // support half-penny prices (e.g. boards at 0.5d/1.5d).
                 double cur_silver_pence = fiefdom.silver_pence;
 
                 // Convert a money-form import price ({gold, shillings, pence}) to
                 // pence (fractional-capable). Returns 0 for plain-number
                 // (gold-denominated) prices.
                 auto money_price_to_pence = [&](const json& price) -> double {
-                    if (!price.is_object()) return 0.0;
-                    double gold = price.value("gold", 0.0);
-                    double shillings = price.value("shillings", 0.0);
-                    double pence = price.value("pence", 0.0);
-                    return gold * pence_per_gold + shillings * pence_per_shilling + pence;
+                    return money::price_to_pence(price, money_currency);
                 };
 
                 // Current resource stock (gold is fractional-capable)
@@ -490,6 +588,8 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                             if (mm_it != road_morale_multipliers.end()) {
                                 total_amount *= mm_it->second;
                             }
+                            // Household (general) morale applies to every output.
+                            total_amount *= (1.0 + general_morale_percent / 100.0);
                             OutputPlan op;
                             op.resource = res;
                             op.amount = total_amount;
@@ -565,14 +665,15 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                                 // the fungible silver+gold wallet (gold converts to
                                 // pence at pence_per_gold; silver spent first).
                                 double pence_price = money_price_to_pence(price_entry);
-                                double total_pence = cur_silver_pence + cur_gold * pence_per_gold;
+                                money::wallet w{cur_gold, cur_silver_pence};
+                                double total_pence = w.pence_equivalent(money_currency);
                                 if (pence_price > 0 && total_pence > 0) {
                                     double affordable = std::min(unmet, std::floor(total_pence / pence_price));
                                     if (affordable >= 1.0) {
                                         double cost_pence = affordable * pence_price;
-                                        double from_silver = std::min(cur_silver_pence, cost_pence);
-                                        cur_silver_pence -= from_silver;
-                                        cur_gold -= (cost_pence - from_silver) / pence_per_gold;
+                                        money::take_pence(w, cost_pence, money_currency);
+                                        cur_gold = w.gold;
+                                        cur_silver_pence = w.silver_pence;
                                         *cur += affordable;
                                         unmet -= affordable;
                                         supplied += affordable;
@@ -583,9 +684,12 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                                 }
                             } else {
                                 double price = price_entry.is_number() ? price_entry.get<double>() : 2.0;
-                                double affordable = std::min(unmet, std::floor(cur_gold / price));
+                                money::wallet w{cur_gold, cur_silver_pence};
+                                double affordable = std::min(unmet, std::floor(w.gold_equivalent(money_currency) / price));
                                 if (affordable >= 1.0) {
-                                    cur_gold -= affordable * price;
+                                    money::take_gold(w, affordable * price, money_currency);
+                                    cur_gold = w.gold;
+                                    cur_silver_pence = w.silver_pence;
                                     *cur += affordable;
                                     unmet -= affordable;
                                     supplied += affordable;
@@ -742,6 +846,202 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                     }
                 }
 
+                // Retinue funding: recruited (non-knight) members are maintained
+                // from the manor economy in strict priority order (priority ASC —
+                // the knight is free and excluded). Each member is funded
+                // all-or-nothing from the fungible wallet + material stock
+                // (shortfalls auto-imported with money, like building costs);
+                // unfunded members incur the configured general-morale penalty.
+                json retinue_report = json::object();
+                double retinue_gold_spent = 0.0;
+                double retinue_pence_spent = 0.0;
+                {
+                    const json retinue_cfg = config_cache.getRetinueConfig();
+                    double unfunded_penalty = retinue_cfg.value("morale", json::object())
+                                                  .value("unfunded_member_penalty", 1.0);
+                    const money::wallet retinue_start{cur_gold, cur_silver_pence};
+                    int fund_count = 0;
+                    int unfunded_count = 0;
+                    json unfunded_names = json::array();
+
+                    struct member_row {
+                        int64_t id;
+                        std::string name;
+                        std::string uclass;
+                        int level;
+                        std::string equipment;
+                    };
+                    std::vector<member_row> members;
+                    db << "SELECT id, display_name, unit_class, level, equipment FROM retinue_members "
+                          "WHERE character_id = ? AND is_knight = 0 AND status = 'active' "
+                          "ORDER BY priority ASC, id ASC;"
+                       << fiefdom.owner_id
+                       >> [&](int64_t id, std::string dn, std::string uclass, int level,
+                              std::string equip) {
+                           members.push_back({id, std::move(dn), std::move(uclass), level,
+                                              std::move(equip)});
+                       };
+
+                    if (!members.empty()) {
+                        auto& combatant_registry = Combatants::CombatantRegistry::getInstance();
+                        money::cost_context retinue_ctx;
+                        retinue_ctx.import_prices = &import_prices;
+                        retinue_ctx.import_settings = &fiefdom.import_settings;
+                        retinue_ctx.c = money_currency;
+                        const auto& eq_items = config_cache.getEquipmentConfig().value("items", json::object());
+
+                        for (const auto& member : members) {
+                            auto combatant_opt = combatant_registry.getPlayerCombatant(member.uclass);
+                            if (!combatant_opt) {
+                                // Unknown class — maintain trivially (no costs).
+                                db << "UPDATE retinue_members SET maintained = 1 WHERE id = ?;" << member.id;
+                                continue;
+                            }
+                            const auto upkeep = (*combatant_opt)->getUpkeep(member.level);
+
+                            json member_cost = json::object();
+                            auto add_cost = [&](const char* res, double amount) {
+                                if (amount <= 0.0) return;
+                                member_cost[res] = amount * days_elapsed;
+                            };
+                            add_cost("gold", upkeep.gold);
+                            add_cost("grain", upkeep.grain);
+                            add_cost("wood", upkeep.wood);
+                            add_cost("steel", upkeep.steel);
+                            add_cost("bronze", upkeep.bronze);
+                            add_cost("stone", upkeep.stone);
+                            add_cost("leather", upkeep.leather);
+                            add_cost("charcoal", upkeep.charcoal);
+                            add_cost("iron", upkeep.iron);
+                            add_cost("ironwork", upkeep.ironwork);
+
+                            // Equipment upkeep: every equipped item's per-day
+                            // upkeep is added to the member's maintenance cost.
+                            if (!member.equipment.empty()) {
+                                try {
+                                    json equip_map = json::parse(member.equipment);
+                                    if (equip_map.is_object()) {
+                                        for (auto& [slot, item_id_v] : equip_map.items()) {
+                                            (void)slot;
+                                            if (!item_id_v.is_string()) continue;
+                                            const std::string it = item_id_v.get<std::string>();
+                                            if (!eq_items.contains(it)) continue;
+                                            const json& ecfg = eq_items[it];
+                                            if (!ecfg.contains("upkeep") || !ecfg["upkeep"].is_object()) continue;
+                                            for (auto& [res, amt] : ecfg["upkeep"].items()) {
+                                                if (!amt.is_number()) continue;
+                                                member_cost[res] = member_cost.value(res, 0.0) +
+                                                                   amt.get<double>() * days_elapsed;
+                                            }
+                                        }
+                                    }
+                                } catch (...) {}
+                            }
+
+                            // Snapshot remaining material stock (wallet covers
+                            // gold/silver_pence across the fungible boundary).
+                            std::map<std::string, double> stock;
+                            for (const std::string& res : {"grain", "wood", "steel", "bronze",
+                                                           "stone", "leather", "mana", "charcoal",
+                                                           "iron", "ironwork", "fancy_ironwork"}) {
+                                double* p = get_cur(res);
+                                stock[res] = (p ? *p : 0.0);
+                            }
+                            money::wallet w{cur_gold, cur_silver_pence};
+
+                            const bool afford = member_cost.empty() ||
+                                money::affordable(w, stock, member_cost, retinue_ctx);
+                            if (afford) {
+                                if (!member_cost.empty()) {
+                                    money::pay(w, stock, member_cost, retinue_ctx);
+                                    cur_gold = w.gold;
+                                    cur_silver_pence = w.silver_pence;
+                                    for (const auto& kv : stock) {
+                                        double* p = get_cur(kv.first);
+                                        if (p) *p = kv.second;
+                                    }
+                                }
+                                ++fund_count;
+                                db << "UPDATE retinue_members SET maintained = 1 WHERE id = ?;" << member.id;
+                            } else {
+                                ++unfunded_count;
+                                morale_damage += unfunded_penalty * days_elapsed;
+                                unfunded_names.push_back(member.name);
+                                db << "UPDATE retinue_members SET maintained = 0 WHERE id = ?;" << member.id;
+                            }
+                        }
+                    }
+
+                    // Knight gear upkeep: the knight is free of BASE upkeep (that
+                    // is folded into the player), but still pays equipment upkeep
+                    // on whatever it wears — design §2/§5 ("gear upkeep only").
+                    {
+                        const auto& knight_eq_items = config_cache.getEquipmentConfig().value("items", json::object());
+                        int64_t knight_id = 0;
+                        std::string knight_equipment;
+                        db << "SELECT id, equipment FROM retinue_members "
+                              "WHERE character_id = ? AND is_knight = 1 LIMIT 1;"
+                           << fiefdom.owner_id
+                           >> [&](int64_t id, std::string e) { knight_id = id; knight_equipment = std::move(e); };
+                        if (knight_id != 0 && !knight_equipment.empty()) {
+                            json knight_cost = json::object();
+                            try {
+                                json ek = json::parse(knight_equipment);
+                                if (ek.is_object()) {
+                                    for (auto& [slot, item_id_v] : ek.items()) {
+                                        (void)slot;
+                                        if (!item_id_v.is_string()) continue;
+                                        const std::string it = item_id_v.get<std::string>();
+                                        if (!knight_eq_items.contains(it)) continue;
+                                        const json& ecfg = knight_eq_items[it];
+                                        if (!ecfg.contains("upkeep") || !ecfg["upkeep"].is_object()) continue;
+                                        for (auto& [res, amt] : ecfg["upkeep"].items()) {
+                                            if (!amt.is_number()) continue;
+                                            knight_cost[res] = knight_cost.value(res, 0.0) +
+                                                               amt.get<double>() * days_elapsed;
+                                        }
+                                    }
+                                }
+                            } catch (...) {}
+                            if (!knight_cost.empty()) {
+                                money::cost_context knight_ctx;
+                                knight_ctx.import_prices = &import_prices;
+                                knight_ctx.import_settings = &fiefdom.import_settings;
+                                knight_ctx.c = money_currency;
+                                std::map<std::string, double> knight_stock;
+                                for (const std::string& res : {"grain", "wood", "steel", "bronze",
+                                                               "stone", "leather", "mana", "charcoal",
+                                                               "iron", "ironwork", "fancy_ironwork"}) {
+                                    double* p = get_cur(res);
+                                    knight_stock[res] = (p ? *p : 0.0);
+                                }
+                                money::wallet w{cur_gold, cur_silver_pence};
+                                if (money::affordable(w, knight_stock, knight_cost, knight_ctx)) {
+                                    money::pay(w, knight_stock, knight_cost, knight_ctx);
+                                    cur_gold = w.gold;
+                                    cur_silver_pence = w.silver_pence;
+                                    for (const auto& kv : knight_stock) {
+                                        double* p = get_cur(kv.first);
+                                        if (p) *p = kv.second;
+                                    }
+                                    db << "UPDATE retinue_members SET maintained = 1 WHERE id = ?;" << knight_id;
+                                } else {
+                                    db << "UPDATE retinue_members SET maintained = 0 WHERE id = ?;" << knight_id;
+                                }
+                            }
+                        }
+                    }
+
+                    const money::wallet retinue_end{cur_gold, cur_silver_pence};
+                    retinue_gold_spent = std::max(0.0, retinue_start.gold - retinue_end.gold);
+                    retinue_pence_spent = std::max(0.0, retinue_start.silver_pence - retinue_end.silver_pence);
+                    retinue_report["funded"] = fund_count;
+                    retinue_report["unfunded"] = unfunded_count;
+                    retinue_report["unfunded_members"] = unfunded_names;
+                    retinue_report["gold_spent"] = retinue_gold_spent;
+                    retinue_report["pence_spent"] = retinue_pence_spent;
+                }
+
                 // Sell excess above reserve -> gold or silver pence. The per-unit
                 // sell price resolves with precedence: export_prices (explicit) →
                 // export_sell_multipliers (per-resource ratio) → global
@@ -826,8 +1126,11 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                         gold_needed += costs["gold"].get<double>() * days_elapsed;
                     }
                     if (gold_needed > 0) {
-                        double effective = std::min(cur_gold, gold_needed);
-                        cur_gold -= effective;
+                        money::wallet w{cur_gold, cur_silver_pence};
+                        double effective = std::min(w.gold_equivalent(money_currency), gold_needed);
+                        money::take_gold(w, effective, money_currency);
+                        cur_gold = w.gold;
+                        cur_silver_pence = w.silver_pence;
                         gold_consumed = effective;
                         double unmet = gold_needed - effective;
                         if (unmet > 0.001) morale_damage += unmet * unmet_penalty * 2;
@@ -875,8 +1178,9 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                 for (auto& [res, val] : ledger_exported.items()) {
                     if (val.is_object() && val.contains("gold")) export_gold += val["gold"].get<double>();
                 }
-                report["net_gold"] = gold_produced + export_gold - import_spend - gold_consumed;
-                report["net_silver"] = export_gain_pence - import_spend_pence;
+                report["net_gold"] = gold_produced + export_gold - import_spend - gold_consumed - retinue_gold_spent;
+                report["net_silver"] = export_gain_pence - import_spend_pence - retinue_pence_spent;
+                report["retinue"] = retinue_report;
                 report["recommendations"] = build_economy_recommendations(
                     config_cache, ledger_produced, ledger_consumed, ledger_imported,
                     ledger_exported, plans, building_types);

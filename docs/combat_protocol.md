@@ -54,7 +54,7 @@ Every message is a JSON object:
 | `welcome` | `{player_id, team, mode, match_code, ruleset_id, ruleset, map, players[], retinue[]}` | Sent once after auth, before the first state |
 | `match_state` | state payload, `full: true` | Full snapshot: initial join, reconnect, `request_state`, and every 25 ticks (2.5 s) as a sync guard |
 | `match_update` | state payload, `full: false` | Partial update: dirty entity rows + removals + events |
-| `match_ended` | `{winner_team, reason, casualties[]}` | Battle over; `winner_team` 0/-1 = defeat/draw |
+| `match_ended` | `{winner_team, reason, casualties[]}` | Battle over; `winner_team` 0/-1 = defeat/draw. Each casualty: `{member_id, owner, end_hp}` (`end_hp` is the member's HP% when they fell — the wound severity under `wounded` rulesets) |
 | `chat` | `{from, from_name, team, text, timestamp}` | Team chat delivery |
 | `voice` | `{from, from_name, signal_type, data}` | WebRTC signaling delivery |
 | `error` | `{error}` | Protocol/validation error; socket may be closed |

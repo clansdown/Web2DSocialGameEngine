@@ -183,7 +183,11 @@ when a fiefdom has no silver. **Build/upgrade/convert auto-import material short
 physical build materials are purchased at their import price with fungible money (respecting the
 per-resource `import_settings` toggle), and the economy tick's penny-market imports can draw on gold.
 This applies consistently in the server (`hasEnoughResources`/`deductResources`/`supply_need`) and the
-balance analyzer's `--sim` (`is_feasible`/`commit_build`/`supply_need`).
+balance analyzer's `--sim` (`is_feasible`/`commit_build`/`supply_need`). The single source of truth is
+the **generic money layer** in `server/Money.hpp/.cpp` (`money::wallet`, `money::load_currency`,
+`money::affordable`, `money::pay`, `money::take_pence`/`take_gold`, `money::price_to_pence`):
+`Validation::hasEnoughResources`/`deductResources` and the economy-tick import/export/gold-upkeep math
+delegate to it, and hire fees route through the same fungible, auto-importing path.
 
 ### messages.db Schema
 
@@ -300,6 +304,19 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - See `api/combatGetConfigs.md` for `/api/combatGetConfigs` documentation
 - See `api/combatMatchmaking.md` for `/api/combatMatchmaking` documentation
 - See `api/getRetinue.md` for `/api/getRetinue` documentation
+- See `api/listRecruitCandidates.md` for `/api/listRecruitCandidates` documentation
+- See `api/hireRecruit.md` for `/api/hireRecruit` documentation
+- See `api/setRetinuePriority.md` for `/api/setRetinuePriority` documentation
+- See `api/getTechTrees.md` for `/api/getTechTrees` documentation
+- See `api/learnTechNode.md` for `/api/learnTechNode` documentation
+- See `api/startForgeOrder.md` for `/api/startForgeOrder` documentation
+- See `api/getRetinueGear.md` for `/api/getRetinueGear` documentation
+- See `api/equipGear.md` for `/api/equipGear` documentation
+- See `api/deassignGear.md` for `/api/deassignGear` documentation
+- See `api/sellItem.md` for `/api/sellItem` documentation
+- See `api/buyGearCity.md` for `/api/buyGearCity` documentation
+- See `api/hireTeacher.md` for `/api/hireTeacher` documentation
+- See `api/applyBookItem.md` for `/api/applyBookItem` documentation
 
 #### Endpoint Overview
 
@@ -323,7 +340,20 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - **/api/combatList**: List open combat lobbies
 - **/api/combatGetConfigs**: List combat rulesets and maps
 - **/api/combatMatchmaking**: PvP matchmaking (STUB — challenges/acceptances later)
-- **/api/getRetinue**: Fetch the character's retinue (knight + soldiers)
+- **/api/getRetinue**: Fetch the character's retinue (knight + soldiers + capacity)
+- **/api/listRecruitCandidates**: List the current hire market (named candidate offers)
+- **/api/hireRecruit**: Hire a candidate (verified offer, capacity, fee from fiefdom stores)
+- **/api/setRetinuePriority**: Reorder the roster by strict priority (maintenance + infirmary-bed order; an ordered permutation of the non-knight members)
+- **/api/getTechTrees**: Tech trees + per-building XP/learned nodes/active forge & training
+- **/api/learnTechNode**: Spend building tech XP to learn a node (prereq-gated, saves)
+- **/api/startForgeOrder**: Start a forge order at a tech-capable building (pays materials)
+- **/api/getRetinueGear**: The fiefdom's armory (gear) + general storage (items)
+- **/api/equipGear**: Equip an armory item to a member (level/slot/class checked)
+- **/api/deassignGear**: Return a member's equipped slot to the armory
+- **/api/sellItem**: Sell an armory item or storage item at the config sell discount
+- **/api/buyGearCity**: Buy gear from the city at an extreme markup (gold-sink bypass)
+- **/api/hireTeacher**: Start a training timer on a tech building (on-demand, pays gold)
+- **/api/applyBookItem**: Consume a training item from storage to start a training timer
 
 ### Realtime Combat
 
@@ -664,6 +694,8 @@ Validates all JSON configuration files against their schema rules. Written in Py
 - `economy.json` `starting_resources` must be an object of valid fiefdom resource keys → non-negative numbers
 - `economy.json` `arable_land_by_level` must be an array of exactly 11 non-negative, non-decreasing numbers (index 0–10 for manor levels; 0 at level 0, 400 at level 1 → 1000 at level 10, following the 10-tier manor-house ledger — 400/465/530/600/670/740/800/870/935/1000)
 - `economy.json` `forest_land_by_level` must be an array of exactly 11 non-negative, non-decreasing numbers (index 0–10 for manor levels; 0 at level 0, 200 at level 1, 600 at level 10)
+- Combatant `requires_manor_level` must be a positive integer (optional; gates which classes appear on the recruit market)
+- Building `recovery_multiplier` must be a non-negative number (optional; infirmary healing-rate bonus), `tech_trees` an array of non-empty strings, `tech_xp_per_day` a non-empty non-negative int array, `max_concurrent_orders` a positive integer
 
 **Config Files Validated:**
 - `game/config/damage_types.json` - Damage type definitions
@@ -674,6 +706,10 @@ Validates all JSON configuration files against their schema rules. Written in Py
 - `game/config/fiefdom_officials.json` - Fiefdom official templates with stats and roles
 - `game/config/manor_ui.json` - Manor UI config (`build_order` governs the build-palette button order only — it never overrides the client's display/level/affordability filters)
 - `game/config/manor_river.json` - River templates (meandering polylines `points` + band `width`; seeded per-fiefdom with 0/90/180/270° rotation — see `server/tables/fiefdom_river.md`)
+- `game/config/retinue.json` - Retinue tuning: `retinue_capacity_by_level` (11 entries, manor levels 0-10; the knight is free), market params (candidates per class, max candidate level offset, grace buckets), recovery (max hours, min-deploy HP), morale contributors, sell discount, `armory_capacity`/`storage_capacity`, training (teacher/book XP grants + durations)
+- `game/config/equipment.json` - Gear items: slots, member-level requirements, per-item daily upkeep, `armory_slots`, `base_value`, `city_price`, and optional `craft` (materials + duration + `tech_node`)
+- `game/config/items.json` - General-storage items (books etc.): `source` (`drop`/`purchase`), `xp_grant`, `training_duration_hours`
+- `game/config/tech_trees.json` - Technology trees: nodes with `xp_cost`, `prerequisites`, and `effects` (start: `unlock_recipe`)
 - `game/config/analyzer_manor_strategies.json` - **Analyzer-only** config: weighted manor build policies (heuristics) with optional min-ratio constraints, consumed by `game_balance_analyzer --sim`. Not a game config — see the `analyzer_` prefix convention below.
 
 **`analyzer_` prefix convention:** Config files used **only** by the `game_balance_analyzer` tool (never by the game/server) live in `game/config/` and MUST be prefixed with `analyzer_` (e.g. `analyzer_manor_strategies.json`) so they are not confused with real game config. Any future analyzer-only config follows the same convention and is added to this list + validated in `tools/check_configs.py`.
@@ -742,7 +778,7 @@ Build the full game progression and content system with a working tower defense 
 - **Per-commodity export pricing**: Export price resolves per resource with precedence `export_prices[resource]` (explicit gold/pence sell price) → `export_sell_multipliers[resource]` (ratio of import price) → global `export_sell_multiplier` (0.5). Engine resolves the unit sell value in the resource's market currency; linter validates both new maps in `economy.json`.
 - **Multi-output buildings + per-output rates**: A building may define an `outputs` array — each output with its own `inputs`, a `min_level` unlock, and a per-player rate (0..1). The blacksmith now produces `ironwork` (level 1+) and `fancy_ironwork` (level 2+, 2× iron input), both simultaneously at level 2+. Engine uses per-output plans: each output is gated by its own input-satisfaction ratio, rates scale output + inputs (0 = off). `fancy_ironwork` added as a real fiefdom resource (column + migration + full plumbing). Rates stored in `fiefdom_buildings.output_rates` (JSON), set via `/api/setBuildingOutputRate`; client has a Production Rates panel in `ManorMenu` with per-output sliders.
 - **Metalworking economy + household grain**: Every craft building (peasant, blacksmith, collier, woodcutter, wood_hewer) is a self-contained household — produces **18 grain/day** and consumes **36 grain/day** via `daily_cost`, plus a small `ironwork` tool upkeep (home_base 20, peasant 1, woodcutter 5, wood_hewer 5, miller 5, collier 2). Blacksmith output scaled to **100 ironwork/day** (input-gated on charcoal 100 + iron 40 per day; no separate charcoal `daily_cost`, so one collier's 120 charcoal nets ~+20 vs one blacksmith); collier charcoal 120 (wood 80 input), bloomery iron 20 (charcoal 30 input), woodcutter wood 20 — so ~5 bloomeries + ~9 colliers feed one full blacksmith, and one blacksmith covers ~50 peasants + 2 woodcutters + 2 woodhewers + a miller + a few colliers + the home base. **Prices deflate with production** (anchored to grain at 1 shilling ≈ 0.05 gold): wood 0.03, charcoal 0.03, iron 0.06, ironwork 0.02 import. **Ironwork exports sell at 25% of import** (`export_sell_multipliers.ironwork = 0.25`), other resources at 50%. `default_reserves` scaled up (grain 150, wood 100, steel 50, bronze 25, leather 25, mana 10, charcoal/iron/ironwork 50, fancy_ironwork 10).
-- **Realtime combat scaffold**: Server-authoritative RTS over WebSocket `/ws/combat` (same port 2290) — matches live entirely in RAM (`server/combat/`), one worker thread per battle from a bounded pool (`--combat-sim-threads`), 10 ticks/s with entity-level deltas + full snapshots every 25 ticks, pluggable codec (`combat_codec`; `json_codec` default with hand-rolled fast serializer, `binary_codec` placeholder), uWS pub/sub topics for broadcast (`match:<id>`, team chat, per-player voice signaling), SQLite writes deferred to the loop thread (`Loop::defer`). REST surface: `combatCreate`/`combatJoin`/`combatList`/`combatGetConfigs`/`combatMatchmaking` (stub)/`getRetinue`. **Retinue defined now**: new `retinue_members` table (knight = character, auto-created; units come from the manor's `train_troops` stub later), casualties persisted after matches per ruleset death handling. Configs: `combat/rulesets.json` (skirmish PvE permanent-death + scrimmage PvP respawn) and `combat/maps/meadow.json` (16×16 with normalized spawn points, tile_costs cost grid for future pathfinding, lenient parse — unknown fields preserved, linter warns not errors). Client: `src/combat/` — CombatScreen (lobby→battle→results), CombatNetClient (first-message auth, backoff reconnect), CombatGame (SimpleGame canvas, entity store + interpolation, select/move), CombatHud, CombatChat (team), CombatVoice (WebRTC mesh, WS-relayed signaling, STUN placeholder), MatchLobby (create/join by code). No hub cards — combat is reached through game flow later (module kept for future integration). Vite proxies `/ws` (ws:true); nginx needs Upgrade headers + long timeouts (server README).
+- **Realtime combat scaffold**: Server-authoritative RTS over WebSocket `/ws/combat` (same port 2290) — matches live entirely in RAM (`server/combat/`), one worker thread per battle from a bounded pool (`--combat-sim-threads`), 10 ticks/s with entity-level deltas + full snapshots every 25 ticks, pluggable codec (`combat_codec`; `json_codec` default with hand-rolled fast serializer, `binary_codec` placeholder), uWS pub/sub topics for broadcast (`match:<id>`, team chat, per-player voice signaling), SQLite writes deferred to the loop thread (`Loop::defer`). REST surface: `combatCreate`/`combatJoin`/`combatList`/`combatGetConfigs`/`combatMatchmaking` (stub)/`getRetinue`. **Retinue defined now**: new `retinue_members` table (knight = character, auto-created; units come from the manor's `train_troops` stub later), casualties persisted after matches per ruleset death handling. Configs: `combat/rulesets.json` (skirmish PvE **wounded**/no-death + scrimmage PvP respawn) and `combat/maps/meadow.json` (16×16 with normalized spawn points, tile_costs cost grid for future pathfinding, lenient parse — unknown fields preserved, linter warns not errors). Client: `src/combat/` — CombatScreen (lobby→battle→results), CombatNetClient (first-message auth, backoff reconnect), CombatGame (SimpleGame canvas, entity store + interpolation, select/move), CombatHud, CombatChat (team), CombatVoice (WebRTC mesh, WS-relayed signaling, STUN placeholder), MatchLobby (create/join by code). No hub cards — combat is reached through game flow later (module kept for future integration). Vite proxies `/ws` (ws:true); nginx needs Upgrade headers + long timeouts (server README).
 
 - **Hash-based history routing**: In-app navigation is URL-driven via `client/src/lib/router.ts` — `#/` hub, `#/activity/<id>[/…]` (arbitrary-depth nested sub-routes, e.g. `#/activity/chat/thread/42`), `#/game/<game>/<level>`. Components read `route_store` and call `navigate()` / `replace_route()` (redirects: game complete/error replaces the game entry so Back doesn't re-enter it) / `go_back()` (in-app Back buttons). Entering an activity/game from an empty/foreign URL pushes a `#/` hub entry first so browser Back always lands on the hub grid. Reload restores the screen from the URL; mobile app-switch fires no hash events and never disturbs the open screen. The old OPFS `last_activity` restore is gone; barony create/join → hub, baron-track start → `#/activity/tasks`. Backing out of a mini-game mid-round leaves an active session that the server resumes on next kickoff (existing logic).
 - **Manor loading fixed**: Two bugs kept the manor at an infinite "Loading Manor…" spinner. (1) `/api/getBuildingConfigs` is authenticated; the client now sends `auth` (it previously called without credentials, got a `needs_auth` response with no `error`/`data`, silently returned `undefined`, and `Object.entries(undefined)` in `ManorMenu.setupGame` threw). (2) `whenLoaded(setupGame)` was registered *after* `initEngine(canvasEl, debugDiv, false, () => {})` — initEngine's synchronous first loop closes the one-shot "all classes loaded" gate, so a late-registered `whenLoaded` never fires and `loading` stays true. Fixed by passing `setupGame` as initEngine's 4th argument (the documented pattern in SimpleGame/Embedding.md, matching TowerDefense/WeedingGame/CombatGame) and removing the `whenLoaded` call. The server now also serves `/images/manor/*` (background + building sprites). `getBuildingConfigsRequest` takes `{ username, token }` and throws on missing data; the manor loading spinner has a Back button as an escape hatch.

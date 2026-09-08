@@ -256,7 +256,10 @@ has its own Svelte screen and its own transport.
 | `combatList` | List open lobbies |
 | `combatGetConfigs` | Rulesets + maps for the create form |
 | `combatMatchmaking` | STUB — PvP queue (challenges/acceptances) is later |
-| `getRetinue` | The character's full retinue |
+| `getRetinue` | The character's full retinue + manor capacity |
+| `listRecruitCandidates` | The current hire market (named candidate offers) |
+| `hireRecruit` | Hire a candidate (verified offer, capacity, fee) |
+| `setRetinuePriority` | Reorder the roster by strict funding/healing priority |
 
 Full protocol and message reference: `docs/combat_protocol.md`.
 

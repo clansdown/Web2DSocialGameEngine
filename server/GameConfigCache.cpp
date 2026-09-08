@@ -68,6 +68,10 @@ bool GameConfigCache::initialize(const std::string& config_dir) {
     add("weeding/specials.json");
     add("weeding/ongoing.json");
     add("economy.json");
+    add("retinue.json");
+    add("equipment.json");
+    add("items.json");
+    add("tech_trees.json");
     add("manor_ui.json");
     add("manor_river.json");
     add("combat/rulesets.json");
@@ -141,6 +145,24 @@ nlohmann::json& GameConfigCache::getWeedingTools() { return getConfig("weeding/t
 nlohmann::json& GameConfigCache::getWeedingSpecials() { return getConfig("weeding/specials.json"); }
 nlohmann::json& GameConfigCache::getWeedingOngoing() { return getConfig("weeding/ongoing.json"); }
 nlohmann::json& GameConfigCache::getEconomyConfig() { return getConfig("economy.json"); }
+nlohmann::json& GameConfigCache::getRetinueConfig() { return getConfig("retinue.json"); }
+nlohmann::json& GameConfigCache::getEquipmentConfig() { return getConfig("equipment.json"); }
+nlohmann::json& GameConfigCache::getItemsConfig() { return getConfig("items.json"); }
+nlohmann::json& GameConfigCache::getTechTreesConfig() { return getConfig("tech_trees.json"); }
+
+int GameConfigCache::getRetinueCapacity(int manor_level) {
+    nlohmann::json& cfg = getRetinueConfig();
+    if (cfg.contains("retinue_capacity_by_level") &&
+        cfg["retinue_capacity_by_level"].is_array()) {
+        const auto& arr = cfg["retinue_capacity_by_level"];
+        if (arr.empty()) return 0;
+        if (manor_level < 0) manor_level = 0;
+        size_t idx = static_cast<size_t>(manor_level);
+        if (idx >= arr.size()) idx = arr.size() - 1;
+        if (arr[idx].is_number()) return arr[idx].get<int>();
+    }
+    return 0;
+}
 
 int GameConfigCache::getBuildingArableAcres(const std::string& type_id) {
     nlohmann::json& buildings = getFiefdomBuildingTypes();

@@ -37,6 +37,8 @@ ensureIndex(db, "idx_fiefdom_walls_fiefdom", "fiefdom_walls", "fiefdom_id");
     ensureIndex(db, "idx_game_sessions_character", "game_sessions", "character_id");
     ensureIndex(db, "idx_weeding_sessions_character", "weeding_sessions", "character_id");
     ensureIndex(db, "idx_retinue_members_character", "retinue_members", "character_id");
+    ensureIndex(db, "idx_fiefdom_armory_fiefdom", "fiefdom_armory", "fiefdom_id");
+    ensureIndex(db, "idx_fiefdom_armory_member", "fiefdom_armory", "member_id");
     }
 
     void ensureMessagesDBIndexes_private(sqlite::database& db) {
@@ -140,6 +142,87 @@ void migrate_pond_type(sqlite::database& db) {
     }
 }
 
+void migrate_retinue_gender(sqlite::database& db) {
+    try {
+        db << "ALTER TABLE retinue_members ADD COLUMN gender TEXT NOT NULL DEFAULT 'male';";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+}
+
+void migrate_retinue_health(sqlite::database& db) {
+    try {
+        db << "ALTER TABLE retinue_members ADD COLUMN health REAL NOT NULL DEFAULT 100;";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+    try {
+        db << "ALTER TABLE retinue_members ADD COLUMN health_updated INTEGER NOT NULL DEFAULT 0;";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+}
+
+void migrate_retinue_priority(sqlite::database& db) {
+    try {
+        db << "ALTER TABLE retinue_members ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+}
+
+void migrate_retinue_equipment(sqlite::database& db) {
+    try {
+        db << "ALTER TABLE retinue_members ADD COLUMN equipment TEXT NOT NULL DEFAULT '{}';";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+}
+
+void migrate_retinue_maintained(sqlite::database& db) {
+    try {
+        db << "ALTER TABLE retinue_members ADD COLUMN maintained INTEGER NOT NULL DEFAULT 1;";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+}
+
+void migrate_fiefdom_morale_ts(sqlite::database& db) {
+    try {
+        db << "ALTER TABLE fiefdoms ADD COLUMN last_victory_ts INTEGER NOT NULL DEFAULT 0;";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+    try {
+        db << "ALTER TABLE fiefdoms ADD COLUMN last_defeat_ts INTEGER NOT NULL DEFAULT 0;";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+}
+
+void migrate_building_tech_actions(sqlite::database& db) {
+    try {
+        db << "ALTER TABLE fiefdom_buildings ADD COLUMN tech_xp REAL NOT NULL DEFAULT 0;";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+    try {
+        db << "ALTER TABLE fiefdom_buildings ADD COLUMN tech_nodes TEXT NOT NULL DEFAULT '[]';";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+    try {
+        db << "ALTER TABLE fiefdom_buildings ADD COLUMN forge_order TEXT NOT NULL DEFAULT '';";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+    try {
+        db << "ALTER TABLE fiefdom_buildings ADD COLUMN training TEXT NOT NULL DEFAULT '';";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
+}
+
 void migrate_charcoal_iron(sqlite::database& db) {
     try {
         db << "ALTER TABLE fiefdoms ADD COLUMN charcoal INTEGER NOT NULL DEFAULT 0;";
@@ -226,6 +309,8 @@ void migrate_baron_character_id(sqlite::database& db) {
             "morale REAL NOT NULL DEFAULT 0,"
             "last_update_time INTEGER NOT NULL DEFAULT 0,"
             "reserves TEXT NOT NULL DEFAULT '{}',"
+            "last_victory_ts INTEGER NOT NULL DEFAULT 0,"
+            "last_defeat_ts INTEGER NOT NULL DEFAULT 0,"
             "FOREIGN KEY(owner_id) REFERENCES characters(id)"
         );
 
@@ -241,6 +326,10 @@ void migrate_baron_character_id(sqlite::database& db) {
             "action_start_ts INTEGER NOT NULL DEFAULT 0,"
             "action_tag TEXT NOT NULL DEFAULT '',"
             "output_rates TEXT NOT NULL DEFAULT '{}',"
+            "tech_xp REAL NOT NULL DEFAULT 0,"
+            "tech_nodes TEXT NOT NULL DEFAULT '[]',"
+            "forge_order TEXT NOT NULL DEFAULT '',"
+            "training TEXT NOT NULL DEFAULT '',"
             "FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id)"
         );
 
@@ -282,12 +371,35 @@ void migrate_baron_character_id(sqlite::database& db) {
             "unit_class TEXT NOT NULL,"
             "is_knight INTEGER NOT NULL DEFAULT 0,"
             "level INTEGER NOT NULL DEFAULT 1,"
+            "gender TEXT NOT NULL DEFAULT 'male',"
+            "health REAL NOT NULL DEFAULT 100,"
+            "health_updated INTEGER NOT NULL DEFAULT 0,"
+            "priority INTEGER NOT NULL DEFAULT 0,"
             "weapons TEXT NOT NULL DEFAULT '{}',"
             "armor TEXT NOT NULL DEFAULT '{}',"
+            "equipment TEXT NOT NULL DEFAULT '{}',"
             "abilities TEXT NOT NULL DEFAULT '[]',"
             "status TEXT NOT NULL DEFAULT 'active',"
+            "maintained INTEGER NOT NULL DEFAULT 1,"
             "created_at INTEGER NOT NULL,"
             "FOREIGN KEY(character_id) REFERENCES characters(id)"
+        );
+
+        createTable(db, "fiefdom_armory",
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "fiefdom_id INTEGER NOT NULL,"
+            "item_id TEXT NOT NULL,"
+            "member_id INTEGER,"
+            "created_at INTEGER NOT NULL,"
+            "FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id)"
+        );
+
+        createTable(db, "fiefdom_storage",
+            "fiefdom_id INTEGER NOT NULL,"
+            "item_id TEXT NOT NULL,"
+            "count INTEGER NOT NULL DEFAULT 0,"
+            "PRIMARY KEY(fiefdom_id, item_id),"
+            "FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id)"
         );
 
         createTable(db, "fiefdom_walls",
@@ -482,6 +594,13 @@ void initializeGameDB(sqlite::database& db) {
     migrate_baron_character_id(db);
     migrate_building_output_rates(db);
     migrate_pond_type(db);
+    migrate_retinue_gender(db);
+    migrate_retinue_health(db);
+    migrate_retinue_priority(db);
+    migrate_retinue_equipment(db);
+    migrate_retinue_maintained(db);
+    migrate_building_tech_actions(db);
+    migrate_fiefdom_morale_ts(db);
     migrate_drop_peasants(db);
     migrate_beams_boards(db);
     ensureGameDBIndexes_private(db);

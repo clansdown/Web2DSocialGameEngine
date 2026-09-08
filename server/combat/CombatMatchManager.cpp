@@ -248,16 +248,48 @@ void combat_match_manager::purge_ended_matches() {
 
 void combat_match_manager::on_match_end(const combat_match& match) {
     // Persist casualties on the uWS loop thread (SQLite is single-owner there).
+    // `wounded` rulesets apply the no-death model: members who fell are wounded
+    // to their individual end-of-combat HP% (health drops, recovery clock
+    // restarts, status stays active) instead of becoming casualties. Recent
+    // battle win/loss timestamps feed the derived household-morale decay terms.
+    const bool wounded_mode = (match.death_handling() == "wounded");
+    std::map<int64_t, std::vector<retinue_db::wound_spec>> wounded_by_player;
     std::map<int64_t, std::vector<int64_t>> casualties_by_player;
     for (const auto& c : match.casualties_snapshot()) {
-        casualties_by_player[c.owner_player_id].push_back(c.member_id);
+        if (wounded_mode) {
+            wounded_by_player[c.owner_player_id].push_back({c.member_id, c.end_hp});
+        } else {
+            casualties_by_player[c.owner_player_id].push_back(c.member_id);
+        }
     }
-    if (casualties_by_player.empty() || !defer_fn_) return;
-    defer_fn_([casualties_by_player]() {
+    const int winner_team = match.winner_team();
+    std::map<int64_t, bool> won_by_player;
+    if (winner_team >= 0) {
+        for (const auto& p : match.players_snapshot()) {
+            won_by_player[p.player_id] = (p.team == winner_team);
+        }
+    }
+    if (!defer_fn_) return;
+    defer_fn_([wounded_by_player, casualties_by_player, won_by_player]() {
         try {
             auto& db = Database::getInstance().gameDB();
+            for (const auto& [player_id, wounds] : wounded_by_player) {
+                retinue_db::apply_wounds(db, player_id, wounds);
+            }
             for (const auto& [player_id, member_ids] : casualties_by_player) {
                 retinue_db::apply_casualties(db, player_id, member_ids);
+            }
+            if (!won_by_player.empty()) {
+                const int64_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                for (const auto& [player_id, won] : won_by_player) {
+                    if (won) {
+                        db << "UPDATE fiefdoms SET last_victory_ts = ? WHERE owner_id = ?;"
+                           << now << player_id;
+                    } else {
+                        db << "UPDATE fiefdoms SET last_defeat_ts = ? WHERE owner_id = ?;"
+                           << now << player_id;
+                    }
+                }
             }
         } catch (const std::exception& e) {
             std::cerr << "[combat] failed to persist casualties: " << e.what() << std::endl;

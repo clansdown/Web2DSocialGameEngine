@@ -3,6 +3,7 @@
 #include "Database.hpp"
 #include "GameConfigCache.hpp"
 #include "GridCollision.hpp"
+#include "Money.hpp"
 #include <algorithm>
 #include <map>
 #include <optional>
@@ -613,19 +614,8 @@ bool hasEnoughResources(GameConfigCache& cache, int fiefdom_id, const json& cost
     json import_settings = json::object();
     try { import_settings = json::parse(import_settings_str); } catch (...) { import_settings = json::object(); }
 
-    auto economy_cfg = cache.getEconomyConfig();
+    const json economy_cfg = cache.getEconomyConfig();
     json import_prices = economy_cfg.value("import_prices", json::object());
-    auto currency_cfg = economy_cfg.value("currency", json::object());
-    double pence_per_shilling = currency_cfg.value("pence_per_shilling", 12.0);
-    double shillings_per_pound = currency_cfg.value("shillings_per_pound", 20.0);
-    double pence_per_gold = currency_cfg.value("pence_per_gold", pence_per_shilling * shillings_per_pound);
-
-    auto money_price_to_pence = [&](const json& price) -> double {
-        if (!price.is_object()) return 0.0;
-        return price.value("gold", 0.0) * pence_per_gold
-             + price.value("shillings", 0.0) * pence_per_shilling
-             + price.value("pence", 0.0);
-    };
 
     std::map<std::string, double> stock = {
         {"wood", (double)wood}, {"stone", (double)stone}, {"steel", (double)steel},
@@ -635,54 +625,22 @@ bool hasEnoughResources(GameConfigCache& cache, int fiefdom_id, const json& cost
         {"beams", (double)beams}, {"boards", (double)boards},
     };
 
-    auto auto_import = [&](const std::string& res) -> bool {
-        if (import_settings.is_object() && import_settings.contains(res)) {
-            return import_settings[res].get<bool>();
-        }
-        return true;
-    };
-
-    double gold_demand = 0.0;
-    double silver_demand = 0.0;
-
-    for (auto& [res, cost] : costs.items()) {
-        double amount = cost.get<double>();
-        if (amount <= 0.0) continue;
-        if (res == "gold") { gold_demand += amount; continue; }
-        if (res == "silver_pence") { silver_demand += amount; continue; }
-        auto it = stock.find(res);
-        if (it == stock.end()) return false;
-        double shortfall = amount - it->second;
-        if (shortfall <= 0.0) continue;
-        // Cover the shortfall with money (auto-import) if enabled and priced.
-        if (auto_import(res) && import_prices.contains(res)) {
-            const json& price = import_prices[res];
-            if (price.is_object()) {
-                silver_demand += shortfall * money_price_to_pence(price);
-            } else if (price.is_number()) {
-                gold_demand += shortfall * price.get<double>();
-            } else {
-                return false;
-            }
-        } else {
-            return false;
-        }
-    }
-
-    // Money is fungible: gold and silver_pence are one wallet at pence_per_gold.
-    double total_gold_demand = gold_demand + silver_demand / pence_per_gold;
-    double total_gold_wealth = gold + silver_pence / pence_per_gold;
-    return total_gold_demand <= total_gold_wealth + 1e-9;
+    money::wallet wallet{gold, silver_pence};
+    money::cost_context ctx;
+    ctx.import_prices = &import_prices;
+    ctx.import_settings = &import_settings;
+    ctx.c = money::load_currency(economy_cfg);
+    return money::affordable(wallet, stock, costs, ctx);
 }
 
 ActionResult deductResources(GameConfigCache& cache, int fiefdom_id, const json& costs, ActionResult& result) {
     ActionResult r;
     r.status = ActionStatus::OK;
-    
+
     if (costs.empty()) return r;
-    
+
     auto& db = Database::getInstance().gameDB();
-    
+
     double gold = 0;
     double silver_pence = 0;
     int wood = 0, stone = 0, steel = 0, bronze = 0, grain = 0, leather = 0, mana = 0;
@@ -701,109 +659,64 @@ ActionResult deductResources(GameConfigCache& cache, int fiefdom_id, const json&
     json import_settings = json::object();
     try { import_settings = json::parse(import_settings_str); } catch (...) { import_settings = json::object(); }
 
-    auto economy_cfg = cache.getEconomyConfig();
+    const json economy_cfg = cache.getEconomyConfig();
     json import_prices = economy_cfg.value("import_prices", json::object());
-    auto currency_cfg = economy_cfg.value("currency", json::object());
-    double pence_per_shilling = currency_cfg.value("pence_per_shilling", 12.0);
-    double shillings_per_pound = currency_cfg.value("shillings_per_pound", 20.0);
-    double pence_per_gold = currency_cfg.value("pence_per_gold", pence_per_shilling * shillings_per_pound);
 
-    auto money_price_to_pence = [&](const json& price) -> double {
-        if (!price.is_object()) return 0.0;
-        return price.value("gold", 0.0) * pence_per_gold
-             + price.value("shillings", 0.0) * pence_per_shilling
-             + price.value("pence", 0.0);
-    };
-
-    // Fungible money spending: gold and silver_pence are one wallet at
-    // pence_per_gold; on shortfall we convert across currencies.
-    auto spend_gold = [&](double gold_cost) {
-        if (gold_cost <= 0.0) return;
-        if (gold >= gold_cost) { gold -= gold_cost; return; }
-        double shortfall = gold_cost - gold;
-        gold = 0.0;
-        silver_pence -= shortfall * pence_per_gold;
-    };
-    auto spend_silver = [&](double pence_cost) {
-        if (pence_cost <= 0.0) return;
-        if (silver_pence >= pence_cost) { silver_pence -= pence_cost; return; }
-        double shortfall = pence_cost - silver_pence;
-        silver_pence = 0.0;
-        gold -= shortfall / pence_per_gold;
-    };
-
-    std::map<std::string, double> stock = {
+    std::map<std::string, double> before_stock = {
         {"wood", (double)wood}, {"stone", (double)stone}, {"steel", (double)steel},
         {"bronze", (double)bronze}, {"grain", (double)grain}, {"leather", (double)leather},
         {"mana", (double)mana}, {"charcoal", (double)charcoal}, {"iron", (double)iron},
         {"ironwork", (double)ironwork}, {"fancy_ironwork", (double)fancy_ironwork},
         {"beams", (double)beams}, {"boards", (double)boards},
     };
+    std::map<std::string, double> stock = before_stock;
 
-    for (auto& [res, cost] : costs.items()) {
-        double amount = cost.get<double>();
-        if (amount <= 0.0) continue;
-        if (res == "gold") { spend_gold(amount); continue; }
-        if (res == "silver_pence") { spend_silver(amount); continue; }
-        auto it = stock.find(res);
-        if (it == stock.end()) continue;
-        double from_stock = std::min(it->second, amount);
-        it->second -= from_stock;
-        double shortfall = amount - from_stock;
-        if (shortfall <= 0.0) continue;
-        // Import the shortfall with money (fungible). hasEnoughResources already
-        // verified affordability; here we just spend it.
-        const json& price = import_prices.value(res, json());
-        if (price.is_object()) {
-            spend_silver(shortfall * money_price_to_pence(price));
-        } else if (price.is_number()) {
-            spend_gold(shortfall * price.get<double>());
-        }
+    money::wallet wallet{gold, silver_pence};
+    money::cost_context ctx;
+    ctx.import_prices = &import_prices;
+    ctx.import_settings = &import_settings;
+    ctx.c = money::load_currency(economy_cfg);
+
+    if (!money::pay(wallet, stock, costs, ctx)) {
+        r.status = ActionStatus::FAIL;
+        r.error_code = "insufficient_resources";
+        r.error_message = "Insufficient resources";
+        return r;
     }
 
-    wood = (int)stock["wood"]; stone = (int)stock["stone"]; steel = (int)stock["steel"];
-    bronze = (int)stock["bronze"]; grain = (int)stock["grain"]; leather = (int)stock["leather"];
-    mana = (int)stock["mana"]; charcoal = (int)stock["charcoal"]; iron = (int)stock["iron"];
-    ironwork = (int)stock["ironwork"]; fancy_ironwork = (int)stock["fancy_ironwork"];
-    beams = (int)stock["beams"]; boards = (int)stock["boards"];
-
-    std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana",
-                                     "charcoal", "iron", "ironwork", "fancy_ironwork", "beams", "boards"};
-    double* gold_ptr = &gold;
-    double* silver_ptr = &silver_pence;
-    int* resource_ptrs[] = {&wood, &stone, &steel, &bronze, &grain, &leather, &mana,
-                            &charcoal, &iron, &ironwork, &fancy_ironwork, &beams, &boards};
-
+    // Side-effect diffs (before/after) per affected resource.
+    const std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel",
+                                           "bronze", "grain", "leather", "mana", "charcoal",
+                                           "iron", "ironwork", "fancy_ironwork", "beams", "boards"};
+    const double resource_after[] = {wallet.gold, wallet.silver_pence,
+                                     stock["wood"], stock["stone"], stock["steel"],
+                                     stock["bronze"], stock["grain"], stock["leather"],
+                                     stock["mana"], stock["charcoal"], stock["iron"],
+                                     stock["ironwork"], stock["fancy_ironwork"],
+                                     stock["beams"], stock["boards"]};
     for (size_t i = 0; i < 15; i++) {
-        if (costs.contains(resource_fields[i])) {
-            double amount = costs[resource_fields[i]].get<double>();
-            double before;
-            double after;
-            if (i == 0) {
-                before = *gold_ptr + amount;
-                after = *gold_ptr;
-            } else if (i == 1) {
-                before = *silver_ptr + amount;
-                after = *silver_ptr;
-            } else {
-                before = *resource_ptrs[i - 2] + static_cast<int>(amount);
-                after = *resource_ptrs[i - 2];
-            }
-            DiffValue diff;
-            diff.field = resource_fields[i];
-            diff.source_type = "fiefdom";
-            diff.source_id = fiefdom_id;
-            diff.entity_key = "fiefdom_id";
-            diff.from_value = before;
-            diff.to_value = after;
-            result.side_effects.push_back(diff);
-        }
+        if (!costs.contains(resource_fields[i])) continue;
+        const double before = (i == 0) ? gold
+                            : (i == 1) ? silver_pence
+                                       : before_stock[resource_fields[i]];
+        DiffValue diff;
+        diff.field = resource_fields[i];
+        diff.source_type = "fiefdom";
+        diff.source_id = fiefdom_id;
+        diff.entity_key = "fiefdom_id";
+        diff.from_value = before;
+        diff.to_value = resource_after[i];
+        result.side_effects.push_back(diff);
     }
-    
+
     db << "UPDATE fiefdoms SET gold = ?, silver_pence = ?, wood = ?, stone = ?, steel = ?, bronze = ?, grain = ?, leather = ?, mana = ?, charcoal = ?, iron = ?, ironwork = ?, fancy_ironwork = ?, beams = ?, boards = ? WHERE id = ?;"
-       << gold << silver_pence << wood << stone << steel << bronze << grain << leather << mana
-       << charcoal << iron << ironwork << fancy_ironwork << beams << boards << fiefdom_id;
-    
+       << wallet.gold << wallet.silver_pence
+       << (int)stock["wood"] << (int)stock["stone"] << (int)stock["steel"]
+       << (int)stock["bronze"] << (int)stock["grain"] << (int)stock["leather"]
+       << (int)stock["mana"] << (int)stock["charcoal"] << (int)stock["iron"]
+       << (int)stock["ironwork"] << (int)stock["fancy_ironwork"]
+       << (int)stock["beams"] << (int)stock["boards"] << fiefdom_id;
+
     return r;
 }
 

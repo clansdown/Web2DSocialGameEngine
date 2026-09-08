@@ -1393,11 +1393,106 @@ export interface retinue_member_dto {
   unit_class: string;
   is_knight: boolean;
   level: number;
+  gender: string;
+  health: number;
+  health_updated: number;
+  priority: number;
   weapons: unknown;
   armor: unknown;
+  equipment: unknown;
   abilities: unknown[];
   status: string;
+  maintained: boolean;
+  fieldable: boolean;
   created_at: number;
+}
+
+// Retinue capacity (the knight is free; recruited members count only).
+export interface retinue_capacity_dto {
+  manor_level: number;
+  total: number;
+  recruited: number;
+  available: number;
+}
+
+// Continuous-health recovery/fielding parameters for the retinue.
+export interface retinue_recovery_dto {
+  max_recovery_hours: number;
+  min_deploy_hp: number;
+  multiplier: number;
+}
+
+// A named hire offer on the recruit market.
+export interface recruit_candidate_dto {
+  unit_class: string;
+  display_name: string;
+  gender: string;
+  level: number;
+  hour_bucket: number;
+  expires_at: number;
+  fee: Record<string, number>;
+}
+
+export interface recruit_market_dto {
+  candidates: recruit_candidate_dto[];
+  current_bucket: number;
+  next_refresh_at: number;
+  manor_level: number;
+  capacity: retinue_capacity_dto;
+}
+
+// Equipment item config (game/config/equipment.json).
+export interface equipment_item_dto {
+  name: string;
+  slot: string;
+  requires_level: number;
+  allowed_classes?: string[];
+  upkeep?: Record<string, number>;
+  armory_slots: number;
+  base_value: number;
+  city_price?: number;
+  craft?: {
+    duration_hours: number;
+    materials: Record<string, number>;
+    tech_node?: string;
+  };
+}
+
+// A building carrying a tech tree plus its per-instance progression state.
+export interface tech_building_dto {
+  id: number;
+  name: string;
+  level: number;
+  tech_trees: string[];
+  tech_xp: number;
+  tech_nodes: string[];
+  forge_order: unknown | null;
+  training: unknown | null;
+}
+
+export interface tech_trees_dto {
+  trees: Record<string, { name: string; nodes: unknown[] }>;
+  buildings: tech_building_dto[];
+}
+
+export interface armory_item_dto {
+  id: number;
+  item_id: string;
+  member_id: number | null;
+  created_at: number;
+  item?: equipment_item_dto;
+  sell_value?: number;
+}
+
+export interface storage_item_dto {
+  item_id: string;
+  count: number;
+  item?: Record<string, unknown>;
+}
+
+export interface retinue_gear_dto {
+  armory: armory_item_dto[];
+  storage: storage_item_dto[];
 }
 
 /**
@@ -1480,15 +1575,286 @@ export async function combatGetConfigsRequest(): Promise<combat_configs_dto> {
  * Fetches the character's full retinue (knight + units).
  *
  * @param characterId - Character whose retinue to fetch
- * @returns Promise<{ members: retinue_member_dto[] }>
+ * @returns Promise<{ members: retinue_member_dto[]; capacity: retinue_capacity_dto }>
  *
  * Usage: Retinue management UI (later); combat snapshots come via welcome
  */
 export async function getRetinueRequest(
   characterId: number
-): Promise<{ members: retinue_member_dto[] }> {
-  return await authenticatedPost<{ members: retinue_member_dto[] }>('getRetinue', {
+): Promise<{
+  members: retinue_member_dto[];
+  capacity: retinue_capacity_dto;
+  recovery: retinue_recovery_dto;
+}> {
+  return await authenticatedPost<{
+    members: retinue_member_dto[];
+    capacity: retinue_capacity_dto;
+    recovery: retinue_recovery_dto;
+  }>('getRetinue', { character_id: characterId });
+}
+
+/**
+ * Lists the current recruit market (named candidate offers for this manor).
+ *
+ * @param characterId - Character whose market to list
+ * @returns Promise<recruit_market_dto> - Candidate offers + capacity
+ *
+ * Usage: Retinue panel recruit tab shows candidate cards, expiry, and fees
+ */
+export async function listRecruitCandidatesRequest(
+  characterId: number
+): Promise<recruit_market_dto> {
+  return await authenticatedPost<recruit_market_dto>('listRecruitCandidates', {
     character_id: characterId
+  });
+}
+
+/**
+ * Hires a named candidate from the recruit market into the retinue.
+ *
+ * @param characterId - Owning character
+ * @param candidate - The offer as returned by listRecruitCandidatesRequest
+ * @returns Promise<{ member: retinue_member_dto; fee: Record<string, number>; capacity: retinue_capacity_dto }>
+ *
+ * Usage: Recruit tab hire button for a specific candidate card
+ */
+export async function hireRecruitRequest(
+  characterId: number,
+  candidate: recruit_candidate_dto
+): Promise<{
+  member: retinue_member_dto;
+  fee: Record<string, number>;
+  capacity: retinue_capacity_dto;
+}> {
+  return await authenticatedPost<{
+    member: retinue_member_dto;
+    fee: Record<string, number>;
+    capacity: retinue_capacity_dto;
+  }>('hireRecruit', {
+    character_id: characterId,
+    unit_class: candidate.unit_class,
+    display_name: candidate.display_name,
+    gender: candidate.gender,
+    level: candidate.level,
+    hour_bucket: candidate.hour_bucket
+  });
+}
+
+/**
+ * Reorders the roster by strict priority (funding + infirmary-bed order).
+ * The knight is always first; `memberIds` must be every non-knight member id
+ * in the new preferred order (a full permutation of the current roster).
+ *
+ * @param characterId - Owning character
+ * @param memberIds - Ordered non-knight member ids, top priority first
+ * @returns Promise<{ members: { id: number; priority: number }[] }> - New ranking
+ *
+ * Usage: Retinue panel Roster tab up/down reorder controls
+ */
+export async function setRetinuePriorityRequest(
+  characterId: number,
+  memberIds: number[]
+): Promise<{ members: { id: number; priority: number }[] }> {
+  return await authenticatedPost<{ members: { id: number; priority: number }[] }>(
+    'setRetinuePriority',
+    { character_id: characterId, member_ids: memberIds }
+  );
+}
+
+/**
+ * Fetches the tech trees and every tech-capable building's progression state.
+ *
+ * @param characterId - Owning character
+ * @returns Promise<tech_trees_dto> - Trees + building xp/learned nodes/orders
+ *
+ * Usage: Tech panel in the manor shows trees and per-building specialization
+ */
+export async function getTechTreesRequest(characterId: number): Promise<tech_trees_dto> {
+  return await authenticatedPost<tech_trees_dto>('getTechTrees', { character_id: characterId });
+}
+
+/**
+ * Spends a building's tech XP to learn a node in its tree.
+ *
+ * @param characterId - Owning character
+ * @param buildingId - The tech-capable building
+ * @param nodeId - Node id from getTechTreesRequest
+ * @returns Promise<{ node_id: string; tech_xp: number; tech_nodes: string[] }>
+ *
+ * Usage: Tech panel learn button on a node card
+ */
+export async function learnTechNodeRequest(
+  characterId: number,
+  buildingId: number,
+  nodeId: string
+): Promise<{ node_id: string; tech_xp: number; tech_nodes: string[] }> {
+  return await authenticatedPost<{ node_id: string; tech_xp: number; tech_nodes: string[] }>(
+    'learnTechNode',
+    { character_id: characterId, building_id: buildingId, node_id: nodeId }
+  );
+}
+
+/**
+ * Starts a forge order at a tech-capable building (pays materials up front).
+ *
+ * @param characterId - Owning character
+ * @param buildingId - The building (must have learned the recipe's tech node)
+ * @param itemId - Equipment item with a `craft` block
+ * @returns Promise<{ forge_order: unknown }>
+ *
+ * Usage: Armory "forge" button on a craftable item
+ */
+export async function startForgeOrderRequest(
+  characterId: number,
+  buildingId: number,
+  itemId: string
+): Promise<{ forge_order: unknown }> {
+  return await authenticatedPost<{ forge_order: unknown }>('startForgeOrder', {
+    character_id: characterId,
+    building_id: buildingId,
+    item_id: itemId
+  });
+}
+
+/**
+ * Fetches the fiefdom's armory (gear) and general storage (items).
+ *
+ * @param characterId - Owning character
+ * @returns Promise<retinue_gear_dto> - Armory + storage lists (item configs merged)
+ *
+ * Usage: Retinue gear/storage panel
+ */
+export async function getRetinueGearRequest(characterId: number): Promise<retinue_gear_dto> {
+  return await authenticatedPost<retinue_gear_dto>('getRetinueGear', {
+    character_id: characterId
+  });
+}
+
+/**
+ * Equips an armory item to a member (level/slot/class checked server-side).
+ *
+ * @param characterId - Owning character
+ * @param armoryId - Armory item row id
+ * @param memberId - Target member
+ * @returns Promise<{ member_id: number; slot: string; item_id: string }>
+ *
+ * Usage: Armory "equip" for a member card
+ */
+export async function equipGearRequest(
+  characterId: number,
+  armoryId: number,
+  memberId: number
+): Promise<{ member_id: number; slot: string; item_id: string }> {
+  return await authenticatedPost<{ member_id: number; slot: string; item_id: string }>('equipGear', {
+    character_id: characterId,
+    armory_id: armoryId,
+    member_id: memberId
+  });
+}
+
+/**
+ * De-equips a member's slot back to the armory (basic kit fills the slot).
+ *
+ * @param characterId - Owning character
+ * @param memberId - The member
+ * @param slot - Slot id ("weapon" | "armor" | "mount" | "potions")
+ * @returns Promise<{ member_id: number; slot: string; item_id: string }>
+ */
+export async function deassignGearRequest(
+  characterId: number,
+  memberId: number,
+  slot: string
+): Promise<{ member_id: number; slot: string; item_id: string }> {
+  return await authenticatedPost<{ member_id: number; slot: string; item_id: string }>(
+    'deassignGear',
+    { character_id: characterId, member_id: memberId, slot }
+  );
+}
+
+/**
+ * Sells an armory item or a storage item at the config sell discount.
+ *
+ * @param characterId - Owning character
+ * @param kind - 'armory' (needs armoryId) or 'storage' (needs itemId)
+ * @param armoryId - Armory row id (kind armory)
+ * @param itemId - Storage item id (kind storage)
+ * @returns Promise<{ gold: number }> - Gold received
+ *
+ * Usage: Sell button on stashed gear / surplus storage items
+ */
+export async function sellItemRequest(
+  characterId: number,
+  kind: 'armory' | 'storage',
+  armoryId: number,
+  itemId: string
+): Promise<{ gold: number }> {
+  return await authenticatedPost<{ gold: number }>('sellItem', {
+    character_id: characterId,
+    kind,
+    armory_id: armoryId,
+    item_id: itemId
+  });
+}
+
+/**
+ * Purchases a gear item from "the city" at its extreme city_price markup.
+ *
+ * @param characterId - Owning character
+ * @param itemId - Equipment item with a city_price
+ * @returns Promise<{ item_id: string; armory_id: number; gold: number }>
+ *
+ * Usage: Armory "buy from city" button (a gold-sink bypass of the blacksmith)
+ */
+export async function buyGearCityRequest(
+  characterId: number,
+  itemId: string
+): Promise<{ item_id: string; armory_id: number; gold: number }> {
+  return await authenticatedPost<{ item_id: string; armory_id: number; gold: number }>(
+    'buyGearCity',
+    { character_id: characterId, item_id: itemId }
+  );
+}
+
+/**
+ * Hires a teacher: starts a one-at-a-time training timer on a tech-capable
+ * building, granting xp when it completes (retinue.json training block).
+ *
+ * @param characterId - Owning character
+ * @param buildingId - A building with a tech tree and no active training
+ * @returns Promise<{ training: unknown }> - The started training timer
+ *
+ * Usage: Tech panel "hire teacher" (on-demand, no inventory)
+ */
+export async function hireTeacherRequest(
+  characterId: number,
+  buildingId: number
+): Promise<{ training: unknown }> {
+  return await authenticatedPost<{ training: unknown }>('hireTeacher', {
+    character_id: characterId,
+    building_id: buildingId
+  });
+}
+
+/**
+ * Consumes one training item (a book) from general storage to start a training
+ * timer on a tech-capable building.
+ *
+ * @param characterId - Owning character
+ * @param buildingId - A building with a tech tree and no active training
+ * @param itemId - items.json item with xp_grant + training_duration_hours
+ * @returns Promise<{ training: unknown; item_id: string }>
+ *
+ * Usage: Storage panel "apply" on a book
+ */
+export async function applyBookItemRequest(
+  characterId: number,
+  buildingId: number,
+  itemId: string
+): Promise<{ training: unknown; item_id: string }> {
+  return await authenticatedPost<{ training: unknown; item_id: string }>('applyBookItem', {
+    character_id: characterId,
+    building_id: buildingId,
+    item_id: itemId
   });
 }
 

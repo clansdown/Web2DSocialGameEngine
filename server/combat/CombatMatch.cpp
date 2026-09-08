@@ -389,7 +389,9 @@ void combat_match::kill_unit(int64_t unit_id) {
     } else {
         // permanent (or revive_resource — revive is not implemented yet,
         // so those units are lost until it is).
-        casualties_.push_back({u.unit_id, u.owner_player_id});
+        // Record the HP% the unit fell with — under `wounded` rulesets it
+        // becomes the member's wound severity (heal from where they ended).
+        casualties_.push_back({u.unit_id, u.owner_player_id, u.hp});
         removed_this_tick_.push_back(u.unit_id);
         units_.erase(it);
     }
@@ -490,7 +492,8 @@ void combat_match::broadcast_ended(const std::function<void(const combat_message
     payload["reason"] = end_reason_;
     nlohmann::json casualties = nlohmann::json::array();
     for (const auto& c : casualties_) {
-        casualties.push_back({{"member_id", c.member_id}, {"owner", c.owner_player_id}});
+        casualties.push_back({{"member_id", c.member_id}, {"owner", c.owner_player_id},
+                              {"end_hp", c.end_hp}});
     }
     payload["casualties"] = casualties;
     msg.json_payload = payload;

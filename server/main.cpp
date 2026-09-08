@@ -47,6 +47,7 @@
 #include "combat/CombatMatchManager.hpp"
 #include "combat/CombatMapCache.hpp"
 #include "RetinueDB.hpp"
+#include "RetinueMarket.hpp"
 #include <sqlite_modern_cpp/errors.h>
 
 using json = nlohmann::json;
@@ -605,6 +606,35 @@ ApiResponse handleGetFiefdom(GameConfigCache& config_cache, const json& body,
             }
         }
         response.data["road_morale"] = road_morale;
+
+        // Derived household morale (computed, never stored): funded/unfunded
+        // retinue + chapel buildings + recent battle results -> capped percent.
+        {
+            int morale_funded = 0, morale_unfunded = 0;
+            db << "SELECT COALESCE(SUM(maintained),0), "
+                  "COALESCE(SUM(CASE WHEN maintained = 0 THEN 1 ELSE 0 END),0) "
+                  "FROM retinue_members WHERE character_id = ? AND is_knight = 0 AND status = 'active';"
+               << fiefdom.owner_id
+               >> [&](int f, int u) { morale_funded = f; morale_unfunded = u; };
+            int64_t last_victory_ts = 0, last_defeat_ts = 0;
+            db << "SELECT last_victory_ts, last_defeat_ts FROM fiefdoms WHERE id = ?;"
+               << fiefdom_id
+               >> [&](int64_t v, int64_t d) { last_victory_ts = v; last_defeat_ts = d; };
+            const int64_t now_ts = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+            const auto hm = Morale::computeHouseholdMorale(
+                building_types, config_cache.getRetinueConfig(),
+                fiefdom.buildings, morale_funded, morale_unfunded,
+                now_ts, last_victory_ts, last_defeat_ts);
+            response.data["household_morale"] = {
+                {"percent", hm.percent},
+                {"points", hm.points},
+                {"chapel_points", hm.chapel_points},
+                {"funded_members", hm.funded_count},
+                {"unfunded_members", hm.unfunded_count},
+                {"victory_decay", hm.victory_decay},
+                {"defeat_decay", hm.defeat_decay}
+            };
+        }
     }
 
     // River cells + water power. The river is lazy-seeded from manor_river.json
@@ -4634,10 +4664,16 @@ bool verify_character_ownership(const json& body,
     return true;
 }
 
-std::vector<combat::retinue_member_snapshot> load_retinue_snapshot(int64_t character_id) {
+std::vector<combat::retinue_member_snapshot> load_retinue_snapshot(
+    int64_t character_id,
+    const retinue_db::recovery_settings& settings = retinue_db::recovery_settings{}) {
     auto& db = Database::getInstance().gameDB();
+    auto members = retinue_db::load_active_retinue(db, character_id);
+    const int64_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    retinue_db::apply_recovery(db, members, now, settings.multiplier, settings.max_recovery_hours);
     std::vector<combat::retinue_member_snapshot> snapshot;
-    for (const auto& m : retinue_db::load_active_retinue(db, character_id)) {
+    for (const auto& m : members) {
+        if (m.health + 1e-9 < settings.min_deploy_hp) continue;  // locked in the infirmary
         combat::retinue_member_snapshot s;
         s.member_id = m.id;
         s.display_name = m.display_name;
@@ -4647,6 +4683,70 @@ std::vector<combat::retinue_member_snapshot> load_retinue_snapshot(int64_t chara
         snapshot.push_back(std::move(s));
     }
     return snapshot;
+}
+
+// Recovery/fielding settings for a character's fiefdom: the retinue.json
+// healing parameters plus additive `recovery_multiplier` bonuses from every
+// completed `class: "infirmary"` building.
+retinue_db::recovery_settings recovery_settings_for(GameConfigCache& config_cache,
+                                                    int64_t character_id) {
+    retinue_db::recovery_settings s;
+    const auto& retinue_cfg = config_cache.getRetinueConfig();
+    const json recovery_cfg = retinue_cfg.value("recovery", json::object());
+    s.max_recovery_hours = recovery_cfg.value("max_recovery_hours", 16.0);
+    s.min_deploy_hp = recovery_cfg.value("min_deploy_hp", 50.0);
+
+    auto& db = Database::getInstance().gameDB();
+    int fiefdom_id = 0;
+    db << "SELECT id FROM fiefdoms WHERE owner_id = ? LIMIT 1;" << character_id
+       >> [&](int id) { fiefdom_id = id; };
+    if (fiefdom_id == 0) return s;
+
+    std::map<std::string, double> type_bonus;
+    const auto& types = config_cache.getFiefdomBuildingTypes();
+    for (const auto& obj : types) {
+        if (!obj.is_object()) continue;
+        for (auto& [type_id, bcfg] : obj.items()) {
+            if (!bcfg.is_object()) continue;
+            if (config_cache.getBuildingClass(type_id) == "infirmary") {
+                type_bonus[type_id] = bcfg.value("recovery_multiplier", 0.0);
+            }
+        }
+    }
+    db << "SELECT DISTINCT name FROM fiefdom_buildings WHERE fiefdom_id = ? AND level >= 1;"
+       << fiefdom_id
+       >> [&](std::string name) {
+              auto it = type_bonus.find(name);
+              if (it != type_bonus.end()) s.multiplier += it->second;
+          };
+
+    // Household morale also speeds healing: morale.recovery_morale_bonus of the
+    // derived general-morale percent adds to the healing-rate multiplier.
+    {
+        const int64_t now_ts = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        int morale_funded = 0, morale_unfunded = 0;
+        db << "SELECT COALESCE(SUM(maintained),0), "
+              "COALESCE(SUM(CASE WHEN maintained = 0 THEN 1 ELSE 0 END),0) "
+              "FROM retinue_members WHERE character_id = ? AND is_knight = 0 AND status = 'active';"
+           << character_id
+           >> [&](int f, int u) { morale_funded = f; morale_unfunded = u; };
+        int64_t last_victory_ts = 0, last_defeat_ts = 0;
+        db << "SELECT last_victory_ts, last_defeat_ts FROM fiefdoms WHERE id = ?;"
+           << fiefdom_id
+           >> [&](int64_t v, int64_t d) { last_victory_ts = v; last_defeat_ts = d; };
+        auto morale_fiefdom = FiefdomFetcher::fetchFiefdomById(fiefdom_id);
+        if (morale_fiefdom.has_value()) {
+            const auto hm = Morale::computeHouseholdMorale(
+                config_cache.getFiefdomBuildingTypes(), config_cache.getRetinueConfig(),
+                morale_fiefdom->buildings, morale_funded, morale_unfunded,
+                now_ts, last_victory_ts, last_defeat_ts);
+            const json morale_cfg = config_cache.getRetinueConfig().value("morale", json::object());
+            const double morale_recovery_bonus = morale_cfg.value("recovery_morale_bonus", 0.5);
+            s.multiplier += (hm.percent / 100.0) * morale_recovery_bonus;
+        }
+    }
+
+    return s;
 }
 
 } // namespace
@@ -4713,7 +4813,8 @@ ApiResponse handleCombatCreate(GameConfigCache& config_cache, const json& body,
     std::string error;
     const std::string match_id = g_combat_manager.create_pve_match(
         ruleset_id, ruleset, map_metadata, character_id, display_name,
-        load_retinue_snapshot(character_id), error);
+        load_retinue_snapshot(character_id, recovery_settings_for(config_cache, character_id)),
+        error);
     if (match_id.empty()) {
         response.error = error.empty() ? "could not create match" : error;
         return response;
@@ -4758,7 +4859,8 @@ ApiResponse handleCombatJoin(GameConfigCache& config_cache, const json& body,
 
     std::string error;
     auto match = g_combat_manager.join_match(match_code, character_id, display_name,
-                                             load_retinue_snapshot(character_id), error);
+                                             load_retinue_snapshot(character_id, recovery_settings_for(config_cache, character_id)),
+                                             error);
     if (!match) {
         response.error = error.empty() ? "could not join match" : error;
         return response;
@@ -4866,15 +4968,977 @@ ApiResponse handleGetRetinue(GameConfigCache& config_cache, const json& body,
     }
 
     auto& db = Database::getInstance().gameDB();
+    auto roster = retinue_db::load_retinue(db, character_id);
+    const int64_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    const retinue_db::recovery_settings rec = recovery_settings_for(config_cache, character_id);
+    retinue_db::apply_recovery(db, roster, now, rec.multiplier, rec.max_recovery_hours);
     nlohmann::json members = nlohmann::json::array();
-    for (const auto& m : retinue_db::load_retinue(db, character_id)) {
-        members.push_back(m.to_json());
+    for (const auto& m : roster) {
+        nlohmann::json j = m.to_json();
+        j["fieldable"] = (m.health + 1e-9 >= rec.min_deploy_hp);
+        members.push_back(std::move(j));
     }
     response.data["members"] = members;
+    response.data["recovery"] = {
+        {"max_recovery_hours", rec.max_recovery_hours},
+        {"min_deploy_hp", rec.min_deploy_hp},
+        {"multiplier", rec.multiplier}
+    };
+
+    // Retinue capacity is keyed to the manor level; the knight is free.
+    int fiefdom_id = 0;
+    int manor_level = 0;
+    db << "SELECT id, manor_level FROM fiefdoms WHERE owner_id = ? LIMIT 1;"
+       << character_id >> [&](int id, int ml) { fiefdom_id = id; manor_level = ml; };
+    const int capacity = (fiefdom_id > 0) ? config_cache.getRetinueCapacity(manor_level) : 0;
+    const int recruited = (fiefdom_id > 0)
+        ? static_cast<int>(retinue_db::recruited_member_count(db, character_id)) : 0;
+    response.data["capacity"] = {
+        {"manor_level", manor_level},
+        {"total", capacity},
+        {"recruited", recruited},
+        {"available", (capacity - recruited > 0) ? (capacity - recruited) : 0}
+    };
 
     if (new_token) {
         response.data["token"] = *new_token;
     }
+    return response;
+}
+
+// Lists the current recruit market offers for a character's manor: the current
+// hour cohort plus the previous hour's (still-hirable, one-hour grace). Offers
+// are deterministic from (character_id, hour bucket), never stored.
+ApiResponse handleListRecruitCandidates(GameConfigCache& config_cache, const json& body,
+                                        const std::optional<std::string>& username,
+                                        const ClientInfo& client,
+                                        const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+
+    int64_t character_id = 0;
+    std::string display_name;
+    if (!verify_character_ownership(body, username, character_id, display_name)) {
+        response.error = "Character does not belong to this user";
+        return response;
+    }
+
+    auto& db = Database::getInstance().gameDB();
+    int fiefdom_id = 0;
+    int manor_level = 0;
+    db << "SELECT id, manor_level FROM fiefdoms WHERE owner_id = ? LIMIT 1;"
+       << character_id >> [&](int id, int ml) { fiefdom_id = id; manor_level = ml; };
+    if (fiefdom_id == 0) {
+        response.error = "You need a manor before you can recruit a household.";
+        return response;
+    }
+
+    const int64_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    int current_bucket = 0;
+    int64_t next_refresh_at = 0;
+    auto candidates = retinue_market::list_candidates(
+        config_cache.getPlayerCombatants(), config_cache.getRetinueConfig(),
+        character_id, now, manor_level, g_text_dir, current_bucket, next_refresh_at);
+
+    json arr = json::array();
+    for (auto& c : candidates) {
+        arr.push_back(c.to_json());
+    }
+    const int capacity = config_cache.getRetinueCapacity(manor_level);
+    const int recruited = static_cast<int>(retinue_db::recruited_member_count(db, character_id));
+    response.data["candidates"] = arr;
+    response.data["current_bucket"] = current_bucket;
+    response.data["next_refresh_at"] = next_refresh_at;
+    response.data["manor_level"] = manor_level;
+    response.data["capacity"] = {
+        {"total", capacity}, {"recruited", recruited},
+        {"available", (capacity - recruited > 0) ? (capacity - recruited) : 0}
+    };
+    if (new_token) {
+        response.data["token"] = *new_token;
+    }
+    return response;
+}
+
+// Hires a candidate from the market. The offer must be verifiable (current or
+// previous hour bucket), affordable (gold + materials from fiefdom stores), the
+// name must be unused, and the manor must have headroom.
+ApiResponse handleHireRecruit(GameConfigCache& config_cache, const json& body,
+                              const std::optional<std::string>& username,
+                              const ClientInfo& client,
+                              const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+
+    int64_t character_id = 0;
+    std::string display_name;
+    if (!verify_character_ownership(body, username, character_id, display_name)) {
+        response.error = "Character does not belong to this user";
+        return response;
+    }
+
+    auto& db = Database::getInstance().gameDB();
+    int fiefdom_id = 0;
+    int manor_level = 0;
+    db << "SELECT id, manor_level FROM fiefdoms WHERE owner_id = ? LIMIT 1;"
+       << character_id >> [&](int id, int ml) { fiefdom_id = id; manor_level = ml; };
+    if (fiefdom_id == 0) {
+        response.error = "You need a manor before you can recruit a household.";
+        return response;
+    }
+
+    recruit_candidate offer;
+    offer.unit_class = body.value("unit_class", "");
+    offer.display_name = body.value("display_name", "");
+    offer.gender = body.value("gender", "");
+    offer.level = body.value("level", 0);
+    offer.hour_bucket = body.value("hour_bucket", -1);
+    if (offer.unit_class.empty() || offer.display_name.empty() ||
+        offer.gender.empty() || offer.level < 1 || offer.hour_bucket < 0) {
+        response.error = "Missing or invalid recruit offer fields.";
+        return response;
+    }
+
+    if (!retinue_market::is_valid_candidate(
+            config_cache.getPlayerCombatants(), config_cache.getRetinueConfig(),
+            character_id, manor_level, g_text_dir, offer)) {
+        response.error = "That offer has expired or was never made.";
+        return response;
+    }
+
+    // Capacity check (the knight is free).
+    const int capacity = config_cache.getRetinueCapacity(manor_level);
+    const int recruited = static_cast<int>(retinue_db::recruited_member_count(db, character_id));
+    if (recruited >= capacity) {
+        response.error = "Your manor cannot house anyone else in your retinue.";
+        return response;
+    }
+
+    // Name uniqueness within the player's roster.
+    int dup = 0;
+    db << "SELECT COUNT(*) FROM retinue_members WHERE character_id = ? AND LOWER(display_name) = LOWER(?);"
+       << character_id << offer.display_name >> [&](int c) { dup = c; };
+    if (dup > 0) {
+        response.error = "Someone with that name already serves you.";
+        return response;
+    }
+
+    // The hire fee is the class cost at the offered level.
+    const auto& player_combatants = config_cache.getPlayerCombatants();
+    if (!player_combatants.is_object() || !player_combatants.contains(offer.unit_class)) {
+        response.error = "Unknown unit class.";
+        return response;
+    }
+    const json fee = retinue_market::compute_recruit_fee_for(
+        player_combatants[offer.unit_class], offer.level);
+
+    // Pay the fee from the fungible fiefdom wallet, auto-importing any material
+    // shortfalls with money (respecting per-resource import toggles). Same path
+    // buildings use — gold and silver_pence are one wallet at pence_per_gold.
+    if (!GameLogic::Validation::hasEnoughResources(config_cache, fiefdom_id, fee)) {
+        response.error = "You cannot afford this candidate's fee (gold + materials).";
+        return response;
+    }
+    GameLogic::ActionResult deduct_result;
+    if (GameLogic::Validation::deductResources(config_cache, fiefdom_id, fee, deduct_result).status != GameLogic::ActionStatus::OK) {
+        response.error = "You cannot afford this candidate's fee (gold + materials).";
+        return response;
+    }
+
+    const int64_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    auto member = retinue_db::hire_member(db, character_id, offer.display_name,
+                                          offer.unit_class, offer.gender,
+                                          offer.level, now);
+    response.data["member"] = member.to_json();
+    response.data["fee"] = fee;
+    response.data["capacity"] = {
+        {"total", capacity}, {"recruited", recruited + 1},
+        {"available", (capacity - recruited - 1 > 0) ? (capacity - recruited - 1) : 0}
+    };
+    if (new_token) {
+        response.data["token"] = *new_token;
+    }
+    return response;
+}
+
+// Reorders the roster by strict priority (funding + infirmary-bed order). The
+// knight is always first (priority 0); `member_ids` lists the non-knight
+// members in their new order (a full permutation of the current roster).
+ApiResponse handleSetRetinuePriority(GameConfigCache& config_cache, const json& body,
+                                     const std::optional<std::string>& username,
+                                     const ClientInfo& client,
+                                     const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+    int64_t character_id = 0;
+    std::string display_name;
+    if (!verify_character_ownership(body, username, character_id, display_name)) {
+        response.error = "Character does not belong to this user";
+        return response;
+    }
+
+    if (!body.contains("member_ids") || !body["member_ids"].is_array()) {
+        response.error = "member_ids (an ordered array of member ids) is required.";
+        return response;
+    }
+    std::vector<int64_t> ordered;
+    for (const auto& v : body["member_ids"]) {
+        if (v.is_number_integer()) ordered.push_back(v.get<int64_t>());
+    }
+
+    auto& db = Database::getInstance().gameDB();
+    if (!retinue_db::reorder_priority(db, character_id, ordered)) {
+        response.error = "member_ids must be exactly your current non-knight members, in your preferred order.";
+        return response;
+    }
+
+    // Reflect the new ranking back so the client can re-render without refetch.
+    auto roster = retinue_db::load_retinue(db, character_id);
+    json members = json::array();
+    for (const auto& m : roster) {
+        members.push_back({{"id", m.id}, {"priority", m.priority}});
+    }
+    response.data["members"] = members;
+    if (new_token) {
+        response.data["token"] = *new_token;
+    }
+    return response;
+}
+
+// ── Phase 5a: technology trees, forge orders, armory/storage, gear ─────────
+
+// The character's fiefdom id (0 if none).
+static int fiefdom_id_for_character(int64_t character_id) {
+    auto& db = Database::getInstance().gameDB();
+    int id = 0;
+    db << "SELECT id FROM fiefdoms WHERE owner_id = ? LIMIT 1;" << character_id
+       >> [&](int i) { id = i; };
+    return id;
+}
+
+// True if a building row belongs to the given fiefdom.
+static bool building_belongs_to_fiefdom(int64_t building_id, int fiefdom_id) {
+    auto& db = Database::getInstance().gameDB();
+    int n = 0;
+    db << "SELECT COUNT(*) FROM fiefdom_buildings WHERE id = ? AND fiefdom_id = ?;"
+       << building_id << fiefdom_id >> [&](int c) { n = c; };
+    return n > 0;
+}
+
+// Reads a building's tech/order state (xp, learned nodes, active forge/training).
+static void load_building_tech(int64_t building_id, double& xp, std::vector<std::string>& nodes,
+                               std::string& forge_order, std::string& training) {
+    auto& db = Database::getInstance().gameDB();
+    db << "SELECT tech_xp, tech_nodes, forge_order, training FROM fiefdom_buildings WHERE id = ?;"
+       << building_id
+       >> [&](double xp_val, std::string node_json, std::string fo, std::string tr) {
+           xp = xp_val;
+           forge_order = std::move(fo);
+           training = std::move(tr);
+           try {
+               auto arr = json::parse(node_json);
+               if (arr.is_array()) {
+                   for (auto& n : arr) if (n.is_string()) nodes.push_back(n.get<std::string>());
+               }
+           } catch (...) {}
+       };
+}
+
+// The building type config object for a placed building (by its current name).
+static json building_type_config(GameConfigCache& config_cache, const std::string& type_id) {
+    for (const auto& obj : config_cache.getFiefdomBuildingTypes()) {
+        if (obj.is_object() && obj.contains(type_id)) return obj[type_id];
+    }
+    return json::object();
+}
+
+ApiResponse handleGetTechTrees(GameConfigCache& config_cache, const json& body,
+                               const std::optional<std::string>& username,
+                               const ClientInfo& client,
+                               const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+    if (!username) { response.needs_auth = true; return response; }
+    int64_t character_id = 0;
+    std::string display_name;
+    if (!verify_character_ownership(body, username, character_id, display_name)) {
+        response.error = "Character does not belong to this user";
+        return response;
+    }
+    const int fiefdom_id = fiefdom_id_for_character(character_id);
+    auto& db = Database::getInstance().gameDB();
+
+    response.data["trees"] = config_cache.getTechTreesConfig().value("trees", json::object());
+
+    json buildings = json::array();
+    if (fiefdom_id > 0) {
+        // Buildings that carry a tech tree, with their xp / learned nodes /
+        // active forge + training state.
+        db << "SELECT id, name, level, tech_xp, tech_nodes, forge_order, training "
+              "FROM fiefdom_buildings WHERE fiefdom_id = ? AND level >= 1;"
+           << fiefdom_id
+           >> [&](int64_t bid, std::string name, int level, double xp, std::string nodes,
+                  std::string forge_order, std::string training) {
+               const json cfg = building_type_config(config_cache, name);
+               if (!cfg.is_object() || !cfg.contains("tech_trees")) return;
+               json b = json::object();
+               b["id"] = bid;
+               b["name"] = name;
+               b["level"] = level;
+               b["tech_trees"] = cfg.value("tech_trees", json::array());
+               b["tech_xp"] = xp;
+               try {
+                   b["tech_nodes"] = json::parse(nodes);
+               } catch (...) { b["tech_nodes"] = json::array(); }
+               b["forge_order"] = forge_order.empty() ? json() : json::parse(forge_order);
+               b["training"] = training.empty() ? json() : json::parse(training);
+               buildings.push_back(std::move(b));
+           };
+    }
+    response.data["buildings"] = buildings;
+    if (new_token) response.data["token"] = *new_token;
+    return response;
+}
+
+ApiResponse handleLearnTechNode(GameConfigCache& config_cache, const json& body,
+                                const std::optional<std::string>& username,
+                                const ClientInfo& client,
+                                const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+    if (!username) { response.needs_auth = true; return response; }
+    int64_t character_id = 0;
+    std::string display_name;
+    if (!verify_character_ownership(body, username, character_id, display_name)) {
+        response.error = "Character does not belong to this user";
+        return response;
+    }
+    const int fiefdom_id = fiefdom_id_for_character(character_id);
+    if (fiefdom_id == 0) { response.error = "You need a manor."; return response; }
+
+    const int64_t building_id = body.value("building_id", 0LL);
+    const std::string node_id = body.value("node_id", "");
+    if (building_id == 0 || node_id.empty()) {
+        response.error = "building_id and node_id are required.";
+        return response;
+    }
+    auto& db = Database::getInstance().gameDB();
+    if (!building_belongs_to_fiefdom(building_id, fiefdom_id)) {
+        response.error = "Building does not belong to your fiefdom.";
+        return response;
+    }
+
+    std::string bname;
+    db << "SELECT name FROM fiefdom_buildings WHERE id = ?;" << building_id
+       >> [&](std::string n) { bname = std::move(n); };
+    const json cfg = building_type_config(config_cache, bname);
+    if (!cfg.contains("tech_trees")) {
+        response.error = "This building has no technology tree.";
+        return response;
+    }
+    const auto& trees_root = config_cache.getTechTreesConfig().value("trees", json::object());
+    for (const auto& tree_id : cfg["tech_trees"]) {
+        const std::string tid = tree_id.get<std::string>();
+        if (!trees_root.contains(tid)) continue;
+        const auto& tree = trees_root[tid];
+        if (!tree.contains("nodes")) continue;
+        for (const auto& node : tree["nodes"]) {
+            if (!node.is_object() || node.value("id", "") != node_id) continue;
+
+            double xp = 0;
+            std::vector<std::string> nodes;
+            std::string forge_order, training;
+            load_building_tech(building_id, xp, nodes, forge_order, training);
+
+            const int cost = node.value("xp_cost", 0);
+            if (xp + 1e-9 < cost) {
+                response.error = "Not enough technology XP for this node.";
+                return response;
+            }
+            for (const auto& prereq : node.value("prerequisites", json::array())) {
+                if (std::find(nodes.begin(), nodes.end(), prereq.get<std::string>()) == nodes.end()) {
+                    response.error = "Prerequisite nodes not learned.";
+                    return response;
+                }
+            }
+            if (std::find(nodes.begin(), nodes.end(), node_id) != nodes.end()) {
+                response.error = "Node already learned.";
+                return response;
+            }
+
+            nodes.push_back(node_id);
+            json node_json = json::array();
+            for (const auto& n : nodes) node_json.push_back(n);
+            db << "UPDATE fiefdom_buildings SET tech_xp = ?, tech_nodes = ? WHERE id = ?;"
+               << (xp - cost) << node_json.dump() << building_id;
+            response.data["node_id"] = node_id;
+            response.data["tech_xp"] = xp - cost;
+            response.data["tech_nodes"] = node_json;
+            if (new_token) response.data["token"] = *new_token;
+            return response;
+        }
+    }
+    response.error = "Unknown technology node for this building.";
+    return response;
+}
+
+ApiResponse handleStartForgeOrder(GameConfigCache& config_cache, const json& body,
+                                  const std::optional<std::string>& username,
+                                  const ClientInfo& client,
+                                  const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+    if (!username) { response.needs_auth = true; return response; }
+    int64_t character_id = 0;
+    std::string display_name;
+    if (!verify_character_ownership(body, username, character_id, display_name)) {
+        response.error = "Character does not belong to this user";
+        return response;
+    }
+    const int fiefdom_id = fiefdom_id_for_character(character_id);
+    if (fiefdom_id == 0) { response.error = "You need a manor."; return response; }
+
+    const int64_t building_id = body.value("building_id", 0LL);
+    const std::string item_id = body.value("item_id", "");
+    if (building_id == 0 || item_id.empty()) {
+        response.error = "building_id and item_id are required.";
+        return response;
+    }
+    auto& db = Database::getInstance().gameDB();
+    if (!building_belongs_to_fiefdom(building_id, fiefdom_id)) {
+        response.error = "Building does not belong to your fiefdom.";
+        return response;
+    }
+
+    const auto& items_root = config_cache.getEquipmentConfig().value("items", json::object());
+    if (!items_root.contains(item_id)) {
+        response.error = "Unknown equipment item.";
+        return response;
+    }
+    const json& item_cfg = items_root[item_id];
+    if (!item_cfg.contains("craft")) {
+        response.error = "This item cannot be forged at the manor.";
+        return response;
+    }
+    const json craft = item_cfg["craft"];
+    const std::string required_node = craft.value("tech_node", "");
+
+    std::string bname;
+    db << "SELECT name FROM fiefdom_buildings WHERE id = ?;" << building_id
+       >> [&](std::string n) { bname = std::move(n); };
+    const json cfg = building_type_config(config_cache, bname);
+    const int max_orders = cfg.value("max_concurrent_orders", 1);
+
+    double xp = 0;
+    std::vector<std::string> nodes;
+    std::string forge_order, training;
+    load_building_tech(building_id, xp, nodes, forge_order, training);
+
+    // One active forge order per building by default (config max_concurrent_orders).
+    int active_orders = forge_order.empty() ? 0 : 1;
+    if (active_orders >= max_orders) {
+        response.error = "This building already has an active forge order.";
+        return response;
+    }
+    if (!required_node.empty() &&
+        std::find(nodes.begin(), nodes.end(), required_node) == nodes.end()) {
+        response.error = "The recipe for this item has not been learned.";
+        return response;
+    }
+
+    // Armory headroom for the finished item (player-initiated add is capped).
+    const int armory_capacity = config_cache.getRetinueConfig().value("armory_capacity", 100);
+    const int item_slots = item_cfg.value("armory_slots", 1);
+    int used_slots = 0;
+    {
+        std::vector<std::string> armory_items;
+        db << "SELECT item_id FROM fiefdom_armory WHERE fiefdom_id = ?;" << fiefdom_id
+           >> [&](std::string it) { armory_items.push_back(it); };
+        for (const auto& it : armory_items) {
+            if (items_root.contains(it)) used_slots += items_root[it].value("armory_slots", 1);
+        }
+    }
+    if (used_slots + item_slots > armory_capacity) {
+        response.error = "Your armory cannot store another forged item.";
+        return response;
+    }
+
+    // Pay forge materials (fungible money, auto-import honoring import toggles).
+    const json materials = craft.value("materials", json::object());
+    if (!materials.empty()) {
+        if (!GameLogic::Validation::hasEnoughResources(config_cache, fiefdom_id, materials)) {
+            response.error = "You cannot afford the forge materials.";
+            return response;
+        }
+        GameLogic::ActionResult deduct_result;
+        GameLogic::Validation::deductResources(config_cache, fiefdom_id, materials, deduct_result);
+    }
+
+    const int64_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    const double duration_hours = craft.value("duration_hours", 1.0);
+    json order = {{"item_id", item_id}, {"start_ts", now}, {"duration_hours", duration_hours}};
+    db << "UPDATE fiefdom_buildings SET forge_order = ? WHERE id = ?;"
+       << order.dump() << building_id;
+    response.data["forge_order"] = order;
+    if (new_token) response.data["token"] = *new_token;
+    return response;
+}
+
+ApiResponse handleGetRetinueGear(GameConfigCache& config_cache, const json& body,
+                                 const std::optional<std::string>& username,
+                                 const ClientInfo& client,
+                                 const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+    if (!username) { response.needs_auth = true; return response; }
+    int64_t character_id = 0;
+    std::string display_name;
+    if (!verify_character_ownership(body, username, character_id, display_name)) {
+        response.error = "Character does not belong to this user";
+        return response;
+    }
+    const int fiefdom_id = fiefdom_id_for_character(character_id);
+    auto& db = Database::getInstance().gameDB();
+    const auto& items_root = config_cache.getEquipmentConfig().value("items", json::object());
+    const double sell_discount = config_cache.getRetinueConfig().value("sell_discount", 0.25);
+
+    json armory = json::array();
+    if (fiefdom_id > 0) {
+        db << "SELECT id, item_id, member_id, created_at FROM fiefdom_armory "
+              "WHERE fiefdom_id = ? ORDER BY id ASC;"
+           << fiefdom_id
+           >> [&](int64_t aid, std::string item_id, int64_t member_id, int64_t created_at) {
+               json a = json::object();
+               a["id"] = aid;
+               a["item_id"] = item_id;
+               a["member_id"] = member_id;
+               a["created_at"] = created_at;
+               if (items_root.contains(item_id)) {
+                   a["item"] = items_root[item_id];
+                   a["sell_value"] = items_root[item_id].value("base_value", 0.0) * sell_discount;
+               }
+               armory.push_back(std::move(a));
+           };
+    }
+    json storage = json::array();
+    if (fiefdom_id > 0) {
+        db << "SELECT item_id, count FROM fiefdom_storage WHERE fiefdom_id = ? ORDER BY item_id ASC;"
+           << fiefdom_id
+           >> [&](std::string item_id, int count) {
+               json s = json::object();
+               s["item_id"] = item_id;
+               s["count"] = count;
+               if (config_cache.getItemsConfig().value("items", json::object()).contains(item_id)) {
+                   s["item"] = config_cache.getItemsConfig()["items"][item_id];
+               }
+               storage.push_back(std::move(s));
+           };
+    }
+    response.data["armory"] = armory;
+    response.data["storage"] = storage;
+    if (new_token) response.data["token"] = *new_token;
+    return response;
+}
+
+ApiResponse handleEquipGear(GameConfigCache& config_cache, const json& body,
+                            const std::optional<std::string>& username,
+                            const ClientInfo& client,
+                            const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+    if (!username) { response.needs_auth = true; return response; }
+    int64_t character_id = 0;
+    std::string display_name;
+    if (!verify_character_ownership(body, username, character_id, display_name)) {
+        response.error = "Character does not belong to this user";
+        return response;
+    }
+    const int fiefdom_id = fiefdom_id_for_character(character_id);
+    if (fiefdom_id == 0) { response.error = "You need a manor."; return response; }
+    const int64_t armory_id = body.value("armory_id", 0LL);
+    const int64_t member_id = body.value("member_id", 0LL);
+    if (armory_id == 0 || member_id == 0) {
+        response.error = "armory_id and member_id are required.";
+        return response;
+    }
+    auto& db = Database::getInstance().gameDB();
+
+    // The armory item must be yours and un-equipped.
+    std::string item_id;
+    int64_t current_member = 0;
+    db << "SELECT item_id, member_id FROM fiefdom_armory WHERE id = ? AND fiefdom_id = ?;"
+       << armory_id << fiefdom_id
+       >> [&](std::string it, int64_t m) { item_id = it; current_member = m; };
+    if (item_id.empty()) { response.error = "Armory item not found."; return response; }
+    if (current_member != 0) { response.error = "That item is already equipped."; return response; }
+
+    // The member must be yours.
+    int owned = 0;
+    db << "SELECT COUNT(*) FROM retinue_members WHERE id = ? AND character_id = ?;"
+       << member_id << character_id >> [&](int c) { owned = c; };
+    if (owned == 0) { response.error = "Member does not belong to you."; return response; }
+
+    int mlvl = 0;
+    std::string mclass;
+    db << "SELECT level, unit_class FROM retinue_members WHERE id = ?;" << member_id
+       >> [&](int l, std::string cls) { mlvl = l; mclass = cls; };
+
+    const auto& items_root = config_cache.getEquipmentConfig().value("items", json::object());
+    if (!items_root.contains(item_id)) { response.error = "Unknown item."; return response; }
+    const json& item_cfg = items_root[item_id];
+    if (item_cfg.value("requires_level", 1) > mlvl) {
+        response.error = "This item requires a higher member level.";
+        return response;
+    }
+    const auto allowed = item_cfg.value("allowed_classes", json::array());
+    if (!allowed.empty()) {
+        bool ok = false;
+        for (const auto& cls : allowed) if (cls.get<std::string>() == mclass) ok = true;
+        if (!ok) { response.error = "This item cannot be used by that unit class."; return response; }
+    }
+    const std::string slot = item_cfg.value("slot", "weapon");
+
+    // Read the member's equipment map FIRST so a displaced item (already in this
+    // slot) can be returned to the armory before the new one takes its place.
+    std::string equip_json;
+    db << "SELECT equipment FROM retinue_members WHERE id = ?;" << member_id
+       >> [&](std::string e) { equip_json = std::move(e); };
+    json equip;
+    try { equip = json::parse(equip_json); } catch (...) { equip = json::object(); }
+    if (!equip.is_object()) equip = json::object();
+
+    // If the slot is occupied, the old item stops being equipped: clear its
+    // armory member_id so it can be re-equipped or sold again.
+    if (equip.contains(slot) && equip[slot].is_string()) {
+        const std::string displaced = equip[slot].get<std::string>();
+        db << "UPDATE fiefdom_armory SET member_id = NULL "
+              "WHERE fiefdom_id = ? AND item_id = ? AND member_id = ?;"
+           << fiefdom_id << displaced << member_id;
+    }
+
+    db << "UPDATE fiefdom_armory SET member_id = ? WHERE id = ?;" << member_id << armory_id;
+    equip[slot] = item_id;
+    db << "UPDATE retinue_members SET equipment = ? WHERE id = ?;" << equip.dump() << member_id;
+
+    response.data["member_id"] = member_id;
+    response.data["slot"] = slot;
+    response.data["item_id"] = item_id;
+    if (new_token) response.data["token"] = *new_token;
+    return response;
+}
+
+ApiResponse handleDeassignGear(GameConfigCache& config_cache, const json& body,
+                               const std::optional<std::string>& username,
+                               const ClientInfo& client,
+                               const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+    if (!username) { response.needs_auth = true; return response; }
+    int64_t character_id = 0;
+    std::string display_name;
+    if (!verify_character_ownership(body, username, character_id, display_name)) {
+        response.error = "Character does not belong to this user";
+        return response;
+    }
+    const int fiefdom_id = fiefdom_id_for_character(character_id);
+    if (fiefdom_id == 0) { response.error = "You need a manor."; return response; }
+    const int64_t member_id = body.value("member_id", 0LL);
+    const std::string slot = body.value("slot", "");
+    if (member_id == 0 || slot.empty()) {
+        response.error = "member_id and slot are required.";
+        return response;
+    }
+    auto& db = Database::getInstance().gameDB();
+    int owned = 0;
+    db << "SELECT COUNT(*) FROM retinue_members WHERE id = ? AND character_id = ?;"
+       << member_id << character_id >> [&](int c) { owned = c; };
+    if (owned == 0) { response.error = "Member does not belong to you."; return response; }
+
+    std::string equip_json;
+    db << "SELECT equipment FROM retinue_members WHERE id = ?;" << member_id
+       >> [&](std::string e) { equip_json = std::move(e); };
+    json equip;
+    try { equip = json::parse(equip_json); } catch (...) { equip = json::object(); }
+    if (!equip.is_object() || !equip.contains(slot)) {
+        response.error = "That slot is empty.";
+        return response;
+    }
+    const std::string item_id = equip[slot].get<std::string>();
+    equip.erase(slot);
+
+    // Hand the item back to the armory.
+    db << "UPDATE fiefdom_armory SET member_id = NULL WHERE fiefdom_id = ? AND item_id = ? AND member_id = ?;"
+       << fiefdom_id << item_id << member_id;
+    db << "UPDATE retinue_members SET equipment = ? WHERE id = ?;" << equip.dump() << member_id;
+
+    response.data["member_id"] = member_id;
+    response.data["slot"] = slot;
+    response.data["item_id"] = item_id;
+    if (new_token) response.data["token"] = *new_token;
+    return response;
+}
+
+ApiResponse handleSellItem(GameConfigCache& config_cache, const json& body,
+                           const std::optional<std::string>& username,
+                           const ClientInfo& client,
+                           const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+    if (!username) { response.needs_auth = true; return response; }
+    int64_t character_id = 0;
+    std::string display_name;
+    if (!verify_character_ownership(body, username, character_id, display_name)) {
+        response.error = "Character does not belong to this user";
+        return response;
+    }
+    const int fiefdom_id = fiefdom_id_for_character(character_id);
+    if (fiefdom_id == 0) { response.error = "You need a manor."; return response; }
+    const std::string kind = body.value("kind", "");   // "armory" | "storage"
+    const int64_t armory_id = body.value("armory_id", 0LL);
+    const std::string item_id = body.value("item_id", "");
+    if (kind != "armory" && kind != "storage") {
+        response.error = "kind must be 'armory' or 'storage'.";
+        return response;
+    }
+    auto& db = Database::getInstance().gameDB();
+    const double sell_discount = config_cache.getRetinueConfig().value("sell_discount", 0.25);
+    const auto& eq_items = config_cache.getEquipmentConfig().value("items", json::object());
+    const auto& gen_items = config_cache.getItemsConfig().value("items", json::object());
+
+    double value_gold = 0.0;
+    if (kind == "armory") {
+        if (armory_id == 0) { response.error = "armory_id required."; return response; }
+        std::string it;
+        int64_t holder = 0;
+        db << "SELECT item_id, member_id FROM fiefdom_armory WHERE id = ? AND fiefdom_id = ?;"
+           << armory_id << fiefdom_id
+           >> [&](std::string i, int64_t m) { it = i; holder = m; };
+        if (it.empty()) { response.error = "Armory item not found."; return response; }
+        if (holder != 0) { response.error = "Sell items must be unequipped first."; return response; }
+        if (eq_items.contains(it)) value_gold = eq_items[it].value("base_value", 0.0) * sell_discount;
+        db << "DELETE FROM fiefdom_armory WHERE id = ?;" << armory_id;
+    } else {
+        if (item_id.empty()) { response.error = "item_id required."; return response; }
+        if (gen_items.contains(item_id)) value_gold = gen_items[item_id].value("base_value", 0.0) * sell_discount;
+        db << "UPDATE fiefdom_storage SET count = count - 1 WHERE fiefdom_id = ? AND item_id = ?;"
+           << fiefdom_id << item_id;
+        db << "DELETE FROM fiefdom_storage WHERE fiefdom_id = ? AND item_id = ? AND count <= 0;"
+           << fiefdom_id << item_id;
+    }
+    if (value_gold > 0.0) {
+        db << "UPDATE fiefdoms SET gold = gold + ? WHERE id = ?;" << value_gold << fiefdom_id;
+    }
+    response.data["gold"] = value_gold;
+    if (new_token) response.data["token"] = *new_token;
+    return response;
+}
+
+ApiResponse handleBuyGearCity(GameConfigCache& config_cache, const json& body,
+                              const std::optional<std::string>& username,
+                              const ClientInfo& client,
+                              const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+    if (!username) { response.needs_auth = true; return response; }
+    int64_t character_id = 0;
+    std::string display_name;
+    if (!verify_character_ownership(body, username, character_id, display_name)) {
+        response.error = "Character does not belong to this user";
+        return response;
+    }
+    const int fiefdom_id = fiefdom_id_for_character(character_id);
+    if (fiefdom_id == 0) { response.error = "You need a manor."; return response; }
+    const std::string item_id = body.value("item_id", "");
+    if (item_id.empty()) { response.error = "item_id is required."; return response; }
+
+    const auto& items_root = config_cache.getEquipmentConfig().value("items", json::object());
+    if (!items_root.contains(item_id)) { response.error = "Unknown equipment item."; return response; }
+    const json& item_cfg = items_root[item_id];
+    const double city_price = item_cfg.value("city_price", 0.0);
+    if (city_price <= 0.0) { response.error = "This item is not sold in the city."; return response; }
+
+    // Armory headroom (a city purchase is a player-initiated add: capped).
+    const int armory_capacity = config_cache.getRetinueConfig().value("armory_capacity", 100);
+    const int item_slots = item_cfg.value("armory_slots", 1);
+    int used_slots = 0;
+    auto& db = Database::getInstance().gameDB();
+    {
+        std::vector<std::string> armory_items;
+        db << "SELECT item_id FROM fiefdom_armory WHERE fiefdom_id = ?;" << fiefdom_id
+           >> [&](std::string it) { armory_items.push_back(it); };
+        for (const auto& it : armory_items) {
+            if (items_root.contains(it)) used_slots += items_root[it].value("armory_slots", 1);
+        }
+    }
+    if (used_slots + item_slots > armory_capacity) {
+        response.error = "Your armory cannot store another purchased item.";
+        return response;
+    }
+
+    // Pay the city markup (fungible money path). Extremely expensive by design —
+    // a diagetic bypass for lords who skip their own blacksmith.
+    const json cost = {{"gold", city_price}};
+    if (!GameLogic::Validation::hasEnoughResources(config_cache, fiefdom_id, cost)) {
+        response.error = "You cannot afford this item in the city.";
+        return response;
+    }
+    GameLogic::ActionResult deduct_result;
+    GameLogic::Validation::deductResources(config_cache, fiefdom_id, cost, deduct_result);
+
+    const int64_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    db << "INSERT INTO fiefdom_armory (fiefdom_id, item_id, member_id, created_at) "
+          "VALUES (?, ?, NULL, ?);"
+       << fiefdom_id << item_id << now;
+    response.data["item_id"] = item_id;
+    response.data["armory_id"] = db.last_insert_rowid();
+    response.data["gold"] = city_price;
+    if (new_token) response.data["token"] = *new_token;
+    return response;
+}
+
+ApiResponse handleHireTeacher(GameConfigCache& config_cache, const json& body,
+                              const std::optional<std::string>& username,
+                              const ClientInfo& client,
+                              const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+    if (!username) { response.needs_auth = true; return response; }
+    int64_t character_id = 0;
+    std::string display_name;
+    if (!verify_character_ownership(body, username, character_id, display_name)) {
+        response.error = "Character does not belong to this user";
+        return response;
+    }
+    const int fiefdom_id = fiefdom_id_for_character(character_id);
+    if (fiefdom_id == 0) { response.error = "You need a manor."; return response; }
+    const int64_t building_id = body.value("building_id", 0LL);
+    if (building_id == 0) { response.error = "building_id is required."; return response; }
+    auto& db = Database::getInstance().gameDB();
+    if (!building_belongs_to_fiefdom(building_id, fiefdom_id)) {
+        response.error = "Building does not belong to your fiefdom.";
+        return response;
+    }
+    std::string bname;
+    db << "SELECT name FROM fiefdom_buildings WHERE id = ?;" << building_id
+       >> [&](std::string n) { bname = std::move(n); };
+    if (!building_type_config(config_cache, bname).contains("tech_trees")) {
+        response.error = "This building has no technology tree.";
+        return response;
+    }
+    double xp = 0;
+    std::vector<std::string> nodes;
+    std::string forge_order, training;
+    load_building_tech(building_id, xp, nodes, forge_order, training);
+    if (!training.empty()) {
+        response.error = "This building is already training.";
+        return response;
+    }
+
+    const auto train = config_cache.getRetinueConfig().value("training", json::object());
+    const double cost_gold = train.value("teacher_gold_cost", 20.0);
+    const double grant_xp = train.value("teacher_xp_grant", 50.0);
+    const double hours = train.value("teacher_duration_hours", 4.0);
+
+    const json cost = {{"gold", cost_gold}};
+    if (cost_gold > 0.0 &&
+        !GameLogic::Validation::hasEnoughResources(config_cache, fiefdom_id, cost)) {
+        response.error = "You cannot afford a teacher.";
+        return response;
+    }
+    if (cost_gold > 0.0) {
+        GameLogic::ActionResult deduct_result;
+        GameLogic::Validation::deductResources(config_cache, fiefdom_id, cost, deduct_result);
+    }
+
+    const int64_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    json tr = {{"grant_xp", grant_xp}, {"start_ts", now}, {"duration_hours", hours}};
+    db << "UPDATE fiefdom_buildings SET training = ? WHERE id = ?;" << tr.dump() << building_id;
+    response.data["training"] = tr;
+    if (new_token) response.data["token"] = *new_token;
+    return response;
+}
+
+ApiResponse handleApplyBookItem(GameConfigCache& config_cache, const json& body,
+                                const std::optional<std::string>& username,
+                                const ClientInfo& client,
+                                const std::optional<std::string>& new_token)
+{
+    ApiResponse response;
+    if (!username) { response.needs_auth = true; return response; }
+    int64_t character_id = 0;
+    std::string display_name;
+    if (!verify_character_ownership(body, username, character_id, display_name)) {
+        response.error = "Character does not belong to this user";
+        return response;
+    }
+    const int fiefdom_id = fiefdom_id_for_character(character_id);
+    if (fiefdom_id == 0) { response.error = "You need a manor."; return response; }
+    const int64_t building_id = body.value("building_id", 0LL);
+    const std::string item_id = body.value("item_id", "");
+    if (building_id == 0 || item_id.empty()) {
+        response.error = "building_id and item_id are required.";
+        return response;
+    }
+    auto& db = Database::getInstance().gameDB();
+    if (!building_belongs_to_fiefdom(building_id, fiefdom_id)) {
+        response.error = "Building does not belong to your fiefdom.";
+        return response;
+    }
+    std::string bname;
+    db << "SELECT name FROM fiefdom_buildings WHERE id = ?;" << building_id
+       >> [&](std::string n) { bname = std::move(n); };
+    if (!building_type_config(config_cache, bname).contains("tech_trees")) {
+        response.error = "This building has no technology tree.";
+        return response;
+    }
+
+    const auto& gen_items = config_cache.getItemsConfig().value("items", json::object());
+    if (!gen_items.contains(item_id)) { response.error = "Unknown item."; return response; }
+    const json& icfg = gen_items[item_id];
+    const double grant_xp = icfg.value("xp_grant", 0.0);
+    const double hours = icfg.value("training_duration_hours", 0.0);
+    if (grant_xp <= 0.0 || hours <= 0.0) {
+        response.error = "That item is not a training item.";
+        return response;
+    }
+
+    int have = 0;
+    db << "SELECT count FROM fiefdom_storage WHERE fiefdom_id = ? AND item_id = ?;"
+       << fiefdom_id << item_id >> [&](int c) { have = c; };
+    if (have < 1) { response.error = "You do not have that item."; return response; }
+
+    double xp = 0;
+    std::vector<std::string> nodes;
+    std::string forge_order, training;
+    load_building_tech(building_id, xp, nodes, forge_order, training);
+    if (!training.empty()) {
+        response.error = "This building is already training.";
+        return response;
+    }
+
+    db << "UPDATE fiefdom_storage SET count = count - 1 WHERE fiefdom_id = ? AND item_id = ?;"
+       << fiefdom_id << item_id;
+    db << "DELETE FROM fiefdom_storage WHERE fiefdom_id = ? AND item_id = ? AND count <= 0;"
+       << fiefdom_id << item_id;
+
+    const int64_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    json tr = {{"grant_xp", grant_xp}, {"start_ts", now}, {"duration_hours", hours}};
+    db << "UPDATE fiefdom_buildings SET training = ? WHERE id = ?;" << tr.dump() << building_id;
+    response.data["training"] = tr;
+    response.data["item_id"] = item_id;
+    if (new_token) response.data["token"] = *new_token;
     return response;
 }
 

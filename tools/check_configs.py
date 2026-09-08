@@ -745,6 +745,16 @@ class ConfigValidator:
                 valid = False
                 continue
 
+            if "requires_manor_level" in combatant_data:
+                rml: object = combatant_data["requires_manor_level"]
+                if not isinstance(rml, int) or isinstance(rml, bool) or rml < 1:
+                    self._add_issue(
+                        file, line, None,
+                        f"Combatant '{combatant_id}' 'requires_manor_level' must be a positive integer",
+                        Severity.ERROR
+                    )
+                    valid = False
+
             if not self._validate_combatant(file, content, combatant_id, combatant_data):
                 valid = False
 
@@ -1171,6 +1181,50 @@ class ConfigValidator:
                 self._add_issue(
                     file, 1, None,
                     f"Building '{building_id}'.forest_acres must be >= 0, got {forest_acres}",
+                    Severity.ERROR
+                )
+
+        if "recovery_multiplier" in data:
+            recovery_multiplier: Any = data["recovery_multiplier"]
+            if not isinstance(recovery_multiplier, (int, float)) or isinstance(recovery_multiplier, bool):
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.recovery_multiplier must be a number, got {type(recovery_multiplier).__name__}",
+                    Severity.ERROR
+                )
+            elif recovery_multiplier < 0:
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.recovery_multiplier must be >= 0, got {recovery_multiplier}",
+                    Severity.ERROR
+                )
+
+        if "tech_trees" in data:
+            tt: Any = data["tech_trees"]
+            if not isinstance(tt, list) or any(not isinstance(t, str) or not t for t in tt):
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.tech_trees must be an array of non-empty strings",
+                    Severity.ERROR
+                )
+
+        if "tech_xp_per_day" in data:
+            txp: Any = data["tech_xp_per_day"]
+            if not isinstance(txp, list) or not txp or any(
+                not isinstance(x, int) or isinstance(x, bool) or x < 0 for x in txp
+            ):
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.tech_xp_per_day must be a non-empty array of non-negative integers (per level)",
+                    Severity.ERROR
+                )
+
+        if "max_concurrent_orders" in data:
+            mco: Any = data["max_concurrent_orders"]
+            if not isinstance(mco, int) or isinstance(mco, bool) or mco < 1:
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.max_concurrent_orders must be a positive integer",
                     Severity.ERROR
                 )
 
@@ -4138,6 +4192,240 @@ class ConfigValidator:
 
         self.validated_files.append(file)
 
+    def validate_retinue(self, file: Path) -> None:
+        """Validate retinue.json — capacity curve, market, recovery, morale."""
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+
+        data: object = self._validate_json(content, file)
+        if data is None:
+            return
+
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with retinue config", Severity.ERROR)
+            return
+
+        capacity = data.get("retinue_capacity_by_level")
+        if capacity is not None:
+            if not isinstance(capacity, list):
+                self._add_issue(file, 1, None, "'retinue_capacity_by_level' must be an array", Severity.ERROR)
+            else:
+                if len(capacity) != 11:
+                    self._add_issue(
+                        file, 1, None,
+                        "'retinue_capacity_by_level' must have exactly 11 entries (manor levels 0-10)",
+                        Severity.ERROR,
+                    )
+                prev: int = -1
+                for idx, val in enumerate(capacity):
+                    if not isinstance(val, int) or isinstance(val, bool) or val < 0:
+                        self._add_issue(
+                            file, 1, None,
+                            f"'retinue_capacity_by_level[{idx}]' must be a non-negative integer",
+                            Severity.ERROR,
+                        )
+                    elif val < prev:
+                        self._add_issue(
+                            file, 1, None,
+                            f"'retinue_capacity_by_level' must be non-decreasing (index {idx})",
+                            Severity.ERROR,
+                        )
+                    else:
+                        prev = int(val)
+
+        market = data.get("market")
+        if market is not None:
+            if not isinstance(market, dict):
+                self._add_issue(file, 1, None, "'market' must be an object", Severity.ERROR)
+            else:
+                for field, minimum in (
+                    ("candidates_per_class", 1),
+                    ("max_candidate_level_offset", 0),
+                    ("grace_buckets", 1),
+                ):
+                    val: object = market.get(field)
+                    if not isinstance(val, int) or isinstance(val, bool) or val < minimum:
+                        self._add_issue(
+                            file, 1, None,
+                            f"'market.{field}' must be an integer >= {minimum}",
+                            Severity.ERROR,
+                        )
+
+        recovery = data.get("recovery")
+        if recovery is not None:
+            if not isinstance(recovery, dict):
+                self._add_issue(file, 1, None, "'recovery' must be an object", Severity.ERROR)
+            else:
+                max_hours: object = recovery.get("max_recovery_hours")
+                if not isinstance(max_hours, (int, float)) or isinstance(max_hours, bool) or max_hours <= 0:
+                    self._add_issue(file, 1, None, "'recovery.max_recovery_hours' must be a positive number", Severity.ERROR)
+                min_hp: object = recovery.get("min_deploy_hp")
+                if not isinstance(min_hp, (int, float)) or isinstance(min_hp, bool) or not (0 <= min_hp <= 100):
+                    self._add_issue(file, 1, None, "'recovery.min_deploy_hp' must be a number between 0 and 100", Severity.ERROR)
+
+        morale = data.get("morale")
+        if morale is not None:
+            if not isinstance(morale, dict):
+                self._add_issue(file, 1, None, "'morale' must be an object", Severity.ERROR)
+            else:
+                max_bonus: object = morale.get("max_bonus_percent")
+                if not isinstance(max_bonus, (int, float)) or isinstance(max_bonus, bool) or max_bonus < 0:
+                    self._add_issue(file, 1, None, "'morale.max_bonus_percent' must be a non-negative number", Severity.ERROR)
+                for field in ("points_per_percent", "victory_points", "defeat_points", "decay_hours"):
+                    val: object = morale.get(field)
+                    if val is not None and (not isinstance(val, (int, float)) or isinstance(val, bool) or val <= 0):
+                        self._add_issue(file, 1, None, f"'morale.{field}' must be a positive number", Severity.ERROR)
+                rec_bonus: object = morale.get("recovery_morale_bonus")
+                if rec_bonus is not None and (not isinstance(rec_bonus, (int, float)) or isinstance(rec_bonus, bool) or rec_bonus < 0):
+                    self._add_issue(file, 1, None, "'morale.recovery_morale_bonus' must be a non-negative number", Severity.ERROR)
+
+        sell_discount: object = data.get("sell_discount")
+        if sell_discount is not None:
+            if not isinstance(sell_discount, (int, float)) or isinstance(sell_discount, bool) or not (0 <= sell_discount <= 1):
+                self._add_issue(file, 1, None, "'sell_discount' must be a number between 0 and 1", Severity.ERROR)
+
+        training = data.get("training")
+        if training is not None:
+            if not isinstance(training, dict):
+                self._add_issue(file, 1, None, "'training' must be an object", Severity.ERROR)
+            else:
+                for field in (
+                    "base_passive_xp_per_day",
+                    "teacher_gold_cost",
+                    "teacher_xp_grant",
+                    "teacher_duration_hours",
+                    "book_xp_grant",
+                    "book_duration_hours",
+                ):
+                    val: object = training.get(field)
+                    if not isinstance(val, (int, float)) or isinstance(val, bool) or val <= 0:
+                        self._add_issue(file, 1, None, f"'training.{field}' must be a positive number", Severity.ERROR)
+
+    def validate_equipment(self, file: Path) -> None:
+        """Validate equipment.json — slots + gear items."""
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+        data: object = self._validate_json(content, file)
+        if data is None or not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with equipment config", Severity.ERROR)
+            return
+
+        slots = data.get("slots")
+        if not isinstance(slots, list) or not slots or any(not isinstance(s, str) or not s for s in slots):
+            self._add_issue(file, 1, None, "'slots' must be a non-empty array of non-empty strings", Severity.ERROR)
+        slots_set: set[str] = set(slots) if isinstance(slots, list) else set()
+
+        items = data.get("items")
+        if not isinstance(items, dict):
+            self._add_issue(file, 1, None, "'items' must be an object", Severity.ERROR)
+            return
+        for item_id, item in items.items():
+            if not isinstance(item, dict):
+                self._add_issue(file, 1, None, f"item '{item_id}' must be an object", Severity.ERROR)
+                continue
+            slot: object = item.get("slot")
+            if not isinstance(slot, str) or not slot:
+                self._add_issue(file, 1, None, f"item '{item_id}'.slot must be a non-empty string", Severity.ERROR)
+            elif slots_set and slot not in slots_set:
+                self._add_issue(file, 1, None, f"item '{item_id}'.slot '{slot}' is not in 'slots'", Severity.ERROR)
+            rl: object = item.get("requires_level")
+            if rl is not None and (not isinstance(rl, int) or isinstance(rl, bool) or rl < 1):
+                self._add_issue(file, 1, None, f"item '{item_id}'.requires_level must be a positive integer", Severity.ERROR)
+            aslots: object = item.get("armory_slots")
+            if aslots is not None and (not isinstance(aslots, int) or isinstance(aslots, bool) or aslots < 0):
+                self._add_issue(file, 1, None, f"item '{item_id}'.armory_slots must be a non-negative integer", Severity.ERROR)
+            bv: object = item.get("base_value")
+            if not isinstance(bv, (int, float)) or isinstance(bv, bool) or bv < 0:
+                self._add_issue(file, 1, None, f"item '{item_id}'.base_value must be a non-negative number", Severity.ERROR)
+            cp: object = item.get("city_price")
+            if cp is not None and (not isinstance(cp, (int, float)) or isinstance(cp, bool) or cp <= 0):
+                self._add_issue(file, 1, None, f"item '{item_id}'.city_price must be a positive number", Severity.ERROR)
+            craft = item.get("craft")
+            if craft is not None:
+                if not isinstance(craft, dict):
+                    self._add_issue(file, 1, None, f"item '{item_id}'.craft must be an object", Severity.ERROR)
+                else:
+                    dh: object = craft.get("duration_hours")
+                    if not isinstance(dh, (int, float)) or isinstance(dh, bool) or dh <= 0:
+                        self._add_issue(file, 1, None, f"item '{item_id}'.craft.duration_hours must be a positive number", Severity.ERROR)
+                    mats: object = craft.get("materials")
+                    if mats is not None and not isinstance(mats, dict):
+                        self._add_issue(file, 1, None, f"item '{item_id}'.craft.materials must be an object", Severity.ERROR)
+
+    def validate_items(self, file: Path) -> None:
+        """Validate items.json — general item storage consumables (books etc.)."""
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+        data: object = self._validate_json(content, file)
+        if data is None or not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with items config", Severity.ERROR)
+            return
+        items = data.get("items")
+        if not isinstance(items, dict):
+            self._add_issue(file, 1, None, "'items' must be an object", Severity.ERROR)
+            return
+        for item_id, item in items.items():
+            if not isinstance(item, dict):
+                self._add_issue(file, 1, None, f"item '{item_id}' must be an object", Severity.ERROR)
+                continue
+            src: object = item.get("source")
+            if src not in ("drop", "purchase"):
+                self._add_issue(file, 1, None, f"item '{item_id}'.source must be 'drop' or 'purchase'", Severity.ERROR)
+            xg: object = item.get("xp_grant")
+            if xg is not None and (not isinstance(xg, (int, float)) or isinstance(xg, bool) or xg <= 0):
+                self._add_issue(file, 1, None, f"item '{item_id}'.xp_grant must be a positive number", Severity.ERROR)
+            td: object = item.get("training_duration_hours")
+            if td is not None and (not isinstance(td, (int, float)) or isinstance(td, bool) or td <= 0):
+                self._add_issue(file, 1, None, f"item '{item_id}'.training_duration_hours must be a positive number", Severity.ERROR)
+
+    def validate_tech_trees(self, file: Path) -> None:
+        """Validate tech_trees.json — tree/node definitions."""
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+        data: object = self._validate_json(content, file)
+        if data is None or not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with tech tree config", Severity.ERROR)
+            return
+        trees = data.get("trees")
+        if not isinstance(trees, dict) or not trees:
+            self._add_issue(file, 1, None, "'trees' must be a non-empty object", Severity.ERROR)
+            return
+        for tree_id, tree in trees.items():
+            if not isinstance(tree, dict) or not isinstance(tree.get("nodes"), list):
+                self._add_issue(file, 1, None, f"tree '{tree_id}' must have a 'nodes' array", Severity.ERROR)
+                continue
+            node_ids: set[str] = set()
+            for node in tree["nodes"]:
+                if not isinstance(node, dict) or not isinstance(node.get("id"), str) or not node["id"]:
+                    self._add_issue(file, 1, None, f"tree '{tree_id}' has a node without an 'id' string", Severity.ERROR)
+                    continue
+                node_ids.add(node["id"])
+                cost: object = node.get("xp_cost")
+                if not isinstance(cost, (int, float)) or isinstance(cost, bool) or cost <= 0:
+                    self._add_issue(file, 1, None, f"tree '{tree_id}' node '{node['id']}'.xp_cost must be a positive number", Severity.ERROR)
+                prereqs = node.get("prerequisites", [])
+                if not isinstance(prereqs, list):
+                    self._add_issue(file, 1, None, f"tree '{tree_id}' node '{node['id']}'.prerequisites must be an array", Severity.ERROR)
+                else:
+                    for p in prereqs:
+                        if not isinstance(p, str) or p not in node_ids:
+                            self._add_issue(file, 1, None, f"tree '{tree_id}' node '{node['id']}' has unknown prerequisite '{p}'", Severity.ERROR)
+                effects = node.get("effects", [])
+                if not isinstance(effects, list):
+                    self._add_issue(file, 1, None, f"tree '{tree_id}' node '{node['id']}'.effects must be an array", Severity.ERROR)
+
     def validate_combat_rulesets(self, file: Path) -> None:
         """Validate game/config/combat/rulesets.json.
 
@@ -4203,10 +4491,10 @@ class ConfigValidator:
                     self._add_issue(file, 1, None, f"rulesets[{idx}].players.min cannot exceed max", Severity.ERROR)
 
             death_handling: object = ruleset.get("death_handling")
-            if death_handling not in ("permanent", "respawn_after_seconds", "revive_resource"):
+            if death_handling not in ("permanent", "wounded", "respawn_after_seconds", "revive_resource"):
                 self._add_issue(
                     file, 1, None,
-                    f"rulesets[{idx}].death_handling must be 'permanent', 'respawn_after_seconds' or 'revive_resource', got {death_handling!r}",
+                    f"rulesets[{idx}].death_handling must be 'permanent', 'wounded', 'respawn_after_seconds' or 'revive_resource', got {death_handling!r}",
                     Severity.ERROR,
                 )
             respawn_delay: object = ruleset.get("respawn_delay_seconds")
@@ -4510,6 +4798,22 @@ class ConfigValidator:
             economy_file: Path = game_config_dir / "economy.json"
             if economy_file.exists():
                 self.validate_economy(economy_file)
+
+            # Validate retinue.json (capacity curve, market, recovery, morale)
+            retinue_file: Path = game_config_dir / "retinue.json"
+            if retinue_file.exists():
+                self.validate_retinue(retinue_file)
+
+            # Validate gear/tech/storage configs
+            equipment_file: Path = game_config_dir / "equipment.json"
+            if equipment_file.exists():
+                self.validate_equipment(equipment_file)
+            items_file: Path = game_config_dir / "items.json"
+            if items_file.exists():
+                self.validate_items(items_file)
+            tech_trees_file: Path = game_config_dir / "tech_trees.json"
+            if tech_trees_file.exists():
+                self.validate_tech_trees(tech_trees_file)
 
             # Validate combat configs (rulesets + maps)
             combat_rulesets_file: Path = game_config_dir / "combat" / "rulesets.json"

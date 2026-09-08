@@ -38,6 +38,10 @@ CREATE TABLE fiefdom_buildings (
 | action_tag | TEXT | NOT NULL DEFAULT '' | Reserved for future action system |
 | pond_type | TEXT | NOT NULL DEFAULT '' | Mill pond type: "earthen"/"timber"/"stone" (empty for non-ponds). Levels are within the type; the type upgrade is `/api/Build` action `upgrade_pond_type`. |
 | output_rates | TEXT | NOT NULL DEFAULT '{}' | JSON object mapping output resource → player rate (0..1). Missing entries default to 1.0. Set via `/api/setBuildingOutputRate`. |
+| tech_xp | REAL | NOT NULL DEFAULT 0 | Accumulated technology XP (passive accrual from `tech_xp_per_day[level-1]`, + completed training grants) |
+| tech_nodes | TEXT | NOT NULL DEFAULT '[]' | JSON array of learned tech-tree node ids (`/api/learnTechNode`) |
+| forge_order | TEXT | NOT NULL DEFAULT '' | JSON `{item_id, start_ts, duration_hours}` of the active forge order, or `''` (mints an armory item on completion) |
+| training | TEXT | NOT NULL DEFAULT '' | JSON `{grant_xp, start_ts, duration_hours}` of the active training timer, or `''` (teacher/book grant lands on completion) |
 
 ## Indexes
 
