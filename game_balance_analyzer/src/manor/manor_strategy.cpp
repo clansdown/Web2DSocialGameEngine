@@ -196,6 +196,18 @@ bool manor_strategy_sim::is_feasible(const building_type& b,
         return false;
     }
 
+    // Exclusive group: at most one building from the group (e.g. chapel/church/
+    // parish_church, or the infirmary stages). Count any existing building whose
+    // type shares the group.
+    if (b.has_exclusive_group()) {
+        for (const auto& inst : buildings) {
+            const building_type* eb = registry_.find(inst.type_id);
+            if (eb && eb->has_exclusive_group() && eb->exclusive_group() == b.exclusive_group()) {
+                return false;
+            }
+        }
+    }
+
     // Manor-level requirement (stage 2 -> 3, stage 3 -> 6, etc.).
     if (b.manor_level_requirement() > manor_level) {
         return false;

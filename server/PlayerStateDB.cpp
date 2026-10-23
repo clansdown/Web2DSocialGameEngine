@@ -293,6 +293,26 @@ void earn_baron_right(sqlite::database& db, int character_id, int64_t timestamp)
        << timestamp << character_id;
 }
 
+void enter_freehold(sqlite::database& db, int character_id, int64_t timestamp) {
+    db << "UPDATE player_game_state SET "
+          "game_phase = 'freehold', base_unlocked = 1, last_updated = ? "
+          "WHERE character_id = ?;"
+       << timestamp << character_id;
+}
+
+void enter_freehold_qualified(sqlite::database& db, int character_id, int64_t timestamp) {
+    db << "UPDATE player_game_state SET "
+          "game_phase = 'freehold_qualified', base_unlocked = 1, last_updated = ? "
+          "WHERE character_id = ?;"
+       << timestamp << character_id;
+}
+
+void set_barony_left_at(sqlite::database& db, int character_id, int64_t timestamp) {
+    db << "UPDATE player_game_state SET barony_left_at = ?, last_updated = ? "
+          "WHERE character_id = ?;"
+       << timestamp << timestamp << character_id;
+}
+
     GameSessionRow create_game_session(sqlite::database& db, int character_id, const std::string& mini_game, int level_id, int difficulty, int total_rounds, int64_t timestamp) {
         GameSessionRow row;
         row.character_id = character_id;

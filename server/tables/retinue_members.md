@@ -31,6 +31,8 @@ CREATE TABLE retinue_members (
     status TEXT NOT NULL DEFAULT 'active',
     maintained INTEGER NOT NULL DEFAULT 1,
     created_at INTEGER NOT NULL,
+    xp INTEGER NOT NULL DEFAULT 0,
+    headshot_id TEXT NOT NULL DEFAULT '',
     FOREIGN KEY(character_id) REFERENCES characters(id)
 );
 ```
@@ -55,6 +57,8 @@ CREATE TABLE retinue_members (
 | `abilities` | text | JSON — learned abilities (deferred until the RTS mechanics land) |
 | `status` | text | `active` \| `casualty` \| `retired`; "in the infirmary" is `health` below `retinue.json recovery.min_deploy_hp`, not a status |
 | `maintained` | int | Whether the economy tick fully funded this member in the current period (priority order, all-or-nothing; shortfalls auto-imported with fungible money). 1 = funded (default), 0 = unfunded |
+| `xp` | int | Cumulative RTS experience. Earned per-fielded-member, warband-derived, completion-only (rts_design.md §14.1); level-ups happen against the class `max_level` (knight levels independently in the RTS, character level untouched). Added via migration (see below) |
+| `headshot_id` | text | Persistent identity: the image path relative to `game/images/retinue/headshots/`, e.g. `male/03.png`. Written once at hire, never changed. The knight keeps `''` and resolves its portrait from `characters.avatar_*` (the owner's PFP). Added via migration (see below) |
 | `created_at` | int | Unix timestamp |
 
 ## Indexes
@@ -78,12 +82,35 @@ billeted in the manor house — they consume no arable or forest land.
   `(character_id, hour bucket)` (`floor(now/3600)`), per-class name pools
   (`game/text/en/names_<class>_male.txt` / `_female.txt`), class gating
   (`requires_manor_level`), and candidate level `1..manor_level + offset`.
-- Offer validity is re-derivable; `hireRecruit` accepts an offer from the
-  current or previous hour bucket (grace window).
+- **Identity roll order: class → sex → level → name → headshot.** Names and
+  headshots are re-rolled deterministically (walk forward from the drawn index
+  in the sorted pool) past anything already used by the character's roster and
+  past earlier offers in the same displayed list, so the normal UI never shows a
+  duplicate. Headshot pools are scanned + sorted from
+  `game/images/retinue/headshots/{male,female}/` (no catalog).
+- Offer validity is **structural** at hire: known + unlocked class, in-range
+  level, current-or-previous hour bucket, name present in the class/sex pool, and
+  an existing headshot for the sex. `hireRecruit` accepts an offer from the
+  current or previous hour bucket (grace window). It deliberately does NOT
+  regenerate the exact offer or enforce name uniqueness — class/level (and thus
+  the fee and stats) are fully validated, so a scripted duplicate is harmless.
 - Hire fees come from the class `costs` array (level-indexed), paid from
   fiefdom stores.
+- `/api/getRetinue` returns each member's `headshot_id` plus a server-resolved
+  `portrait_url` (soldiers → the headshot; the knight → the owner's PFP).
 
 ## Usage Notes
+
+- **`xp` column migration:** the `xp` column (default 0) is added to existing
+  databases by the same idempotent migration pattern as `player_game_state.honor_name`
+  — a `PRAGMA table_info` check followed by `ALTER TABLE ... ADD COLUMN xp
+  INTEGER NOT NULL DEFAULT 0` when absent. Reads include the column; combat
+  conclusion persists it via `retinue_db::grant_experience` (rts_design.md §14).
+
+- **`headshot_id` column migration:** added by the same idempotent pattern
+  (`ALTER TABLE retinue_members ADD COLUMN headshot_id TEXT NOT NULL DEFAULT ''`).
+  No backfill is needed (no pre-existing recruited members at the time of
+  introduction); the knight's empty value is the intended steady state.
 
 - The knight row is created lazily by `retinue_db::get_or_create_knight()`
   (first call to `/api/getRetinue` or any match join) from the character's

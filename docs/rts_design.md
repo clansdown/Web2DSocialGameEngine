@@ -5,6 +5,10 @@ realtime combat game (`/ws/combat`). It was produced through an extended design
 collaboration; the numbered **Decision Log** (Appendix A) records every decision with a
 one-line rationale and marks the values that are tuning constants.
 
+**Cosmetics & premium variety** (Platinum, the six-slot cosmetic catalog, the store, and
+the never-power integrity rails) are specified in **§15**; adventure access is deferred
+(§18). The system is game-wide in principle but the RTS is its first consumer.
+
 **Sibling docs** (wire/format contracts — this doc *references* them, it does not
 replace them):
 - `docs/combat_protocol.md` — WebSocket transport, envelope, message types, replication
@@ -19,7 +23,7 @@ updated during implementation, not in this doc):
   becomes the safety cap; `wounded` death-handling stays.
 - `combat_protocol.md` — gains per the **Protocol & Config Delta** section: `facing` on
   unit rows, a `structures` array + events, `attack` carries `result`, the `deploy` phase,
-  `deploy_zone` on maps.
+  `deploy_zone` on maps, and the welcome roster/banner **cosmetic loadout** (§15.3).
 - `combat_maps.md` — `obstacles` gain per-obstacle blocking flags; maps gain `deploy_zone`.
 - `combat_system.md` (server/docs) — combatant config gains `max_hp`, `attack_range`,
   `attack_interval`, `attack_type`, `turn_rate`, `dodge` triple, `direction_defense` triple.
@@ -62,7 +66,7 @@ missions against an enemy warband.
 - No base building, unit production, resources, or tech in-match.
 - No permanent unit death (see Pillars).
 - No player abilities (the data model reserves the slot).
-- No fog of war (full visibility; a light-fog variant is a documented v2 polish, §17).
+- No fog of war (full visibility; a light-fog variant is a documented v2 polish, §18).
 - No PvP matchmaking (scrimmage stays a later milestone).
 
 ## 3. Mission Model — Targeted Annihilation
@@ -146,17 +150,20 @@ in-match time, not setup).
 
 ### 4.6 Results
 Victory/defeat/draw banner + reason; per-member **XP gained + level-ups**; wounds list
-(members sent to recover); a rewards stub (morale now, gold/equipment tables empty).
+(members sent to recover); a rewards stub (morale now, gold/equipment/cosmetics tables
+empty — see §14.2 and §15.6).
 
 ## 5. Units & Combat Model
 
 ### 5.1 Combatant config (extended)
 
-Both `player_combatants.json` and `enemy_combatants.json` gain **optional** per-level
-fields (all with sensible defaults so existing entries still load):
+Both `player_combatants.json` and `enemy_combatants.json` gain a **required**
+per-unit `size` and **optional** per-level fields (the optionals have sensible
+defaults so existing entries still load):
 
 | Field | Type | Default | Purpose |
 |---|---|---|---|
+| `size` | number (per-unit) | **required** | body radius, normalized units — sim collision/spacing + drawn sprite size |
 | `max_hp` | number (per-level) | derived from class | in-match health pool (see HP bridge) |
 | `attack_range` | number (per-level) | class default | engagement reach in normalized units |
 | `attack_interval` | number (per-level) | class default | seconds between attack resolutions |
@@ -164,6 +171,12 @@ fields (all with sensible defaults so existing entries still load):
 | `turn_rate` | number (per-unit) | global constant | radians/sec rotate-toward-target speed |
 | `direction_defense` | `{front, side, back}` (flat, per-unit) | `{1.0, 0.6, 0.35}` | arc multipliers on the per-type base |
 | `dodge` | `{front, side, back}` (flat, per-unit) | `{0, 0, 0}` | dodge chance per arc, 0..1 |
+
+`size` is how big the combatant is: it is the sim's hard-body radius (collision,
+deploy separation, structure adjacency) and the client's drawn sprite/token size,
+**independent of the source image dimensions**. One standard soldier is 0.03; a
+goblin 0.025, a knight 0.035, a troll 0.065. It rides each in-battle unit row as
+`radius` and is cataloged per class in `combatGetConfigs.combatant_radius`.
 
 Per-level arrays use the existing interpolation/extrapolation rules and `combatants.hpp`
 accessors (with the single-element guards).
@@ -231,7 +244,9 @@ hold formation to present fronts.
 
 ### 5.6 Melee rings are physical
 
-Collision is **everything hard** (Decision 12): units block each other. Only as many
+Collision is **everything hard** (Decision 12): units block each other — each unit
+uses its per-class `size` as its body radius (contact distance = the sum of the two
+radii; deploy spacing uses the largest body placed, so trolls don't stack). Only as many
 melee as physically fit around a target engage it — no artificial attack slots, no
 death-ball focus-fire instant kills. Friendly units block friendlies too; pathing flows
 around (see §8).
@@ -393,7 +408,7 @@ fall out of this (§5.6). Friendly units block friendlies too.
 
 ### 8.4 Terrain blocking — per kind
 
-(Map format evolves per §16.) Natural features block per-kind:
+(Map format evolves per §17.) Natural features block per-kind:
 - **Impassable `tile_costs` cells (0)** — block **movement only** (water, a ditch:
   arrows still fly over).
 - **`obstacles`** — carry per-obstacle flags (`blocks_movement`, `blocks_ranged`,
@@ -552,8 +567,12 @@ Winner values for annihilation: **1 = players win, 0 = players lose, -1 = draw**
 
 ### 14.1 XP — fixed per-member, warband-derived
 
-- Each fielded member earns **base XP computed from the warband's size and composition**
-  (strength-derived or authored per warband; tuning).
+- Each fielded member earns **base XP computed from the warband's realized size and
+  composition** — the assembled warband's aggregate strength
+  `R = (Σ power) × N^(β−1)` (β = 2) from `server/RetinueStrength.{hpp,cpp}`, times
+  `xp.per_power` (`game/config/combat/offerings.json`). The generator prices the
+  finished warband, so XP tracks what was actually fielded, not the target. See
+  `server/docs/combat_system.md` → "Strength" for the per-unit formula.
 - Roster size and party size **do not divide it** — bringing your whole roster is never
   punished, and five players ganging up on one goblin each earn the goblin's tiny XP
   (Decision 63). The skill is choosing a warband you can beat that still pays.
@@ -566,18 +585,114 @@ Winner values for annihilation: **1 = players win, 0 = players lose, -1 = draw**
 
 ### 14.2 Rewards pipeline
 
-**Pipeline live, gold/equipment tables empty in v1** (Decision 22): morale runs now; gold
-spoils and gear-grant slots exist in config values defaulted to zero/empty so the machine
-ships before it's fed. No half-fed features when gold/gear arrive.
+**Pipeline live, gold/equipment/cosmetics tables empty in v1** (Decision 22): morale
+runs now; gold spoils, gear-grant, and cosmetic-grant slots exist in config values
+defaulted to zero/empty so the machine ships before it's fed. No half-fed features when
+gold/gear/cosmetics arrive. The cosmetic-grant slot is the reserved seam for paid
+adventures (§15.6).
 
 ### 14.3 Morale
 
 `fiefdoms.last_victory_ts` / `last_defeat_ts` set on win/loss respectively. A **draw sets
 neither** (explicit, symmetrical). These feed the existing household-morale decay terms.
 
-## 15. Server Architecture
+## 15. Cosmetics, Battle Presence & Platinum
 
-### 15.1 Tick composition (per 100 ms tick, in order)
+### 15.0 The variety rule (Pillar)
+
+Real money — whether spent through **Platinum** or as a direct bundle — buys **variety,
+never power**. Premium purchases must never alter simulation outcomes, progression rate,
+matchmaking, or any competitive parity. The store is a self-expression and content
+surface only.
+
+**Forbidden by policy and enforced by tooling:** stat/unit power; XP, morale, healing, or
+HP-bridge modifiers; queue/cooldown skips that gate progression parity; matchmaking
+weighting; randomized / loot-box purchases; and any transfer of Platinum or cosmetics
+between accounts.
+
+**Explicitly allowed (variety):** cosmetics; maps; a mini-game monthly pass; and
+(deferred) adventure access that grants exclusive cosmetics. Content a player chooses to
+unlock is variety, not power.
+
+### 15.1 Platinum — the premium currency
+
+- Platinum is a separate ledger, **completely non-fungible** with `gold`/`silver_pence`:
+  no conversion in either direction, and **not usable in the normal economy**
+  (construction, upkeep, imports, recruitment, or any fiefdom cost). Conversely, gold or
+  silver can never buy premium items.
+- **Not obtainable from normal gameplay** — only real-money purchase (and future
+  event/promo grants).
+- **Not tradable or giftable.** There are no account-to-account transfers of Platinum or
+  cosmetics.
+- Items are priced in `price_platinum`; some products (e.g. a monthly pass, an adventure
+  pack) may be priced directly in real money. The payment gateway is a **pluggable stub**
+  — real settlement is deferred; purchases are recorded as **idempotent**
+  `platinum_transactions` so a settled purchase grants exactly once.
+
+### 15.2 Cosmetic catalog — six slots
+
+| Slot | Scope | Battle presence |
+|---|---|---|
+| `banner` | heraldry / colors | lobby, deploy, results; above the knight |
+| `knight` | the character's armor, helm, colors | the knight unit |
+| `squad_uniform` | palette + pattern + emblem over all fielded retinue units | all fielded units |
+| `unit` | per-member skin override | that retinue member |
+| `structure` | banner drape / skin on a player-built wall/tower/barricade/spikes | built structures |
+| `flourish` | non-gameplay effects (splash tint, attack flash, victory flag, death marker) | events only — never stats |
+
+Each item carries `id`, `name`, `slot`, `tier`, `price_platinum`, `source`
+(`store` | `adventure_reward`), and an **appearance descriptor** (palette / pattern /
+emblem / trim) rendered procedurally through the existing sprite API (Decision 24);
+hand-authored art drops behind the same API. The `cosmetics.json` catalog is validated by
+a **deny-by-default whitelist** (§15.5.1).
+
+### 15.3 Ownership & application
+
+- **Character-bound**: the owned set (`character_cosmetics`) and the loadout
+  (`character_loadout`, slot → item) belong to a single character.
+- The server owns the truth. A fielding character's loadout travels in the **join-time
+  snapshot** (welcome roster rows + a player banner) — **never** in 10 Hz tick deltas — so
+  cosmetics add zero battle-message overhead.
+- Clients render only what the server authenticates, and render **appearance only**; the
+  team ring, HP bar, and facing chevron are **config-independent overlays** drawn on top
+  (§15.5.2).
+
+### 15.4 Store & entity surface
+
+`getStore`, `getCosmetics`, `purchasePremiumItem` (idempotent: balance → debit → grant,
+duplicate-aware), `purchasePlatinum` (gateway stub → payment intent + webhook stub),
+`equipCosmetic`, `deassignCosmetic`. Refunds set a `revoked` flag (visually locked,
+cleared from loadouts) rather than rolling back. Entitlements are server-authoritative;
+the client never asserts ownership.
+
+### 15.5 Integrity rails
+
+**15.5.1 Inert by construction.** A cosmetic is data with nowhere to store a gameplay
+effect. `cosmetics.json` is validated by a **whitelist** — only `id`, `name`, `slot`,
+`tier`, `price_platinum`, `source`, `description`, `appearance`, `sort` (and visual-only
+keys inside `appearance`) are permitted; any other key is an error. A whitelist is
+deny-by-default, so a future `siege_bonus` is rejected even though it was never on a
+blacklist. Enforced twice: the config linter (author time) and the absence of any sim
+read path (the match snapshot copies only `appearance`).
+
+**15.5.2 No camouflage.** Appearances cannot alter class silhouette or scale beyond a
+small authored band, and the team-color ring, HP bar, and facing chevron are always drawn
+in addition to (never replaced by) the cosmetic. The appearance validator rejects
+palettes/patterns that could read as the opposing team.
+
+**15.5.3 Deterministic store.** No loot boxes or randomized purchases; every purchase is a
+direct selection. Purchases are idempotent and logged; refunds revoke.
+
+### 15.6 Rewards seam (adventures deferred)
+
+`rewards.json` gains a **`cosmetics` slot, empty in v1** — the same "ship the machine
+before feeding it" rule as gold/equipment (Decision 22). Paid adventures (undefined; see
+§18) will grant **exclusive** cosmetics through this slot; the store catalog stays a
+separate catalog.
+
+## 16. Server Architecture
+
+### 16.1 Tick composition (per 100 ms tick, in order)
 
 1. **Drain commands** → validate & assign orders (move/AM/attack/stop/hold/patrol/stance/
    formation/construct).
@@ -591,13 +706,13 @@ neither** (explicit, symmetrical). These feed the existing household-morale deca
    wall-shelter, deaths/wounds events, cosmetic-arrow events (`attack` with `result`).
 7. **Respawns / cleanup** (rulesets that have them) + **end-condition check**.
 
-### 15.2 Determinism
+### 16.2 Determinism
 
 A **seeded PRNG per match** (created at match start) drives all dodge and AI randomness —
 battles are reproducible by rerunning the same seed (debugging, balance, tests). The
 client never needs to be deterministic.
 
-### 15.3 Entities
+### 16.3 Entities
 
 - `combat_unit` — extended: base stats (max_hp, damage/defense, speed, range, interval,
   arc multipliers, dodge, turn_rate), runtime (order queue, waypoints, target id,
@@ -606,14 +721,14 @@ client never needs to be deterministic.
   (building|active|destroyed), garrison slot, blocking flags.
 - Enemies: environment owner (0, team 2), negative id namespace.
 
-### 15.4 Threading & persistence
+### 16.4 Threading & persistence
 
 Unchanged foundation: one worker thread per match, loop thread only enqueues commands,
 SQLite writes deferred via `Loop::defer` after battle ends (wounds, XP, morale).
 
-## 16. Protocol & Config Delta
+## 17. Protocol & Config Delta
 
-### 16.1 Wire changes
+### 17.1 Wire changes
 
 - Unit rows gain **`facing`**.
 - New parallel **`structures`** array: `{id, type, owner, team, x, y, hp, max_hp, state,
@@ -624,8 +739,10 @@ SQLite writes deferred via `Loop::defer` after battle ends (wounds, XP, morale).
   per-target damage list so the delayed-HP ledger stays in sync.
 - New **`deploy`** phase on `match_state`.
 - `match_ended` gains XP + morale + reward-stub payload.
+- **Welcome roster rows** gain each member's cosmetic loadout, and `welcome` carries the
+  player's `banner`; cosmetics never ship on tick deltas (§15.3).
 
-### 16.2 Config & data files
+### 17.2 Config & data files
 
 | File | Change |
 |---|---|
@@ -636,11 +753,14 @@ SQLite writes deferred via `Loop::defer` after battle ends (wounds, XP, morale).
 | `combat/maps/*.json` | + per-team `deploy_zone`; per-obstacle blocking flags |
 | `combat/structures.json` (new) | barricade/spikes/wall/tower definitions |
 | `combat/formations.json` (new) | shape offsets, rotation, movement params |
-| `combat/rewards.json` (new) | pipeline slots (morale / xp / gold / equipment) |
+| `combat/rewards.json` (new) | pipeline slots (morale / xp / gold / equipment / cosmetics) |
+| `cosmetics.json` (new) | appearance catalog: six slots, tiers, `price_platinum`, `source`; whitelist-validated (no gameplay keys) |
+| `platinum_ledger` / `platinum_transactions` tables | per-character Platinum balance + idempotent purchase records |
+| `character_cosmetics` / `character_loadout` tables | owned set + equipped slots (character-bound) |
 | `retinue_members` table | + `xp` column (migration), + `level` reads for cap |
 | `check_configs.py`, `server/docs/combat_system.md`, docs referenced in §Doc-conflict-list | updated validation + docs |
 
-## 17. Deferred
+## 18. Deferred
 
 Abilities (slot reserved in the data model); light-fog visibility (camp-visible,
 units-hidden, v2 polish); PvP matchmaking + scrimmage; fog of war; server-simulated
@@ -649,7 +769,13 @@ API); cover bonuses for barricades; Demolish command; per-unit battle stats doss
 `penetrates_walls` spells; touch control-group polish beyond the long-press affordance;
 TURN relay for voice; passive member XP/leveling systems outside combat.
 
-## 18. Appendix A — Decision Log
+**Cosmetics & monetization deferrals:** adventure *access* purchase (adventures are
+undefined — they combine story + mini-games + adventure battles); the mini-game monthly
+pass; individual map purchases; merging character-bound cosmetics across characters;
+spectator/replay cosmetics; cosmetics on environment-owned (enemy) units (never);
+randomized / loot-box monetization (never).
+
+## 19. Appendix A — Decision Log
 
 Each entry: **# — decision** (rationale). Values marked *(tuning)* are deliberately
 spelled-out but not balanced.
@@ -689,7 +815,7 @@ spelled-out but not balanced.
 21. **XP completion-only** — no kill tracking; *(refined by 63)*.
 22. **Reward pipeline live, tables empty** — morale + XP now; gold/gear slots zeroed.
 23. **Formations: palette + rotation + hotkeys** — all co-exist.
-24. **Procedural class sprites** — no art dependency; real art drops behind the same API.
+24. **Procedural class sprites** — no art dependency; real art drops behind the same API. Directional (up to 8-view, StarCraft-style) clips are declared per class via `animations` (`fps`/`views`; the frame count is discovered from the set directory contents, and mirroring is an opt-in per-direction `{set, mirror}`); the server advertises only authored clips/sets (D71). A single-image `idle` clip is the standing pose.
 25. **Environment owner + negative ids for enemies** — clean team math + client typing.
 26. **No timer; safety cap** — guarantees termination; *(refined by 55)*.
 27. **Seeded PRNG per match** — reproducible battles.
@@ -761,6 +887,33 @@ spelled-out but not balanced.
 66. **Draw = base XP, no victory multiplier, no morale timestamp** — participation isn't
     wasted, draws never farm progression.
 
+### Cosmetics & monetization
+67. **Platinum: non-fungible, variety-only** — a separate premium ledger, not
+    convertible to/from `gold`/`silver_pence`, not usable in the normal economy, not
+    obtainable from normal play, and not tradable/giftable. It buys variety, never power
+    (Pillar §15.0).
+68. **Character-bound cosmetics** — ownership set + loadout belong to a single character.
+69. **Six cosmetic slots in v1** — `banner` / `knight` / `squad_uniform` / `unit` /
+    `structure` / `flourish` (§15.2).
+70. **Cosmetics ride join-time snapshots** — welcome roster rows + player banner; never
+    10 Hz tick deltas (§15.3).
+71. **Procedural appearance descriptors first** — palette/pattern/emblem/trim through the
+    sprite API (extends D24); hand-authored art drops behind the same API.
+72. **Server-authoritative, idempotent purchases** — idempotency keys give exactly-once
+    grants; the client never asserts ownership.
+73. **Payment gateway is a pluggable stub** — real settlement deferred; intent +
+    webhook/transaction records now.
+74. **No loot boxes** — the store is deterministic; every purchase is a direct selection
+    (§15.5.3).
+75. **Store catalog ≠ adventure-reward catalog** — paid-adventure cosmetics are exclusive
+    to that path; the store carries a separate catalog.
+76. **Cosmetics inert by construction** — deny-by-default whitelist of appearance/meta
+    keys; enforced by the config linter and by having no sim read path (§15.5.1).
+77. **No camouflage** — silhouette/scale bands preserved; team ring, HP bar, and facing
+    chevron are always overlaid, never replaced (§15.5.2).
+78. **Refunds revoke (flag)** — no rollback; the item is visually locked and cleared from
+    loadouts.
+
 ### Baked-in rulings (no open decision)
 - Spawn/deploy facing defaults **toward the enemy camp** (+ rotate gesture).
 - Forfeit: units withdraw unwounded; structures persist team-owned; garrisoned archers
@@ -777,6 +930,10 @@ spelled-out but not balanced.
 - XP levels apply only after match persistence (no mid-match level-ups).
 - Deploy disconnect: squad stays, auto-deploys on phase end.
 - Draw morale: neither timestamp.
+- Cosmetics have zero gameplay keys — only `appearance` is ever copied into the match
+  snapshot.
+- Environment-owned (enemy) units never wear cosmetics.
+- Platinum/cosmetics never transfer between accounts.
 
 ### Tuning constants (spelled values, not balanced)
 - Base speed 0.04 n/s; default `direction_defense` `{1.0, 0.6, 0.35}`; splash radius

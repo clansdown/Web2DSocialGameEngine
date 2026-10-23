@@ -635,6 +635,24 @@ network_stage manor_network_analyzer::analyze_stage(int s) const {
                                   + " water-power; upgrade mill pond (earthen 2, timber 4, stone 6).");
         }
 
+        // Exclusive groups: at most one building from a group (chapel chain,
+        // infirmary chain, ...) may exist.
+        {
+            std::map<std::string, int> group_counts;
+            for (const auto& [id, c] : sc.counts) {
+                const building_type* b = registry_.find(id);
+                if (b && b->has_exclusive_group()) {
+                    group_counts[b->exclusive_group()] += c;
+                }
+            }
+            for (const auto& [group, c] : group_counts) {
+                if (c > 1) {
+                    sc.warnings.push_back("Exclusive group '" + group + "' has " + fmt(c)
+                                          + " buildings (at most 1 allowed).");
+                }
+            }
+        }
+
         // Arable land: report acres used and warn if it exceeds the max
         // available at a fully-upgraded (level-10) manor house.
         sc.arable_total = economy_.arable_land_for_level(kAssumedManorLevel);

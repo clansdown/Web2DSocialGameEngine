@@ -55,30 +55,54 @@ The `server/tables/` directory contains detailed schema documentation for each S
 - `server/tables/fiefdoms.md` - fiefdoms table
 - `server/tables/fiefdom_buildings.md` - fiefdom_buildings table (level, x/y, construction, `pond_type`, `output_rates`)
 - `server/tables/fiefdom_river.md` - fiefdom_river table (water-power river cells)
-- `server/tables/player_messages.md` - player_messages table
-- `server/tables/message_queues.md` - message_queues table
-- `server/tables/player_game_state.md` - player_game_state table (game phases, baron-track honor name)
+- `server/tables/player_game_state.md` - player_game_state table (game phases, baron-track honor name, `barony_left_at` join cooldown)
+- `server/tables/character_letters.md` - in-game letters (text-system key + read state; game.db)
+- `server/tables/character_milestones.md` - per-character progression milestones (e.g. `ettin_slain`; game.db)
+- `server/tables/character_counters.md` - generic per-character counters (e.g. `slain.<class>`; game.db)
+- `server/tables/character_mission_completions.md` - completed one-shot PvE mission offerings (game.db)
+- `server/tables/combat_mission_attempts.md` - every finished combat mission attempt + warband end state (game.db)
+- `server/tables/character_identity_history.md` - prior names/avatars (admin identity lock; game.db)
+- `server/tables/change_counter.md`, `chats.md`, `chat_members.md`, `chat_invites.md`,
+  `messages.md`, `message_versions.md`, `message_translations.md`, `message_reactions.md`,
+  `bookmarks.md`, `friends.md`, `friend_requests.md`, `blocks.md`, `character_mutes.md`,
+  `character_relation_counts.md`, `chat_bans.md`, `moderation_log.md`,
+  `rate_limit_violations.md`, `rate_limit_timeouts.md`, `push_subscriptions.md`,
+  `push_preferences.md`, `chat_language_prefs.md` - the chat system (chat.db)
+- `server/tables/platinum_ledger.md` - premium currency balance (non-fungible; variety only)
+- `server/tables/platinum_transactions.md` - idempotent premium purchase records
+- `server/tables/character_cosmetics.md` - character-bound owned cosmetics (revoke flag)
+- `server/tables/character_loadout.md` - equipped cosmetic slots (slot → item JSON)
 
 Each `.md` file documents the table's purpose, full schema, field descriptions, indexes, relationships, and usage notes. See `server/tables/README.md` for guidance on documenting new tables.
 
 ### Database Architecture
 
-The server uses **two independent SQLite databases** for maximum concurrency:
+The server uses **three independent SQLite databases** for maximum concurrency:
 
 1. **game.db** - Game state and persistent data
    - `users`: User accounts and authentication
    - `characters`: Character entities with display names and levels
    - `fiefdoms`: Character territories and holdings
+   - `character_identity_history`: prior names/avatars (admin identity lock)
+   - `character_counters`: generic per-character counters (`slain.<class>` etc.)
+   - `character_mission_completions`: completed one-shot PvE offerings
+   - `combat_mission_attempts`: finished combat mission attempts + warband end state
    - Future game tables as needed
 
-2. **messages.db** - Character messaging system
-   - `player_messages`: Direct messages between characters
-   - `message_queues`: Unread message counters per character
-   - Future messaging tables as needed
+2. **chat.db** - The chat system
+   - `chats`, `chat_members`, `chat_invites`, `messages`, `message_versions`,
+     `message_translations`, `message_reactions`, `bookmarks`
+   - Social graph: `friends`, `friend_requests`, `blocks`, `character_mutes`,
+     `character_relation_counts`
+   - Moderation: `chat_bans`, `moderation_log`
+   - Rate limiting: `rate_limit_violations`, `rate_limit_timeouts`
+   - Push: `push_subscriptions`, `push_preferences`
+   - `chat_language_prefs`
+   - Full reference: `server/docs/chat.md`
 
 **Design Notes:**
 - No joins across databases - they are completely independent
-- Concurrent writes possible to both databases simultaneously
+- Concurrent writes possible to all databases simultaneously
 - Separate file handles allow true parallel access
 - Database files created automatically in working directory
 
@@ -90,7 +114,8 @@ CREATE TABLE users (
     username TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    adult INTEGER NOT NULL DEFAULT 0
+    adult INTEGER NOT NULL DEFAULT 0,
+    language TEXT NOT NULL DEFAULT 'en'
 );
 
 CREATE TABLE characters (
@@ -189,23 +214,16 @@ the **generic money layer** in `server/Money.hpp/.cpp` (`money::wallet`, `money:
 `Validation::hasEnoughResources`/`deductResources` and the economy-tick import/export/gold-upkeep math
 delegate to it, and hire fees route through the same fungible, auto-importing path.
 
-### messages.db Schema
+### chat.db Schema
 
-```sql
-CREATE TABLE player_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    from_character_id INTEGER NOT NULL,
-    to_character_id INTEGER NOT NULL,
-    message TEXT NOT NULL,
-    timestamp INTEGER NOT NULL,
-    read INTEGER DEFAULT 0
-);
+Chat lives in its own database with ~21 tables (chats, members, messages,
+translations, reactions, the social graph, moderation, rate limiting, push, and
+language prefs). The full DDL and design are documented in `server/docs/chat.md`
+and the per-table files under `server/tables/` (see the Table Documentation list
+above). `character_identity_history` (admin identity lock) lives in **game.db**.
 
-CREATE TABLE message_queues (
-    character_id INTEGER PRIMARY KEY NOT NULL,
-    unread_count INTEGER DEFAULT 0
-);
-```
+Key cross-cutting primitive: every mutated chat row carries a global `change_id`
+(from `change_counter`), so one integer cursor drives delta polling.
 
 ### game.db Additional Tables
 
@@ -302,6 +320,7 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - See `api/combatJoin.md` for `/api/combatJoin` documentation
 - See `api/combatList.md` for `/api/combatList` documentation
 - See `api/combatGetConfigs.md` for `/api/combatGetConfigs` documentation
+- See `api/getCombatOfferings.md` for `/api/getCombatOfferings` documentation
 - See `api/combatMatchmaking.md` for `/api/combatMatchmaking` documentation
 - See `api/getRetinue.md` for `/api/getRetinue` documentation
 - See `api/listRecruitCandidates.md` for `/api/listRecruitCandidates` documentation
@@ -317,6 +336,20 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - See `api/buyGearCity.md` for `/api/buyGearCity` documentation
 - See `api/hireTeacher.md` for `/api/hireTeacher` documentation
 - See `api/applyBookItem.md` for `/api/applyBookItem` documentation
+- See `api/getStore.md` for `/api/getStore` documentation
+- See `api/getCosmetics.md` for `/api/getCosmetics` documentation
+- See `api/purchasePremiumItem.md` for `/api/purchasePremiumItem` documentation
+- See `api/purchasePlatinum.md` for `/api/purchasePlatinum` documentation
+- See `api/settlePlatinum.md` for `/api/settlePlatinum` documentation
+- See `api/equipCosmetic.md` for `/api/equipCosmetic` documentation
+- See `api/deassignCosmetic.md` for `/api/deassignCosmetic` documentation
+- See `api/refundPremiumItem.md` for `/api/refundPremiumItem` documentation
+- See `api/getAvatarPool.md` for `/api/getAvatarPool` documentation
+- See `api/getPortraitFrames.md` for `/api/getPortraitFrames` documentation
+- See `api/setCharacterAvatar.md` for `/api/setCharacterAvatar` documentation
+- See `api/uploadCharacterAvatar.md` for `/api/uploadCharacterAvatar` documentation
+- See `api/removeCustomAvatar.md` for `/api/removeCustomAvatar` documentation
+- See `api/getCharacterAvatar.md` for the `GET /api/avatar/<character_id>` docs
 
 #### Endpoint Overview
 
@@ -335,10 +368,11 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - **/api/getCharacterTexts**: Character-context text fetch (server applies gender + `{character_name}` substitution)
 - **/api/setFiefdomReserve**: Set per-resource stockpile reserves (excess above reserve is auto-sold at the resource's export price — explicit `export_prices`, else `export_sell_multipliers` ratio, else 50% of import price)
 - **/api/setBuildingOutputRate**: Set a building output's production rate (0..1) per building instance — scales that output and its inputs; validates the output exists and is unlocked at the building's level
-- **/api/combatCreate**: Create a realtime combat lobby (PvE) — returns a shareable match code
+- **/api/combatCreate**: Create a realtime combat lobby (PvE) — returns a shareable match code; takes an auto-generated `offering_id` (or an authored `opportunity_id`)
 - **/api/combatJoin**: Join a combat lobby by code
 - **/api/combatList**: List open combat lobbies
 - **/api/combatGetConfigs**: List combat rulesets and maps
+- **/api/getCombatOfferings**: The character's current-hour auto-generated PvE mission offerings (tiers + board, minus completed)
 - **/api/combatMatchmaking**: PvP matchmaking (STUB — challenges/acceptances later)
 - **/api/getRetinue**: Fetch the character's retinue (knight + soldiers + capacity)
 - **/api/listRecruitCandidates**: List the current hire market (named candidate offers)
@@ -354,10 +388,59 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - **/api/buyGearCity**: Buy gear from the city at an extreme markup (gold-sink bypass)
 - **/api/hireTeacher**: Start a training timer on a tech building (on-demand, pays gold)
 - **/api/applyBookItem**: Consume a training item from storage to start a training timer
+- **/api/getStore**: Premium store catalog (cosmetics + bundles + products) + Platinum balance + owned set
+- **/api/getCosmetics**: Character-owned cosmetics + equipped loadout + Platinum balance
+- **/api/purchasePremiumItem**: Buy a cosmetic/bundle with Platinum (idempotent, server-authoritative)
+- **/api/purchasePlatinum**: Start a real-money Platinum purchase (gateway stub → pending intent/transaction)
+- **/api/settlePlatinum**: Mock gateway webhook — settle a pending purchase, granting Platinum exactly once
+- **/api/equipCosmetic**: Equip an owned cosmetic into a validated loadout slot
+- **/api/deassignCosmetic**: Clear a loadout slot (item stays owned)
+- **/api/refundPremiumItem**: Refund (revoke) a cosmetic — flags it revoked, clears the loadout, credits no Platinum (support action)
+- **/api/getAvatarPool**: Safe PFP pool for the requested `gender` (gender-split `images/avatars/safe/{male,female}/`, scanned + sorted at startup and **auto-rescanned on directory change** — no restart needed; returned in a per-user shuffled display order seeded from the username, canonical pool stays sorted) + viewer adult flag
+- **/api/getPortraitFrames**: Decorative portrait-frame geometry (`game/config/portrait_frames.json`): overlay image + pixel size + portrait destination rect per variant
+- **/api/setCharacterAvatar**: Set the character's safe-pool PFP (validated against the character's own sex pool; always present; shown to minors and as the fallback; 24h cooldown, creation pick exempt; does not clear a custom upload)
+- **/api/uploadCharacterAvatar**: 18+-only custom PFP upload (format/size/dimension checks; surfaced by the hub Profile activity; moderation TODO)
+- **/api/removeCustomAvatar**: 18+-only removal of a custom PFP (reverts to the safe pick)
+- **GET /api/avatar/<character_id>**: Age-gated custom-PFP stream (never served statically; owner or adult viewer)
+- **/api/foundFreehold**: Found an Outlying Freehold (lone manor, no barony) — `land_patent` → `freehold`
+- **/api/leaveBarony**: Leave a barony (founder names a successor, or a solo barony is tombstoned; stamps the join cooldown) — back to `freehold`/`freehold_qualified`
+- **/api/applyForMesneLord**: A qualified freeholder founds an Honor (barony + `mesne_lord` membership, reusing the manor) → `sandbox`
+- **/api/getLetters**: List the character's in-game letters, newest first
+- **/api/markLetterRead**: Mark a letter read (idempotent)
+- **/api/getBaronyMembers**: List a barony's members in join order (requester must be a member)
+
+### Chat
+
+Server-authoritative chat (direct/group/barony/dukedom/wildlands), per-character
+membership, aggregate delta polling, integrated translation, Web Push, and admin
+identity locks. Full reference: `server/docs/chat.md`. Config:
+`game/config/chat.json`, `chat_admins.json`, `translation.json`, `push.json`.
+
+- **Core**: `getChats`, `getChatMessages`, `pollChats`, `pollWildlands`,
+  `sendChatMessage`, `editChatMessage`, `deleteChatMessage`, `markChatRead`,
+  `setChatSettings`, `openDirectChat`, `searchChatCharacters`
+- **Translation**: `requestTranslations`, `getChatLanguagePrefs`,
+  `setChatLanguagePref`
+- **Reactions/bookmarks**: `addChatReaction`, `removeChatReaction`,
+  `addChatBookmark`, `removeChatBookmark`, `getChatBookmarks`
+- **Social**: `sendFriendRequest`, `acceptFriendRequest`,
+  `declineFriendRequest`, `unfriend`, `blockUser`, `unblockUser`,
+  `muteCharacter`, `unmuteCharacter`, `getFriends`
+- **Groups**: `createGroupChat`, `inviteToGroup`, `acceptGroupInvite`,
+  `declineGroupInvite`, `leaveChat`, `transferGroupOwnership`,
+  `setGroupModerator`, `kickMember`, `renameGroup`, `setGroupInvitePolicy`
+- **Moderation**: `banFromChat`, `unbanFromChat`, `getModerationLog`
+- **Presence**: `chatHeartbeat`, `getFriendPresence`, `setChatTyping`
+- **Push**: `getPushConfig`, `subscribePush`, `unsubscribePush`,
+  `setPushPreferences`
+- **Admin**: `adminGetIdentityHistory`, `adminLockIdentity`
+
+Each endpoint has a doc in `api/`; the SQL tables are documented under
+`server/tables/`; the translation sidecar lives in `server/translation/`.
 
 ### Realtime Combat
 
-The combat game (PvE 1–32; PvP 2–64 later) is a server-authoritative RTS over
+The combat game (PvE 1–8; PvP 2–64 later) is a server-authoritative RTS over
 **WebSocket `/ws/combat`** on port 2290 — **not** a mini-game. Design and
 protocol: `docs/combat_protocol.md`; mission rules: `docs/combat_rulesets.md`;
 map format: `docs/combat_maps.md`.
@@ -372,6 +455,24 @@ map format: `docs/combat_maps.md`.
   placeholder. Never build wire format inside game logic.
 - Retinue: `retinue_members` table (knight = character). Units are created by
   the manor game's `train_troops` (stub). See `server/tables/retinue_members.md`.
+- **Strength primitive**: `server/RetinueStrength.{hpp,cpp}` computes one
+  TTK-accurate per-unit power (`DPS × effective HP`; front-arc weighted defense
+  and dodge; AoE + ranged-engagement bonuses) and an army aggregate
+  `S = (Σ power) × N^(β−1)` (β = 2 — the N-vs-1 effect). The **same formula**
+  prices a player retinue and an enemy warband. Stats come from the shared
+  resolver `combat::resolve_combatant_stats`
+  (`server/combat/CombatantStats.{hpp,cpp}`), also used by the sim, so they can
+  never drift. Tuning lives in `offerings.json` `encounter`.
+- **Warband assembly** (`mission_gen::assemble_warband`): the party's `S` sets a
+  target `T = ρ·S` (ρ drawn from the offering-id seed), a horde/elite
+  coefficient `e` (party size vs. retinue size) weights classes by
+  `w ∝ (p_L1/p_ref)^e`, each pick rolls its unmet `requires` prerequisites
+  (depth-first, config-driven), and units are added at a level drawn in
+  `[1, L_fit]` under `T + p_min`. The first unit that cannot fit ends the round;
+  the assembly ends on a dry pass. The **realized** power drives danger/XP.
+  Combatant level arrays follow `m(L) = 1 + 0.1·(L−1)` (√m on damage and HP,
+  flat everything else). See `server/docs/combat_system.md` → "PvE Mission
+  Offerings".
 - Voice chat: WebRTC mesh; server relays signaling only. TURN required in prod.
 
 ### Building
@@ -426,7 +527,7 @@ When testing or verifying the server, use the `agent_test_server.sh` script for 
 - `-l FILE`: Write logs to file
 - `-q`: Quiet mode (minimal output)
 - `-v`: Verbose mode
-- `--keep-db`: Keep `.agent_test_db/` directory after exit (default: cleanup)
+- `--keep-db`: Keep `test_run/agent/` directory after exit (default: cleanup)
 
 **Exit Codes:**
 - `0`: Success (limit reached and server exited cleanly)
@@ -434,7 +535,7 @@ When testing or verifying the server, use the `agent_test_server.sh` script for 
 - `2`: Server startup failed
 
 **Behavior:**
-- Uses `.agent_test_db/` directory for databases (automatically wiped and recreated)
+- Uses `test_run/agent/` directory for databases (automatically wiped and recreated), running the server with `--content game/`
 - Runs on port 3290 by default
 - Exits immediately when request or time limit is reached
 - Cuts off in-flight requests on timeout
@@ -447,6 +548,37 @@ When testing or verifying the server, use the `agent_test_server.sh` script for 
 - With logging: `./agent_test_server.sh -N 25 -l test.log`
 - Verbose debugging: `./agent_test_server.sh -N 10 -v`
 - Keep databases for inspection: `./agent_test_server.sh -N 5 --keep-db`
+
+**Combat smoke test** (`tools/combat_smoke.sh [PORT]`): end-to-end realtime combat
+verification — createAccount → login → combatGetConfigs → combatCreate → WS auth
+→ roster → deploy placement → construct (structure builds) → battle (move +
+attack events) → match_ended with XP persisted to `retinue_members`. Env knobs:
+`SMOKE_OPPORTUNITY` (mission id; default `goblin_raiders`) and `SMOKE_AOE_CHECK=1`
+(assert the AoE splash path — e.g. `SMOKE_OPPORTUNITY=troll_march SMOKE_AOE_CHECK=1`).
+Exits 0 on pass, 2 on failure; uses an isolated per-port scratch DB and cleans up.
+
+**Offerings smoke test** (`tools/offerings_smoke.sh [PORT]`): the auto-generated
+PvE mission offering flow — createAccount → login → `getCombatOfferings` (asserts
+the solo tier + a non-empty board, and that a non-barony character sees solo
+only) → `combatCreate` with an `offering_id` (asserts the id round-trips and a
+`danger_band` is returned) → a malformed id is rejected. Exits 0 on pass, 2 on
+failure; isolated per-port scratch DB.
+
+**Monetization smoke test** (`tools/monetization_smoke.sh [PORT]`): end-to-end
+premium-store verification — createAccount → login → getStore → unaffordable
+purchase rejected → `purchasePlatinum` (pending → duplicate) → `settlePlatinum`
+(grants exactly once → `already_settled`) → buy a cosmetic (ok → duplicate →
+`already_owned`, one debit only) → equip/deassign → `getCosmetics` →
+`refundPremiumItem` (revokes + clears the loadout, replay `not_owned`). Exits 0
+on pass, 2 on failure; isolated per-port scratch DB.
+
+**Combat determinism / replay** (`tools/replay_combat.sh [SEED] [PORT]`):
+records a scripted match with `--combat-replay-dir` + `--combat-seed`, then
+re-runs the tick-exact command/ready log through `--combat-replay` and asserts
+the final `state_hash` matches — same seed + same command log → identical
+outcome. Exits 0 on match, 2 on mismatch. (`--combat-seed N` and
+`--combat-replay-dir DIR` are server CLI flags; `SMOKE_SEED=N` /
+`SMOKE_REPLAY_DIR=DIR` are passed through by `combat_smoke.sh`.)
 
 ### March Progress Testing
 
@@ -470,11 +602,11 @@ Use `tools/set_march_progress.sh` to set a character's march progress to an exac
 ### Deployment Notes
 
 1. **HTTP Only**: The server listens on HTTP (port 2290). TLS/HTTPS is handled by a reverse proxy (nginx, etc.)
-2. **Databases**: `game.db` and `messages.db` are created in the working directory on first run
-3. **Concurrent Access**: Two independent database connections allow simultaneous read/write operations
+2. **Databases**: `game.db`, `chat.db` (and `messages.db` is retired) are created in `--db-dir` (default: the working directory) on first run
+3. **Concurrent Access**: Three independent database connections allow simultaneous read/write operations
 4. **Error Handling**: All errors return JSON with format `{ "error": "description" }`
 5. **API Documentation**: Every endpoint has a corresponding `.md` file in `api/` directory with detailed request/response examples
-6. **Server working directory**: The server binary runs from the `game/` directory. Image paths like `images/ui/` resolve relative to `game/`, so assets at `game/images/ui/book.png` are served from `/images/ui/book.png`. The Vite dev proxy (`/images` → `localhost:2290`) follows the same path resolution.
+6. **Assets vs working directory**: the read-only assets `config/`, `images/`, and `text/` are read from the `--content` root (default: the working directory). `run_server.sh` runs the server from `test_run/` and passes `--content <repo>/game`, so databases and uploads land in `test_run/` and `game/` stays pristine for `push_to_production.sh`. Image paths like `images/ui/` resolve under the content root, so assets at `game/images/ui/book.png` are served from `/images/ui/book.png`. The Vite dev proxy (`/images` → `localhost:2290`) follows the same path resolution.
 
 ### Coding Standards
 
@@ -695,29 +827,79 @@ Validates all JSON configuration files against their schema rules. Written in Py
 - `economy.json` `arable_land_by_level` must be an array of exactly 11 non-negative, non-decreasing numbers (index 0–10 for manor levels; 0 at level 0, 400 at level 1 → 1000 at level 10, following the 10-tier manor-house ledger — 400/465/530/600/670/740/800/870/935/1000)
 - `economy.json` `forest_land_by_level` must be an array of exactly 11 non-negative, non-decreasing numbers (index 0–10 for manor levels; 0 at level 0, 200 at level 1, 600 at level 10)
 - Combatant `requires_manor_level` must be a positive integer (optional; gates which classes appear on the recruit market)
-- Building `recovery_multiplier` must be a non-negative number (optional; infirmary healing-rate bonus), `tech_trees` an array of non-empty strings, `tech_xp_per_day` a non-empty non-negative int array, `max_concurrent_orders` a positive integer
+- Building `recovery_multiplier` must be a non-negative number (optional; infirmary healing-rate bonus), `exclusive_group` a non-empty lowercase snake_case string (optional; at most one building from the group per fiefdom — see `fiefdom_building_types.md`), `tech_trees` an array of non-empty strings, `tech_xp_per_day` a non-empty non-negative int array, `max_concurrent_orders` a positive integer
+- Combat RTS combatant fields (`size` (**required**, normalized body radius `> 0` and `<= 0.2`), `max_hp`/`attack_range`/`attack_interval` per-level arrays, `attack_type`, `turn_rate`, `direction_defense`/`dodge` triples, `aoe` splash block, optional `animations` clips with `fps`/`views` (`{set, mirror}`; the frame count is discovered from the set directory, so `frames` is not declared)) are validated; `combat/warbands.json` warband entries cross-reference enemy combatant ids and carry valid `tactic`/`aggro_model`
+- `cosmetics.json` items are validated by a **deny-by-default whitelist** (`id, name, slot, tier, price_platinum, source, description, appearance, sort`; appearance keys `palette/pattern/emblem/trim`) — any unknown key is an ERROR, so a cosmetic can never carry a gameplay key (no pay-to-win; rts_design.md §15.5.1)
+- `portrait_frames.json` `frames` entries must carry `image` (a served `/images/...` path), positive integer `image_width`/`image_height`, and a `portrait` rect (`x,y >= 0`, `width,height > 0`, contained within the image); a missing frame image is a WARN until the art is authored
+- `progression.json` must carry a `mesne_lord.requirements` object (`manor_level` a non-negative integer, `milestones` an array of non-empty strings); `milestones` (optional) is an array of counter-based conditions (`{id, counter, min}`; a `slain.<class>` counter is cross-checked against `enemy_combatants.json`, unknown class = WARN); `barony.join_cooldown_days` (optional) a non-negative integer
 
 **Config Files Validated:**
 - `game/config/damage_types.json` - Damage type definitions
-- `game/config/player_combatants.json` - Player unit definitions
-- `game/config/enemy_combatants.json` - Enemy unit definitions
+- `game/config/player_combatants.json` - Player unit definitions (level arrays follow the `m(L) = 1 + 0.1·(L−1)` curve: `√m` on `damage` and `max_hp`, flat defense/range/interval/speed)
+- `game/config/enemy_combatants.json` - Enemy unit definitions (includes the boss-tier `ettin`, source of the `ettin_slain` milestone); the same level curve, plus optional `requires: [{unit_class, count}]` prerequisites that warband assembly rolls up recursively
+- `game/config/progression.json` - Progression gates: `mesne_lord.requirements` (`manor_level` + `milestones`), counter-based `milestones` (`{id, counter, min}`; `slain.<class>` cross-checked against `enemy_combatants.json`), and `barony.join_cooldown_days`
 - `game/config/fiefdom_building_types.json` - Building type definitions
 - `game/config/heroes.json` - Hero definitions with equipment, skills, and status effects
 - `game/config/fiefdom_officials.json` - Fiefdom official templates with stats and roles
 - `game/config/manor_ui.json` - Manor UI config (`build_order` governs the build-palette button order only — it never overrides the client's display/level/affordability filters)
 - `game/config/manor_river.json` - River templates (meandering polylines `points` + band `width`; seeded per-fiefdom with 0/90/180/270° rotation — see `server/tables/fiefdom_river.md`)
+- `game/config/portrait_frames.json` - Decorative portrait overlay geometry: per-variant overlay `image`, `image_width`/`image_height`, and the pixel `portrait` rect the portrait is mapped into (frame drawn on top — see `server/docs/portrait_frames.md`)
 - `game/config/retinue.json` - Retinue tuning: `retinue_capacity_by_level` (11 entries, manor levels 0-10; the knight is free), market params (candidates per class, max candidate level offset, grace buckets), recovery (max hours, min-deploy HP), morale contributors, sell discount, `armory_capacity`/`storage_capacity`, training (teacher/book XP grants + durations)
 - `game/config/equipment.json` - Gear items: slots, member-level requirements, per-item daily upkeep, `armory_slots`, `base_value`, `city_price`, and optional `craft` (materials + duration + `tech_node`)
 - `game/config/items.json` - General-storage items (books etc.): `source` (`drop`/`purchase`), `xp_grant`, `training_duration_hours`
 - `game/config/tech_trees.json` - Technology trees: nodes with `xp_cost`, `prerequisites`, and `effects` (start: `unlock_recipe`)
+- `game/config/combat/warbands.json` - Mission opportunities: ruleset + map + fixed warband composition + tier + `xp_base` + flavor; per-group `tactic`/`aggro_model`
+- `game/config/combat/structures.json` - Temporary combat structures (barricade/spikes/wall/tower): footprint, hp, build time, per-player caps, `blocks_physical_ranged`/`blocks_magical_ranged`, garrison buff
+- `game/config/combat/formations.json` - Formation shapes (line/column/wedge/circle) with spacing/rotation params
+- `game/config/combat/profiles.json` - Enemy AI: per-class fight styles + group behavioral axes (tactic/aggro/engagement/retreat/siege)
+- `game/config/combat/rewards.json` - Rewards pipeline: `xp_curve`, `victory_multiplier`, draw = base, morale flags, empty gold/equipment/cosmetics slots
+- `game/config/combat/offerings.json` - Auto-generated PvE mission offerings: `board` (`per_tier`, `validity_hours`), `power_scale` (quantizer), `difficulty` (`band_min`/`band_max`, drawn as `ρ`), `tiers` (party ranges + barony requirement), `encounter` (`max_units`, `prerequisite_depth`, strength tuning, `eliteness` seed range/coefficients), `xp` (`per_power`/`min`), `danger_bands`, `map_pool`; monster prerequisites (`requires`) live on `enemy_combatants.json` and are validated there
+- `game/config/cosmetics.json` - Premium-variety catalog (rts_design.md §15): six slots, tiers, `price_platinum`, `source`, `appearance` descriptors; **whitelist-validated** so no item can carry a gameplay key (no pay-to-win)
+- `game/config/chat.json` - Chat limits/policy: per-type `limits` (max chars/lines), group policy, friend caps, `mods_see_blocked`, and the `rate_limit` block (1/s, 30/min, 100/5min + escalation/decay)
+- `game/config/chat_admins.json` - Admin account-id allowlist (`account_ids`) for the chat moderation/admin endpoints
+- `game/config/translation.json` - Translation sidecar connection (`sidecar_url`, `enabled`, `detection_confidence_threshold`, `request_timeout_ms`)
+- `game/config/push.json` - Web Push VAPID keyring (`vapid.current` + `vapid.keys`), `sub`, `default_ttl`
 - `game/config/analyzer_manor_strategies.json` - **Analyzer-only** config: weighted manor build policies (heuristics) with optional min-ratio constraints, consumed by `game_balance_analyzer --sim`. Not a game config — see the `analyzer_` prefix convention below.
 
 **`analyzer_` prefix convention:** Config files used **only** by the `game_balance_analyzer` tool (never by the game/server) live in `game/config/` and MUST be prefixed with `analyzer_` (e.g. `analyzer_manor_strategies.json`) so they are not confused with real game config. Any future analyzer-only config follows the same convention and is added to this list + validated in `tools/check_configs.py`.
 
 **Image Directory Validation:**
-- `game/images/` - Game images (auto-detected from directory structure; only `combatants/`, `buildings/`, `heroes/`, `portraits/` entity directories are validated)
+- `game/images/` - Game images (auto-detected from directory structure; the `combatants/`, `buildings/`, `heroes/`, `portraits/` entity directories are validated, plus the retinue/avatar portrait pools)
 - Linter validates: required directories exist and are non-empty, file naming convention
+- **Portrait pools** (no catalog config; scanned + sorted at startup, **auto-rescanned when the pool directory's mtime changes** — no restart needed): `images/retinue/headshots/{male,female}/` (required, non-empty), `images/retinue/frames/{recruit,management}.png` (warn until authored; geometry in `game/config/portrait_frames.json`), `images/avatars/safe/{male,female}/` (warn until authored; gender-split). Accepted formats: png/jpg/jpeg/webp/avif. Custom PFPs live outside `images/` at `uploads/avatars/` and are never statically served.
 - See README.md "Images" section for directory structure specification
+
+### `tools/check_art.py`
+
+Reports which art referenced by the config files is missing on disk, and exactly
+where each missing file/directory belongs. Read-only — it never creates art (use
+`tools/generate_placeholder_art.py` for generation). Buildings are reported
+most-likely-built-first (manor-level gate, then level-1 gold-equivalent build
+cost from `economy.json` import prices), so early-game art surfaces first, before
+the per-category display truncation. Run from the repo root:
+
+```bash
+python3 tools/check_art.py                 # human report (missing only)
+python3 tools/check_art.py --all           # also list present assets/categories
+python3 tools/check_art.py --category manor
+python3 tools/check_art.py --paths-only    # just the missing paths
+python3 tools/check_art.py --json          # machine-readable
+```
+
+- Covers explicit config references: `fiefdom_building_types.json`
+  (`image`, `construction_image`, `road_tiles`, `race_tiles`),
+  `portrait_frames.json`, `mini_games.json`, `ui_textures.json`
+  (`texture_prefix`), tower-defense mobs/towers/units/projectiles (`image_file`,
+  incl. `area_effect.image_file`) + maps (`imageFilename`), weeding
+  plants (`sprite.image_file` + `damage_sprites` variants)/tools/specials/maps,
+  and combat maps (`image_filename`).
+- Also reports the data-driven pools (`images/retinue/headshots/{male,female}/`,
+  `images/avatars/safe/`) and — in a clearly-marked **legacy** group — the
+  server-scanned entity directories (`combatants/`, `buildings/` without an
+  explicit `image`, `heroes/`, hero skills, `portraits/`).
+- By default only categories with missing art (and only the missing items) are
+  printed; `--all` expands fully-covered categories and present assets.
+- Exits `1` when anything is missing (CI-friendly); `--no-fail` forces `0`.
 
 ## Config File Changes Rule
 
@@ -738,7 +920,7 @@ Validates all JSON configuration files against their schema rules. Written in Py
    - `mini_games.json` level entries reference maps by filename (e.g. `"map": "td_level_1.json"`)
    - Maps are loaded dynamically at runtime — no server restart needed
 6. **Image directory updates required:** If adding new combatants, buildings, heroes, or officials:
-   - Combatants: Create `images/combatants/{id}/idle/`, `attack/`, `defend/`, `die/` subdirectories
+   - Combatants: optional directional art at `images/combatants/{class}/{clip}/{set}/1.png…` (frame count discovered from the directory; `idle` = the standing pose) — see `server/docs/combat_system.md` → "Combatant Art (RTS)"; legacy flat `images/combatants/{id}/idle/1.png`
    - Buildings: Create `images/buildings/{id}/construction/`, `idle/` subdirectories
    - Heroes: Create `images/heroes/{id}/idle/`, `attack/` subdirectories and `skills/{skill_id}/` for icons
    - Officials: Create `images/portraits/{portrait_id}/` directories with portrait images
@@ -767,7 +949,7 @@ Build the full game progression and content system with a working tower defense 
 - **SimpleGame collision system**: Projectiles now use `onCollisionWithEnemy()` callbacks instead of manual `dist < 12` — engine's quadtree handles bounding-box overlap detection
 - **Projectile config**: New `game/config/tower_defense/projectiles.json` with width, height, speed (1600 = 4×), image_file, forward_vector. Server sends it in TD kickoff response
 - **Engine movement**: Projectiles move via `doMovement()` using `direction_x/direction_y` + `velocity` (set by `setOrientationTowards()`). `projTick()` only updates homing direction
-- **Mob sprite mirroring**: `mirrorOnDirection = true` + `forwardVector` from config on all mobs
+- **Mob sprite mirroring**: automatic in SimpleGame — each mob's class `defaultSpriteForwardVector` is set from the config `forward_vector` (`[1, 0]` = sprite faces right), and the engine mirrors the sprite per frame from the movement direction. No opt-in flag (the old `mirrorOnDirection` no longer exists in the engine)
 - **Soldier sizes**: Bumped +50% (archers 48×48, others 54×54)
 - **NaN destination fix**: Removed `rename_field(wp, "x", "x")` self-rename that destroyed waypoint x coordinates
 - **Pause button**: Added sidebar pause button using SimpleGame's exported `togglePause()`/`isPaused()`/`onPause`/`onResume` API
@@ -793,6 +975,21 @@ Build the full game progression and content system with a working tower defense 
 
 - **Manor-house ledger + stone removal + `descriptions`**: The manor house (`home_base`) upgrade costs now follow the 10-tier ledger (`~/Downloads/manor_house_upgrade_costs.md`): level-indexed arrays resized 14 → 10 entries; build (level 1) is **free** (a gift from the lord's family — the ledger's "Loaned Carpenter + Grant"); levels 2–10 charge the ledger's guild-contract gold (`gold_cost` 0.5/1.75/28/44/130/275/490/820/1350), `wood_cost` (cords), `beams_cost`/`boards_cost`, `iron_cost` (blooms), and `ironwork_cost` (forged ironwork) per tier. **`stone_cost` is removed from the game**: deleted from all 13 stone-cost buildings, the mill-pond top level + its three `pond_types` (earthen/timber/stone — type names kept as physical descriptors), and `wall_config.json`; `stone` dropped from `economy.json` `import_prices`/`default_reserves`/`starting_resources` and from both mini-game `completion_bonus` grants; the linter's resource/cost sets, client import/label/format maps, and analyzer resource lists no longer reference it. The DB `stone` column + C++ plumbing are **retired** (stays 0) — config-driven removal, zero server economy changes. `construction_times` trimmed to 10 entries; upgrade **tenant gates** (`dependencies`) now require the manor ~⅔ full of villeins (level 2 = 15 → level 10 = 34; target renamed `peasant` → `villein`). `arable_land_by_level` follows the ledger's Arable Farmland column: 400/465/530/600/670/740/800/870/935/1000.
 - **`descriptions` internal-note field**: every building type may carry a `descriptions` array — formal in-config design notes (JSON has no comments). Linter validates it (array of non-empty strings); the server **strips it** from `/api/getBuildingConfigs` and the `getGameInfo` `fiefdom_building_types` branch so the notes never reach the client. `home_base` carries the full ledger rationale; the stone-removal buildings carry one-line notes.
+- **RTS combat implemented (M0–M6 of `docs/rts_implementation_plan.md`; design: `docs/rts_design.md`)**: the `/ws/combat` game is now a real squad-tactics simulator. **Simulation core** (`server/combat/`): per-unit stats resolved from the combatant config snapshot at spawn (HP bridge `match_hp = class_max_hp × roster_health%`), base speed 0.04 × movement_speed, A* pathing over `tile_costs` with structure-aware blocking (`CombatPathfinding`), hard-body collision, directional arcs (front ±90°/side 45°/back ±45°), `final = dmg × 100/(100 + def×arc_mult)`, per-arc dodge (seeded PRNG), acquisition stances (Move never auto-engages), seeded `--combat-seed` PRNG. **Missions**: opportunities (`combat/warbands.json`; `combatGetConfigs` lists them, `combatCreate` takes `opportunity_id`, warband fixed at create), roster select (WS `roster`, knight always fielded), deploy phase (placements in `deploy_zones`, per-player Ready, 25s auto-deploy, facing defaults toward enemy camp), XP persistence (`retinue_members.xp` migration + `grant_experience`, victory multiplier, draw = base XP + no morale stamp). **Structures** (channeled construct, solid immediately, ~2 builders, HP ramp, interrupt aborts, ranged-block flags, arrow-slit towers with garrison melee-immunity + expel/empty). **Enemy AI** (profiles.json styles; group tactics/aggro; contact → battle state; goblin surround, orc guard/retreat, bandit/mage range-keeping, siege on walls). **AoE/alchemist** (safe-center over-throw with hold-fire, explicit Lob ground point, wall shelter, uniform splash incl. building-state structures, enemy flask-lobber). **Formations** (line/column/wedge/circle offset slots + rotation via the persistent `formation` command). Client: battle view renders team colors + **facing chevrons**, deploy auto-ready placeholder, results show per-member XP; combat is a hub activity (`activity_combat`, gated behind `land_patent`). **Regression tooling**: `tools/combat_smoke.sh`/`.mjs` verify the full loop (create → roster → deploy → construct → battle → match_ended → XP persisted) and the AoE path (`SMOKE_OPPORTUNITY=troll_march SMOKE_AOE_CHECK=1`). Wire deltas (facing, structures, deploy phase, attack `result`, winner 1/0/-1, xp payload) are live; `docs/combat_protocol.md`/`combat_maps.md`/`combat_rulesets.md`/`server/docs/combat_system.md`/`server/tables/retinue_members.md` reflect them.
+
+- **Premium variety / cosmetics (M11 of `docs/rts_implementation_plan.md`; design: `docs/rts_design.md` §15)**: real money buys **variety, never power**. **Platinum** is a separate ledger (`platinum_ledger`), completely non-fungible with `gold`/`silver_pence` (no conversion either direction, no economy use, no normal-play earning, no trading). **Character-bound** cosmetics (`character_cosmetics` + `character_loadout`) in six slots (banner/knight/squad_uniform/unit/structure/flourish). The catalog `game/config/cosmetics.json` is validated by a **deny-by-default whitelist** — any non-appearance key is a lint ERROR (rts_design.md §15.5.1), so a cosmetic can never carry a gameplay stat (the no-pay-to-win proof). Store REST: `getStore`/`getCosmetics`/`purchasePremiumItem`/`purchasePlatinum`/`settlePlatinum`/`equipCosmetic`/`deassignCosmetic`; purchases are **idempotent** (`platinum_transactions.idempotency_key UNIQUE`), server-authoritative, with a pluggable payment-gateway stub. `rewards.json` gains an empty `cosmetics` seam for the deferred paid-adventure rewards. Verified by `tools/monetization_smoke.sh` (settle grants exactly once; duplicate/re-buy guarded; `refundPremiumItem` revokes + clears the loadout) plus a seeded gameplay-key lint rejection.
+- **RTS client + monetization close (M7/M8/M10/M12/M13)**: the client now delivers the full journey — `MissionPick` (opportunities + open lobbies + join-by-code), `RosterSelect`, in-lobby roster/ready, `DeployView` (drag placement in the team `deploy_zone`, facing, Ready/auto-deploy), and `ResultsView` (XP + level-ups + wounds). `CombatGame` renders structures, procedural class sprites with **mandatory team ring + HP bar + facing chevron** overlays, a **pending-damage ledger** (arrow-synced damage numbers), AoE blasts, hold-fire icons, a **risky-Lob friendly-fire preview**, blocked-arrow-to-wall tracers, box/shift/double-click/control-group selection, a camera kit (drag/zoom/WASD/**edge scroll**/minimap), **smart-tap vs context-panel touch** with long-press pan, and `CombatCommandBar` (Move/Attack-Move/Patrol/Attack/Lob/Stop/Hold/Stance/Construct/Formation + queue). Cosmetics render through `StorePanel` + procedural appearance descriptors (palette/pattern/emblem) with the overlays intact; the `banner` renders in lobby/deploy/results and above the knight. Server: host roster subset applied at create; welcome sends the fielded roster + `banner` + per-member `cosmetic`; `combatGetConfigs` sends structures/formations. Determinism: `--combat-seed` + `state_hash` in `match_ended` + **tick-exact `--combat-replay-dir`/`--combat-replay`** + `tools/replay_combat.sh`. `refundPremiumItem` added.
+- **RTS design-conformance pass**: forfeit now **withdraws units unwounded** and stamps the leaver a defeat (no XP) regardless of team outcome; a new explicit order or builder death **aborts a build and resets its progress** (`build_aborted`); **Patrol is a real ping-pong** that engages en route and `attack_move` is a first-class command; **deploy placement is per-unit and non-overlapping**; enemy groups move on **shared flow fields** (§8.1); structures can't be placed on map obstacles; **cost>1 terrain slows movement**; and the banner cosmetic renders. `fieldable` was verified already correct via `getRetinue` (the welcome snapshot carries only fieldable members).
+- **Combat unit wire row** now carries `attack_type` + `def_front/side/back` + `dodge_front/side/back` (class constants) for the selection card, plus `radius` (per-class `size`, normalized) for the drawn size; `combatGetConfigs` also returns `structures`, `formations`, and `combatant_radius`.
+- **Per-class combatant size**: `player_combatants.json`/`enemy_combatants.json` now carry a **required** `size` (normalized board units; 0.03 = one standard soldier; goblin 0.025, knight 0.035, troll 0.065). The server resolves it into `combat_unit_stats.radius` and uses it as the physical body radius — hard-body collision contact distance (`sum of radii`), deploy spacing (largest body placed), and structure-adjacency reach — replacing the old global `k_unit_radius`. It rides each in-battle unit row as `radius` and is cataloged per class in `combatGetConfigs.combatant_radius`. Client: `CombatGame.svelte` sizes the drawn body/ring/chevron/sprite box from `unit.radius` (`body_radius_px`, 0.03 ≈ 13 px) and the pick radius, and `DeployView.svelte` sizes deploy tokens from `combatant_radius`, so bigger units read bigger **independent of source image dimensions**. Validated by `tools/check_configs.py` (`size` required, number `> 0` and `<= 0.2`).
+- **RTS walk cycles (directional combatant art)**: each combatant may declare an `animations` block (`player_combatants.json`/`enemy_combatants.json`) — clips with `fps` and per-direction `views` (a set name, or `{ set, mirror }` for an opt-in horizontal flip across the vertical axis; the shipped configs use identity views — all 8 directions authored, no mirroring). Frames live at `game/images/combatants/<class>/<clip>/<set>/<n>.png` starting at 1, and the **frame count is discovered from the directory contents** (never declared — so an animation may have any number of frames). `walk` (10 fps) and a single-image `idle` **standing pose** are shipped (`attack`/`die` reserved). `handleCombatGetConfigs` emits `combatant_art` **only for clips/sets with an authored directory on disk**, discovering `frames` and narrowing `views`, so the client never requests missing art. Client: `unit_sprites.ts` gained a per-(class, clip, set) cache + `set_combatant_art`/`preload_unit_sprites`/`resolve_frame`/`resolve_body_frame`/`direction_index`/`is_moving`; a shared `combat_configs.ts` caches `combatGetConfigs` for `CombatGame` + `DeployView`. `CombatGame.tick_effects(dt)` accumulates a per-entity `anim_time` while the lerp is still closing on its target; `draw` renders the 8-way sector unrotated (mirrored as configured) with the facing chevron snapped to the sector, resting on the `idle` standing frame (walk frame 1 when no idle art), falling back to the legacy rotated `idle/1.png` then the procedural circle. `DeployView` uses the same rest frame. Tooling: `check_configs.py` validates `animations` (`fps`/`views`; a stale `frames` warns as ignored) and treats combatant art as optional; `check_art.py` reports `<class>/<clip>/<set>/` directories that are **missing or empty** (never frame counts). Docs: `server/docs/combat_system.md`, `api/combatGetConfigs.md`, `rts_design.md` D24, AGENTS image-directory section.
+- **Retinue identity + PFP**: every retinue member now has a persistent `headshot_id` (path under `game/images/retinue/headshots/{male,female}/`, scanned + sorted at startup by `server/AvatarPool.*` — no catalog config). Recruit generation rolls `class → sex → level → name → headshot`, deterministically re-rolling names/headshots past identities already in the roster (and past earlier offers in the same list); hire validation is now **structural** (class/level/bucket + pool membership) with the exact-offer regeneration and name-uniqueness gate removed. `getRetinue` returns `headshot_id` + a server-resolved `portrait_url` (knight → owner PFP). Client: `RetinuePortrait.svelte` renders the frame as a transparent overlay **on top** of the headshot and maps the portrait through a config-driven rect (`game/config/portrait_frames.json` → `/api/getPortraitFrames`: overlay image + pixel size + pixel `portrait` rect); the headshot is **stretched** `object-fit: fill` into that rect so non-square/ornamental frame openings work. It also adds a recruit card grid, an all-members **management grid** with a health bar + Ready/Infirmary badge, and a per-member **management detail** (`RetinueMemberDetail.svelte`) hosting equipment, priority reorder, and armory/storage; the old top-level roster/gear tabs are gone. **Player PFP** (variety only, layered like safe/custom names): `characters.avatar_safe_id` (always present; shown to minors and as the fallback) / `avatar_custom_id` (optional 18+ overlay for adult viewers) / `avatar_changed_at`; forced safe pick at creation from the character's own **gender-split** pool (`images/avatars/safe/{male,female}/`; `AvatarPicker.svelte`/`ProfilePanel.svelte` request the character's `sex`, skips when that pool is empty), 24h per-character cooldown (creation exempt), 18+-only custom upload (`uploadCharacterAvatar`, surfaced by the hub **Profile** activity `ProfilePanel.svelte`; the client pre-scales to 256×256 WebP/JPEG; moderation TODO) stored outside the static tree and served solely by the age-gated `GET /api/avatar/<character_id>` (owner or adult viewer; under-18 always gets the safe pick). Portrait URL resolution is shared (`server/AvatarUrl.cpp`, `resolve_avatar_url`) and viewer-aware everywhere — `getCharacter`, retinue, and **chat** (`CharacterDirectory`/`search_characters`). New endpoints `getAvatarPool`/`getPortraitFrames`/`setCharacterAvatar`/`uploadCharacterAvatar`/`removeCustomAvatar`; new static routes `/images/retinue/*` and `/images/avatars/safe/*` (MIME for png/jpg/jpeg/webp/avif). RTS intentionally uses no portraits. Content still owed: `retinue/frames/{recruit,management}.png` (geometry already cataloged in `game/config/portrait_frames.json`), the `images/avatars/safe/` pool, and the mage name top-up (alchemist pools authored). Docs: `docs/retinue_design.md` §13, `server/tables/retinue_members.md`, `server/tables/characters.md`, new `api/*Avatar*.md`.
+
+- **Exclusive building groups**: new optional `exclusive_group` field on a building type — at most one building from the group per fiefdom (distinct from `max_per_fiefdom`, which caps a single type). Config: `chapel`/`church`/`parish_church` share `"chapel"`; the three infirmary stages share `"infirmary"` (so their `recovery_multiplier` bonuses no longer stack). Server: `GameConfigCache::getBuildingExclusiveGroup`, `Validation::countBuildingsInExclusiveGroup(cache, fiefdom_id, group, exclude_building_id = 0)`, enforced on **build** and stage **convert** (convert excludes the row being upgraded, so `chapel → church` works) → error `exclusive_building_exists`; `getBuildingConfigs` injects `exclusive_group`. Client: `ManorMenu.svelte` computes `candidateIds` (all display-able types, buttons + texts created once), `computeBuildableIds()` (manor level + exclusive-group filter), and `syncBuildColumn()` (reconciles the SimpleGame `Column` children — `Column.layout()` does not skip invisible children, so hiding requires remove/re-add), called from `loadFiefdomData`. The other members of an occupied group are **hidden** from the build palette; affordability/prereq/`max_per_fiefdom` still grey out; the convert path is unaffected. Linter validates `exclusive_group`; the analyzer models it (`building_type::exclusive_group_`, `is_feasible` group check, network warning).
+- **webp/avif parity (detect + serve)**: every path that handled png now handles webp/avif too. `server/images/ImageCache.cpp` extension checks accept `.webp`/`.avif`; `server/ImageReader.cpp` `get_image_dimensions` parses WebP (VP8/VP8L/VP8X) and AVIF (ISOBMFF `ispe`) dimensions (fixes `handleGetUITextures` skipping them and the oversized-upload guard for webp/avif custom PFPs); the five static image routes (`/images/ui|tower_defense|weeding|manor|combatants/*`) now use the webp/avif-aware `serve_image_subtree`; `tools/check_configs.py` accepts `.avif`. (Combatant art stays png-only — the client's `unit_sprites.ts` builds `.png` frame URLs; a follow-up.)
+- **Image pools auto-rescan (no restart)**: `AvatarPool` and `ImageCache` now lazily rescan when a watched directory's mtime changes, mirroring the `TowerDefenseMapCache`/`CombatMapCache` pattern (POSIX `stat()` + `time_t`; `std::filesystem::file_time_type` is broken on Linux). `AvatarPool` tracks the four pool-dir mtimes and re-scans on access (now returns by value under a mutex); `ImageCache` records every directory's mtime and rebuilds the tree on any change. Directory mtime bumps on add/remove/rename (not in-place content edits) — new art appears without a restart.
+- **Player avatars split from retinue portraits**: new `client/src/components/PlayerAvatar.svelte` renders the player's own PFP in a **1:1.5** portrait box with `object-fit: contain` (whole image, aspect preserved) and a mat background, separate from `RetinuePortrait.svelte` (retinue-only: square, framed). `ProfilePanel.svelte`'s "current portrait" now uses `PlayerAvatar`; the custom-upload preview is `64×96 contain`. `SafeAvatarGrid.svelte` (shared by the creation picker and the Profile panel) renders each pool entry in a 1:1.5 area with `contain` + mat.
+- **Warband assembly implemented** (`mission_gen::assemble_warband`): replaces the placeholder role/fraction generator. The offering id now freezes `(players, troop_count, power_bucket)` (7 fields), the board combines the character with the strongest `max_players − 1` barony members into one aggregate `S`, and assembly draws `ρ` (target `T = ρ·S`) and a horde/elite `e` (seed + party-size − log2 retinue-size), weights classes by `(p_L1/p_ref)^e`, rolls unmet `requires` prerequisites depth-first, and adds units at a random level in `[1, L_fit]` under `T + p_min` (first failure ends the round; dry pass ends assembly; 10 000-iteration backstop). Realized `R` drives `danger_ratio`/`danger_band`/XP. `encounter.composition`, `level_reference_power`, and `level_per_ratio` are gone; tier `anchor`s are gone; configs now carry `eliteness` + `prerequisite_depth`, and enemy classes carry `requires`. Combatant level arrays were reauthored to `m(L) = 1 + 0.1·(L−1)` (`√m` on damage/HP). New API fields: `target_power`, `realized_power`, `difficulty`, `eliteness`. Docs: `server/docs/combat_system.md` → "PvE Mission Offerings", `api/getCombatOfferings.md`, `api/combatCreate.md`.
 
 #### In Progress
 - (none)
@@ -814,12 +1011,13 @@ Build the full game progression and content system with a working tower defense 
 - Create arrow/bolt projectile images at `game/images/tower_defense/projectiles/`
 - Generate parchment background and path icon images
 - Add `rounds` field to baron_levels in `mini_games.json` if needed
-- Combat: implement real combat mechanics (damage, target selection, abilities) — currently attack/ability relay as events only
-- Combat: PvE enemy AI (flow-field pathfinding over `tile_costs`; enemies currently idle)
-- Combat: PvP matchmaking (challenges/acceptances/handicaps); per-user team selection
-- Combat: barony-invite UI via the messaging system; `combatList` browser
-- Combat: TURN relay for voice chat; WebRTC peers on late-joiners; per-player fog of war
-- Combat: `train_troops` manor integration (units with weapons/armor/abilities from `player_combatants.json`/`heroes.json`)
+- RTS: PvP matchmaking (challenges/acceptances/handicaps); per-user team selection
+- RTS: barony-invite UI via the messaging system; `combatList` browser already surfaced in `MissionPick`
+- RTS: TURN relay for voice chat; WebRTC peers on late-joiners; per-player fog of war
+- RTS: `train_troops` manor integration (units with weapons/armor/abilities from `player_combatants.json`/`heroes.json`)
+- RTS: balance pass against real playtests (tuning constants; the determinism replay is now tick-exact via `--combat-replay`)
+- RTS: M7 polish — hand-authored sprite/cosmetic art behind the same appearance API; touch parity beyond smart-tap/context-panel + long-press pan
+- Monetization: real payment-gateway integration (replace the `purchasePlatinum`/`settlePlatinum` stub); adventure-access purchase + monthly-pass fulfilment (deferred — `rts_design.md` §18)
 
 ### Critical Context
 - **Server compiles** with `./compile_server.sh` (no arguments). Client `npm run check` passes with only pre-existing WeedingGame errors.
@@ -833,7 +1031,7 @@ Build the full game progression and content system with a working tower defense 
 - **`rename_field` self-rename bug**: `rename_field(obj, "x", "x")` with `from == to` destroys the field. Fixed by removing these calls.
 - **Level ID** threaded through: `App.svelte → MiniGameContainer → TowerDefense` (not hardcoded 0).
 - **Combat is not a mini-game**: it never routes through `MiniGameContainer`/`startMiniGame`; the `client/src/combat/` module is kept for future game-flow entry (hub cards were removed — combat is no longer launched from `available_activities`).
-- **Combat threading**: match sim runs on its own worker thread; the uWS loop thread only enqueues commands and relays chat/voice; SQLite writes are `Loop::defer`-ed back to the loop thread.
+- **Combat threading**: match sim runs on its own worker thread; the uWS loop thread only enqueues commands and relays chat/voice. **uWS is single-threaded — the only thread-safe entry point is `Loop::defer`.** Worker broadcasts are posted to the loop (which calls `App::publish` on the loop thread); the App address is held in a shared atomic slot nulled before destruction. SQLite writes are also `Loop::defer`-ed back to the loop thread. Worker threads are **joinable**; on shutdown (SIGINT/SIGTERM or `--shutdown-after-ms`) the server falls through (close sockets + listener → `App::run()` returns) and `combat_match_manager::shutdown()` stops + joins the pool *before* the App is destroyed. `ClientInfo` owns `std::string`s (never uWS request views, which die with the handler). Regression: `tools/combat_shutdown_test.sh`, `tools/combat_broadcast_stress.sh`, TSan via `./compile_debug-server.sh --tsan`.
 - **Combat maps are lenient**: `CombatMapCache` preserves unknown fields; the linter warns (not errors) on them so the format can evolve (see `docs/combat_maps.md`).
 
 ### Relevant Files

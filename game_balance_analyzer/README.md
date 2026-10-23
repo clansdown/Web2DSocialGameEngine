@@ -152,7 +152,8 @@ Every strategy is driven by one adaptive **policy**: each simulated day it build
 then runs the economy tick. A building is feasible when its level-1 build cost is
 coverable from current stock plus imports affordable with the current fungible
 gold/silver_pence wallet (gold and pence are one wallet at 240 pence/gold), its
-`max_per_fiefdom` cap is not yet reached, its `manor_level` requirement is met,
+`max_per_fiefdom` cap is not yet reached, its `exclusive_group` (if any) has no
+member built, its `manor_level` requirement is met,
 **and** its `arable_acres`/`forest_acres` fit within the manor's remaining
 land (arable and forest totals both scale with the current manor level).
 
@@ -285,7 +286,8 @@ the stage contribute their top building), the module:
    `construction_times`, `--day-seconds` per day, gold cost reported
    separately; `manor_level` requirements are assumed satisfied at a
    fully-upgraded (level-10) manor house).
-3. **Warnings** — `max_per_fiefdom` caps, water-power capacity vs mill-pond
+3. **Warnings** — `max_per_fiefdom` caps, exclusive-group violations (more than
+    one building from a group), water-power capacity vs mill-pond
     capacity, and unresolvable internal deficits.
 
 **Arable land** is modeled as a constraint. Each stage/scale reports

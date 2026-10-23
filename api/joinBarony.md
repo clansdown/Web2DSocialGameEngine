@@ -1,6 +1,8 @@
 # `/api/joinBarony`
 
-Joins an existing barony, creates a fiefdom, and transitions the player to sandbox phase.
+Joins an existing barony. A land-patent holder or a freeholder may join; the
+character's existing fiefdom is reused (one fiefdom per character), and the
+player transitions to the `sandbox` phase.
 
 **Requires authentication.**
 
@@ -9,7 +11,7 @@ Joins an existing barony, creates a fiefdom, and transitions the player to sandb
 ```json
 {
     "character_id": 1,
-        "barony_id": 2,
+    "barony_id": 2,
     "auth": {
         "username": "player",
         "token": "session_token_hex"
@@ -23,7 +25,7 @@ Joins an existing barony, creates a fiefdom, and transitions the player to sandb
 {
     "status": "ok",
     "data": {
-    "barony_id": 2,
+        "barony_id": 2,
         "fiefdom_id": 5,
         "game_phase": "sandbox",
         "base_unlocked": true
@@ -36,14 +38,36 @@ Joins an existing barony, creates a fiefdom, and transitions the player to sandb
 ```json
 { "error": "character_id required" }
 { "error": "barony_id required" }
+{ "error": "Character does not belong to this user" }
 { "error": "Barony not found" }
 { "error": "Already a member of a barony" }
 { "error": "Must have a land patent to join a barony" }
+{ "error": "You must wait before joining another barony" }
+```
+
+The cooldown rejection also carries the expiry timestamp:
+
+```json
+{
+    "error": "You must wait before joining another barony",
+    "data": { "cooldown_until": 1700259200 }
+}
 ```
 
 ## Notes
 
-- Creates a fiefdom for the character with `manor_level = 1` and 5 starting gold
-- Character must be in `land_patent` game phase
-- Character can only be in one barony at a time
-- Fiefdom position is auto-assigned
+- Character must be in `land_patent`, `freehold`, or `freehold_qualified`; other
+  phases are rejected with `Must have a land patent to join a barony`.
+- The fiefdom is **created only if the character has none**; a freeholder's
+  existing manor is reused, so tenure changes never destroy or duplicate it
+  (one fiefdom per character). New fiefdoms start at `manor_level = 0`
+  (home_base under construction) with the `economy.json.starting_resources`
+  balance.
+- Character can only be in one barony at a time; defunct (tombstoned) baronies
+  are rejected with `Barony not found` and excluded from `/api/getBaronies`.
+- After leaving a barony, a join cooldown applies
+  (`progression.json` `barony.join_cooldown_days`, default 3 days). Until it
+  expires the request fails with `You must wait before joining another barony`
+  and a `cooldown_until` timestamp (`/api/getPlayerState` reports the same
+  value as `barony_join_cooldown_until`).
+- Fiefdom position is auto-assigned.

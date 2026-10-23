@@ -27,14 +27,47 @@ export interface combat_envelope {
 export interface combat_unit_dto {
   id: number;
   owner: number;
+  team: number;
   name: string;
   unit_class: string;
   level: number;
   x: number;
   y: number;
+  facing: number;
   hp: number;
   max_hp: number;
   status: string;
+  is_enemy: boolean;
+  /** Attack class (melee | ranged | magical) for the selection card. */
+  attack_type?: string;
+  /** Directional defense multipliers (front/side/back). */
+  def_front?: number;
+  def_side?: number;
+  def_back?: number;
+  /** Per-arc dodge chances (0..1). */
+  dodge_front?: number;
+  dodge_side?: number;
+  dodge_back?: number;
+  /**
+   * Body radius in normalized board units (the per-class `size`). Drives the
+   * drawn sprite/token/ring size, independent of the source image dimensions.
+   * `size` is required by the config, so the server always sends it.
+   */
+  radius?: number;
+}
+
+/** A deployable combat structure (matches combat_structure; M3 wire). */
+export interface combat_structure_dto {
+  id: number;
+  type: string;
+  owner: number;
+  team: number;
+  x: number;
+  y: number;
+  hp: number;
+  max_hp: number;
+  state: string;
+  garrisoned_unit_id: number;
 }
 
 export interface combat_event_dto {
@@ -47,10 +80,26 @@ export interface combat_state_payload {
   full: boolean;
   phase: string;
   countdown?: number;
+  deploy_time?: number;
   battle_time?: number;
   units: combat_unit_dto[];
+  structures: combat_structure_dto[];
   removed: number[];
   events: combat_event_dto[];
+}
+
+/**
+ * A cosmetic appearance descriptor (rts_design.md §15.2). Purely visual:
+ * palette/pattern/emblem/trim are rendered procedurally and carry no gameplay
+ * key (the server copies only `appearance` into the snapshot).
+ */
+export interface combat_appearance_dto {
+  palette?: string[];
+  pattern?: string;
+  emblem?: string;
+  trim?: string;
+  item_id?: string;
+  slot?: string;
 }
 
 export interface combat_player_dto {
@@ -67,6 +116,10 @@ export interface combat_retinue_member_dto {
   unit_class: string;
   level: number;
   is_knight: boolean;
+  health: number;
+  fieldable: boolean;
+  /** Per-member cosmetic override (unit slot); appearance only. */
+  cosmetic?: combat_appearance_dto | null;
 }
 
 /** Payload of the welcome message. */
@@ -80,13 +133,33 @@ export interface combat_welcome_payload {
   map: Record<string, unknown>;
   players: combat_player_dto[];
   retinue: combat_retinue_member_dto[];
+  /** The player's equipped banner (appearance only; rts_design.md §15.3). */
+  banner?: combat_appearance_dto | null;
+  /** Per-player slot appearances: knight/squad_uniform/structure/flourish. */
+  cosmetics?: Record<string, combat_appearance_dto>;
 }
 
-/** Payload of the match_ended message. */
+/** One per-member outcome in the match_ended payload. */
+export interface combat_member_xp_dto {
+  member_id: number;
+  xp: number;
+}
+
+/** One member's level-up count (0 omitted) in the match_ended payload. */
+export interface combat_level_up_dto {
+  member_id: number;
+  level_ups: number;
+}
+
+/** Payload of the match_ended message (winner 1/0/-1 per §13.3). */
 export interface combat_ended_payload {
-  winner_team: number;
+  winner: number;
+  winner_team?: number;
   reason: string;
-  casualties: { member_id: number; owner: number }[];
+  casualties: { member_id: number; owner: number; end_hp: number }[];
+  xp_by_member?: combat_member_xp_dto[];
+  level_ups?: combat_level_up_dto[];
+  rewards_stub?: Record<string, unknown>;
 }
 
 export interface combat_chat_payload {

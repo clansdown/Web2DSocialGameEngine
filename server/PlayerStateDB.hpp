@@ -98,6 +98,16 @@ void start_baron_track(sqlite::database& db, int character_id, int64_t timestamp
 
 void earn_baron_right(sqlite::database& db, int character_id, int64_t timestamp);
 
+// A lone knight's manor, unattached to any barony. base_unlocked=1 (manor play)
+// but no barony membership. `enter_freehold_qualified` is the same state after
+// the mesne-lord requirements are met (the apply button appears).
+void enter_freehold(sqlite::database& db, int character_id, int64_t timestamp);
+
+void enter_freehold_qualified(sqlite::database& db, int character_id, int64_t timestamp);
+
+// Records when the character last left a barony (drives the join cooldown).
+void set_barony_left_at(sqlite::database& db, int character_id, int64_t timestamp);
+
 // Game session management
 GameSessionRow create_game_session(sqlite::database& db, int character_id, const std::string& mini_game, int level_id, int difficulty, int total_rounds, int64_t timestamp);
 

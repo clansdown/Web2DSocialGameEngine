@@ -22,6 +22,7 @@ Authenticate a user and return all characters associated with the account.
     "user_id": 1,
     "username": "player_name",
     "adult": false,
+    "language": "en",
     "characters": [
       {
         "id": 1,
@@ -40,6 +41,7 @@ Authenticate a user and return all characters associated with the account.
 | user_id | integer | User account ID |
 | username | string | Login username |
 | adult | boolean | Whether account is for adults |
+| language | string | Account interface / display language (chosen at creation) |
 | characters | array | Array of character objects owned by this user |
 | characters[].id | integer | Character ID |
 | characters[].display_name | string | Character display name |

@@ -1,11 +1,16 @@
 # `/api/hireRecruit`
 
 Hires a **named candidate** from the recruit market into the player's retinue.
-The offer must be verifiable — it has to match an offer actually generated for
-this character in the **current or previous hour bucket** (re-derived from the
-`(character_id, hour bucket)` seed, never stored) — and the manor must have
-capacity, the name must be unused in the roster, and the fee must be
-affordable from fiefdom stores.
+The offer is validated **structurally**: a known class unlocked at the manor's
+level, an in-range level, the **current or previous hour bucket** (grace
+window), a name from the class/sex pool, and an existing headshot for the sex.
+The manor must also have capacity and the fee must be affordable from fiefdom
+stores.
+
+Name/headshot uniqueness is a **generation-time** property (the market re-rolls
+past identities already in the roster), not a server gate: a scripted client may
+hire a duplicate name, which is harmless because class and level — and therefore
+the fee and stats — are still fully validated.
 
 **Requires authentication.**
 
@@ -17,6 +22,7 @@ affordable from fiefdom stores.
     "unit_class": "spearman",
     "display_name": "William",
     "gender": "male",
+    "headshot_id": "male/07.png",
     "level": 2,
     "hour_bucket": 242365,
     "auth": {
@@ -43,6 +49,7 @@ All offer fields come from the candidate object returned by
             "is_knight": false,
             "level": 2,
             "gender": "male",
+            "headshot_id": "male/07.png",
             "health": 100,
             "health_updated": 1750006500,
             "priority": 1,
@@ -64,7 +71,6 @@ All offer fields come from the candidate object returned by
 ```json
 { "error": "That offer has expired or was never made." }
 { "error": "Your manor cannot house anyone else in your retinue." }
-{ "error": "Someone with that name already serves you." }
 { "error": "You cannot afford this candidate's fee (gold + materials)." }
 { "error": "You need a manor before you can recruit a household." }
 { "error": "Character does not belong to this user" }
@@ -72,8 +78,8 @@ All offer fields come from the candidate object returned by
 
 ## Notes
 
-- **Validation order**: offer verifiability → capacity → name uniqueness →
-  affordability. The fee is paid from the fiefdom on success through the same
+- **Validation order**: structural offer validity (class/level/bucket/pools) →
+  capacity → affordability. The fee is paid from the fiefdom on success through the same
   fungible path buildings use — **gold and silver_pence are one wallet**
   (1 gold = 240 pence per `economy.json` `currency`), a fee denominated in one
   can be paid from the other, and any **physical material shortfall is
@@ -81,5 +87,6 @@ All offer fields come from the candidate object returned by
   per-resource `import_settings` toggles).
 - The knight (`is_knight = true`) can never be hired or dismissed; new
   **priority** ranks below every current member (see `/api/getRetinue`).
-- Names must not duplicate an existing roster member. The market itself may
-  still offer a name already in the roster — hire simply rejects it.
+- `headshot_id` persists on the member and is returned with the portrait in
+  `/api/getRetinue`. Duplicate names/headshots are not rejected (generation
+  avoids them in normal play).

@@ -2,31 +2,37 @@
 #include <nlohmann/json.hpp>
 #include <functional>
 #include <optional>
+#include <string>
+#include <unordered_map>
 #include "ApiResponse.hpp"
 
 class GameConfigCache;
 
+// Request metadata for logging/auth context. These are OWNED strings: uWS only
+// guarantees req->getHeader() views during the synchronous handler call, and we
+// capture this struct into res->onData (which fires later, when the body arrives
+// and the request buffer may be reused). Never store uWS views in here.
 struct ClientInfo {
-    std::string_view real_ip;
-    std::string_view forwarded_for;
-    std::string_view forwarded_proto;
-    std::string_view forwarded_host;
-    std::string_view forwarded_port;
-    std::string_view user_agent;
-    std::string_view host;
-    std::string_view request_id;
+    std::string real_ip;
+    std::string forwarded_for;
+    std::string forwarded_proto;
+    std::string forwarded_host;
+    std::string forwarded_port;
+    std::string user_agent;
+    std::string host;
+    std::string request_id;
 };
 
 inline ClientInfo parseClientHeaders(auto* req) {
     ClientInfo info;
-    info.real_ip = req->getHeader("x-real-ip");
-    info.forwarded_for = req->getHeader("x-forwarded-for");
-    info.forwarded_proto = req->getHeader("x-forwarded-proto");
-    info.forwarded_host = req->getHeader("x-forwarded-host");
-    info.forwarded_port = req->getHeader("x-forwarded-port");
-    info.user_agent = req->getHeader("user-agent");
-    info.host = req->getHeader("host");
-    info.request_id = req->getHeader("x-request-id");
+    info.real_ip = std::string(req->getHeader("x-real-ip"));
+    info.forwarded_for = std::string(req->getHeader("x-forwarded-for"));
+    info.forwarded_proto = std::string(req->getHeader("x-forwarded-proto"));
+    info.forwarded_host = std::string(req->getHeader("x-forwarded-host"));
+    info.forwarded_port = std::string(req->getHeader("x-forwarded-port"));
+    info.user_agent = std::string(req->getHeader("user-agent"));
+    info.host = std::string(req->getHeader("host"));
+    info.request_id = std::string(req->getHeader("x-request-id"));
     return info;
 }
 
@@ -143,6 +149,11 @@ ApiResponse handleGetBaronies(GameConfigCache& config_cache, const nlohmann::jso
                                const ClientInfo& client,
                                const std::optional<std::string>& new_token);
 
+ApiResponse handleGetBaronyMembers(GameConfigCache& config_cache, const nlohmann::json& body,
+                                   const std::optional<std::string>& username,
+                                   const ClientInfo& client,
+                                   const std::optional<std::string>& new_token);
+
 ApiResponse handleJoinBarony(GameConfigCache& config_cache, const nlohmann::json& body,
                                const std::optional<std::string>& username,
                                const ClientInfo& client,
@@ -157,6 +168,31 @@ ApiResponse handleStartBaronTrack(GameConfigCache& config_cache, const nlohmann:
                                   const std::optional<std::string>& username,
                                   const ClientInfo& client,
                                   const std::optional<std::string>& new_token);
+
+ApiResponse handleFoundFreehold(GameConfigCache& config_cache, const nlohmann::json& body,
+                                const std::optional<std::string>& username,
+                                const ClientInfo& client,
+                                const std::optional<std::string>& new_token);
+
+ApiResponse handleLeaveBarony(GameConfigCache& config_cache, const nlohmann::json& body,
+                              const std::optional<std::string>& username,
+                              const ClientInfo& client,
+                              const std::optional<std::string>& new_token);
+
+ApiResponse handleApplyForMesneLord(GameConfigCache& config_cache, const nlohmann::json& body,
+                                    const std::optional<std::string>& username,
+                                    const ClientInfo& client,
+                                    const std::optional<std::string>& new_token);
+
+ApiResponse handleGetLetters(GameConfigCache& config_cache, const nlohmann::json& body,
+                             const std::optional<std::string>& username,
+                             const ClientInfo& client,
+                             const std::optional<std::string>& new_token);
+
+ApiResponse handleMarkLetterRead(GameConfigCache& config_cache, const nlohmann::json& body,
+                                 const std::optional<std::string>& username,
+                                 const ClientInfo& client,
+                                 const std::optional<std::string>& new_token);
 
 ApiResponse handleSetFiefdomImport(GameConfigCache& config_cache, const nlohmann::json& body,
                                    const std::optional<std::string>& username,
@@ -177,6 +213,31 @@ ApiResponse handleSetCharacterSex(GameConfigCache& config_cache, const nlohmann:
                                    const std::optional<std::string>& username,
                                    const ClientInfo& client,
                                    const std::optional<std::string>& new_token);
+
+ApiResponse handleGetAvatarPool(GameConfigCache& config_cache, const nlohmann::json& body,
+                                const std::optional<std::string>& username,
+                                const ClientInfo& client,
+                                const std::optional<std::string>& new_token);
+
+ApiResponse handleGetPortraitFrames(GameConfigCache& config_cache, const nlohmann::json& body,
+                                    const std::optional<std::string>& username,
+                                    const ClientInfo& client,
+                                    const std::optional<std::string>& new_token);
+
+ApiResponse handleSetCharacterAvatar(GameConfigCache& config_cache, const nlohmann::json& body,
+                                     const std::optional<std::string>& username,
+                                     const ClientInfo& client,
+                                     const std::optional<std::string>& new_token);
+
+ApiResponse handleUploadCharacterAvatar(GameConfigCache& config_cache, const nlohmann::json& body,
+                                        const std::optional<std::string>& username,
+                                        const ClientInfo& client,
+                                        const std::optional<std::string>& new_token);
+
+ApiResponse handleRemoveCustomAvatar(GameConfigCache& config_cache, const nlohmann::json& body,
+                                     const std::optional<std::string>& username,
+                                     const ClientInfo& client,
+                                     const std::optional<std::string>& new_token);
 
 ApiResponse handleTDRound(GameConfigCache& config_cache, const nlohmann::json& body,
                            const std::optional<std::string>& username,
@@ -237,6 +298,51 @@ ApiResponse handleCombatGetConfigs(GameConfigCache& config_cache, const nlohmann
                                    const std::optional<std::string>& username,
                                    const ClientInfo& client,
                                    const std::optional<std::string>& new_token);
+
+ApiResponse handleGetCombatOfferings(GameConfigCache& config_cache, const nlohmann::json& body,
+                                     const std::optional<std::string>& username,
+                                     const ClientInfo& client,
+                                     const std::optional<std::string>& new_token);
+
+ApiResponse handleGetStore(GameConfigCache& config_cache, const nlohmann::json& body,
+                           const std::optional<std::string>& username,
+                           const ClientInfo& client,
+                           const std::optional<std::string>& new_token);
+
+ApiResponse handleGetCosmetics(GameConfigCache& config_cache, const nlohmann::json& body,
+                               const std::optional<std::string>& username,
+                               const ClientInfo& client,
+                               const std::optional<std::string>& new_token);
+
+ApiResponse handlePurchasePremiumItem(GameConfigCache& config_cache, const nlohmann::json& body,
+                                      const std::optional<std::string>& username,
+                                      const ClientInfo& client,
+                                      const std::optional<std::string>& new_token);
+
+ApiResponse handlePurchasePlatinum(GameConfigCache& config_cache, const nlohmann::json& body,
+                                   const std::optional<std::string>& username,
+                                   const ClientInfo& client,
+                                   const std::optional<std::string>& new_token);
+
+ApiResponse handleSettlePlatinum(GameConfigCache& config_cache, const nlohmann::json& body,
+                                 const std::optional<std::string>& username,
+                                 const ClientInfo& client,
+                                 const std::optional<std::string>& new_token);
+
+ApiResponse handleEquipCosmetic(GameConfigCache& config_cache, const nlohmann::json& body,
+                                const std::optional<std::string>& username,
+                                const ClientInfo& client,
+                                const std::optional<std::string>& new_token);
+
+ApiResponse handleDeassignCosmetic(GameConfigCache& config_cache, const nlohmann::json& body,
+                                   const std::optional<std::string>& username,
+                                   const ClientInfo& client,
+                                   const std::optional<std::string>& new_token);
+
+ApiResponse handleRefundPremiumItem(GameConfigCache& config_cache, const nlohmann::json& body,
+                                    const std::optional<std::string>& username,
+                                    const ClientInfo& client,
+                                    const std::optional<std::string>& new_token);
 
 ApiResponse handleGetRetinue(GameConfigCache& config_cache, const nlohmann::json& body,
                              const std::optional<std::string>& username,
@@ -308,6 +414,9 @@ ApiResponse handleApplyBookItem(GameConfigCache& config_cache, const nlohmann::j
                                 const ClientInfo& client,
                                 const std::optional<std::string>& new_token);
 
+// Defined in chat/ChatHandlers.cpp; registers the chat endpoint family.
+void register_chat_handlers(std::unordered_map<std::string, ApiHandler>& handlers);
+
 inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfigCache& config_cache) {
     using Json = const nlohmann::json&;
     using Username = const std::optional<std::string>&;
@@ -316,7 +425,6 @@ inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfi
 
     std::unordered_map<std::string, ApiHandler> handlers;
     auto add = [&](const std::string& name, ApiHandler handler) { handlers[name] = std::move(handler); };
-
     add("login",                  [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleLogin(c, b, u, cl, t); });
     add("getCharacter",           [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetCharacter(c, b, u, cl, t); });
     add("Build",                  [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleBuild(c, b, u, cl, t); });
@@ -340,10 +448,21 @@ inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfi
     add("setFiefdomReserve",      [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSetFiefdomReserve(c, b, u, cl, t); });
     add("setBuildingOutputRate",  [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSetBuildingOutputRate(c, b, u, cl, t); });
     add("getBaronies",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetBaronies(c, b, u, cl, t); });
+    add("getBaronyMembers",       [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetBaronyMembers(c, b, u, cl, t); });
     add("joinBarony",             [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleJoinBarony(c, b, u, cl, t); });
     add("createBarony",           [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleCreateBarony(c, b, u, cl, t); });
     add("startBaronTrack",        [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleStartBaronTrack(c, b, u, cl, t); });
+    add("foundFreehold",          [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleFoundFreehold(c, b, u, cl, t); });
+    add("leaveBarony",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleLeaveBarony(c, b, u, cl, t); });
+    add("applyForMesneLord",      [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleApplyForMesneLord(c, b, u, cl, t); });
+    add("getLetters",             [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetLetters(c, b, u, cl, t); });
+    add("markLetterRead",         [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleMarkLetterRead(c, b, u, cl, t); });
     add("setCharacterSex",        [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSetCharacterSex(c, b, u, cl, t); });
+    add("getAvatarPool",          [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetAvatarPool(c, b, u, cl, t); });
+    add("getPortraitFrames",      [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetPortraitFrames(c, b, u, cl, t); });
+    add("setCharacterAvatar",     [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSetCharacterAvatar(c, b, u, cl, t); });
+    add("uploadCharacterAvatar",  [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleUploadCharacterAvatar(c, b, u, cl, t); });
+    add("removeCustomAvatar",     [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleRemoveCustomAvatar(c, b, u, cl, t); });
     add("tdRound",                [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleTDRound(c, b, u, cl, t); });
     add("weedingStart",           [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleWeedingStart(c, b, u, cl, t); });
     add("weedingTurn",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleWeedingTurn(c, b, u, cl, t); });
@@ -355,6 +474,15 @@ inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfi
     add("combatList",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleCombatList(c, b, u, cl, t); });
     add("combatMatchmaking",     [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleCombatMatchmaking(c, b, u, cl, t); });
     add("combatGetConfigs",      [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleCombatGetConfigs(c, b, u, cl, t); });
+    add("getCombatOfferings",    [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetCombatOfferings(c, b, u, cl, t); });
+    add("getStore",              [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetStore(c, b, u, cl, t); });
+    add("getCosmetics",          [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetCosmetics(c, b, u, cl, t); });
+    add("purchasePremiumItem",   [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handlePurchasePremiumItem(c, b, u, cl, t); });
+    add("purchasePlatinum",      [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handlePurchasePlatinum(c, b, u, cl, t); });
+    add("settlePlatinum",        [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSettlePlatinum(c, b, u, cl, t); });
+    add("equipCosmetic",         [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleEquipCosmetic(c, b, u, cl, t); });
+    add("deassignCosmetic",      [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleDeassignCosmetic(c, b, u, cl, t); });
+    add("refundPremiumItem",     [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleRefundPremiumItem(c, b, u, cl, t); });
     add("getRetinue",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetRetinue(c, b, u, cl, t); });
     add("listRecruitCandidates", [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleListRecruitCandidates(c, b, u, cl, t); });
     add("hireRecruit",           [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleHireRecruit(c, b, u, cl, t); });
@@ -369,5 +497,6 @@ inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfi
     add("buyGearCity",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleBuyGearCity(c, b, u, cl, t); });
     add("hireTeacher",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleHireTeacher(c, b, u, cl, t); });
     add("applyBookItem",          [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleApplyBookItem(c, b, u, cl, t); });
+    register_chat_handlers(handlers);
     return handlers;
 }

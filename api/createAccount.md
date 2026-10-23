@@ -11,7 +11,8 @@ Create a new user account and automatically log in.
   "adult": false,
   "word1": "Cloud",
   "word2": "Dragon",
-  "displayName": "CoolPlayer123"
+  "displayName": "CoolPlayer123",
+  "language": "en"
 }
 ```
 
@@ -44,6 +45,7 @@ With age verification (adult=true requires digitalCredential):
 | displayName | string | No | Custom display name (only allowed if adult=true) |
 | digitalCredential | object | Conditional | Digital credential for age verification (required if adult=true) |
 | sex | string | No | Character sex: `"male"` or `"female"` for gender-substituted text |
+| language | string | No | Chosen interface / display language (default `"en"`); also the default chat translation target |
 
 ### digitalCredential Structure
 
@@ -67,6 +69,7 @@ No authentication required for this endpoint.
     "user_id": 1,
     "username": "new_player",
     "adult": false,
+    "language": "en",
     "characters": [
       {
         "id": 1,
@@ -85,6 +88,7 @@ No authentication required for this endpoint.
 | user_id | integer | User account ID |
 | username | string | Login username |
 | adult | boolean | Whether account is for adults |
+| language | string | Chosen interface / display language (persisted on the account) |
 | characters | array | Array of character objects (first character is auto-created) |
 | characters[].id | integer | Character ID |
 | characters[].display_name | string | Character display name |

@@ -85,6 +85,20 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
         }
     }
 
+    // Exclusive group: at most one building from a group (e.g. chapel/church/
+    // parish_church, or the infirmary stages). Distinct from max_per_fiefdom,
+    // which caps a single type; this caps the whole group across types.
+    {
+        const std::string group = ctx.config_cache->getBuildingExclusiveGroup(building_type);
+        if (!group.empty() &&
+            Validation::countBuildingsInExclusiveGroup(*ctx.config_cache, fiefdom_id, group) >= 1) {
+            result.status = ActionStatus::FAIL;
+            result.error_code = "exclusive_building_exists";
+            result.error_message = "You already have a building from the '" + group + "' group in this fiefdom";
+            return result;
+        }
+    }
+
     if (config.contains("prerequisites") && config["prerequisites"].is_array()) {
         auto prerequisites_opt = Validation::getPrerequisitesForLevel(*ctx.config_cache, building_type, 1);
         if (prerequisites_opt && !prerequisites_opt->empty()) {
@@ -1873,6 +1887,19 @@ public:
             }
         }
 
+        // Exclusive group of the successor: at most one building from the group.
+        // The row being converted is excluded so chapel -> church is allowed.
+        {
+            const std::string group = ctx.config_cache->getBuildingExclusiveGroup(successor);
+            if (!group.empty() &&
+                Validation::countBuildingsInExclusiveGroup(*ctx.config_cache, fiefdom_id, group, building_id) >= 1) {
+                result.status = ActionStatus::FAIL;
+                result.error_code = "exclusive_building_exists";
+                result.error_message = "You already have a building from the '" + group + "' group in this fiefdom";
+                return result;
+            }
+        }
+
         // Successor level-1 prerequisites + dependencies (chain-aware).
         auto prereqs_opt = Validation::getPrerequisitesForLevel(*ctx.config_cache, successor, 1);
         if (prereqs_opt && !prereqs_opt->empty()) {
@@ -2291,6 +2318,26 @@ int countBuildingsByType(GameConfigCache& cache, int fiefdom_id, const std::stri
        << fiefdom_id << min_level
        >> [&](std::string name, int lvl) {
            if (buildingSatisfiesRequirement(cache, name, target_building)) count++;
+       };
+    return count;
+}
+
+// Counts completed buildings whose type shares `group`'s exclusive group. A
+// building counts when its own type's `exclusive_group` equals `group` (exact
+// membership — the group is an explicit list of types, not a chain). An
+// optional `exclude_building_id` skips one row (used by convert so the building
+// being upgraded does not count itself).
+int countBuildingsInExclusiveGroup(GameConfigCache& cache, int fiefdom_id,
+                                   const std::string& group, int exclude_building_id) {
+    if (group.empty()) return 0;
+    auto& db = Database::getInstance().gameDB();
+    int count = 0;
+    db << "SELECT id, name FROM fiefdom_buildings "
+          "WHERE fiefdom_id = ? AND level > 0;"
+       << fiefdom_id
+       >> [&](int id, std::string name) {
+           if (exclude_building_id != 0 && id == exclude_building_id) return;
+           if (cache.getBuildingExclusiveGroup(name) == group) count++;
        };
     return count;
 }

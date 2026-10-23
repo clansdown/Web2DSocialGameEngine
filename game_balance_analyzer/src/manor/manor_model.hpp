@@ -75,6 +75,11 @@ public:
     // True if the building belongs to the given class.
     bool is_class(const std::string& cls) const { return !cls.empty() && class_ == cls; }
 
+    // Exclusive group (config `exclusive_group`): at most one building from the
+    // group may exist per fiefdom. Empty/absent = not in a group.
+    bool has_exclusive_group() const { return exclusive_group_.has_value(); }
+    const std::string& exclusive_group() const { return exclusive_group_.value_or(empty_); }
+
     // The immediate successor stage, if any (reverse of built_from lookup).
     std::optional<std::string> successor() const { return successor_; }
 
@@ -93,6 +98,8 @@ private:
     int arable_acres_ = 0;
     int forest_acres_ = 0;
     std::string class_;
+    std::optional<std::string> exclusive_group_;
+    static const std::string empty_;
 };
 
 // A registry of all building types, with chain helpers.

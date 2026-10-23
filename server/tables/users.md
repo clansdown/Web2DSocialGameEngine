@@ -10,7 +10,8 @@ CREATE TABLE users (
     username TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    adult INTEGER NOT NULL DEFAULT 0
+    adult INTEGER NOT NULL DEFAULT 0,
+    language TEXT NOT NULL DEFAULT 'en'
 );
 ```
 
@@ -23,6 +24,7 @@ CREATE TABLE users (
 | password_hash | TEXT | NOT NULL | Hashed password (yescrypt) |
 | created_at | INTEGER | NOT NULL | Unix timestamp of account creation |
 | adult | INTEGER | NOT NULL DEFAULT 0 | Whether account is for adults (1=true, 0=false) |
+| language | TEXT | NOT NULL DEFAULT 'en' | Chosen interface / display language (also the default chat translation target) |
 
 ## Indexes
 
@@ -36,4 +38,7 @@ CREATE TABLE users (
 
 - Password hashing using glibc `crypt()` with yescrypt prefix `$y$`
 - `adult` flag controls whether custom display names can be set on characters
+- `language` is chosen at first launch and persisted at account creation; the
+  client adopts it on every device and the server uses it as the display
+  language for chat translation (see `server/docs/chat.md`)
 - Accessed by `/api/login`, `/api/createAccount`, `/api/updateUserProfile` endpoints

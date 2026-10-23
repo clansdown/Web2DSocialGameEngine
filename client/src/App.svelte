@@ -7,10 +7,12 @@
   import LanguageSelect from './components/LanguageSelect.svelte';
   import PathSelect from './components/PathSelect.svelte';
   import SexSelect from './components/SexSelect.svelte';
+  import AvatarPicker from './components/AvatarPicker.svelte';
   import BaronyJoin from './components/BaronyJoin.svelte';
   import BaronyCreate from './components/BaronyCreate.svelte';
   import DialogOverlay from './components/DialogOverlay.svelte';
   import StoryText from './components/StoryText.svelte';
+  import LetterOverlay from './components/LetterOverlay.svelte';
   // MiniGameSelect is used internally by HubScreen
   import MiniGameContainer from './minigames/MiniGameContainer.svelte';
   import * as auth from './lib/auth';
@@ -37,6 +39,11 @@
   let introTitle = $state('');
   let introBody = $state('');
 
+  // Character-creation avatar step: complete once a pick is confirmed OR the
+  // safe pool is empty (skip). The flag matters for the skip path, where no
+  // avatar_safe_id is set and the picker would otherwise re-render forever.
+  let avatar_step_done = $state(false);
+
   // Barony flow state
   let showBaronyList = $state(false);
   let showBaronyCreate = $state(false);
@@ -50,6 +57,15 @@
   // Barony patent notification state (shown when the baron track is completed)
   let showBaronyPatent = $state(false);
   let baronyPatentText = $state('');
+
+  // Unread-letter overlay: the server returns the oldest unread letter; once
+  // dismissed (and marked read) we refetch so the next one can appear.
+  let dismissedLetterId = $state<number | null>(null);
+  let activeLetter = $derived(
+    $playerGameState?.unread_letter && $playerGameState.unread_letter.id !== dismissedLetterId
+      ? $playerGameState.unread_letter
+      : null
+  );
 
   /**
    * Loads stored language preference on startup.
@@ -93,6 +109,13 @@
             adult: response.adult
           });
           characters.set(response.characters);
+
+          // Adopt the account's interface / display language on this device.
+          if (response.language) {
+            language.set(response.language);
+            await auth.saveStoredLanguage(response.language);
+            languageSet = true;
+          }
 
           const lastCharId = await auth.loadCurrentCharacterId();
           const lastChar = response.characters.find(c => c.id === lastCharId) || response.characters[0];
@@ -148,6 +171,22 @@
    */
   function handleSetSex(): void {
     // SexSelect updates currentCharacter internally — just re-check routing
+  }
+
+  /**
+   * Handles confirmation of the character-creation portrait pick. The picker
+   * has already updated currentCharacter; this advances the creation flow.
+   */
+  function handleSetAvatar(): void {
+    avatar_step_done = true;
+  }
+
+  /**
+   * Handles the empty-safe-pool skip. Nothing was chosen, so advance without an
+   * avatar; the Profile activity is where a portrait is picked later.
+   */
+  function handleSkipAvatar(): void {
+    avatar_step_done = true;
   }
 
   async function handleConfirmPath(archetype: string): Promise<void> {
@@ -222,6 +261,47 @@
     // Game phase is now baron_track — go straight to the campaign page.
     // Fetch game state to refresh.
     navigate({ type: 'activity', id: 'tasks', rest: [] });
+    if ($currentCharacter) {
+      fetchPlayerState($currentCharacter.id);
+    }
+  }
+
+  /**
+   * Founds a freehold → hub grid; refetches state to pick up the new phase.
+   */
+  function handleFreeholdFounded(): void {
+    navigate({ type: 'hub', rest: [] });
+    if ($currentCharacter) {
+      fetchPlayerState($currentCharacter.id);
+    }
+  }
+
+  /**
+   * Founds an honor (mesne lord) → hub grid; refetches state for the new phase.
+   */
+  function handleHonorFounded(): void {
+    navigate({ type: 'hub', rest: [] });
+    if ($currentCharacter) {
+      fetchPlayerState($currentCharacter.id);
+    }
+  }
+
+  /**
+   * Leaves a barony → hub grid; refetches state for the freehold phase.
+   */
+  function handleBaronyLeft(): void {
+    navigate({ type: 'hub', rest: [] });
+    if ($currentCharacter) {
+      fetchPlayerState($currentCharacter.id);
+    }
+  }
+
+  /**
+   * Dismisses the unread-letter overlay and refetches so the next unread letter
+   * (if any) can appear.
+   */
+  function handleLetterDismissed(): void {
+    if (activeLetter) dismissedLetterId = activeLetter.id;
     if ($currentCharacter) {
       fetchPlayerState($currentCharacter.id);
     }
@@ -353,6 +433,10 @@
   </DialogOverlay>
 {/if}
 
+{#if activeLetter}
+  <LetterOverlay letter={activeLetter} onDismiss={handleLetterDismissed} />
+{/if}
+
 {#if languageLoading}
   <div class="container d-flex justify-content-center align-items-center min-vh-100">
     <div class="spinner-border" role="status">
@@ -375,6 +459,8 @@
   <SexSelect onConfirm={handleSetSex} />
 {:else if $currentCharacter.archetype === null && !showIntroOverlay}
   <PathSelect onConfirm={handleConfirmPath} />
+{:else if $currentCharacter.avatar_safe_id == null && !avatar_step_done && !showIntroOverlay}
+  <AvatarPicker onConfirm={handleSetAvatar} onSkip={handleSkipAvatar} />
 {:else if showBaronyList}
   <BaronyJoin
     onJoined={handleBaronyJoined}
@@ -403,12 +489,15 @@
     activities={$playerGameState.available_activities}
     onStartLevel={handleStartLevel}
   />
-  {:else if $playerGameState.game_phase === 'land_patent' || $playerGameState.game_phase === 'baron_track'}
+  {:else if $playerGameState.game_phase === 'land_patent' || $playerGameState.game_phase === 'baron_track' || $playerGameState.game_phase === 'freehold' || $playerGameState.game_phase === 'freehold_qualified'}
   <HubScreen
     activities={$playerGameState.available_activities}
     onStartLevel={handleStartLevel}
     onJoinBarony={handleGoToJoinBarony}
     onBaronTrackStarted={handleBaronTrackStarted}
+    onFreeholdFounded={handleFreeholdFounded}
+    onBaronyLeft={handleBaronyLeft}
+    onHonorFounded={handleHonorFounded}
   />
   {:else if $playerGameState.game_phase === 'baron_right'}
   <BaronyCreate
@@ -419,5 +508,6 @@
   <HubScreen
     activities={$playerGameState.available_activities}
     onStartLevel={handleStartLevel}
+    onBaronyLeft={handleBaronyLeft}
   />
 {/if}

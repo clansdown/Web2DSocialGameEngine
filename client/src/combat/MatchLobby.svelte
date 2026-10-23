@@ -1,189 +1,106 @@
 <script lang="ts">
   /**
-   * MatchLobby — create or join a PvE combat match.
+   * MatchLobby — the in-match lobby after a player has created or joined a
+   * match: share the code, pick the fielded roster, and signal Ready
+   * (rts_design.md §4.3). Joining players roster-select here; the host chose
+   * theirs at mission pick. The match advances once every player is ready.
    *
-   * Creating a match makes this character the host and returns a shareable
-   * match code; barony members (or any invited player) join with that code.
-   * PvP matchmaking is stubbed (see combatMatchmaking).
+   * The opportunity's warband is already fixed at create (D62) and cannot be
+   * changed by a joiner.
    */
+  import { untrack } from 'svelte';
   import { loadTexts } from '../lib/text';
-  import { currentCharacter } from '../lib/stores';
-  import {
-    combatCreateRequest,
-    combatGetConfigsRequest,
-    combatJoinRequest,
-    handle_combat_error
-  } from '../lib/api';
-  import type { combat_ruleset_dto, combat_map_dto } from '../lib/api';
+  import type { CombatNetClient } from './CombatNetClient';
+  import type { combat_welcome_payload } from './protocol';
+  import RosterSelect from './RosterSelect.svelte';
+  import CombatBanner from './CombatBanner.svelte';
 
   interface Props {
-    on_joined: (matchId: string) => void;
-    on_back: () => void;
+    net: CombatNetClient;
+    welcome: combat_welcome_payload;
+    my_player_id: number;
+    on_leave: () => void;
   }
 
-  let { on_joined, on_back }: Props = $props();
+  let { net, welcome, my_player_id, on_leave }: Props = $props();
 
-  let rulesets = $state<combat_ruleset_dto[]>([]);
-  let maps = $state<combat_map_dto[]>([]);
-  let selected_ruleset = $state('');
-  let selected_map = $state('');
-  let join_code = $state('');
-  let busy = $state(false);
-  let error = $state('');
+  // Default to fielding every fieldable non-knight member; the parent owns the
+  // selected array and we notify the server on each change. `untrack` avoids a
+  // Svelte warning (the welcome snapshot is stable for the match's lifetime).
+  let selected_ids = $state<number[]>(
+    untrack(() =>
+      welcome.retinue.filter((m) => !m.is_knight && m.fieldable).map((m) => m.member_id)
+    )
+  );
   let texts = $state<Record<string, string>>({});
 
   $effect(() => {
     loadTexts([
       'combat_lobby_title',
-      'combat_lobby_create_heading',
-      'combat_lobby_join_heading',
-      'combat_lobby_ruleset_label',
-      'combat_lobby_map_label',
-      'combat_lobby_create_btn',
+      'combat_lobby_waiting',
+      'combat_ready_btn',
+      'combat_lobby_share_note',
       'combat_lobby_code_label',
-      'combat_lobby_join_btn',
-      'combat_lobby_back_btn',
-      'combat_lobby_loading'
+      'combat_results_back_btn'
     ]).then((loaded) => {
       texts = loaded;
     });
-    void load_configs();
   });
 
   /**
-   * Loads the available rulesets and maps from the server.
+   * Sends the roster subset to the server (empty = field everything).
    *
-   * @param none
-   * @returns Promise<void>
+   * @param ids - The selected non-knight member ids
+   * @returns void
    */
-  async function load_configs(): Promise<void> {
-    try {
-      const configs = await combatGetConfigsRequest();
-      rulesets = configs.rulesets;
-      maps = configs.maps;
-      if (rulesets.length > 0) {
-        selected_ruleset = rulesets[0].id;
-      }
-      if (maps.length > 0) {
-        selected_map = maps[0].id;
-      }
-    } catch (e) {
-      error = handle_combat_error(e);
-    }
-  }
-
-  /**
-   * Creates a new PvE match with the selected ruleset/map.
-   *
-   * @param none
-   * @returns Promise<void>
-   */
-  async function create_match(): Promise<void> {
-    if (!$currentCharacter || busy) return;
-    busy = true;
-    error = '';
-    try {
-      const result = await combatCreateRequest($currentCharacter.id, {
-        mode: 'pve',
-        ruleset_id: selected_ruleset,
-        map_id: selected_map
-      });
-      on_joined(result.match_id);
-    } catch (e) {
-      error = handle_combat_error(e);
-    } finally {
-      busy = false;
-    }
-  }
-
-  /**
-   * Joins an existing lobby match by its shareable code.
-   *
-   * @param none
-   * @returns Promise<void>
-   */
-  async function join_match(): Promise<void> {
-    if (!$currentCharacter || busy) return;
-    const code = join_code.trim().toUpperCase();
-    if (!code) return;
-    busy = true;
-    error = '';
-    try {
-      const result = await combatJoinRequest($currentCharacter.id, code);
-      on_joined(result.match_id);
-    } catch (e) {
-      error = handle_combat_error(e);
-    } finally {
-      busy = false;
-    }
+  function update_roster(ids: number[]): void {
+    selected_ids = ids;
+    net.set_roster(ids);
   }
 </script>
 
 <div class="container py-4">
-  <button class="btn btn-outline-secondary mb-4" onclick={on_back}>
-    &larr; {texts.combat_lobby_back_btn}
-  </button>
-
-  <h2 class="mb-4">{texts.combat_lobby_title}</h2>
-
-  {#if error}
-    <div class="alert alert-danger py-2">{error}</div>
-  {/if}
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div class="d-flex align-items-center gap-3">
+      <CombatBanner banner={welcome.banner} size={36} title={texts.combat_lobby_title ?? ''} />
+      <h2 class="mb-0">{texts.combat_lobby_title ?? ''}</h2>
+    </div>
+    <span class="badge text-bg-primary fs-5">{welcome.match_code}</span>
+  </div>
+  <p class="text-muted">{texts.combat_lobby_share_note ?? ''}</p>
 
   <div class="row g-4">
     <div class="col-md-6">
-      <div class="card border-primary">
-        <div class="card-header">{texts.combat_lobby_create_heading}</div>
-        <div class="card-body">
-          <div class="mb-3">
-            <label class="form-label" for="combat_ruleset_select">{texts.combat_lobby_ruleset_label}</label>
-            <select id="combat_ruleset_select" class="form-select" bind:value={selected_ruleset}>
-              {#each rulesets as ruleset}
-                <option value={ruleset.id}>{ruleset.name}</option>
-              {/each}
-            </select>
-          </div>
-          <div class="mb-3">
-            <label class="form-label" for="combat_map_select">{texts.combat_lobby_map_label}</label>
-            <select id="combat_map_select" class="form-select" bind:value={selected_map}>
-              {#each maps as map}
-                <option value={map.id}>{map.id}</option>
-              {/each}
-            </select>
-          </div>
-          <button
-            class="btn btn-primary w-100"
-            onclick={create_match}
-            disabled={busy || rulesets.length === 0 || maps.length === 0}
-          >
-            {busy ? texts.combat_lobby_loading : texts.combat_lobby_create_btn}
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <div class="col-md-6">
       <div class="card border-secondary">
-        <div class="card-header">{texts.combat_lobby_join_heading}</div>
-        <div class="card-body">
-          <div class="mb-3">
-            <label class="form-label" for="combat_code_input">{texts.combat_lobby_code_label}</label>
-            <input
-              id="combat_code_input"
-              class="form-control text-uppercase"
-              placeholder="ABCDEF"
-              maxlength="6"
-              bind:value={join_code}
-              onkeydown={(e) => {
-                if (e.key === 'Enter') void join_match();
-              }}
-            />
-          </div>
-          <button class="btn btn-outline-primary w-100" onclick={join_match} disabled={busy}>
-            {busy ? texts.combat_lobby_loading : texts.combat_lobby_join_btn}
-          </button>
-        </div>
+        <div class="card-header">{texts.combat_lobby_waiting ?? ''}</div>
+        <ul class="list-group list-group-flush">
+          {#each welcome.players as player}
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+              <span>
+                {player.display_name}
+                {#if player.player_id === my_player_id}
+                  <span class="badge text-bg-primary ms-2">You</span>
+                {/if}
+              </span>
+              <span class="badge {player.ready ? 'text-bg-success' : 'text-bg-secondary'}">
+                {player.ready ? texts.combat_ready_btn : '…'}
+              </span>
+            </li>
+          {/each}
+        </ul>
       </div>
     </div>
+    <div class="col-md-6">
+      <RosterSelect members={welcome.retinue} selected={selected_ids} on_change={update_roster} />
+    </div>
+  </div>
+
+  <div class="d-flex gap-2 mt-4">
+    <button class="btn btn-primary btn-lg" onclick={() => net.ready()}>
+      {texts.combat_ready_btn ?? ''}
+    </button>
+    <button class="btn btn-outline-danger btn-lg" onclick={on_leave}>
+      {texts.combat_results_back_btn ?? ''}
+    </button>
   </div>
 </div>

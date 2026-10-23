@@ -335,6 +335,7 @@ Coordinates are relative to the fiefdom center (0, 0):
 | `insufficient_resources` | Not enough resources | Cannot afford construction costs |
 | `insufficient_arable_land` | Not enough arable land to build a {type} | The fiefdom has fewer available acres than the building claims. Convert (stage upgrade) also returns this when the successor claims more acres than remain |
 | `insufficient_forest_land` | Not enough forest land to build a {type} | The fiefdom has fewer available forest acres than a wood producer claims (woodcutter 80 / coppicer 60 / timber_hauler 70). Convert also returns this when the successor claims more forest acres than remain |
+| `exclusive_building_exists` | You already have a building from the '{group}' group in this fiefdom | The type belongs to an `exclusive_group` and another member of that group already exists. Convert (stage upgrade) excludes the building being upgraded, so within-group conversion is allowed |
 | `construction_in_progress` | Building is already under construction | Cannot start new construction while existing construction ongoing |
 | `cannot_move_under_construction` | Cannot move building under construction | Building must be completed first |
 | `move_location_invalid` | New location not valid for this building | Collision or bounds violation |

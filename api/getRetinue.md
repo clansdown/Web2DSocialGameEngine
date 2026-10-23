@@ -37,6 +37,8 @@ Combat matches snapshot the *active* members when a player joins (see
                 "is_knight": true,
                 "level": 1,
                 "gender": "male",
+                "headshot_id": "",
+                "portrait_url": "/images/avatars/safe/3.png",
                 "health": 100,
                 "health_updated": 1750000000,
                 "priority": 0,
@@ -92,6 +94,18 @@ Combat matches snapshot the *active* members when a player joins (see
     general-morale penalty and their class's unfunded effect (Phase-4+ combat).
   - `equipment` — generic slot→item map (`weapon`, `armor`, `mount`,
     `potions`, ...). `weapons`/`armor` are legacy columns kept for back-compat.
+  - `headshot_id` — the member's fixed identity portrait (a path under
+    `game/images/retinue/headshots/`, e.g. `male/03.png`); empty for the knight.
+  - `portrait_url` — server-resolved display portrait. Soldiers get
+    `/images/retinue/headshots/<headshot_id>`; the knight gets the owner's PFP
+    (the safe pick, or `/api/avatar/<id>` for an 18+ custom image, which the
+    client must call with its session credentials). May be `""`.
+  - **Health status** — the management UI shows `health` as a bar plus a
+    Ready/Infirmary badge (`fieldable`); `retinue_recovery_estimate` hours can be
+    derived client-side from the `recovery` block.
+  - **Deferred**: if the infirmary can hold fewer members than are wounded, a
+    bed-management interface will be needed; `priority` is already the
+    infirmary-bed order. Not implemented.
 - **Capacity** — `total` is `retinue_capacity_by_level[manor_level]` from
   `retinue.json` and counts *recruited* members only; the knight is free.
 - `status` is `active` | `casualty` | `retired`. In the new no-death model the

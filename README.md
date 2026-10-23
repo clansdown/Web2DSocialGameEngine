@@ -167,9 +167,9 @@ Use `local_test_server.sh` for development and manual testing:
 ./local_test_server.sh -d            # Debug mode with request logs
 ```
 
-The server runs in the background with status info shown. Uses databases in current directory (`game.db`, `messages.db`) - these are permanent and never cleaned up. Kill it with:
+The server runs in the background with status info shown. It runs from `test_run/` (so its databases live there, not in `game/`) and reads assets from `game/` via `--content`. Kill it with:
 ```bash
-kill $(cat .local_test_server.pid)
+kill $(cat test_run/.local_test_server.pid)
 ```
 
 ### Automated Testing (Agent)
@@ -192,7 +192,7 @@ Use `agent_test_server.sh` for CI/CD and automated agent testing:
 | `-l FILE` | Write logs to file |
 | `-q` | Quiet mode |
 | `-v` | Verbose mode |
-| `--keep-db` | Keep `.agent_test_db/` directory after exit |
+| `--keep-db` | Keep `test_run/agent/` directory after exit |
 
 **Exit Codes:**
 - `0` - Success
@@ -200,7 +200,7 @@ Use `agent_test_server.sh` for CI/CD and automated agent testing:
 - `2` - Server startup failed
 
 **Behavior:**
-- Uses `.agent_test_db/` directory for databases (wiped and recreated each run)
+- Runs from `test_run/agent/` (databases live there; wiped and recreated each run) and reads assets from `game/` via `--content`
 - Runs on port 3290 (or custom with `-p`)
 - Exits immediately when limit reached (cuts off in-flight requests)
 - Displays summary: total requests, time elapsed

@@ -49,7 +49,10 @@ code can join while the match is in the lobby phase.
 
 ## Notes
 
-- The joining player's active retinue is snapshotted into the match.
+- The joining player's active retinue is snapshotted into the match. Roster
+  select happens over the WebSocket (`roster` message) before the deploy phase.
+- The warband was **fixed at match creation** (D62) — joining never changes the
+  fight, and there is no party-power scaling.
 - Team assignment is automatic: PvE places everyone on team 1.
 - After joining, open the WebSocket to `/ws/combat` and authenticate
   (`auth` first message) to receive the `welcome` + full state snapshot.

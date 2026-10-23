@@ -16,6 +16,7 @@ nlohmann::json retinue_member::to_json() const {
     j["is_knight"] = is_knight;
     j["level"] = level;
     j["gender"] = gender;
+    j["headshot_id"] = headshot_id;
     j["health"] = health;
     j["health_updated"] = health_updated;
     j["priority"] = priority;
@@ -25,6 +26,7 @@ nlohmann::json retinue_member::to_json() const {
     j["abilities"] = abilities;
     j["status"] = status;
     j["maintained"] = maintained;
+    j["xp"] = xp;
     j["created_at"] = created_at;
     return j;
 }
@@ -33,14 +35,16 @@ namespace {
 
 constexpr const char* kRetinueColumns =
     "id, character_id, display_name, unit_class, is_knight, level, gender, health, "
-    "health_updated, priority, weapons, armor, equipment, abilities, status, maintained, created_at";
+    "health_updated, priority, weapons, armor, equipment, abilities, status, maintained, xp, created_at, "
+    "headshot_id";
 
 retinue_member row_to_member(int64_t id, int64_t character_id, std::string display_name,
                              std::string unit_class, int is_knight, int level,
                              std::string gender, double health, int64_t health_updated,
                              int priority, std::string weapons, std::string armor,
                              std::string equipment, std::string abilities,
-                             std::string status, int maintained, int64_t created_at)
+                             std::string status, int maintained, int64_t xp, int64_t created_at,
+                             std::string headshot_id)
 {
     retinue_member m;
     m.id = id;
@@ -50,10 +54,12 @@ retinue_member row_to_member(int64_t id, int64_t character_id, std::string displ
     m.is_knight = is_knight != 0;
     m.level = level;
     m.gender = std::move(gender);
+    m.headshot_id = std::move(headshot_id);
     m.health = health;
     m.health_updated = health_updated;
     m.priority = priority;
     m.maintained = maintained != 0;
+    m.xp = xp;
     try {
         m.weapons = nlohmann::json::parse(weapons);
         m.armor = nlohmann::json::parse(armor);
@@ -81,13 +87,14 @@ std::vector<retinue_member> load_retinue(sqlite::database& db, int64_t character
               int is_knight, int level, std::string gender, double health,
               int64_t health_updated, int priority, std::string weapons, std::string armor,
               std::string equipment, std::string abilities, std::string status,
-              int maintained, int64_t created_at) {
+              int maintained, int64_t xp, int64_t created_at, std::string headshot_id) {
              members.push_back(row_to_member(id, cid, std::move(display_name),
                                              std::move(unit_class), is_knight, level,
                                              std::move(gender), health, health_updated,
                                              priority, std::move(weapons), std::move(armor),
                                              std::move(equipment), std::move(abilities),
-                                             std::move(status), maintained, created_at));
+                                             std::move(status), maintained, xp, created_at,
+                                             std::move(headshot_id)));
          };
     return members;
 }
@@ -101,13 +108,14 @@ retinue_member get_or_create_knight(sqlite::database& db, int64_t character_id) 
               int is_knight, int level, std::string gender, double health,
               int64_t health_updated, int priority, std::string weapons, std::string armor,
               std::string equipment, std::string abilities, std::string status,
-              int maintained, int64_t created_at) {
+              int maintained, int64_t xp, int64_t created_at, std::string headshot_id) {
              knights.push_back(row_to_member(id, cid, std::move(display_name),
                                              std::move(unit_class), is_knight, level,
                                              std::move(gender), health, health_updated,
                                              priority, std::move(weapons), std::move(armor),
                                              std::move(equipment), std::move(abilities),
-                                             std::move(status), maintained, created_at));
+                                             std::move(status), maintained, xp, created_at,
+                                             std::move(headshot_id)));
          };
     if (!knights.empty()) return knights.front();
 
@@ -163,20 +171,22 @@ std::vector<retinue_member> load_active_retinue(sqlite::database& db, int64_t ch
               int is_knight, int level, std::string gender, double health,
               int64_t health_updated, int priority, std::string weapons, std::string armor,
               std::string equipment, std::string abilities, std::string status,
-              int maintained, int64_t created_at) {
+              int maintained, int64_t xp, int64_t created_at, std::string headshot_id) {
              members.push_back(row_to_member(id, cid, std::move(display_name),
                                              std::move(unit_class), is_knight, level,
                                              std::move(gender), health, health_updated,
                                              priority, std::move(weapons), std::move(armor),
                                              std::move(equipment), std::move(abilities),
-                                             std::move(status), maintained, created_at));
+                                             std::move(status), maintained, xp, created_at,
+                                             std::move(headshot_id)));
          };
     return members;
 }
 
 retinue_member hire_member(sqlite::database& db, int64_t character_id,
                            const std::string& display_name, const std::string& unit_class,
-                           const std::string& gender, int level, int64_t now)
+                           const std::string& gender, const std::string& headshot_id,
+                           int level, int64_t now)
 {
     // New members rank below everyone currently in the roster.
     int max_priority = 0;
@@ -187,9 +197,9 @@ retinue_member hire_member(sqlite::database& db, int64_t character_id,
         : std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 
     db << "INSERT INTO retinue_members (character_id, display_name, unit_class, is_knight, level, "
-          "gender, health, health_updated, priority, weapons, armor, equipment, abilities, status, maintained, created_at) "
-          "VALUES (?, ?, ?, 0, ?, ?, 100, ?, ?, '{}', '{}', '{}', '[]', 'active', 1, ?);"
-       << character_id << display_name << unit_class << level << gender << created
+          "gender, headshot_id, health, health_updated, priority, weapons, armor, equipment, abilities, status, maintained, created_at) "
+          "VALUES (?, ?, ?, 0, ?, ?, ?, 100, ?, ?, '{}', '{}', '{}', '[]', 'active', 1, ?);"
+       << character_id << display_name << unit_class << level << gender << headshot_id << created
        << (max_priority + 1) << created;
 
     retinue_member m;
@@ -200,6 +210,7 @@ retinue_member hire_member(sqlite::database& db, int64_t character_id,
     m.is_knight = false;
     m.level = level;
     m.gender = gender;
+    m.headshot_id = headshot_id;
     m.health = 100.0;
     m.health_updated = created;
     m.priority = max_priority + 1;
@@ -307,6 +318,47 @@ void apply_wounds(sqlite::database& db, int64_t character_id,
     }
     std::cout << "[combat] wounded " << wounds.size() << " retinue member(s) of character "
               << character_id << " (no-death model; they recover)" << std::endl;
+}
+
+std::vector<level_up_record> grant_experience(
+    sqlite::database& db, int64_t character_id,
+    const std::map<int64_t, double>& xp_by_member,
+    const std::vector<double>& xp_curve,
+    const std::function<int(const std::string& unit_class)>& max_level_for_class)
+{
+    std::vector<level_up_record> level_ups;
+    if (xp_by_member.empty()) return level_ups;
+
+    for (const auto& [member_id, gain] : xp_by_member) {
+        int old_level = 1;
+        int64_t old_xp = 0;
+        std::string unit_class;
+        db << "SELECT level, xp, unit_class FROM retinue_members WHERE id = ? AND character_id = ?;"
+           << member_id << character_id
+           >> [&](int l, int64_t x, std::string uc) {
+                  old_level = l;
+                  old_xp = x;
+                  unit_class = std::move(uc);
+              };
+        if (old_level == 0) continue;   // not this character's member
+
+        const int64_t new_xp = std::max<int64_t>(0, old_xp + static_cast<int64_t>(gain));
+        const int max_level = std::max(1, max_level_for_class(unit_class));
+
+        // Level from cumulative XP: level L (>=2) requires xp >= xp_curve[L-2].
+        int new_level = 1;
+        for (size_t i = 0; i < xp_curve.size() && new_level < max_level; ++i) {
+            if (new_xp >= xp_curve[i]) new_level = i + 2;
+        }
+        new_level = std::min(new_level, max_level);
+
+        db << "UPDATE retinue_members SET xp = ?, level = ? WHERE id = ? AND character_id = ?;"
+           << new_xp << new_level << member_id << character_id;
+        if (new_level > old_level) {
+            level_ups.push_back({member_id, old_level, new_level});
+        }
+    }
+    return level_ups;
 }
 
 } // namespace retinue_db

@@ -19,7 +19,9 @@ FetchContent_Declare(sqlite_modern_cpp
 FetchContent_MakeAvailable(sqlite_modern_cpp)
 
 # ── uWebSockets / uSockets ─────────────────────────────────────────────
-set(UWS_SRC_DIR "${CMAKE_CURRENT_BINARY_DIR}/_deps/uwebsockets-src")
+# CACHE so a second build tree (e.g. --tsan) can reuse the same source clone
+# and prebuilt uSockets.a instead of re-downloading: -DUWS_SRC_DIR=<abs path>.
+set(UWS_SRC_DIR "${CMAKE_CURRENT_BINARY_DIR}/_deps/uwebsockets-src" CACHE PATH "uWebSockets source directory")
 set(UWS_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/uWebSockets-include")
 
 if(NOT EXISTS "${UWS_SRC_DIR}")
@@ -53,7 +55,7 @@ foreach(header IN LISTS UWS_HEADERS)
     execute_process(COMMAND ln -sf "${UWS_SRC_DIR}/src/${header_name}" "${UWS_INCLUDE_DIR}/${header_name}" OUTPUT_QUIET ERROR_QUIET)
 endforeach()
 
-add_executable(server main.cpp ImageReader.cpp SafeNameGenerator.cpp init_db.cpp FiefdomFetcher.cpp combatants.cpp heroes.cpp fiefdom_officials.cpp GameConfigCache.cpp MoraleCalculator.cpp WaterNetwork.cpp ActionHandlers.cpp game_logic.cpp DigitalCredentialsVerifier.cpp images/ImageCache.cpp PlayerStateDB.cpp TowerDefenseMapCache.cpp TextManager.cpp GridCollision.cpp UnitUnlockCalculator.cpp TDPlacementValidator.cpp TDGoldCalculator.cpp mini_games/tower_defense_handler.cpp WeedingGameLogic.cpp OngoingRewards.cpp Money.cpp RetinueDB.cpp RetinueMarket.cpp combat/CombatCodecJson.cpp combat/CombatCodecBinary.cpp combat/CombatMatch.cpp combat/CombatMatchManager.cpp combat/CombatMapCache.cpp)
+add_executable(server main.cpp ImageReader.cpp SafeNameGenerator.cpp init_db.cpp FiefdomFetcher.cpp combatants.cpp heroes.cpp fiefdom_officials.cpp GameConfigCache.cpp MoraleCalculator.cpp WaterNetwork.cpp ActionHandlers.cpp game_logic.cpp DigitalCredentialsVerifier.cpp images/ImageCache.cpp PlayerStateDB.cpp Letters.cpp Progression.cpp TowerDefenseMapCache.cpp TextManager.cpp GridCollision.cpp UnitUnlockCalculator.cpp TDPlacementValidator.cpp TDGoldCalculator.cpp mini_games/tower_defense_handler.cpp WeedingGameLogic.cpp OngoingRewards.cpp Money.cpp RetinueDB.cpp RetinueMarket.cpp RetinueStrength.cpp MissionGenerator.cpp MissionOfferings.cpp AvatarPool.cpp AvatarUrl.cpp combat/CombatCodecJson.cpp combat/CombatCodecBinary.cpp combat/CombatMatch.cpp combat/CombatantStats.cpp combat/CombatMatchManager.cpp combat/CombatMapCache.cpp combat/CombatPathfinding.cpp CosmeticsDB.cpp chat/ChatDB.cpp chat/ChatService.cpp chat/ChatHandlers.cpp chat/MadladTranslationEngine.cpp chat/Presence.cpp chat/PushSender.cpp)
 
 target_include_directories(server PRIVATE
     "${sqlite_modern_cpp_SOURCE_DIR}/hdr"

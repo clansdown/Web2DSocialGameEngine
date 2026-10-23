@@ -1,9 +1,14 @@
 #include "CombatMatchManager.hpp"
 #include "RetinueDB.hpp"
+#include "Progression.hpp"
+#include "MissionOfferings.hpp"
 #include "Database.hpp"
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <set>
 
 namespace combat {
 
@@ -12,11 +17,35 @@ constexpr int64_t k_ended_match_retention_seconds = 600;   // purge ended matche
 } // namespace
 
 combat_match_manager::~combat_match_manager() {
-    shutdown_ = true;
+    shutdown();
+}
+
+void combat_match_manager::shutdown() {
+    {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        if (shutdown_) return;   // idempotent
+        shutdown_ = true;
+    }
     pending_cv_.notify_all();
+
+    // Ask every active battle to stop so its worker returns promptly instead of
+    // blocking the join for the rest of the match.
+    {
+        std::lock_guard<std::mutex> lock(registry_mutex_);
+        for (auto& [id, match] : matches_by_id_) {
+            if (match) match->request_stop();
+        }
+    }
+
     for (auto& t : workers_) {
         if (t.joinable()) t.join();
     }
+    workers_.clear();
+
+    // No producers remain: drop the callbacks so nothing can post to a loop that
+    // is about to be torn down.
+    publish_fn_ = nullptr;
+    defer_fn_ = nullptr;
 }
 
 void combat_match_manager::initialize(std::shared_ptr<combat_codec> codec,
@@ -33,8 +62,9 @@ void combat_match_manager::initialize(std::shared_ptr<combat_codec> codec,
 
 void combat_match_manager::start_pool(int n) {
     for (int i = 0; i < n; i++) {
+        // Joinable: shutdown() stops active matches and joins these before the
+        // uWS App/loop is destroyed.
         workers_.emplace_back([this] { worker_loop(); });
-        workers_.back().detach();   // process-lifetime workers; no shutdown join needed
     }
     std::cout << "[combat] started " << n << " simulation worker thread(s)" << std::endl;
 }
@@ -96,9 +126,7 @@ std::string combat_match_manager::make_match_code() {
 }
 
 std::string combat_match_manager::create_pve_match(
-    const std::string& ruleset_id,
-    const nlohmann::json& ruleset,
-    const nlohmann::json& map_metadata,
+    combat_match_config config,
     int64_t host_character_id,
     const std::string& host_display_name,
     const std::vector<retinue_member_snapshot>& host_retinue,
@@ -117,7 +145,9 @@ std::string combat_match_manager::create_pve_match(
     }
 
     auto match = std::make_shared<combat_match>(match_id, match_code, "pve",
-                                                ruleset, map_metadata);
+                                                std::move(config));
+    // Record the command log for deterministic replay when a replay dir is set.
+    match->enable_replay_log(!replay_dir_.empty());
     if (!match->add_player(host_character_id, host_display_name, host_retinue)) {
         error = "could not add host to match";
         return "";
@@ -166,6 +196,10 @@ void combat_match_manager::mark_ready(const std::string& match_id, int64_t chara
                                       bool ready) {
     auto match = get_match(match_id);
     if (!match) return;
+    if (match->phase() == match_phase::deploy) {
+        match->set_player_deploy_ready(character_id, ready);
+        return;
+    }
     match->set_player_ready(character_id, ready);
     if (ready && match->phase() == match_phase::lobby && match->all_players_ready()) {
         request_battle(match);
@@ -252,6 +286,8 @@ void combat_match_manager::on_match_end(const combat_match& match) {
     // to their individual end-of-combat HP% (health drops, recovery clock
     // restarts, status stays active) instead of becoming casualties. Recent
     // battle win/loss timestamps feed the derived household-morale decay terms.
+    // Draw stamps neither (§14.3). Fielded members earn completion-IXP
+    // (rts_design.md §14.1) — warband-derived, victory-multiplied.
     const bool wounded_mode = (match.death_handling() == "wounded");
     std::map<int64_t, std::vector<retinue_db::wound_spec>> wounded_by_player;
     std::map<int64_t, std::vector<int64_t>> casualties_by_player;
@@ -262,25 +298,149 @@ void combat_match_manager::on_match_end(const combat_match& match) {
             casualties_by_player[c.owner_player_id].push_back(c.member_id);
         }
     }
-    const int winner_team = match.winner_team();
+    const int winner = match.winner();
     std::map<int64_t, bool> won_by_player;
-    if (winner_team >= 0) {
+    // PvE winner semantics (rts_design.md §13.3): 1 = players win, 0 = players
+    // lose, -1 = draw. A draw stamps NEITHER morale timestamp (§14.3).
+    if (winner == 1) {
+        for (const auto& p : match.players_snapshot()) won_by_player[p.player_id] = true;
+    } else if (winner == 0) {
+        for (const auto& p : match.players_snapshot()) won_by_player[p.player_id] = false;
+    }
+    // §3.5: a forfeiting player records a defeat regardless of team outcome.
+    const std::set<int64_t> forfeited = match.forfeited_players();
+    for (int64_t pid : forfeited) won_by_player[pid] = false;
+
+    // Per-player XP maps (fixed per-fielded-member, completion-only). A leaver
+    // earns nothing for a match they abandoned (§3.5).
+    const double xp_base = match.xp_base();
+    const double victory_mult =
+        match.rewards_config().value("victory_multiplier", 1.5);
+    const double gain = (winner == 1) ? xp_base * victory_mult : xp_base;
+    const std::vector<double> xp_curve =
+        match.rewards_config().value("xp_curve", std::vector<double>{});
+    std::map<int64_t, std::map<int64_t, double>> xp_by_player;
+    if (gain > 0.0) {
         for (const auto& p : match.players_snapshot()) {
-            won_by_player[p.player_id] = (p.team == winner_team);
+            if (forfeited.count(p.player_id) != 0) continue;
+            for (const auto& m : p.retinue) {
+                xp_by_player[p.player_id][m.member_id] = gain;
+            }
         }
     }
+
+    // Class max_level caps from the match's combatant-config snapshot (never
+    // GameConfigCache on this thread).
+    std::map<std::string, int> class_max_levels;
+    if (match.player_combatants().is_object()) {
+        for (const auto& [cid, cfg] : match.player_combatants().items()) {
+            if (cfg.is_object() && cfg.contains("max_level") && cfg["max_level"].is_number()) {
+                class_max_levels[cid] = cfg["max_level"].get<int>();
+            }
+        }
+    }
+
+    // Determinism replay (M10): capture the tick-exact command log while the
+    // match thread still owns the state, then write it on the loop thread.
+    if (!replay_dir_.empty()) {
+        nlohmann::json record = match.replay_record();
+        const std::string dir = replay_dir_;
+        const std::string replay_match_id = match.id();
+        auto write_replay = [dir, replay_match_id, record]() {
+            try {
+                std::error_code ec;
+                std::filesystem::create_directories(dir, ec);
+                std::ofstream out(dir + "/" + replay_match_id + ".json", std::ios::binary);
+                if (out) out << record.dump(2);
+            } catch (const std::exception& e) {
+                std::cerr << "[combat] failed to write replay: " << e.what() << std::endl;
+            }
+        };
+        if (defer_fn_) {
+            defer_fn_(write_replay);
+        } else {
+            write_replay();
+        }
+    }
+
+    // Mission offerings + counters (rts_design.md §3.1/§14): tally enemy deaths
+    // by class, capture the warband end state, and snapshot the attempt.
+    const std::map<std::string, int> enemy_deaths = match.enemy_deaths();
+    const std::map<std::string, int> enemy_fled = match.enemy_fled();
+    const std::string offering_id = match.offering_id();
+    const int64_t attempt_id = match.mission_attempt_id();
+    const std::vector<progression::milestone_condition> milestone_conditions =
+        progression::parse_milestone_conditions(
+            nlohmann::json{{"milestones", match.milestone_conditions()}});
+
+    nlohmann::json end_state;
+    end_state["deaths"] = nlohmann::json::object();
+    for (const auto& [cls, n] : enemy_deaths) end_state["deaths"][cls] = n;
+    end_state["fled"] = nlohmann::json::object();
+    for (const auto& [cls, n] : enemy_fled) end_state["fled"][cls] = n;
+    nlohmann::json survivors = nlohmann::json::array();
+    for (const auto& u : match.build_full_state().units) {
+        if (u.is_enemy && u.status == "alive") {
+            survivors.push_back({{"unit_class", u.unit_class}, {"hp", u.hp}});
+        }
+    }
+    end_state["survivors"] = survivors;
+
+    nlohmann::json participants = nlohmann::json::array();
+    std::vector<int64_t> participant_ids;
+    for (const auto& p : match.players_snapshot()) {
+        participant_ids.push_back(p.player_id);
+        nlohmann::json members = nlohmann::json::array();
+        for (const auto& m : p.retinue) members.push_back(m.member_id);
+        participants.push_back({{"character_id", p.player_id}, {"fielded_member_ids", members}});
+    }
+    const std::string attempt_result =
+        winner == 1 ? "victory" : (winner == 0 ? "defeat" : "draw");
+    const std::string participants_json = participants.dump();
+    const std::string end_state_json = end_state.dump();
+
     if (!defer_fn_) return;
-    defer_fn_([wounded_by_player, casualties_by_player, won_by_player]() {
+    defer_fn_([wounded_by_player, casualties_by_player, won_by_player, xp_by_player,
+               xp_curve, class_max_levels, enemy_deaths, offering_id, attempt_id,
+               milestone_conditions, participant_ids, participants_json, end_state_json,
+               attempt_result, winner]() {
         try {
             auto& db = Database::getInstance().gameDB();
+            std::function<int(const std::string&)> max_level_for =
+                [class_max_levels](const std::string& unit_class) {
+                    auto it = class_max_levels.find(unit_class);
+                    return it == class_max_levels.end() ? 99 : it->second;
+                };
             for (const auto& [player_id, wounds] : wounded_by_player) {
                 retinue_db::apply_wounds(db, player_id, wounds);
             }
             for (const auto& [player_id, member_ids] : casualties_by_player) {
                 retinue_db::apply_casualties(db, player_id, member_ids);
             }
+            for (const auto& [player_id, xp_map] : xp_by_player) {
+                retinue_db::grant_experience(db, player_id, xp_map, xp_curve, max_level_for);
+            }
+
+            const int64_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+
+            // Attempt log + per-class slain counters + counter-based milestones.
+            // Counters increment for every participant on every attempt (victory
+            // or not); deaths only — a routed enemy is not slain.
+            if (attempt_id > 0) {
+                mission_offerings::record_attempt_end(db, attempt_id, attempt_result,
+                                                      participants_json, end_state_json, now);
+            }
+            for (int64_t pid : participant_ids) {
+                if (!enemy_deaths.empty()) {
+                    mission_offerings::increment_counters(db, pid, enemy_deaths, now);
+                }
+                if (!milestone_conditions.empty()) {
+                    progression::evaluate_milestone_conditions(
+                        db, static_cast<int>(pid), milestone_conditions, now);
+                }
+            }
+
             if (!won_by_player.empty()) {
-                const int64_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
                 for (const auto& [player_id, won] : won_by_player) {
                     if (won) {
                         db << "UPDATE fiefdoms SET last_victory_ts = ? WHERE owner_id = ?;"
@@ -291,8 +451,15 @@ void combat_match_manager::on_match_end(const combat_match& match) {
                     }
                 }
             }
+
+            // A won mission consumes the offering for every participant (one-shot).
+            if (!offering_id.empty() && winner == 1) {
+                for (int64_t pid : participant_ids) {
+                    mission_offerings::record_completion(db, pid, offering_id, now);
+                }
+            }
         } catch (const std::exception& e) {
-            std::cerr << "[combat] failed to persist casualties: " << e.what() << std::endl;
+            std::cerr << "[combat] failed to persist combat results: " << e.what() << std::endl;
         }
     });
 }

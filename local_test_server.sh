@@ -4,7 +4,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-PID_FILE="$SCRIPT_DIR/.local_test_server.pid"
+PID_FILE="$SCRIPT_DIR/test_run/.local_test_server.pid"
+RUN_DIR="$SCRIPT_DIR/test_run"
+mkdir -p "$RUN_DIR"
 PORT=2290
 DEBUG=false
 FOREGROUND=false
@@ -82,14 +84,14 @@ else
     VERBOSE_FLAG="--quiet"
 fi
 
-cd "$SCRIPT_DIR"
+cd "$RUN_DIR"
 
 if [ "$FOREGROUND" = true ]; then
     echo "Starting $GAME_NAME server in foreground on port $PORT..."
-    ./server/build/server --port "$PORT" $VERBOSE_FLAG
+    "$SCRIPT_DIR/server/build/server" --content "$SCRIPT_DIR/game" --port "$PORT" $VERBOSE_FLAG
 else
     echo "Starting $GAME_NAME server in background on port $PORT..."
-    ./server/build/server --port "$PORT" $VERBOSE_FLAG >/dev/null 2>&1 &
+    "$SCRIPT_DIR/server/build/server" --content "$SCRIPT_DIR/game" --port "$PORT" $VERBOSE_FLAG >/dev/null 2>&1 &
 
     SERVER_PID=$!
     echo "$SERVER_PID" > "$PID_FILE"

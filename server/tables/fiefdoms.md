@@ -101,6 +101,13 @@ Forest is an **off-map resource analogous to arable land** limiting the wood pro
   reserve is auto-sold at 50% of the import price; amounts at/below reserve are kept. Set via
   `/api/setFiefdomReserve`.
 - wall_count represents number of defensive layers around the manor
+- A character owns **at most one fiefdom**. It is created lazily on first need
+  (`/api/foundFreehold`, `/api/joinBarony`, `/api/createBarony`, or
+  `/api/applyForMesneLord`) and **persists across tenure changes** — leaving a
+  barony, joining another, or applying for a mesne lordship all reuse the same
+  manor (`ensure_fiefdom_for_character` in the server). New fiefdoms start at
+  `manor_level = 0` (home_base under construction) with the
+  `economy.json.starting_resources` balance.
 - Accessed by `/api/getFiefdom` endpoint
 
 ## Resource Ranges

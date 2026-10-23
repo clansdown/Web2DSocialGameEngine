@@ -1,4 +1,5 @@
 /tmp/
+/test_run/
 
 # Prerequisites
 *.d
@@ -44,6 +45,7 @@
 
 /server/config/*
 /server/build/
+/server/build-*/
 /server/bin/
 /server/images/
 /llm_image_creator/
@@ -58,12 +60,8 @@ push_to_production.sh
 /.game_name
 /.docker_repo
 /.docker_creds
+/.deploy
 
-# Local test server PID file
-.local_test_server.pid
-
-# Agent test database directory
-.agent_test_db/
 # Local generation statistics
 .commit/
 

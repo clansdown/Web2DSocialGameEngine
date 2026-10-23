@@ -1264,8 +1264,8 @@
     ev.waypointIndex = startIdx;
     ev.pathId = targetPathId;
     e.decelerationDistance = 0;
-    // Enable sprite mirroring based on movement direction (spriteForwardVector inherited from class default)
-    e.mirrorOnDirection = true;
+    // Sprite mirroring is automatic: the engine mirrors each frame from the
+    // class default forward vector (set from config `forward_vector` above).
 
     e.onArrival(() => {
       const ev2 = e.var as EnemyVar;
@@ -1477,7 +1477,6 @@
       if (aeCfg) {
         // Flask projectile — no direct damage, spawns pool on impact
         p.setSpeed(cfg.speed || 400);
-        p.mirrorOnDirection = true;
         p.setOrientationTowards({ x: fx, y: fy });
         pv.targetX = fx;
         pv.targetY = fy;
@@ -1487,7 +1486,6 @@
         pv.dmg = tdmg;
         pv.aoe = (t.piece.area_of_effect?.radius || 0);  // AoE radius in board units
         p.setSpeed(cfg.speed || 1600);
-        p.mirrorOnDirection = true;
         if (reasonEnemy) {
           p.setOrientationTowards(predictIntercept(t.obj, reasonEnemy, cfg.speed || 1600));
         } else {

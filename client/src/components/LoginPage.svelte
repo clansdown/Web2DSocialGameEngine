@@ -3,7 +3,7 @@
   import { loginRequest } from '../lib/api';
   import { handleError } from '../lib/errors';
   import * as auth from '../lib/auth';
-  import { user, characters, currentCharacter, authLoading } from '../lib/stores';
+  import { user, characters, currentCharacter, authLoading, language } from '../lib/stores';
 
   const dispatch = createEventDispatcher<{
     switchToCreate: void;
@@ -47,6 +47,13 @@
         adult: response.adult
       });
       characters.set(response.characters);
+
+      // The account's interface language is the display language: adopt it on
+      // any device so UI text and chat translation target match.
+      if (response.language) {
+        language.set(response.language);
+        await auth.saveStoredLanguage(response.language);
+      }
 
       const lastCharId = await auth.loadCurrentCharacterId();
       const lastChar = response.characters.find(c => c.id === lastCharId) || response.characters[0];

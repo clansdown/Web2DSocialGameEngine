@@ -4,7 +4,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-AGENT_DB_DIR="$SCRIPT_DIR/.agent_test_db"
+AGENT_DB_DIR="$SCRIPT_DIR/test_run/agent"
 PORT=3290
 KEEP_DB=false
 LOG_FILE=""
@@ -128,7 +128,7 @@ if [ ! -f server ]; then
     exit 1
 fi
 
-cd "$SCRIPT_DIR"
+cd "$AGENT_DB_DIR"
 
 if [ "$QUIET" = false ]; then
     echo "Starting $GAME_NAME test server on port $PORT..."
@@ -140,11 +140,11 @@ fi
 START_TIME=$(date +%s)
 
 if [ -n "$LOG_FILE" ]; then
-    ./server/build/server --db-dir "$AGENT_DB_DIR" --port "$PORT" $VERBOSE_FLAG \
+    "$SCRIPT_DIR/server/build/server" --content "$SCRIPT_DIR/game" --port "$PORT" $VERBOSE_FLAG \
         --test-num-requests "$TEST_NUM_REQUESTS" --test-timeout-seconds "$TEST_TIMEOUT" \
         > "$LOG_FILE" 2>&1 &
 else
-    ./server/build/server --db-dir "$AGENT_DB_DIR" --port "$PORT" $VERBOSE_FLAG \
+    "$SCRIPT_DIR/server/build/server" --content "$SCRIPT_DIR/game" --port "$PORT" $VERBOSE_FLAG \
         --test-num-requests "$TEST_NUM_REQUESTS" --test-timeout-seconds "$TEST_TIMEOUT" \
         >/dev/null 2>&1 &
 fi

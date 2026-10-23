@@ -75,6 +75,11 @@ namespace Validation {
     bool checkFiefdomPrerequisites(GameConfigCache& cache, int fiefdom_id, const nlohmann::json& prerequisites);
     int countBuildingsByType(GameConfigCache& cache, int fiefdom_id, const std::string& target_building, int min_level);
 
+    // Counts completed buildings (level >= 1) whose type belongs to `group`'s
+    // exclusive group, optionally excluding one row (the building being
+    // converted). Returns 0 for an empty group.
+    int countBuildingsInExclusiveGroup(GameConfigCache& cache, int fiefdom_id, const std::string& group, int exclude_building_id = 0);
+
     class TransactionGuard {
     public:
         TransactionGuard(sqlite::database& db);

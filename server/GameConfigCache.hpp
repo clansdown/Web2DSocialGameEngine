@@ -45,9 +45,23 @@ public:
     int getBuildingForestAcres(const std::string& type_id);
     double getForestLandByLevel(int manor_level);
     std::string getBuildingClass(const std::string& type_id);
+    std::string getBuildingExclusiveGroup(const std::string& type_id);
     nlohmann::json& getManorUi();
     nlohmann::json& getManorRiver();
+    nlohmann::json& getPortraitFrames();
     nlohmann::json& getCombatRulesets();
+    nlohmann::json& getCombatWarbands();
+    nlohmann::json& getCombatStructures();
+    nlohmann::json& getCombatFormations();
+    nlohmann::json& getCombatProfiles();
+    nlohmann::json& getCombatRewards();
+    nlohmann::json& getCombatOfferings();
+    nlohmann::json& getCosmetics();
+    nlohmann::json& getProgression();
+    nlohmann::json& getChatConfig();
+    nlohmann::json& getChatAdmins();
+    nlohmann::json& getTranslationConfig();
+    nlohmann::json& getPushConfig();
     std::optional<nlohmann::json> loadWeedingMap(const std::string& filename);
     std::optional<nlohmann::json> loadWeedingLevelConfig(const std::string& filename);
 

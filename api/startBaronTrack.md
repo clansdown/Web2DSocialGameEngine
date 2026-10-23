@@ -43,7 +43,8 @@ name** up front, which the player carries through the whole track.
 
 ## Notes
 
-- Character must be in `land_patent` game phase
+- Character must be in `land_patent`, `freehold`, or `freehold_qualified` game
+  phase (a land-patent holder or a freeholder may start the baron track)
 - `honor_name` is required, trimmed, capped at 64 characters, and **must be
   unique** (case-insensitive) against existing barony names — this is a hard
   requirement, not a warning. The name is stored in `player_game_state.honor_name`

@@ -11,26 +11,26 @@ public:
         return instance;
     }
 
-    void init(const std::string& game_db_path, const std::string& messages_db_path) {
+    void init(const std::string& game_db_path, const std::string& chat_db_path) {
         ensure_directory(game_db_path);
-        ensure_directory(messages_db_path);
+        ensure_directory(chat_db_path);
 
         game_db = sqlite::database(game_db_path);
-        messages_db = sqlite::database(messages_db_path);
+        chat_db = sqlite::database(chat_db_path);
     }
 
     sqlite::database& gameDB() {
         return game_db;
     }
 
-    sqlite::database& messagesDB() {
-        return messages_db;
+    sqlite::database& chatDB() {
+        return chat_db;
     }
 
 private:
     Database()
         : game_db("game.db")
-        , messages_db("messages.db") {
+        , chat_db("chat.db") {
     }
 
     void ensure_directory(const std::string& path) {
@@ -43,5 +43,5 @@ private:
 
 private:
     sqlite::database game_db;
-    sqlite::database messages_db;
+    sqlite::database chat_db;
 };

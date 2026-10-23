@@ -41,6 +41,9 @@ Fetches all available baronies that a player can join.
 ## Notes
 
 - Returns all baronies regardless of membership
+- **Defunct** baronies are excluded: when a founder leaves while they are the
+  last member, the barony is tombstoned (`baronies.defunct_at > 0`), hidden from
+  this list, and its name stays permanently reserved (see `/api/leaveBarony`)
 - `owner_character_id`/`owner_name` is the immutable founder; `baron_character_id`/`baron_name`
   is the current baron, present only once a barony has been promoted (may be absent for baronies
   created before baron tracking was added)

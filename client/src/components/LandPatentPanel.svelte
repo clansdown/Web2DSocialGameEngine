@@ -16,7 +16,7 @@
    */
 
   import { currentCharacter } from '../lib/stores';
-  import { startBaronTrackRequest } from '../lib/api';
+  import { startBaronTrackRequest, foundFreeholdRequest } from '../lib/api';
   import { loadTexts as fetchTexts } from '../lib/text';
   import * as auth from '../lib/auth';
   import { handleError } from '../lib/errors';
@@ -26,9 +26,10 @@
   interface Props {
     onJoinBarony: () => void;
     onBaronTrackStarted: () => void;
+    onFreeholdFounded: () => void;
   }
 
-  let { onJoinBarony, onBaronTrackStarted }: Props = $props();
+  let { onJoinBarony, onBaronTrackStarted, onFreeholdFounded }: Props = $props();
 
   let texts = $state<Record<string, string>>({});
   let textsLoaded = $state(false);
@@ -36,12 +37,15 @@
   let honorName = $state('');
   let honorError = $state<string | null>(null);
   let startingTrack = $state(false);
+  let founding = $state(false);
 
   const TEXT_IDS: string[] = [
     'ui_patent_title',
     'ui_patent_body',
     'ui_patent_join',
     'ui_patent_start_own',
+    'ui_patent_freehold',
+    'ui_patent_freehold_note',
     'ui_patent_honor_title',
     'ui_patent_honor_body',
     'ui_patent_honor_label',
@@ -116,11 +120,33 @@
     }
   }
 
+  /**
+   * Founds an Outlying Freehold: calls the foundFreehold API and notifies the
+   * parent on success so the game phase can be refreshed (routes to freehold).
+   */
+  async function confirmFoundFreehold(): Promise<void> {
+    if (!$currentCharacter || founding) return;
+    founding = true;
+    try {
+      const token = auth.getSessionToken();
+      const username = auth.getInMemoryCredentials()?.username;
+      if (!token || !username) {
+        handleError('Not authenticated', new Error('No session'));
+        return;
+      }
+      await foundFreeholdRequest($currentCharacter.id, { username, token });
+      onFreeholdFounded();
+    } catch (e) {
+      handleError('Failed to found freehold', e);
+    } finally {
+      founding = false;
+    }
+  }
+
   $effect(() => {
     loadTexts();
   });
 </script>
-
 <div class="card h-100 border-primary">
   <div class="card-body p-4">
     {#if !textsLoaded}
@@ -137,7 +163,7 @@
       <GameText text={texts['ui_patent_body'] || ''} />
 
       <div class="row g-3 mt-2">
-        <div class="col-12 col-md-6">
+        <div class="col-12 col-md-4">
           <button
             class="btn btn-primary w-100 py-3"
             onclick={onJoinBarony}
@@ -145,7 +171,7 @@
             {texts['ui_patent_join'] || 'Join a Barony'}
           </button>
         </div>
-        <div class="col-12 col-md-6">
+        <div class="col-12 col-md-4">
           <button
             class="btn btn-outline-primary w-100 py-3"
             onclick={openHonorDialog}
@@ -153,7 +179,23 @@
             {texts['ui_patent_start_own'] || 'Earn the Right to Start One'}
           </button>
         </div>
+        <div class="col-12 col-md-4">
+          <button
+            class="btn btn-outline-secondary w-100 py-3"
+            onclick={confirmFoundFreehold}
+            disabled={founding}
+          >
+            {#if founding}
+              <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+            {/if}
+            {texts['ui_patent_freehold'] || 'Found an Outlying Freehold'}
+          </button>
+        </div>
       </div>
+
+      <p class="text-muted mt-3 mb-0 small">
+        {texts['ui_patent_freehold_note'] || ''}
+      </p>
     {/if}
   </div>
 </div>

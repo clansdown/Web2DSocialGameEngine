@@ -42,6 +42,8 @@ void append_unit_row(std::string& out, const combat_unit& u) {
     out += std::to_string(u.unit_id);
     out += ",\"owner\":";
     out += std::to_string(u.owner_player_id);
+    out += ",\"team\":";
+    out += std::to_string(u.team);
     out += ",\"name\":\"";
     out += json_escape(u.display_name);
     out += "\",\"unit_class\":\"";
@@ -52,13 +54,62 @@ void append_unit_row(std::string& out, const combat_unit& u) {
     out += fmt_double(u.x);
     out += ",\"y\":";
     out += fmt_double(u.y);
+    out += ",\"facing\":";
+    out += fmt_double(u.facing);
     out += ",\"hp\":";
     out += fmt_double(u.hp);
     out += ",\"max_hp\":";
     out += fmt_double(u.max_hp);
     out += ",\"status\":\"";
     out += json_escape(u.status);
-    out += "\"}";
+    out += "\",\"is_enemy\":";
+    out += u.is_enemy ? "true" : "false";
+    // Static stats for the selection card (§12.4): attack type + arc defense /
+    // dodge triples. These are class/level constants, so the cost is small and
+    // the client avoids a second config round-trip.
+    out += ",\"attack_type\":\"";
+    out += json_escape(u.stats.attack_type);
+    out += "\",\"def_front\":";
+    out += fmt_double(u.stats.direction_defense_front);
+    out += ",\"def_side\":";
+    out += fmt_double(u.stats.direction_defense_side);
+    out += ",\"def_back\":";
+    out += fmt_double(u.stats.direction_defense_back);
+    out += ",\"dodge_front\":";
+    out += fmt_double(u.stats.dodge_front);
+    out += ",\"dodge_side\":";
+    out += fmt_double(u.stats.dodge_side);
+    out += ",\"dodge_back\":";
+    out += fmt_double(u.stats.dodge_back);
+    // Body size (§5.6): normalized per-class radius. The client scales the drawn
+    // sprite/ring/token by this, independent of the source image dimensions.
+    out += ",\"radius\":";
+    out += fmt_double(u.stats.radius);
+    out += "}";
+}
+
+void append_structure_row(std::string& out, const combat_structure& s) {
+    out += "{\"id\":";
+    out += std::to_string(s.id);
+    out += ",\"type\":\"";
+    out += json_escape(s.type);
+    out += "\",\"owner\":";
+    out += std::to_string(s.owner_player_id);
+    out += ",\"team\":";
+    out += std::to_string(s.team);
+    out += ",\"x\":";
+    out += fmt_double(s.x);
+    out += ",\"y\":";
+    out += fmt_double(s.y);
+    out += ",\"hp\":";
+    out += fmt_double(s.hp);
+    out += ",\"max_hp\":";
+    out += fmt_double(s.max_hp);
+    out += ",\"state\":\"";
+    out += json_escape(s.state);
+    out += "\",\"garrisoned_unit_id\":";
+    out += std::to_string(s.garrisoned_unit_id);
+    out += "}";
 }
 
 } // namespace
@@ -67,7 +118,7 @@ std::string json_codec::serialize_message(const combat_message& msg) const {
     if (msg.type == "match_state" || msg.type == "match_update") {
         // Hot path: hand-build the payload instead of using nlohmann::json.
         std::string out;
-        out.reserve(256 + msg.units.size() * 160);
+        out.reserve(256 + msg.units.size() * 160 + msg.structures.size() * 120);
         out += "{\"v\":1,\"fmt\":\"json\",\"type\":\"";
         out += msg.type;
         out += "\",\"match_id\":\"";
@@ -83,6 +134,10 @@ std::string json_codec::serialize_message(const combat_message& msg) const {
             out += ",\"countdown\":";
             out += fmt_double(msg.countdown);
         }
+        if (msg.deploy_time >= 0.0) {
+            out += ",\"deploy_time\":";
+            out += fmt_double(msg.deploy_time);
+        }
         out += ",\"battle_time\":";
         out += fmt_double(msg.battle_time);
         out += ",\"units\":[";
@@ -91,6 +146,13 @@ std::string json_codec::serialize_message(const combat_message& msg) const {
             if (!first) out += ",";
             first = false;
             append_unit_row(out, u);
+        }
+        out += "],\"structures\":[";
+        first = true;
+        for (const auto& s : msg.structures) {
+            if (!first) out += ",";
+            first = false;
+            append_structure_row(out, s);
         }
         out += "],\"removed\":[";
         first = true;

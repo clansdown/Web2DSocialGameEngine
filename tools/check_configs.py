@@ -282,6 +282,7 @@ class ConfigValidator:
         self.all_files_present: bool = True
         # Track IDs for image validation
         self.validated_combatant_ids: set[str] = set()
+        self.validated_enemy_combatant_ids: set[str] = set()
         self.validated_building_ids: set[str] = set()
         self.external_image_building_ids: set[str] = set()
         self.validated_hero_ids: set[str] = set()
@@ -622,7 +623,183 @@ class ConfigValidator:
                         )
                         valid = False
 
+        if not self._validate_rts_combat_fields(file, combatant_id, data):
+            valid = False
+
         self._validate_visual_description(file, combatant_id, data, "Combatant")
+
+        return valid
+
+    def _validate_rts_combat_fields(
+        self,
+        file: Path,
+        combatant_id: str,
+        data: dict[str, Any]
+    ) -> bool:
+        """Validate the RTS combat-model fields (rts_design.md §5.1): the required
+        body `size`, optional per-level `max_hp`/`attack_range`/`attack_interval`
+        arrays, the flat per-unit arc triples `direction_defense`/`dodge`,
+        `attack_type`, `turn_rate`, and the optional `aoe` splash block."""
+        valid: bool = True
+
+        # Per-level scalar arrays.
+        for scalar_field in ("max_hp", "attack_range", "attack_interval"):
+            if scalar_field not in data:
+                continue
+            sarr: Any = data[scalar_field]
+            if not isinstance(sarr, list) or not sarr:
+                self._add_issue(
+                    file, 1, None,
+                    f"Combatant '{combatant_id}'.{scalar_field} must be a non-empty per-level array",
+                    Severity.ERROR,
+                )
+                valid = False
+                continue
+            for i, item in enumerate(sarr):
+                if not isinstance(item, (int, float)) or isinstance(item, bool):
+                    self._add_issue(
+                        file, 1, None,
+                        f"Combatant '{combatant_id}'.{scalar_field}[{i}] must be a number",
+                        Severity.ERROR,
+                    )
+                    valid = False
+                elif scalar_field == "attack_interval" and item <= 0:
+                    self._add_issue(
+                        file, 1, None,
+                        f"Combatant '{combatant_id}'.{scalar_field}[{i}] must be > 0, got {item}",
+                        Severity.ERROR,
+                    )
+                    valid = False
+                elif scalar_field == "attack_range" and item < 0:
+                    self._add_issue(
+                        file, 1, None,
+                        f"Combatant '{combatant_id}'.{scalar_field}[{i}] must be >= 0, got {item}",
+                        Severity.ERROR,
+                    )
+                    valid = False
+                elif scalar_field == "max_hp" and item <= 0:
+                    self._add_issue(
+                        file, 1, None,
+                        f"Combatant '{combatant_id}'.{scalar_field}[{i}] must be > 0, got {item}",
+                        Severity.ERROR,
+                    )
+                    valid = False
+
+        # Flat per-unit arc triples.
+        for triple_field in ("direction_defense", "dodge"):
+            if triple_field not in data:
+                continue
+            triple: Any = data[triple_field]
+            if not isinstance(triple, dict):
+                self._add_issue(
+                    file, 1, None,
+                    f"Combatant '{combatant_id}'.{triple_field} must be an object with front/side/back",
+                    Severity.ERROR,
+                )
+                valid = False
+                continue
+            for arc in ("front", "side", "back"):
+                if arc not in triple:
+                    self._add_issue(
+                        file, 1, None,
+                        f"Combatant '{combatant_id}'.{triple_field} is missing arc '{arc}'",
+                        Severity.ERROR,
+                    )
+                    valid = False
+                    continue
+                value: Any = triple[arc]
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    self._add_issue(
+                        file, 1, None,
+                        f"Combatant '{combatant_id}'.{triple_field}.{arc} must be a number",
+                        Severity.ERROR,
+                    )
+                    valid = False
+                elif not 0 <= value <= 1:
+                    self._add_issue(
+                        file, 1, None,
+                        f"Combatant '{combatant_id}'.{triple_field}.{arc} must be in 0..1, got {value}",
+                        Severity.ERROR,
+                    )
+                    valid = False
+
+        if "attack_type" in data:
+            attack_type: Any = data["attack_type"]
+            if attack_type not in VALID_DAMAGE_TYPES:
+                self._add_issue(
+                    file, 1, None,
+                    f"Combatant '{combatant_id}'.attack_type must be one of "
+                    f"{sorted(VALID_DAMAGE_TYPES)}, got {attack_type!r}",
+                    Severity.ERROR,
+                )
+                valid = False
+
+        if "turn_rate" in data:
+            turn_rate: Any = data["turn_rate"]
+            if not isinstance(turn_rate, (int, float)) or isinstance(turn_rate, bool) or turn_rate <= 0:
+                self._add_issue(
+                    file, 1, None,
+                    f"Combatant '{combatant_id}'.turn_rate must be a number > 0, got {turn_rate!r}",
+                    Severity.ERROR,
+                )
+                valid = False
+
+        # Body size (normalized board units): drives the sim collision radius and
+        # the client's drawn sprite size. Required — how big a combatant is must
+        # always be authored, never defaulted.
+        if "size" not in data:
+            self._add_issue(
+                file, 1, None,
+                f"Combatant '{combatant_id}' is missing required field 'size'",
+                Severity.ERROR,
+            )
+            valid = False
+        else:
+            size: Any = data["size"]
+            if not isinstance(size, (int, float)) or isinstance(size, bool) or size <= 0:
+                self._add_issue(
+                    file, 1, None,
+                    f"Combatant '{combatant_id}'.size must be a number > 0, got {size!r}",
+                    Severity.ERROR,
+                )
+                valid = False
+            elif size > 0.2:
+                self._add_issue(
+                    file, 1, None,
+                    f"Combatant '{combatant_id}'.size must be <= 0.2 (normalized board "
+                    f"units; 0.03 is one standard soldier), got {size}",
+                    Severity.ERROR,
+                )
+                valid = False
+
+        if "aoe" in data:
+            aoe: Any = data["aoe"]
+            if not isinstance(aoe, dict):
+                self._add_issue(
+                    file, 1, None,
+                    f"Combatant '{combatant_id}'.aoe must be an object",
+                    Severity.ERROR,
+                )
+                valid = False
+            else:
+                for bool_field in ("splash", "flat_mitigation", "safe_arc_auto_aim",
+                                   "hold_fire_on_no_safe_arc"):
+                    if bool_field in aoe and not isinstance(aoe[bool_field], bool):
+                        self._add_issue(
+                            file, 1, None,
+                            f"Combatant '{combatant_id}'.aoe.{bool_field} must be a boolean",
+                            Severity.ERROR,
+                        )
+                        valid = False
+                if "splash_radius" in aoe:
+                    sr: Any = aoe["splash_radius"]
+                    if not isinstance(sr, (int, float)) or isinstance(sr, bool) or sr <= 0:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Combatant '{combatant_id}'.aoe.splash_radius must be a number > 0",
+                            Severity.ERROR,
+                        )
+                        valid = False
 
         return valid
 
@@ -755,11 +932,279 @@ class ConfigValidator:
                     )
                     valid = False
 
+            if not is_player and "requires" in combatant_data:
+                if not self._validate_combatant_requires(
+                    file, content, combatant_id, combatant_data["requires"], data
+                ):
+                    valid = False
+
+            if "animations" in combatant_data:
+                if not self._validate_combatant_animations(
+                    file, content, combatant_id, combatant_data["animations"]
+                ):
+                    valid = False
+
             if not self._validate_combatant(file, content, combatant_id, combatant_data):
                 valid = False
 
         # Track IDs for image validation
         self.validated_combatant_ids.update(seen_ids)
+        if not is_player:
+            self.validated_enemy_combatant_ids.update(seen_ids)
+            self._check_requires_cycles(file, data)
+
+        return valid
+
+    def _validate_combatant_requires(
+        self,
+        file: Path,
+        content: str,
+        combatant_id: str,
+        requires: object,
+        data: dict[str, Any],
+    ) -> bool:
+        """Validate a combatant's prerequisite list (`[{unit_class, count}]`).
+
+        Warband assembly rolls unmet prerequisites up recursively, so the schema
+        is strict: unknown classes and non-positive counts are errors. A
+        self-reference still works (the unit satisfies its own requirement), but
+        it is warned as an authoring mistake.
+        """
+        valid: bool = True
+        line: int = content[:].count('\n') + 1
+        if not isinstance(requires, list) or not requires:
+            self._add_issue(
+                file, line, None,
+                f"Combatant '{combatant_id}' 'requires' must be a non-empty array",
+                Severity.ERROR,
+            )
+            return False
+        for i, req in enumerate(requires):
+            if not isinstance(req, dict):
+                self._add_issue(
+                    file, line, None,
+                    f"Combatant '{combatant_id}'.requires[{i}] must be an object",
+                    Severity.ERROR,
+                )
+                valid = False
+                continue
+            required_class: object = req.get("unit_class")
+            if not isinstance(required_class, str) or not required_class:
+                self._add_issue(
+                    file, line, None,
+                    f"Combatant '{combatant_id}'.requires[{i}].unit_class must be a non-empty string",
+                    Severity.ERROR,
+                )
+                valid = False
+            elif required_class not in data:
+                self._add_issue(
+                    file, line, None,
+                    f"Combatant '{combatant_id}'.requires[{i}] references unknown combatant '{required_class}'",
+                    Severity.ERROR,
+                )
+                valid = False
+            elif required_class == combatant_id:
+                self._add_issue(
+                    file, line, None,
+                    f"Combatant '{combatant_id}'.requires[{i}] references itself",
+                    Severity.WARN,
+                )
+            count: object = req.get("count")
+            if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+                self._add_issue(
+                    file, line, None,
+                    f"Combatant '{combatant_id}'.requires[{i}].count must be a positive integer",
+                    Severity.ERROR,
+                )
+                valid = False
+        return valid
+
+    def _check_requires_cycles(self, file: Path, data: dict[str, Any]) -> None:
+        """Warn once when the enemy prerequisite graph contains a cycle."""
+        graph: dict[str, list[str]] = {}
+        for cid, cdata in data.items():
+            if not isinstance(cdata, dict):
+                continue
+            reqs: object = cdata.get("requires")
+            if not isinstance(reqs, list):
+                continue
+            edges: list[str] = []
+            for req in reqs:
+                if isinstance(req, dict) and isinstance(req.get("unit_class"), str):
+                    edges.append(req["unit_class"])
+            graph[cid] = edges
+
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(node: str) -> bool:
+            if node in visiting:
+                return True
+            if node in visited:
+                return False
+            visiting.add(node)
+            for nxt in graph.get(node, []):
+                if nxt in graph and visit(nxt):
+                    return True
+            visiting.discard(node)
+            visited.add(node)
+            return False
+
+        for cid in graph:
+            if visit(cid):
+                self._add_issue(
+                    file, 1, None,
+                    f"Combatant prerequisite graph contains a cycle through '{cid}'",
+                    Severity.WARN,
+                )
+                return
+
+    def _validate_combatant_animations(
+        self,
+        file: Path,
+        content: str,
+        combatant_id: str,
+        animations: Any,
+    ) -> bool:
+        """Validate a combatant's directional animation block (rts_design.md D24).
+
+        `animations` is keyed by clip id (e.g. "walk"); each clip carries a
+        positive numeric `fps` and optional per-direction `views`. A view is either
+        a set name or `{set, mirror}`. Frames live at
+        `images/combatants/<class>/<clip>/<set>/<n>.png`; the frame *count* is
+        discovered from the directory contents at runtime (server), so `frames` is
+        no longer declared — a stale `frames` is warned as ignored. Directory
+        existence is checked by tools/check_art.py.
+        """
+        valid: bool = True
+        line: int = content[:].count('\n') + 1
+        if not isinstance(animations, dict):
+            self._add_issue(
+                file, line, None,
+                f"Combatant '{combatant_id}' 'animations' must be an object",
+                Severity.ERROR
+            )
+            return False
+        if not animations:
+            self._add_issue(
+                file, line, None,
+                f"Combatant '{combatant_id}' 'animations' must not be empty",
+                Severity.WARN
+            )
+            return True
+
+        directions: set[str] = {"e", "se", "s", "sw", "w", "nw", "n", "ne"}
+        for clip_id, clip in animations.items():
+            if not isinstance(clip_id, str) or not clip_id:
+                self._add_issue(
+                    file, line, None,
+                    f"Combatant '{combatant_id}' animation clip ids must be non-empty strings",
+                    Severity.ERROR
+                )
+                valid = False
+                continue
+            if not clip_id.replace("_", "").isalnum() or not clip_id.islower():
+                self._add_issue(
+                    file, line, None,
+                    f"Combatant '{combatant_id}' animation clip '{clip_id}' should be "
+                    "lowercase snake_case",
+                    Severity.WARN
+                )
+            if not isinstance(clip, dict):
+                self._add_issue(
+                    file, line, None,
+                    f"Combatant '{combatant_id}'.animations['{clip_id}'] must be an object",
+                    Severity.ERROR
+                )
+                valid = False
+                continue
+
+            if "frames" in clip:
+                self._add_issue(
+                    file, line, None,
+                    f"Combatant '{combatant_id}'.animations['{clip_id}'].frames is ignored — "
+                    "the frame count is discovered from the set directory contents",
+                    Severity.WARN
+                )
+
+            fps: Any = clip.get("fps")
+            if not isinstance(fps, (int, float)) or isinstance(fps, bool) or fps <= 0:
+                self._add_issue(
+                    file, line, None,
+                    f"Combatant '{combatant_id}'.animations['{clip_id}'].fps must be a "
+                    "positive number",
+                    Severity.ERROR
+                )
+                valid = False
+
+            if "views" not in clip:
+                continue
+            views: Any = clip["views"]
+            if not isinstance(views, dict):
+                self._add_issue(
+                    file, line, None,
+                    f"Combatant '{combatant_id}'.animations['{clip_id}'].views must be an object",
+                    Severity.ERROR
+                )
+                valid = False
+                continue
+            for direction, view in views.items():
+                if direction not in directions:
+                    self._add_issue(
+                        file, line, None,
+                        f"Combatant '{combatant_id}'.animations['{clip_id}'].views has unknown "
+                        f"direction '{direction}' (expected one of "
+                        f"{', '.join(sorted(directions))})",
+                        Severity.ERROR
+                    )
+                    valid = False
+                if isinstance(view, str):
+                    if not view:
+                        self._add_issue(
+                            file, line, None,
+                            f"Combatant '{combatant_id}'.animations['{clip_id}'].views"
+                            f"['{direction}'] set name must be non-empty",
+                            Severity.ERROR
+                        )
+                        valid = False
+                elif isinstance(view, dict):
+                    set_name: Any = view.get("set")
+                    if not isinstance(set_name, str) or not set_name:
+                        self._add_issue(
+                            file, line, None,
+                            f"Combatant '{combatant_id}'.animations['{clip_id}'].views"
+                            f"['{direction}'].set must be a non-empty string",
+                            Severity.ERROR
+                        )
+                        valid = False
+                    mirror: Any = view.get("mirror")
+                    if mirror is not None and not isinstance(mirror, bool):
+                        self._add_issue(
+                            file, line, None,
+                            f"Combatant '{combatant_id}'.animations['{clip_id}'].views"
+                            f"['{direction}'].mirror must be a boolean",
+                            Severity.ERROR
+                        )
+                        valid = False
+                    unknown_keys: set[str] = set(view.keys()) - {"set", "mirror"}
+                    if unknown_keys:
+                        self._add_issue(
+                            file, line, None,
+                            f"Combatant '{combatant_id}'.animations['{clip_id}'].views"
+                            f"['{direction}'] has unknown key(s): "
+                            f"{', '.join(sorted(unknown_keys))}",
+                            Severity.ERROR
+                        )
+                        valid = False
+                else:
+                    self._add_issue(
+                        file, line, None,
+                        f"Combatant '{combatant_id}'.animations['{clip_id}'].views"
+                        f"['{direction}'] must be a set-name string or a "
+                        "{set, mirror} object",
+                        Severity.ERROR
+                    )
+                    valid = False
 
         return valid
 
@@ -1240,6 +1685,22 @@ class ConfigValidator:
                 self._add_issue(
                     file, 1, None,
                     f"Building '{building_id}'.class should be lowercase snake_case, got {cls!r}",
+                    Severity.WARNING
+                )
+
+        # Exclusive group: at most one building from the group per fiefdom.
+        if "exclusive_group" in data:
+            group: Any = data["exclusive_group"]
+            if not isinstance(group, str) or not group:
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.exclusive_group must be a non-empty string",
+                    Severity.ERROR
+                )
+            elif group != group.lower() or not all(c.isalnum() or c == "_" for c in group):
+                self._add_issue(
+                    file, 1, None,
+                    f"Building '{building_id}'.exclusive_group should be lowercase snake_case, got {group!r}",
                     Severity.WARNING
                 )
 
@@ -2191,6 +2652,110 @@ class ConfigValidator:
                                         f"[{j}] must be an [x,y] integer pair", Severity.ERROR)
                         valid = False
 
+        return valid
+
+    def validate_portrait_frames(self, file: Path, content: str, images_dir: Path) -> bool:
+        """Validate portrait_frames.json (decorative portrait overlay geometry).
+
+        Each `frames` entry names an overlay `image` (a served `/images/...`
+        URL), its pixel size (`image_width`/`image_height`), and the `portrait`
+        rectangle in those same pixels that the portrait image is mapped into.
+        The frame is drawn on top of the portrait, so the rectangle is a draw
+        box, not a mask.
+        """
+        data: JsonDataType = self._validate_json(content, file)
+        if data is None:
+            return False
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected an object", Severity.ERROR)
+            return False
+
+        frames: Any = data.get("frames")
+        if not isinstance(frames, dict) or not frames:
+            self._add_issue(file, 1, None, "'frames' must be a non-empty object", Severity.ERROR)
+            return False
+
+        valid: bool = True
+        for variant, frame in frames.items():
+            if not isinstance(frame, dict):
+                self._add_issue(file, 1, None,
+                                f"frames['{variant}'] must be an object", Severity.ERROR)
+                valid = False
+                continue
+
+            image: Any = frame.get("image")
+            if not isinstance(image, str) or not image:
+                self._add_issue(file, 1, None,
+                                f"frames['{variant}'].image must be a non-empty string",
+                                Severity.ERROR)
+                valid = False
+            else:
+                # `image` is a served URL (/images/...); map it back to disk and
+                # warn (not error) while the art is still being authored.
+                relative: str = image[len("/images/"):] if image.startswith("/images/") \
+                    else image.lstrip("/")
+                if not (images_dir / relative).exists():
+                    self._add_issue(file, 1, None,
+                                    f"frames['{variant}'].image not found on disk "
+                                    f"(TODO: art): {image}", Severity.WARN)
+
+            image_width: Any = frame.get("image_width")
+            image_height: Any = frame.get("image_height")
+            if not isinstance(image_width, int) or isinstance(image_width, bool) or image_width <= 0:
+                self._add_issue(file, 1, None,
+                                f"frames['{variant}'].image_width must be a positive integer",
+                                Severity.ERROR)
+                valid = False
+            if not isinstance(image_height, int) or isinstance(image_height, bool) or image_height <= 0:
+                self._add_issue(file, 1, None,
+                                f"frames['{variant}'].image_height must be a positive integer",
+                                Severity.ERROR)
+                valid = False
+
+            rect: Any = frame.get("portrait")
+            if not isinstance(rect, dict):
+                self._add_issue(file, 1, None,
+                                f"frames['{variant}'].portrait must be an object",
+                                Severity.ERROR)
+                valid = False
+                continue
+
+            rect_x: Any = rect.get("x")
+            rect_y: Any = rect.get("y")
+            rect_w: Any = rect.get("width")
+            rect_h: Any = rect.get("height")
+            rect_ok: bool = True
+            for name, value, allow_zero in (("x", rect_x, True), ("y", rect_y, True),
+                                            ("width", rect_w, False), ("height", rect_h, False)):
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    self._add_issue(file, 1, None,
+                                    f"frames['{variant}'].portrait.{name} must be a number",
+                                    Severity.ERROR)
+                    rect_ok = False
+                elif allow_zero and value < 0:
+                    self._add_issue(file, 1, None,
+                                    f"frames['{variant}'].portrait.{name} must be >= 0",
+                                    Severity.ERROR)
+                    rect_ok = False
+                elif not allow_zero and value <= 0:
+                    self._add_issue(file, 1, None,
+                                    f"frames['{variant}'].portrait.{name} must be > 0",
+                                    Severity.ERROR)
+                    rect_ok = False
+            if not rect_ok:
+                valid = False
+
+            numbers_ok: bool = all(
+                isinstance(v, (int, float)) and not isinstance(v, bool)
+                for v in (image_width, image_height, rect_x, rect_y, rect_w, rect_h)
+            )
+            if numbers_ok and (rect_x + rect_w > image_width or rect_y + rect_h > image_height):
+                self._add_issue(file, 1, None,
+                                f"frames['{variant}'].portrait exceeds the frame image "
+                                f"bounds ({image_width}x{image_height})", Severity.ERROR)
+                valid = False
+
+        self.validated_files.append(file)
         return valid
 
     def _hero_id_is_valid(self, hero_id: str, line: int, file: Path) -> bool:
@@ -3194,7 +3759,7 @@ class ConfigValidator:
 
     def _validate_image_file_numbering(self, dir_path: Path) -> list[str]:
         """Validate that files in directory follow numeric naming convention."""
-        valid_extensions = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
+        valid_extensions = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".avif"}
         invalid_files: list[str] = []
 
         if not dir_path.exists():
@@ -3218,12 +3783,16 @@ class ConfigValidator:
         required: set[tuple] = set()
         optional: set[tuple] = set()
 
-        # Combatants: idle, attack, defend, die (all required)
+        # Combatants: art is optional (classes without art render procedurally).
+        # Directional clips (walk/idle) keep their frames one level deeper under
+        # <clip>/<set>/ and are validated by tools/check_art.py; here we only
+        # recognize the clip directories so real ones aren't flagged as orphans.
         for combatant_id in self.validated_combatant_ids:
-            required.add(("combatants", combatant_id, "idle"))
-            required.add(("combatants", combatant_id, "attack"))
-            required.add(("combatants", combatant_id, "defend"))
-            required.add(("combatants", combatant_id, "die"))
+            optional.add(("combatants", combatant_id, "idle"))
+            optional.add(("combatants", combatant_id, "walk"))
+            optional.add(("combatants", combatant_id, "attack"))
+            optional.add(("combatants", combatant_id, "defend"))
+            optional.add(("combatants", combatant_id, "die"))
 
         # Buildings: construction, idle (required), harvest (optional)
         # Skip buildings with explicit image field (they use external images, not server images/)
@@ -3284,7 +3853,11 @@ class ConfigValidator:
                 img_type = relative_parts[0]
                 if img_type not in entity_types:
                     continue
-                item_id = relative_parts[1]
+                # A `type/id/` directory that holds clip subdirectories (the
+                # normal layout, e.g. combatants/<class>/walk/<set>/) is fine; a
+                # leaf at this depth has no recognized subtype and is orphaned.
+                if any(child.is_dir() for child in root_path.iterdir()):
+                    continue
                 self._add_issue(
                     images_dir, 1, None,
                     f"Orphaned images directory: {root_path.relative_to(images_dir)}/",
@@ -3319,8 +3892,9 @@ class ConfigValidator:
             if not dir_path.exists():
                 continue
 
-            # Check if directory is empty
-            has_files = any(f.is_file() for f in dir_path.iterdir())
+            # Check if directory is empty. Recurse so directional clip dirs
+            # (e.g. combatants/<class>/walk/<set>/<n>.png) count as populated.
+            has_files = any(entry.is_file() for entry in dir_path.rglob("*"))
 
             if not has_files:
                 if dir_tuple in expected_required:
@@ -3390,6 +3964,81 @@ class ConfigValidator:
                                 f"Orphaned images directory: images/{type_name}/{item_id}/",
                                 Severity.WARN
                             )
+
+    def validate_portrait_pools(self, images_dir: Path) -> None:
+        """Validate the retinue headshot/avatar pools and frame overlays.
+
+        These are data-driven pools (no catalog config): the server scans and
+        sorts the directories at startup. Required:
+          - images/retinue/headshots/{male,female}/ (non-empty)
+        Missing-until-authored (warnings, so the build stays green before art
+        lands):
+          - images/retinue/frames/ overlay images (checked by
+            validate_portrait_frames against game/config/portrait_frames.json)
+          - images/avatars/safe/{male,female}/ (non-empty)
+        """
+        allowed_ext: set[str] = {".png", ".jpg", ".jpeg", ".webp", ".avif"}
+
+        def pool_files(directory: Path) -> tuple[int, list[str]]:
+            if not directory.exists():
+                return 0, []
+            count = 0
+            invalid: list[str] = []
+            for entry in directory.iterdir():
+                if not entry.is_file():
+                    continue
+                if entry.suffix.lower() in allowed_ext:
+                    count += 1
+                elif not entry.name.startswith("."):
+                    invalid.append(entry.name)
+            return count, invalid
+
+        for gender in ("male", "female"):
+            directory = images_dir / "retinue" / "headshots" / gender
+            if not directory.exists():
+                self._add_issue(
+                    directory, 1, None,
+                    f"Missing headshot pool: images/retinue/headshots/{gender}/",
+                    Severity.ERROR
+                )
+                continue
+            count, invalid = pool_files(directory)
+            if count == 0:
+                self._add_issue(
+                    directory, 1, None,
+                    f"Empty headshot pool: images/retinue/headshots/{gender}/",
+                    Severity.ERROR
+                )
+            for name in invalid:
+                self._add_issue(
+                    directory, 1, None,
+                    f"Unsupported image format in images/retinue/headshots/{gender}/: {name}",
+                    Severity.WARN
+                )
+
+        # The safe player-avatar pool is gender-split like the retinue headshots.
+        for gender in ("male", "female"):
+            safe_dir = images_dir / "avatars" / "safe" / gender
+            if not safe_dir.exists():
+                self._add_issue(
+                    safe_dir, 1, None,
+                    f"Missing safe avatar pool (TODO: art): images/avatars/safe/{gender}/",
+                    Severity.WARN
+                )
+                continue
+            count, invalid = pool_files(safe_dir)
+            if count == 0:
+                self._add_issue(
+                    safe_dir, 1, None,
+                    f"Empty safe avatar pool (TODO: art): images/avatars/safe/{gender}/",
+                    Severity.WARN
+                )
+            for name in invalid:
+                self._add_issue(
+                    safe_dir, 1, None,
+                    f"Unsupported image format in images/avatars/safe/{gender}/: {name}",
+                    Severity.WARN
+                )
 
     def validate_spawn_schedules(self, game_config_dir: Path) -> None:
         """Validate tower defense spawn schedule files."""
@@ -4626,15 +5275,70 @@ class ConfigValidator:
                         continue
                     if not isinstance(obs.get("id"), str):
                         self._add_issue(file, 1, None, f"obstacles[{idx}].id must be a string", Severity.ERROR)
+                    for coord in ("x", "y"):
+                        value: object = obs.get(coord)
+                        if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 1:
+                            self._add_issue(file, 1, None, f"obstacles[{idx}].{coord} must be a number in 0..1", Severity.ERROR)
                     radius: object = obs.get("radius")
                     if not isinstance(radius, (int, float)) or isinstance(radius, bool) or radius <= 0:
                         self._add_issue(file, 1, None, f"obstacles[{idx}].radius must be a positive number", Severity.ERROR)
+                    # Per-obstacle blocking flags (rts_design.md §8.4): all
+                    # optional booleans; absent = blocking (default solid).
+                    for flag in ("blocks_movement", "blocks_ranged", "blocks_aoe"):
+                        flag_val: object = obs.get(flag)
+                        if flag_val is not None and not isinstance(flag_val, bool):
+                            self._add_issue(
+                                file, 1, None,
+                                f"obstacles[{idx}].{flag} must be a boolean",
+                                Severity.ERROR,
+                            )
+
+        deploy_zones: object = data.get("deploy_zones")
+        if deploy_zones is not None:
+            if not isinstance(deploy_zones, list) or not deploy_zones:
+                self._add_issue(file, 1, None, "'deploy_zones' must be a non-empty array", Severity.ERROR)
+            else:
+                seen_deploy_teams: set[int] = set()
+                for idx, dz in enumerate(deploy_zones, start=1):
+                    if not isinstance(dz, dict):
+                        self._add_issue(file, 1, None, f"deploy_zones[{idx}] must be an object", Severity.ERROR)
+                        continue
+                    team: object = dz.get("team")
+                    if not isinstance(team, int) or team < 1:
+                        self._add_issue(file, 1, None, f"deploy_zones[{idx}].team must be a positive integer", Severity.ERROR)
+                    else:
+                        if team in seen_deploy_teams:
+                            self._add_issue(file, 1, None, f"deploy_zones[{idx}] duplicates team {team}", Severity.ERROR)
+                        seen_deploy_teams.add(team)
+                    for coord in ("x", "y"):
+                        value: object = dz.get(coord)
+                        if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 1:
+                            self._add_issue(file, 1, None, f"deploy_zones[{idx}].{coord} must be a number in 0..1", Severity.ERROR)
+                    for dim in ("w", "h"):
+                        value: object = dz.get(dim)
+                        if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+                            self._add_issue(file, 1, None, f"deploy_zones[{idx}].{dim} must be a positive number", Severity.ERROR)
+                    xv = dz.get("x", 0)
+                    yv = dz.get("y", 0)
+                    wv = dz.get("w", 1)
+                    hv = dz.get("h", 1)
+                    if (isinstance(xv, (int, float)) and isinstance(wv, (int, float)) and xv + wv > 1.0):
+                        self._add_issue(file, 1, None, f"deploy_zones[{idx}] extends past the right edge (x + w > 1)", Severity.ERROR)
+                    if (isinstance(yv, (int, float)) and isinstance(hv, (int, float)) and yv + hv > 1.0):
+                        self._add_issue(file, 1, None, f"deploy_zones[{idx}] extends past the bottom edge (y + h > 1)", Severity.ERROR)
+                if seen_deploy_teams and {1, 2} - seen_deploy_teams:
+                    missing_teams: set[int] = {1, 2} - seen_deploy_teams
+                    self._add_issue(
+                        file, 1, None,
+                        f"deploy_zones missing team(s): {sorted(missing_teams)} (spawn-point fallback applies)",
+                        Severity.WARN,
+                    )
 
         # Unknown fields: warnings only (flexible format — see docs/combat_maps.md)
         known_fields: Final[set[str]] = {
             "format_version", "name", "image_filename", "width_tiles",
             "height_tiles", "tile_size_px", "tile_costs", "spawn_points",
-            "start_positions", "obstacles",
+            "start_positions", "obstacles", "deploy_zones",
         }
         unknown: set[str] = set(data.keys()) - known_fields
         if unknown:
@@ -4643,6 +5347,869 @@ class ConfigValidator:
                 f"Unknown map fields (ignored): {', '.join(sorted(unknown))}",
                 Severity.WARN,
             )
+
+    def validate_combat_warbands(self, file: Path, valid_enemy_ids: set[str]) -> None:
+        """Validate game/config/combat/warbands.json — mission opportunities.
+
+        Each opportunity bundles a ruleset + map + warband composition + tier +
+        XP base + flavor. Warband entries must reference enemy combatant ids that
+        exist in enemy_combatants.json (cross-referenced against the validated
+        enemy set).
+        """
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+
+        data: object = self._validate_json(content, file)
+        if data is None:
+            return
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with 'format_version' and 'opportunities'", Severity.ERROR)
+            return
+
+        if not isinstance(data.get("format_version"), str):
+            self._add_issue(file, 1, None, "'format_version' must be a string", Severity.ERROR)
+        opportunities: object = data.get("opportunities")
+        if not isinstance(opportunities, list) or not opportunities:
+            self._add_issue(file, 1, None, "'opportunities' must be a non-empty array", Severity.ERROR)
+            return
+
+        seen_ids: set[str] = set()
+        for idx, opp in enumerate(opportunities, start=1):
+            if not isinstance(opp, dict):
+                self._add_issue(file, 1, None, f"opportunities[{idx}] must be an object", Severity.ERROR)
+                continue
+
+            opp_id: object = opp.get("id")
+            if not isinstance(opp_id, str) or not opp_id:
+                self._add_issue(file, 1, None, f"opportunities[{idx}].id must be a non-empty string", Severity.ERROR)
+            elif opp_id in seen_ids:
+                self._add_issue(file, 1, None, f"Duplicate opportunity id: {opp_id}", Severity.ERROR)
+            else:
+                seen_ids.add(opp_id)
+
+            if not isinstance(opp.get("name"), str):
+                self._add_issue(file, 1, None, f"opportunities[{idx}].name must be a string", Severity.ERROR)
+            tier: object = opp.get("tier")
+            if not isinstance(tier, int) or tier < 1:
+                self._add_issue(file, 1, None, f"opportunities[{idx}].tier must be a positive integer", Severity.ERROR)
+            if not isinstance(opp.get("ruleset"), str):
+                self._add_issue(file, 1, None, f"opportunities[{idx}].ruleset must be a string", Severity.ERROR)
+            if not isinstance(opp.get("map"), str):
+                self._add_issue(file, 1, None, f"opportunities[{idx}].map must be a string", Severity.ERROR)
+            xp_base: object = opp.get("xp_base")
+            if not isinstance(xp_base, (int, float)) or isinstance(xp_base, bool) or xp_base < 0:
+                self._add_issue(file, 1, None, f"opportunities[{idx}].xp_base must be a non-negative number", Severity.ERROR)
+            if "flavor" in opp and (not isinstance(opp["flavor"], str) or not opp["flavor"]):
+                self._add_issue(file, 1, None, f"opportunities[{idx}].flavor must be a non-empty string", Severity.WARN)
+
+            warband: object = opp.get("warband")
+            if not isinstance(warband, list) or not warband:
+                self._add_issue(file, 1, None, f"opportunities[{idx}].warband must be a non-empty array", Severity.ERROR)
+                continue
+            for wb_idx, entry in enumerate(warband, start=1):
+                if not isinstance(entry, dict):
+                    self._add_issue(file, 1, None, f"opportunities[{idx}].warband[{wb_idx}] must be an object", Severity.ERROR)
+                    continue
+                unit_class: object = entry.get("unit_class")
+                if not isinstance(unit_class, str) or not unit_class:
+                    self._add_issue(file, 1, None, f"opportunities[{idx}].warband[{wb_idx}].unit_class must be a non-empty string", Severity.ERROR)
+                elif valid_enemy_ids and unit_class not in valid_enemy_ids:
+                    self._add_issue(
+                        file, 1, None,
+                        f"opportunities[{idx}].warband[{wb_idx}] references unknown enemy combatant '{unit_class}'",
+                        Severity.ERROR,
+                    )
+                lvl: object = entry.get("level")
+                if not isinstance(lvl, int) or lvl < 1:
+                    self._add_issue(file, 1, None, f"opportunities[{idx}].warband[{wb_idx}].level must be a positive integer", Severity.ERROR)
+                count: object = entry.get("count")
+                if not isinstance(count, int) or count < 1:
+                    self._add_issue(file, 1, None, f"opportunities[{idx}].warband[{wb_idx}].count must be a positive integer", Severity.ERROR)
+                if ("group" in entry and (not isinstance(entry["group"], str) or not entry["group"])):
+                    self._add_issue(file, 1, None, f"opportunities[{idx}].warband[{wb_idx}].group must be a non-empty string", Severity.WARN)
+                if "tactic" in entry and entry["tactic"] not in ("charge", "hold", "skirmish", "guard", "reinforce"):
+                    self._add_issue(file, 1, None, f"opportunities[{idx}].warband[{wb_idx}].tactic must be one of charge/hold/skirmish/guard/reinforce", Severity.ERROR)
+                if "aggro_model" in entry and entry["aggro_model"] not in ("local", "call_to_arms", "global"):
+                    self._add_issue(file, 1, None, f"opportunities[{idx}].warband[{wb_idx}].aggro_model must be one of local/call_to_arms/global", Severity.ERROR)
+
+        self.validated_files.append(file)
+
+    def validate_combat_structures(self, file: Path) -> None:
+        """Validate game/config/combat/structures.json.
+
+        Each temporary structure: footprint (tiles), max_hp, build_time_seconds,
+        per-player cap, and the ranged/magic block-flag property pair
+        (rts_design.md §6.4/§7). `arrow_slit` marks a tower that passes ranged
+        in and out; `garrison` defines the archer-tower buff.
+        """
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+
+        data: object = self._validate_json(content, file)
+        if data is None:
+            return
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with 'format_version' and 'structures'", Severity.ERROR)
+            return
+
+        if not isinstance(data.get("format_version"), str):
+            self._add_issue(file, 1, None, "'format_version' must be a string", Severity.ERROR)
+        structures: object = data.get("structures")
+        if not isinstance(structures, dict) or not structures:
+            self._add_issue(file, 1, None, "'structures' must be a non-empty object", Severity.ERROR)
+            return
+
+        for struct_id, struct_data in structures.items():
+            if not isinstance(struct_data, dict):
+                self._add_issue(file, 1, None, f"Structure '{struct_id}' must be an object", Severity.ERROR)
+                continue
+            footprint: object = struct_data.get("footprint")
+            if not isinstance(footprint, int) or footprint < 1:
+                self._add_issue(file, 1, None, f"Structure '{struct_id}'.footprint must be an integer >= 1", Severity.ERROR)
+            max_hp: object = struct_data.get("max_hp")
+            if not isinstance(max_hp, (int, float)) or isinstance(max_hp, bool) or max_hp <= 0:
+                self._add_issue(file, 1, None, f"Structure '{struct_id}'.max_hp must be a positive number", Severity.ERROR)
+            build_time: object = struct_data.get("build_time_seconds")
+            if not isinstance(build_time, (int, float)) or isinstance(build_time, bool) or build_time <= 0:
+                self._add_issue(file, 1, None, f"Structure '{struct_id}'.build_time_seconds must be a positive number", Severity.ERROR)
+            cap: object = struct_data.get("max_per_player")
+            if not isinstance(cap, int) or cap < 1:
+                self._add_issue(file, 1, None, f"Structure '{struct_id}'.max_per_player must be a positive integer", Severity.ERROR)
+            for flag in ("blocks_ranged", "blocks_physical_ranged", "blocks_magical_ranged", "arrow_slit"):
+                flag_val: object = struct_data.get(flag)
+                if flag_val is not None and not isinstance(flag_val, bool):
+                    self._add_issue(file, 1, None, f"Structure '{struct_id}'.{flag} must be a boolean", Severity.ERROR)
+
+            garrison: object = struct_data.get("garrison")
+            if garrison is not None:
+                if not isinstance(garrison, dict):
+                    self._add_issue(file, 1, None, f"Structure '{struct_id}'.garrison must be an object", Severity.ERROR)
+                else:
+                    cap_v: object = garrison.get("capacity")
+                    if not isinstance(cap_v, int) or cap_v < 1:
+                        self._add_issue(file, 1, None, f"Structure '{struct_id}'.garrison.capacity must be a positive integer", Severity.ERROR)
+                    allowed: object = garrison.get("allowed_classes")
+                    if allowed is not None and (not isinstance(allowed, list) or any(not isinstance(c, str) or not c for c in allowed)):
+                        self._add_issue(file, 1, None, f"Structure '{struct_id}'.garrison.allowed_classes must be an array of non-empty strings", Severity.ERROR)
+                    for buff_field in ("damage_bonus_pct", "range_bonus_pct"):
+                        buff: object = garrison.get(buff_field)
+                        if buff is not None and (not isinstance(buff, (int, float)) or isinstance(buff, bool) or buff < 0):
+                            self._add_issue(file, 1, None, f"Structure '{struct_id}'.garrison.{buff_field} must be a non-negative number", Severity.ERROR)
+
+        self.validated_files.append(file)
+
+    def validate_combat_formations(self, file: Path) -> None:
+        """Validate game/config/combat/formations.json.
+
+        Persistent movement modifiers (rts_design.md §8.3): line/column/wedge/
+        circle shapes with generation params (spacing, row_spacing, radius_step).
+        """
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+
+        data: object = self._validate_json(content, file)
+        if data is None:
+            return
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with 'format_version' and 'formations'", Severity.ERROR)
+            return
+
+        if not isinstance(data.get("format_version"), str):
+            self._add_issue(file, 1, None, "'format_version' must be a string", Severity.ERROR)
+        formations: object = data.get("formations")
+        if not isinstance(formations, dict) or not formations:
+            self._add_issue(file, 1, None, "'formations' must be a non-empty object", Severity.ERROR)
+            return
+
+        valid_shapes: Final[set[str]] = {"line", "column", "wedge", "circle"}
+        for form_id, form_data in formations.items():
+            if not isinstance(form_data, dict):
+                self._add_issue(file, 1, None, f"Formation '{form_id}' must be an object", Severity.ERROR)
+                continue
+            if not isinstance(form_data.get("name"), str):
+                self._add_issue(file, 1, None, f"Formation '{form_id}'.name must be a string", Severity.ERROR)
+            shape: object = form_data.get("shape")
+            if shape not in valid_shapes:
+                self._add_issue(file, 1, None, f"Formation '{form_id}'.shape must be one of {sorted(valid_shapes)}, got {shape!r}", Severity.ERROR)
+            for num_field in ("spacing", "row_spacing", "radius_step"):
+                nv: object = form_data.get(num_field)
+                if nv is not None and (not isinstance(nv, (int, float)) or isinstance(nv, bool) or nv <= 0):
+                    self._add_issue(file, 1, None, f"Formation '{form_id}'.{num_field} must be a positive number", Severity.ERROR)
+
+        self.validated_files.append(file)
+
+    def validate_combat_profiles(self, file: Path) -> None:
+        """Validate game/config/combat/profiles.json.
+
+        Per-class fight styles + the group-level behavioral axes (tactic,
+        aggro_model, engagement, retreat, siege) consumed by the enemy AI
+        (rts_design.md §11).
+        """
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+
+        data: object = self._validate_json(content, file)
+        if data is None:
+            return
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with 'format_version', 'class_styles' and 'group_axes'", Severity.ERROR)
+            return
+
+        if not isinstance(data.get("format_version"), str):
+            self._add_issue(file, 1, None, "'format_version' must be a string", Severity.ERROR)
+
+        class_styles: object = data.get("class_styles")
+        if class_styles is not None:
+            if not isinstance(class_styles, dict) or not class_styles:
+                self._add_issue(file, 1, None, "'class_styles' must be a non-empty object", Severity.ERROR)
+            else:
+                for style_id, style_data in class_styles.items():
+                    if not isinstance(style_data, dict):
+                        self._add_issue(file, 1, None, f"class_styles['{style_id}'] must be an object", Severity.ERROR)
+                        continue
+                    if not isinstance(style_data.get("name"), str):
+                        self._add_issue(file, 1, None, f"class_styles['{style_id}'].name must be a string", Severity.ERROR)
+                    for key, val in style_data.items():
+                        if key == "name":
+                            continue
+                        if key in ("retreat_threshold", "preferred_range"):
+                            if not isinstance(val, (int, float)) or isinstance(val, bool):
+                                self._add_issue(file, 1, None, f"class_styles['{style_id}'].{key} must be a number", Severity.ERROR)
+                        elif not isinstance(val, bool):
+                            self._add_issue(file, 1, None, f"class_styles['{style_id}'].{key} must be a boolean", Severity.WARN)
+
+        group_axes: object = data.get("group_axes")
+        if group_axes is not None:
+            if not isinstance(group_axes, dict):
+                self._add_issue(file, 1, None, "'group_axes' must be an object", Severity.ERROR)
+            else:
+                valid_tactics: Final[set[str]] = {"charge", "hold", "skirmish", "guard", "reinforce"}
+                valid_aggro: Final[set[str]] = {"local", "call_to_arms", "global"}
+                tactic_list: object = group_axes.get("tactic")
+                if tactic_list is not None:
+                    if not isinstance(tactic_list, list) or any(t not in valid_tactics for t in tactic_list):
+                        self._add_issue(file, 1, None, f"group_axes.tactic must be a list of {sorted(valid_tactics)}", Severity.ERROR)
+                aggro_list: object = group_axes.get("aggro_model")
+                if aggro_list is not None:
+                    if not isinstance(aggro_list, list) or any(t not in valid_aggro for t in aggro_list):
+                        self._add_issue(file, 1, None, f"group_axes.aggro_model must be a list of {sorted(valid_aggro)}", Severity.ERROR)
+
+        self.validated_files.append(file)
+
+    def validate_combat_rewards(self, file: Path) -> None:
+        """Validate game/config/combat/rewards.json.
+
+        The rewards pipeline (rts_design.md §14): xp_curve (level-up thresholds),
+        victory multiplier, draw = base XP, morale stamps, and the empty
+        gold/equipment slots reserved for the future pipeline.
+        """
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+
+        data: object = self._validate_json(content, file)
+        if data is None:
+            return
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with 'format_version' and reward slots", Severity.ERROR)
+            return
+
+        if not isinstance(data.get("format_version"), str):
+            self._add_issue(file, 1, None, "'format_version' must be a string", Severity.ERROR)
+
+        xp_curve: object = data.get("xp_curve")
+        if not isinstance(xp_curve, list) or not xp_curve:
+            self._add_issue(file, 1, None, "'xp_curve' must be a non-empty array of level-up thresholds", Severity.ERROR)
+        else:
+            prev: float = 0.0
+            for i, threshold in enumerate(xp_curve):
+                if not isinstance(threshold, (int, float)) or isinstance(threshold, bool) or threshold <= prev:
+                    self._add_issue(
+                        file, 1, None,
+                        f"'xp_curve[{i}]' must be a strictly increasing non-negative number (got {threshold!r})",
+                        Severity.ERROR,
+                    )
+                else:
+                    prev = float(threshold)
+
+        victory_multiplier: object = data.get("victory_multiplier")
+        if not isinstance(victory_multiplier, (int, float)) or isinstance(victory_multiplier, bool) or victory_multiplier <= 0:
+            self._add_issue(file, 1, None, "'victory_multiplier' must be a positive number", Severity.ERROR)
+        if "draw_xp" in data and data["draw_xp"] != "base":
+            self._add_issue(file, 1, None, "'draw_xp' must be \"base\" (draw = base XP, no multiplier)", Severity.ERROR)
+        morale: object = data.get("morale")
+        if morale is not None:
+            if not isinstance(morale, dict):
+                self._add_issue(file, 1, None, "'morale' must be an object", Severity.ERROR)
+            else:
+                for key, val in morale.items():
+                    if not isinstance(val, (int, float)) or isinstance(val, bool) or val < 0:
+                        self._add_issue(file, 1, None, f"'morale.{key}' must be a non-negative number", Severity.ERROR)
+
+        # Reserved adventure-reward seam (§15.6) — an empty list in v1.
+        cosmetics_slot: object = data.get("cosmetics")
+        if cosmetics_slot is not None and not isinstance(cosmetics_slot, list):
+            self._add_issue(file, 1, None, "'cosmetics' must be an array (adventure-reward seam; empty in v1)", Severity.ERROR)
+
+        self.validated_files.append(file)
+
+    def validate_cosmetics(self, file: Path) -> None:
+        """Validate game/config/cosmetics.json (rts_design.md §15).
+
+        The premium-variety catalog. Each item is validated by a
+        DENY-BY-DEFAULT whitelist of appearance/meta keys: any unknown key is an
+        ERROR, so a cosmetic can carry no gameplay stat by construction
+        (§15.5.1). Slots, tiers, sources, and product kinds are enumerated;
+        prices are non-negative; bundle items must reference real item ids.
+        """
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+
+        data: object = self._validate_json(content, file)
+        if data is None:
+            return
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with 'format_version' and 'items'", Severity.ERROR)
+            return
+
+        if not isinstance(data.get("format_version"), str):
+            self._add_issue(file, 1, None, "'format_version' must be a string", Severity.ERROR)
+
+        valid_slots: Final[set[str]] = {"banner", "knight", "squad_uniform", "unit", "structure", "flourish"}
+        valid_tiers: Final[set[str]] = {"common", "uncommon", "rare", "legendary"}
+        valid_sources: Final[set[str]] = {"store", "adventure_reward"}
+        valid_kinds: Final[set[str]] = {"platinum_pack", "monthly_pass"}
+        item_keys: Final[set[str]] = {"id", "name", "slot", "tier", "price_platinum", "source",
+                                      "description", "appearance", "sort"}
+        appearance_keys: Final[set[str]] = {"palette", "pattern", "emblem", "trim"}
+        bundle_keys: Final[set[str]] = {"id", "name", "price_platinum", "description", "items", "sort"}
+        product_keys: Final[set[str]] = {"id", "name", "price_real", "platinum", "kind", "description", "sort"}
+
+        items: object = data.get("items")
+        if not isinstance(items, list) or not items:
+            self._add_issue(file, 1, None, "'items' must be a non-empty array", Severity.ERROR)
+            return
+
+        seen_item_ids: set[str] = set()
+        for idx, item in enumerate(items, start=1):
+            if not isinstance(item, dict):
+                self._add_issue(file, 1, None, f"items[{idx}] must be an object", Severity.ERROR)
+                continue
+            # Deny-by-default: any key beyond the whitelist is a pay-to-win risk.
+            for key in item.keys():
+                if key not in item_keys:
+                    self._add_issue(
+                        file, 1, None,
+                        f"items[{idx}] has unknown key '{key}' — cosmetics are cosmetic only "
+                        "(no gameplay keys; §15.5.1)",
+                        Severity.ERROR,
+                    )
+            iid: object = item.get("id")
+            if not isinstance(iid, str) or not iid:
+                self._add_issue(file, 1, None, f"items[{idx}].id must be a non-empty string", Severity.ERROR)
+            elif iid in seen_item_ids:
+                self._add_issue(file, 1, None, f"Duplicate cosmetic id '{iid}'", Severity.ERROR)
+            else:
+                seen_item_ids.add(iid)
+            if not isinstance(item.get("name"), str):
+                self._add_issue(file, 1, None, f"items[{idx}].name must be a string", Severity.ERROR)
+            slot: object = item.get("slot")
+            if slot not in valid_slots:
+                self._add_issue(file, 1, None, f"items[{idx}].slot must be one of {sorted(valid_slots)}", Severity.ERROR)
+            tier: object = item.get("tier")
+            if tier not in valid_tiers:
+                self._add_issue(file, 1, None, f"items[{idx}].tier must be one of {sorted(valid_tiers)}", Severity.ERROR)
+            source: object = item.get("source")
+            if source not in valid_sources:
+                self._add_issue(file, 1, None, f"items[{idx}].source must be one of {sorted(valid_sources)}", Severity.ERROR)
+            price: object = item.get("price_platinum")
+            if not isinstance(price, int) or isinstance(price, bool) or price < 0:
+                self._add_issue(file, 1, None, f"items[{idx}].price_platinum must be a non-negative integer", Severity.ERROR)
+            appearance: object = item.get("appearance")
+            if not isinstance(appearance, dict):
+                self._add_issue(file, 1, None, f"items[{idx}].appearance must be an object", Severity.ERROR)
+            else:
+                for key in appearance.keys():
+                    if key not in appearance_keys:
+                        self._add_issue(
+                            file, 1, None,
+                            f"items[{idx}].appearance has unknown key '{key}' — appearance is visual only (§15.5.1)",
+                            Severity.ERROR,
+                        )
+                palette: object = appearance.get("palette")
+                if not isinstance(palette, list) or not palette or any(
+                    not isinstance(c, str) or not c for c in palette
+                ):
+                    self._add_issue(file, 1, None, f"items[{idx}].appearance.palette must be a non-empty array of colour strings", Severity.ERROR)
+                for text_key in ("pattern", "emblem", "trim"):
+                    val: object = appearance.get(text_key)
+                    if val is not None and (not isinstance(val, str) or not val):
+                        self._add_issue(file, 1, None, f"items[{idx}].appearance.{text_key} must be a non-empty string", Severity.ERROR)
+
+        bundles: object = data.get("bundles")
+        if bundles is not None:
+            if not isinstance(bundles, list):
+                self._add_issue(file, 1, None, "'bundles' must be an array", Severity.ERROR)
+            else:
+                seen_bundle_ids: set[str] = set()
+                for idx, bundle in enumerate(bundles, start=1):
+                    if not isinstance(bundle, dict):
+                        self._add_issue(file, 1, None, f"bundles[{idx}] must be an object", Severity.ERROR)
+                        continue
+                    for key in bundle.keys():
+                        if key not in bundle_keys:
+                            self._add_issue(file, 1, None, f"bundles[{idx}] has unknown key '{key}'", Severity.ERROR)
+                    bid: object = bundle.get("id")
+                    if not isinstance(bid, str) or not bid:
+                        self._add_issue(file, 1, None, f"bundles[{idx}].id must be a non-empty string", Severity.ERROR)
+                    elif bid in seen_bundle_ids:
+                        self._add_issue(file, 1, None, f"Duplicate bundle id '{bid}'", Severity.ERROR)
+                    else:
+                        seen_bundle_ids.add(bid)
+                    if not isinstance(bundle.get("name"), str):
+                        self._add_issue(file, 1, None, f"bundles[{idx}].name must be a string", Severity.ERROR)
+                    bprice: object = bundle.get("price_platinum")
+                    if not isinstance(bprice, int) or isinstance(bprice, bool) or bprice < 0:
+                        self._add_issue(file, 1, None, f"bundles[{idx}].price_platinum must be a non-negative integer", Severity.ERROR)
+                    bitems: object = bundle.get("items")
+                    if not isinstance(bitems, list) or not bitems:
+                        self._add_issue(file, 1, None, f"bundles[{idx}].items must be a non-empty array", Severity.ERROR)
+                    else:
+                        for ref in bitems:
+                            if not isinstance(ref, str) or ref not in seen_item_ids:
+                                self._add_issue(file, 1, None, f"bundles[{idx}].items references unknown item {ref!r}", Severity.ERROR)
+
+        products: object = data.get("products")
+        if products is not None:
+            if not isinstance(products, list):
+                self._add_issue(file, 1, None, "'products' must be an array", Severity.ERROR)
+            else:
+                seen_product_ids: set[str] = set()
+                for idx, product in enumerate(products, start=1):
+                    if not isinstance(product, dict):
+                        self._add_issue(file, 1, None, f"products[{idx}] must be an object", Severity.ERROR)
+                        continue
+                    for key in product.keys():
+                        if key not in product_keys:
+                            self._add_issue(file, 1, None, f"products[{idx}] has unknown key '{key}'", Severity.ERROR)
+                    pid: object = product.get("id")
+                    if not isinstance(pid, str) or not pid:
+                        self._add_issue(file, 1, None, f"products[{idx}].id must be a non-empty string", Severity.ERROR)
+                    elif pid in seen_product_ids:
+                        self._add_issue(file, 1, None, f"Duplicate product id '{pid}'", Severity.ERROR)
+                    else:
+                        seen_product_ids.add(pid)
+                    if not isinstance(product.get("name"), str):
+                        self._add_issue(file, 1, None, f"products[{idx}].name must be a string", Severity.ERROR)
+                    kind: object = product.get("kind")
+                    if kind not in valid_kinds:
+                        self._add_issue(file, 1, None, f"products[{idx}].kind must be one of {sorted(valid_kinds)}", Severity.ERROR)
+                    real: object = product.get("price_real")
+                    if not isinstance(real, (int, float)) or isinstance(real, bool) or real < 0:
+                        self._add_issue(file, 1, None, f"products[{idx}].price_real must be a non-negative number", Severity.ERROR)
+                    plat: object = product.get("platinum", 0)
+                    if not isinstance(plat, int) or isinstance(plat, bool) or plat < 0:
+                        self._add_issue(file, 1, None, f"products[{idx}].platinum must be a non-negative integer", Severity.ERROR)
+
+        self.validated_files.append(file)
+
+    def validate_chat(self, file: Path, content: str) -> None:
+        """Validate chat.json (per-chat limits, group policy, friends, rate limit)."""
+        data = self._validate_json(content, file)
+        if data is None:
+            return
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected an object", Severity.ERROR)
+            return
+
+        non_negative_int_fields = [
+            "group_max_members", "group_name_change_cooldown_seconds",
+            "invite_expiry_seconds", "max_groups_per_character",
+            "max_pending_invites_per_group", "max_friend_requests_per_day",
+            "friend_cap", "translation_reap_age_seconds",
+            "translation_top_languages",
+        ]
+        for field in non_negative_int_fields:
+            value = data.get(field)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                self._add_issue(file, 1, None, f"'{field}' must be a non-negative integer", Severity.ERROR)
+
+        if not isinstance(data.get("mods_see_blocked"), bool):
+            self._add_issue(file, 1, None, "'mods_see_blocked' must be a boolean", Severity.ERROR)
+
+        limits = data.get("limits")
+        if not isinstance(limits, dict) or not limits:
+            self._add_issue(file, 1, None, "'limits' must be a non-empty object", Severity.ERROR)
+        else:
+            for key in ("wildlands", "barony", "dukedom", "group", "direct", "direct_friend"):
+                entry = limits.get(key)
+                if not isinstance(entry, dict):
+                    self._add_issue(file, 1, None, f"limits.{key} must be an object", Severity.ERROR)
+                    continue
+                for field in ("max_characters", "max_lines"):
+                    value = entry.get(field)
+                    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                        self._add_issue(file, 1, None, f"limits.{key}.{field} must be a positive integer", Severity.ERROR)
+
+        rate = data.get("rate_limit")
+        if not isinstance(rate, dict):
+            self._add_issue(file, 1, None, "'rate_limit' must be an object", Severity.ERROR)
+        else:
+            for field in ("per_second", "per_minute", "per_5_minutes", "decay_seconds"):
+                value = rate.get(field)
+                if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                    self._add_issue(file, 1, None, f"rate_limit.{field} must be a positive integer", Severity.ERROR)
+            escalation = rate.get("escalation_seconds")
+            if not isinstance(escalation, list) or not escalation:
+                self._add_issue(file, 1, None, "rate_limit.escalation_seconds must be a non-empty array", Severity.ERROR)
+            else:
+                for i, value in enumerate(escalation):
+                    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                        self._add_issue(file, 1, None, f"rate_limit.escalation_seconds[{i}] must be a positive integer", Severity.ERROR)
+
+        self.validated_files.append(file)
+
+    def validate_chat_admins(self, file: Path, content: str) -> None:
+        """Validate chat_admins.json (account-id allowlist)."""
+        data = self._validate_json(content, file)
+        if data is None:
+            return
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected an object", Severity.ERROR)
+            return
+        ids = data.get("account_ids")
+        if not isinstance(ids, list):
+            self._add_issue(file, 1, None, "'account_ids' must be an array", Severity.ERROR)
+        else:
+            for i, value in enumerate(ids):
+                if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                    self._add_issue(file, 1, None, f"account_ids[{i}] must be a positive integer", Severity.ERROR)
+        self.validated_files.append(file)
+
+    def validate_translation(self, file: Path, content: str) -> None:
+        """Validate translation.json (translation sidecar connection)."""
+        data = self._validate_json(content, file)
+        if data is None:
+            return
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected an object", Severity.ERROR)
+            return
+        if not isinstance(data.get("sidecar_url"), str) or not data.get("sidecar_url"):
+            self._add_issue(file, 1, None, "'sidecar_url' must be a non-empty string", Severity.ERROR)
+        if not isinstance(data.get("enabled"), bool):
+            self._add_issue(file, 1, None, "'enabled' must be a boolean", Severity.ERROR)
+        threshold = data.get("detection_confidence_threshold")
+        if (not isinstance(threshold, (int, float)) or isinstance(threshold, bool)
+                or not (0 <= threshold <= 1)):
+            self._add_issue(file, 1, None, "'detection_confidence_threshold' must be a number in [0,1]", Severity.ERROR)
+        timeout = data.get("request_timeout_ms")
+        if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
+            self._add_issue(file, 1, None, "'request_timeout_ms' must be a positive integer", Severity.ERROR)
+        self.validated_files.append(file)
+
+    def validate_push(self, file: Path, content: str) -> None:
+        """Validate push.json (VAPID keyring + Web Push defaults)."""
+        data = self._validate_json(content, file)
+        if data is None:
+            return
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected an object", Severity.ERROR)
+            return
+        vapid = data.get("vapid")
+        if not isinstance(vapid, dict):
+            self._add_issue(file, 1, None, "'vapid' must be an object", Severity.ERROR)
+        else:
+            current = vapid.get("current")
+            keys = vapid.get("keys")
+            if not isinstance(current, str) or not current:
+                self._add_issue(file, 1, None, "vapid.current must be a non-empty string", Severity.ERROR)
+            if not isinstance(keys, dict) or not keys:
+                self._add_issue(file, 1, None, "vapid.keys must be a non-empty object", Severity.ERROR)
+            elif isinstance(current, str) and current not in keys:
+                self._add_issue(file, 1, None, "vapid.current must name a key in vapid.keys", Severity.ERROR)
+            if isinstance(keys, dict):
+                for kid, entry in keys.items():
+                    if not isinstance(entry, dict):
+                        self._add_issue(file, 1, None, f"vapid.keys.{kid} must be an object", Severity.ERROR)
+                        continue
+                    for field in ("public", "private"):
+                        if not isinstance(entry.get(field), str):
+                            self._add_issue(file, 1, None, f"vapid.keys.{kid}.{field} must be a string", Severity.ERROR)
+        if not isinstance(data.get("sub"), str) or not data.get("sub"):
+            self._add_issue(file, 1, None, "'sub' must be a non-empty string", Severity.ERROR)
+        ttl = data.get("default_ttl")
+        if not isinstance(ttl, int) or isinstance(ttl, bool) or ttl <= 0:
+            self._add_issue(file, 1, None, "'default_ttl' must be a positive integer", Severity.ERROR)
+        self.validated_files.append(file)
+
+    def validate_combat_offerings(self, file: Path) -> None:
+        """Validate combat/offerings.json — auto-generated PvE mission offerings.
+
+        Board/tier/quantizer/difficulty/encounter/XP/danger-band rules; the
+        enemy-class weighting and prerequisite graph live on the combatants
+        themselves (`requires`, cross-checked by validate_combatants).
+        """
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+        data: object = self._validate_json(content, file)
+        if data is None:
+            return
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with offerings config", Severity.ERROR)
+            return
+
+        if not isinstance(data.get("format_version"), str):
+            self._add_issue(file, 1, None, "'format_version' must be a string", Severity.ERROR)
+
+        board: object = data.get("board")
+        if not isinstance(board, dict):
+            self._add_issue(file, 1, None, "'board' must be an object", Severity.ERROR)
+        else:
+            per_tier: object = board.get("per_tier")
+            if not isinstance(per_tier, int) or isinstance(per_tier, bool) or per_tier <= 0:
+                self._add_issue(file, 1, None, "'board.per_tier' must be a positive integer", Severity.ERROR)
+            validity: object = board.get("validity_hours")
+            if not isinstance(validity, int) or isinstance(validity, bool) or validity <= 0:
+                self._add_issue(file, 1, None, "'board.validity_hours' must be a positive integer", Severity.ERROR)
+
+        power_scale: object = data.get("power_scale")
+        if not isinstance(power_scale, dict):
+            self._add_issue(file, 1, None, "'power_scale' must be an object", Severity.ERROR)
+        else:
+            if power_scale.get("mode") not in ("geometric", "linear"):
+                self._add_issue(file, 1, None, "'power_scale.mode' must be 'geometric' or 'linear'", Severity.ERROR)
+            base: object = power_scale.get("base")
+            if not isinstance(base, (int, float)) or isinstance(base, bool) or base <= 0:
+                self._add_issue(file, 1, None, "'power_scale.base' must be a positive number", Severity.ERROR)
+            ratio: object = power_scale.get("ratio")
+            if not isinstance(ratio, (int, float)) or isinstance(ratio, bool) or ratio <= 0:
+                self._add_issue(file, 1, None, "'power_scale.ratio' must be a positive number", Severity.ERROR)
+
+        difficulty: object = data.get("difficulty")
+        if not isinstance(difficulty, dict):
+            self._add_issue(file, 1, None, "'difficulty' must be an object", Severity.ERROR)
+        else:
+            band_min: object = difficulty.get("band_min")
+            band_max: object = difficulty.get("band_max")
+            if not isinstance(band_min, (int, float)) or isinstance(band_min, bool) or band_min <= 0:
+                self._add_issue(file, 1, None, "'difficulty.band_min' must be a positive number", Severity.ERROR)
+            if not isinstance(band_max, (int, float)) or isinstance(band_max, bool) or band_max <= 0:
+                self._add_issue(file, 1, None, "'difficulty.band_max' must be a positive number", Severity.ERROR)
+            if isinstance(band_min, (int, float)) and isinstance(band_max, (int, float)) and band_max < band_min:
+                self._add_issue(file, 1, None, "'difficulty.band_max' must be >= band_min", Severity.ERROR)
+
+        tiers: object = data.get("tiers")
+        if not isinstance(tiers, list) or not tiers:
+            self._add_issue(file, 1, None, "'tiers' must be a non-empty array", Severity.ERROR)
+        else:
+            seen_tiers: set[str] = set()
+            for i, tier in enumerate(tiers):
+                if not isinstance(tier, dict):
+                    self._add_issue(file, 1, None, f"'tiers[{i}]' must be an object", Severity.ERROR)
+                    continue
+                tid: object = tier.get("id")
+                if not isinstance(tid, str) or not tid:
+                    self._add_issue(file, 1, None, f"'tiers[{i}].id' must be a non-empty string", Severity.ERROR)
+                elif tid in seen_tiers:
+                    self._add_issue(file, 1, None, f"duplicate tier id '{tid}'", Severity.ERROR)
+                else:
+                    seen_tiers.add(tid)
+                tmin: object = tier.get("min_players")
+                tmax: object = tier.get("max_players")
+                if not isinstance(tmin, int) or isinstance(tmin, bool) or tmin < 1:
+                    self._add_issue(file, 1, None, f"'tiers[{i}].min_players' must be a positive integer", Severity.ERROR)
+                if not isinstance(tmax, int) or isinstance(tmax, bool) or tmax < 1:
+                    self._add_issue(file, 1, None, f"'tiers[{i}].max_players' must be a positive integer", Severity.ERROR)
+                if isinstance(tmin, int) and isinstance(tmax, int) and tmax < tmin:
+                    self._add_issue(file, 1, None, f"'tiers[{i}].max_players' must be >= min_players", Severity.ERROR)
+                if not isinstance(tier.get("requires_barony"), bool):
+                    self._add_issue(file, 1, None, f"'tiers[{i}].requires_barony' must be a boolean", Severity.ERROR)
+
+        encounter: object = data.get("encounter")
+        if not isinstance(encounter, dict):
+            self._add_issue(file, 1, None, "'encounter' must be an object", Severity.ERROR)
+        else:
+            max_units: object = encounter.get("max_units")
+            if not isinstance(max_units, int) or isinstance(max_units, bool) or max_units <= 0:
+                self._add_issue(file, 1, None, "'encounter.max_units' must be a positive integer", Severity.ERROR)
+            prerequisite_depth: object = encounter.get("prerequisite_depth")
+            if not isinstance(prerequisite_depth, int) or isinstance(prerequisite_depth, bool) or prerequisite_depth < 0:
+                self._add_issue(file, 1, None, "'encounter.prerequisite_depth' must be a non-negative integer", Severity.ERROR)
+            engagement_exponent: object = encounter.get("engagement_exponent")
+            if not isinstance(engagement_exponent, (int, float)) or isinstance(engagement_exponent, bool) or engagement_exponent < 1:
+                self._add_issue(file, 1, None, "'encounter.engagement_exponent' must be a number >= 1", Severity.ERROR)
+            defense_weights: object = encounter.get("defense_weights")
+            if not isinstance(defense_weights, dict):
+                self._add_issue(file, 1, None, "'encounter.defense_weights' must be an object", Severity.ERROR)
+            else:
+                for weight_key in ("melee", "ranged", "magical"):
+                    weight_value: object = defense_weights.get(weight_key)
+                    if not isinstance(weight_value, (int, float)) or isinstance(weight_value, bool) or weight_value < 0:
+                        self._add_issue(file, 1, None, f"'encounter.defense_weights.{weight_key}' must be a non-negative number", Severity.ERROR)
+            aoe_multiplier: object = encounter.get("aoe_multiplier")
+            if not isinstance(aoe_multiplier, (int, float)) or isinstance(aoe_multiplier, bool) or aoe_multiplier <= 0:
+                self._add_issue(file, 1, None, "'encounter.aoe_multiplier' must be a positive number", Severity.ERROR)
+            ranged_bonus_per_unit: object = encounter.get("ranged_bonus_per_unit")
+            if not isinstance(ranged_bonus_per_unit, (int, float)) or isinstance(ranged_bonus_per_unit, bool) or ranged_bonus_per_unit < 0:
+                self._add_issue(file, 1, None, "'encounter.ranged_bonus_per_unit' must be a non-negative number", Severity.ERROR)
+            ranged_melee_ref: object = encounter.get("ranged_melee_ref")
+            if not isinstance(ranged_melee_ref, (int, float)) or isinstance(ranged_melee_ref, bool) or ranged_melee_ref < 0:
+                self._add_issue(file, 1, None, "'encounter.ranged_melee_ref' must be a non-negative number", Severity.ERROR)
+            eliteness: object = encounter.get("eliteness")
+            if not isinstance(eliteness, dict):
+                self._add_issue(file, 1, None, "'encounter.eliteness' must be an object", Severity.ERROR)
+            else:
+                eliteness_fields: tuple[str, ...] = (
+                    "seed_min", "seed_max", "players_ref", "troops_ref",
+                    "players_coeff", "troops_coeff", "min", "max",
+                )
+                eliteness_numbers: dict[str, float] = {}
+                for key in eliteness_fields:
+                    value: object = eliteness.get(key)
+                    if not isinstance(value, (int, float)) or isinstance(value, bool):
+                        self._add_issue(file, 1, None, f"'encounter.eliteness.{key}' must be a number", Severity.ERROR)
+                    else:
+                        eliteness_numbers[key] = float(value)
+                if "seed_min" in eliteness_numbers and "seed_max" in eliteness_numbers:
+                    if eliteness_numbers["seed_max"] < eliteness_numbers["seed_min"]:
+                        self._add_issue(file, 1, None, "'encounter.eliteness.seed_max' must be >= seed_min", Severity.ERROR)
+                if "min" in eliteness_numbers and "max" in eliteness_numbers:
+                    if eliteness_numbers["max"] < eliteness_numbers["min"]:
+                        self._add_issue(file, 1, None, "'encounter.eliteness.max' must be >= min", Severity.ERROR)
+                for key in ("players_ref", "troops_ref"):
+                    if key in eliteness_numbers and eliteness_numbers[key] <= 0:
+                        self._add_issue(file, 1, None, f"'encounter.eliteness.{key}' must be positive", Severity.ERROR)
+
+        xp: object = data.get("xp")
+        if not isinstance(xp, dict):
+            self._add_issue(file, 1, None, "'xp' must be an object", Severity.ERROR)
+        else:
+            per_power: object = xp.get("per_power")
+            if not isinstance(per_power, (int, float)) or isinstance(per_power, bool) or per_power < 0:
+                self._add_issue(file, 1, None, "'xp.per_power' must be a non-negative number", Severity.ERROR)
+            min_xp: object = xp.get("min")
+            if not isinstance(min_xp, (int, float)) or isinstance(min_xp, bool) or min_xp < 0:
+                self._add_issue(file, 1, None, "'xp.min' must be a non-negative number", Severity.ERROR)
+
+        bands: object = data.get("danger_bands")
+        if not isinstance(bands, list) or not bands:
+            self._add_issue(file, 1, None, "'danger_bands' must be a non-empty array", Severity.ERROR)
+        else:
+            for i, band in enumerate(bands):
+                if not isinstance(band, dict):
+                    self._add_issue(file, 1, None, f"'danger_bands[{i}]' must be an object", Severity.ERROR)
+                    continue
+                if not isinstance(band.get("id"), str) or not band.get("id"):
+                    self._add_issue(file, 1, None, f"'danger_bands[{i}].id' must be a non-empty string", Severity.ERROR)
+                max_ratio: object = band.get("max_ratio")
+                if max_ratio is not None and (not isinstance(max_ratio, (int, float)) or isinstance(max_ratio, bool) or max_ratio <= 0):
+                    self._add_issue(file, 1, None, f"'danger_bands[{i}].max_ratio' must be null or a positive number", Severity.ERROR)
+
+        map_pool: object = data.get("map_pool")
+        if map_pool is not None:
+            if not isinstance(map_pool, list) or not map_pool:
+                self._add_issue(file, 1, None, "'map_pool' must be null or a non-empty array", Severity.ERROR)
+            else:
+                for i, m in enumerate(map_pool):
+                    if not isinstance(m, str) or not m:
+                        self._add_issue(file, 1, None, f"'map_pool[{i}]' must be a non-empty string", Severity.ERROR)
+
+        self.validated_files.append(file)
+
+    def validate_progression(self, file: Path) -> None:
+        """Validate progression.json — freehold/mesne-lord gates + barony cooldown.
+
+        `milestones` are counter-based conditions (e.g. slain.ettin >= 1); a
+        `slain.<class>` counter is cross-checked against enemy_combatants.json.
+        """
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+
+        data: object = self._validate_json(content, file)
+        if data is None:
+            return
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with progression config", Severity.ERROR)
+            return
+
+        mesne: object = data.get("mesne_lord")
+        if mesne is None:
+            self._add_issue(file, 1, None, "Missing 'mesne_lord' block", Severity.ERROR)
+        elif not isinstance(mesne, dict):
+            self._add_issue(file, 1, None, "'mesne_lord' must be an object", Severity.ERROR)
+        else:
+            requirements: object = mesne.get("requirements")
+            if not isinstance(requirements, dict):
+                self._add_issue(file, 1, None, "'mesne_lord.requirements' must be an object", Severity.ERROR)
+            else:
+                manor_level: object = requirements.get("manor_level")
+                if not isinstance(manor_level, int) or isinstance(manor_level, bool) or manor_level < 0:
+                    self._add_issue(file, 1, None, "'mesne_lord.requirements.manor_level' must be a non-negative integer", Severity.ERROR)
+                milestones: object = requirements.get("milestones")
+                if not isinstance(milestones, list):
+                    self._add_issue(file, 1, None, "'mesne_lord.requirements.milestones' must be an array", Severity.ERROR)
+                else:
+                    for i, milestone in enumerate(milestones):
+                        if not isinstance(milestone, str) or not milestone:
+                            self._add_issue(file, 1, None, f"'mesne_lord.requirements.milestones[{i}]' must be a non-empty string", Severity.ERROR)
+
+        boss: object = data.get("boss_milestones")
+        if boss is not None:
+            self._add_issue(file, 1, None, "'boss_milestones' is deprecated — use counter-based 'milestones'", Severity.WARN)
+
+        milestones: object = data.get("milestones")
+        if milestones is not None:
+            if not isinstance(milestones, list):
+                self._add_issue(file, 1, None, "'milestones' must be an array", Severity.ERROR)
+            else:
+                for i, cond in enumerate(milestones):
+                    if not isinstance(cond, dict):
+                        self._add_issue(file, 1, None, f"'milestones[{i}]' must be an object", Severity.ERROR)
+                        continue
+                    if not isinstance(cond.get("id"), str) or not cond.get("id"):
+                        self._add_issue(file, 1, None, f"'milestones[{i}].id' must be a non-empty string", Severity.ERROR)
+                    counter: object = cond.get("counter")
+                    if not isinstance(counter, str) or not counter:
+                        self._add_issue(file, 1, None, f"'milestones[{i}].counter' must be a non-empty string", Severity.ERROR)
+                    elif counter.startswith("slain.") and counter[len("slain."):] not in self.validated_enemy_combatant_ids:
+                        self._add_issue(file, 1, None, f"'milestones[{i}].counter' references unknown enemy class '{counter[len('slain.'):]}'", Severity.WARN)
+                    min_val: object = cond.get("min")
+                    if not isinstance(min_val, int) or isinstance(min_val, bool) or min_val < 1:
+                        self._add_issue(file, 1, None, f"'milestones[{i}].min' must be a positive integer", Severity.ERROR)
+
+        barony: object = data.get("barony")
+        if barony is not None:
+            if not isinstance(barony, dict):
+                self._add_issue(file, 1, None, "'barony' must be an object", Severity.ERROR)
+            else:
+                cooldown: object = barony.get("join_cooldown_days")
+                if not isinstance(cooldown, int) or isinstance(cooldown, bool) or cooldown < 0:
+                    self._add_issue(file, 1, None, "'barony.join_cooldown_days' must be a non-negative integer", Severity.ERROR)
+
+        self.validated_files.append(file)
 
     def validate_all(
         self,
@@ -4742,6 +6309,16 @@ class ConfigValidator:
                 self._add_issue(manor_strategies_file, 1, None,
                                 f"Failed to read file: {e}", Severity.ERROR)
 
+        # Validate progression.json (needs validated_enemy_combatant_ids from the
+        # combatants loop above)
+        progression_file: Path = config_dir / "progression.json"
+        if progression_file.exists():
+            try:
+                self.validate_progression(progression_file)
+            except Exception as e:
+                self._add_issue(progression_file, 1, None,
+                                f"Failed to read file: {e}", Severity.ERROR)
+
         # Separate errors and warnings before image validation
         for issue in self.issues:
             if issue.severity == Severity.ERROR:
@@ -4754,6 +6331,7 @@ class ConfigValidator:
             images_dir = config_dir.parent / "images"
             if images_dir.exists():
                 self.validate_images_directory(images_dir)
+                self.validate_portrait_pools(images_dir)
 
         # Validate tower defense spawn schedules
         if game_config_dir is not None:
@@ -4804,6 +6382,20 @@ class ConfigValidator:
             if retinue_file.exists():
                 self.validate_retinue(retinue_file)
 
+            # Validate portrait_frames.json (decorative portrait overlay geometry)
+            portrait_frames_file: Path = game_config_dir / "portrait_frames.json"
+            if portrait_frames_file.exists():
+                try:
+                    pf_content: str = portrait_frames_file.read_text(encoding="utf-8")
+                    self.validate_portrait_frames(portrait_frames_file, pf_content,
+                                                  game_config_dir.parent / "images")
+                except Exception as e:
+                    self._add_issue(portrait_frames_file, 1, None,
+                                    f"Failed to read file: {e}", Severity.ERROR)
+            else:
+                self._add_issue(portrait_frames_file, 1, None,
+                                "Config file not found", Severity.WARN)
+
             # Validate gear/tech/storage configs
             equipment_file: Path = game_config_dir / "equipment.json"
             if equipment_file.exists():
@@ -4829,6 +6421,89 @@ class ConfigValidator:
                     self.validated_files.append(map_file)
             else:
                 self._add_issue(combat_maps_dir, 1, None, "Combat maps directory not found", Severity.ERROR)
+
+            # Combat content configs (warbands, structures, formations,
+            # profiles, rewards). Cross-references enemy combatant ids.
+            combat_warbands_file: Path = game_config_dir / "combat" / "warbands.json"
+            if combat_warbands_file.exists():
+                self.validate_combat_warbands(combat_warbands_file, self.validated_enemy_combatant_ids)
+            else:
+                self._add_issue(combat_warbands_file, 1, None, "Config file not found", Severity.ERROR)
+
+            combat_structures_file: Path = game_config_dir / "combat" / "structures.json"
+            if combat_structures_file.exists():
+                self.validate_combat_structures(combat_structures_file)
+            else:
+                self._add_issue(combat_structures_file, 1, None, "Config file not found", Severity.ERROR)
+
+            combat_formations_file: Path = game_config_dir / "combat" / "formations.json"
+            if combat_formations_file.exists():
+                self.validate_combat_formations(combat_formations_file)
+            else:
+                self._add_issue(combat_formations_file, 1, None, "Config file not found", Severity.ERROR)
+
+            combat_profiles_file: Path = game_config_dir / "combat" / "profiles.json"
+            if combat_profiles_file.exists():
+                self.validate_combat_profiles(combat_profiles_file)
+            else:
+                self._add_issue(combat_profiles_file, 1, None, "Config file not found", Severity.ERROR)
+
+            combat_rewards_file: Path = game_config_dir / "combat" / "rewards.json"
+            if combat_rewards_file.exists():
+                self.validate_combat_rewards(combat_rewards_file)
+            else:
+                self._add_issue(combat_rewards_file, 1, None, "Config file not found", Severity.ERROR)
+
+            combat_offerings_file: Path = game_config_dir / "combat" / "offerings.json"
+            if combat_offerings_file.exists():
+                self.validate_combat_offerings(combat_offerings_file)
+            else:
+                self._add_issue(combat_offerings_file, 1, None, "Config file not found", Severity.ERROR)
+
+            # Premium-variety catalog (Platinum cosmetics; rts_design.md §15).
+            cosmetics_file: Path = game_config_dir / "cosmetics.json"
+            if cosmetics_file.exists():
+                self.validate_cosmetics(cosmetics_file)
+            else:
+                self._add_issue(cosmetics_file, 1, None, "Config file not found", Severity.ERROR)
+
+            # Chat configs: chat.json (limits/policy), chat_admins.json (admin
+            # allowlist), translation.json (sidecar), push.json (VAPID).
+            chat_file: Path = game_config_dir / "chat.json"
+            if chat_file.exists():
+                try:
+                    self.validate_chat(chat_file, chat_file.read_text(encoding="utf-8"))
+                except Exception as e:
+                    self._add_issue(chat_file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            else:
+                self._add_issue(chat_file, 1, None, "Config file not found", Severity.ERROR)
+
+            chat_admins_file: Path = game_config_dir / "chat_admins.json"
+            if chat_admins_file.exists():
+                try:
+                    self.validate_chat_admins(chat_admins_file, chat_admins_file.read_text(encoding="utf-8"))
+                except Exception as e:
+                    self._add_issue(chat_admins_file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            else:
+                self._add_issue(chat_admins_file, 1, None, "Config file not found", Severity.WARN)
+
+            translation_file: Path = game_config_dir / "translation.json"
+            if translation_file.exists():
+                try:
+                    self.validate_translation(translation_file, translation_file.read_text(encoding="utf-8"))
+                except Exception as e:
+                    self._add_issue(translation_file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            else:
+                self._add_issue(translation_file, 1, None, "Config file not found", Severity.WARN)
+
+            push_file: Path = game_config_dir / "push.json"
+            if push_file.exists():
+                try:
+                    self.validate_push(push_file, push_file.read_text(encoding="utf-8"))
+                except Exception as e:
+                    self._add_issue(push_file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            else:
+                self._add_issue(push_file, 1, None, "Config file not found", Severity.WARN)
 
             mini_games_file: Path = game_config_dir / "mini_games.json"
             if mini_games_file.exists():

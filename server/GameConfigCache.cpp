@@ -74,7 +74,20 @@ bool GameConfigCache::initialize(const std::string& config_dir) {
     add("tech_trees.json");
     add("manor_ui.json");
     add("manor_river.json");
+    add("portrait_frames.json");
     add("combat/rulesets.json");
+    add("combat/warbands.json");
+    add("combat/structures.json");
+    add("combat/formations.json");
+    add("combat/profiles.json");
+    add("combat/rewards.json");
+    add("combat/offerings.json");
+    add("cosmetics.json");
+    add("progression.json");
+    add("chat.json");
+    add("chat_admins.json");
+    add("translation.json");
+    add("push.json");
 
     for (auto& [name, entry] : configs_) {
         struct stat st;
@@ -238,9 +251,43 @@ std::string GameConfigCache::getBuildingClass(const std::string& type_id) {
     return "";
 }
 
+// A building's optional exclusive group: at most one building from a given
+// group may exist in a fiefdom. Empty string means the building is not in an
+// exclusive group. Distinct from `class` (which is a prerequisite/modifier
+// targeting namespace) — exclusivity is a build constraint.
+std::string GameConfigCache::getBuildingExclusiveGroup(const std::string& type_id) {
+    nlohmann::json& buildings = getFiefdomBuildingTypes();
+    if (buildings.is_array()) {
+        for (auto& obj : buildings) {
+            if (obj.is_object() && obj.contains(type_id)) {
+                const auto& cfg = obj[type_id];
+                if (cfg.is_object() && cfg.contains("exclusive_group") &&
+                    cfg["exclusive_group"].is_string()) {
+                    return cfg["exclusive_group"].get<std::string>();
+                }
+                return "";
+            }
+        }
+    }
+    return "";
+}
+
 nlohmann::json& GameConfigCache::getManorUi() { return getConfig("manor_ui.json"); }
 nlohmann::json& GameConfigCache::getManorRiver() { return getConfig("manor_river.json"); }
+nlohmann::json& GameConfigCache::getPortraitFrames() { return getConfig("portrait_frames.json"); }
 nlohmann::json& GameConfigCache::getCombatRulesets() { return getConfig("combat/rulesets.json"); }
+nlohmann::json& GameConfigCache::getCombatWarbands() { return getConfig("combat/warbands.json"); }
+nlohmann::json& GameConfigCache::getCombatStructures() { return getConfig("combat/structures.json"); }
+nlohmann::json& GameConfigCache::getCombatFormations() { return getConfig("combat/formations.json"); }
+nlohmann::json& GameConfigCache::getCombatProfiles() { return getConfig("combat/profiles.json"); }
+nlohmann::json& GameConfigCache::getCombatRewards() { return getConfig("combat/rewards.json"); }
+nlohmann::json& GameConfigCache::getCombatOfferings() { return getConfig("combat/offerings.json"); }
+nlohmann::json& GameConfigCache::getCosmetics() { return getConfig("cosmetics.json"); }
+nlohmann::json& GameConfigCache::getProgression() { return getConfig("progression.json"); }
+nlohmann::json& GameConfigCache::getChatConfig() { return getConfig("chat.json"); }
+nlohmann::json& GameConfigCache::getChatAdmins() { return getConfig("chat_admins.json"); }
+nlohmann::json& GameConfigCache::getTranslationConfig() { return getConfig("translation.json"); }
+nlohmann::json& GameConfigCache::getPushConfig() { return getConfig("push.json"); }
 
 std::optional<nlohmann::json> GameConfigCache::getTowerDefenseSpawnSchedule(const std::string& filename) {
     nlohmann::json& data = getConfig("tower_defense/spawn_schedules/" + filename);

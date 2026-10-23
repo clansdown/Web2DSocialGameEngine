@@ -20,12 +20,22 @@ export interface Character {
   level: number;
   archetype: string | null;
   sex: string | null;
+  /** Safe-pool PFP id; null until the creation picker is answered. */
+  avatar_safe_id?: string | null;
+  /** Custom (18+) PFP filename; null when none. */
+  avatar_custom_id?: string | null;
+  /** Unix ts of the last avatar change (24h cooldown). */
+  avatar_changed_at?: number;
+  /** Server-resolved display URL for this character's PFP (may be ""). */
+  avatar_url?: string;
 }
 
 export interface AuthResponse {
   user_id: number;
   username: string;
   adult: boolean;
+  /** Account interface / display language (persisted at creation). */
+  language?: string;
   characters: Character[];
   token?: string;
 }
@@ -188,7 +198,8 @@ export async function createAccountRequest(
   displayName?: string,
   digitalCredential?: { protocol: string; data: unknown },
   overrideCode?: string,
-  sex?: string
+  sex?: string,
+  language?: string
 ): Promise<AuthResponse> {
   const body: Record<string, unknown> = {
     username,
@@ -208,6 +219,9 @@ export async function createAccountRequest(
   }
   if (sex) {
     body.sex = sex;
+  }
+  if (language) {
+    body.language = language;
   }
 
   const res = await apiPost<AuthResponse>('createAccount', body);
@@ -337,7 +351,19 @@ export interface MiniGameProgress {
   last_played: number;
 }
 
-export type GamePhase = 'initial_mission' | 'land_patent' | 'baron_track' | 'baron_right' | 'sandbox';
+export type GamePhase = 'initial_mission' | 'land_patent' | 'baron_track' | 'baron_right' | 'freehold' | 'freehold_qualified' | 'sandbox';
+
+export interface UnreadLetter {
+  id: number;
+  letter_key: string;
+}
+
+export interface BaronySummary {
+  id: number;
+  name: string;
+  role: string;
+  member_count: number;
+}
 
 export interface PlayerGameState {
   character_id: number;
@@ -350,6 +376,10 @@ export interface PlayerGameState {
   last_updated: number;
   progress: MiniGameProgress[];
   available_activities: string[];
+  has_letters?: boolean;
+  unread_letter?: UnreadLetter | null;
+  barony_join_cooldown_until?: number;
+  barony?: BaronySummary | null;
 }
 
 export interface MiniGameLevelConfig {
@@ -1210,6 +1240,195 @@ export async function startBaronTrackRequest(
   return res.data as StartBaronTrackResponse;
 }
 
+/** Response from foundFreehold: the unattached manor's id and new phase. */
+export interface FoundFreeholdResponse {
+  fiefdom_id: number;
+  game_phase: string;
+  base_unlocked: boolean;
+}
+
+/**
+ * Founds an Outlying Freehold — a lone knight's manor unattached to any barony.
+ * Only a land-patent holder may do this. The manor persists across later tenure
+ * changes (joining or founding a barony reuses it).
+ *
+ * @param characterId - Character founding the freehold
+ * @param auth - Authentication object with username and token
+ * @returns Promise<FoundFreeholdResponse> - New fiefdom id and phase
+ *
+ * Usage: Called from LandPatentPanel's freehold option
+ */
+export async function foundFreeholdRequest(
+  characterId: number,
+  auth: { username: string; token: string }
+): Promise<FoundFreeholdResponse> {
+  const res = await apiPost<FoundFreeholdResponse>('foundFreehold', {
+    character_id: characterId
+  }, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return res.data as FoundFreeholdResponse;
+}
+
+/** Response from leaveBarony: the new phase (freehold or freehold_qualified). */
+export interface LeaveBaronyResponse {
+  game_phase: string;
+  left_barony_id: number;
+}
+
+/**
+ * Leaves the character's current barony, becoming a freeholder. A founder must
+ * pass a `successorCharacterId` (another member) unless they are the last
+ * member, in which case the barony is tombstoned. A join cooldown is stamped.
+ *
+ * @param characterId - Character leaving
+ * @param successorCharacterId - New baron when the leaver is the founder (optional)
+ * @param auth - Authentication object with username and token
+ * @returns Promise<LeaveBaronyResponse> - New phase
+ *
+ * Usage: Called from the Barony panel's Leave action
+ */
+export async function leaveBaronyRequest(
+  characterId: number,
+  successorCharacterId: number | null,
+  auth: { username: string; token: string }
+): Promise<LeaveBaronyResponse> {
+  const body: Record<string, unknown> = { character_id: characterId };
+  if (successorCharacterId !== null) {
+    body.successor_character_id = successorCharacterId;
+  }
+  const res = await apiPost<LeaveBaronyResponse>('leaveBarony', body,
+    { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return res.data as LeaveBaronyResponse;
+}
+
+/** Response from applyForMesneLord: the founded honor (barony) and fiefdom. */
+export interface ApplyForMesneLordResponse {
+  barony_id: number;
+  fiefdom_id: number;
+  game_phase: string;
+  base_unlocked: boolean;
+}
+
+/**
+ * Applies to become a Mesne Lord: a qualified freeholder founds an Honor (a
+ * barony under its pre-elevation name), reusing the existing manor.
+ *
+ * @param characterId - Qualified freeholder applying
+ * @param name - Honor name (unique, case-insensitive, <= 64 chars)
+ * @param auth - Authentication object with username and token
+ * @returns Promise<ApplyForMesneLordResponse> - Founded honor info
+ *
+ * Usage: Called from the Honor panel once the freeholder is eligible
+ */
+export async function applyForMesneLordRequest(
+  characterId: number,
+  name: string,
+  auth: { username: string; token: string }
+): Promise<ApplyForMesneLordResponse> {
+  const res = await apiPost<ApplyForMesneLordResponse>('applyForMesneLord', {
+    character_id: characterId,
+    name
+  }, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return res.data as ApplyForMesneLordResponse;
+}
+
+/** A barony member row (used for founder succession). */
+export interface BaronyMember {
+  character_id: number;
+  display_name: string;
+  role: string;
+}
+
+/**
+ * Lists a barony's members. Only a member of that barony may call it.
+ *
+ * @param baronyId - Barony to list
+ * @param auth - Authentication object with username and token
+ * @returns Promise<BaronyMember[]> - Members in join order
+ *
+ * Usage: Called from the Barony panel so a founder can pick a successor
+ */
+export async function getBaronyMembersRequest(
+  baronyId: number,
+  auth: { username: string; token: string }
+): Promise<BaronyMember[]> {
+  const res = await apiPost<{ members: BaronyMember[] }>('getBaronyMembers', {
+    barony_id: baronyId
+  }, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return (res.data as { members: BaronyMember[] }).members;
+}
+
+/** A received letter (a text-system key + timestamps; 0 read_at = unread). */
+export interface Letter {
+  id: number;
+  letter_key: string;
+  created_at: number;
+  read_at: number;
+}
+
+/**
+ * Fetches every letter the character has received, newest first.
+ *
+ * @param characterId - Character whose letters to fetch
+ * @param auth - Authentication object with username and token
+ * @returns Promise<Letter[]> - Received letters
+ *
+ * Usage: Called from the Letters panel and the hub's unread overlay
+ */
+export async function getLettersRequest(
+  characterId: number,
+  auth: { username: string; token: string }
+): Promise<Letter[]> {
+  const res = await apiPost<{ letters: Letter[] }>('getLetters', {
+    character_id: characterId
+  }, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return (res.data as { letters: Letter[] }).letters;
+}
+
+/**
+ * Marks a letter read (idempotent).
+ *
+ * @param characterId - Owner character
+ * @param letterId - Letter to mark read
+ * @param auth - Authentication object with username and token
+ * @returns Promise<void>
+ *
+ * Usage: Called when the unread overlay is dismissed or a letter is opened
+ */
+export async function markLetterReadRequest(
+  characterId: number,
+  letterId: number,
+  auth: { username: string; token: string }
+): Promise<void> {
+  const res = await apiPost<{ result: string }>('markLetterRead', {
+    character_id: characterId,
+    letter_id: letterId
+  }, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+}
+
 /**
  * Queries the server for the expected silver reward of an ongoing game at the
  * given difficulty/size, adjusted for the character's current reward pool.
@@ -1293,6 +1512,8 @@ export interface BuildingTypeConfig {
   forest_acres: number;
   /** Class grouping, definitive and independent of the built_from chain. */
   class: string;
+  /** Exclusive group: at most one building from the group per fiefdom ("" = none). */
+  exclusive_group?: string;
   /** The previous stage this building can be converted from (stage chains). */
   built_from?: string;
   outputs?: BuildingOutputConfig[];
@@ -1373,17 +1594,181 @@ export interface combat_match_summary_dto {
   player_count: number;
   max_players: number;
   host_name?: string;
+  opportunity_id?: string;
+  tier?: number;
 }
+
+/** A mission opportunity (ruleset + map + fixed warband; rts_design.md §3.1). */
+export interface combat_opportunity_dto {
+  id: string;
+  name: string;
+  tier: number;
+  ruleset: string;
+  map: string;
+  xp_base?: number;
+  flavor?: string;
+  warband?: { unit_class: string; level: number; count: number; group?: string }[];
+  total_units?: number;
+}
+
+/**
+ * An auto-generated PvE mission offering (rts_design.md §3.1). The content is a
+ * pure function of `id`; the client passes `id` back to combatCreate.
+ */
+export interface combat_offering_dto {
+  id: string;
+  tier: string;
+  index: number;
+  ruleset: string;
+  map_id: string;
+  xp_base: number;
+  danger_band: string;
+  danger_ratio: number;
+  /** Target power T = rho * S (preview alias of target_power). */
+  encounter_power?: number;
+  /** Target power T = rho * S. */
+  target_power?: number;
+  /** The assembled warband's actual aggregate power R. */
+  realized_power?: number;
+  /** Drawn relative difficulty rho. */
+  difficulty?: number;
+  /** Drawn horde/elite coefficient e (< 0 horde, > 0 elite). */
+  eliteness?: number;
+  warband: {
+    unit_class: string;
+    level: number;
+    count: number;
+    group?: string;
+    tactic?: string;
+    aggro_model?: string;
+  }[];
+  total_units: number;
+}
+
+/** One offering tier (solo / duo / company). */
+export interface combat_tier_dto {
+  id: string;
+  min_players: number;
+  max_players: number;
+}
+
+export interface combat_offerings_dto {
+  tiers: combat_tier_dto[];
+  offerings: combat_offering_dto[];
+}
+
+/** A temporary-structure definition (game/config/combat/structures.json). */
+export interface combat_structure_def_dto {
+  id: string;
+  name: string;
+  footprint: number;
+  max_hp: number;
+  build_time_seconds: number;
+  max_per_player: number;
+  blocks_ranged: boolean;
+}
+
+/** A formation shape definition (game/config/combat/formations.json). */
+export interface combat_formation_def_dto {
+  id: string;
+  name: string;
+}
+
+/**
+ * One direction view for a directional sprite clip: either an authored set name
+ * (e.g. "e") or an explicit `{ set, mirror }` that reuses another set with a
+ * horizontal flip (mirroring across the vertical axis). rts_design.md D24/D71.
+ */
+export type combatant_view_dto = string | { set: string; mirror?: boolean };
+
+/**
+ * One animation clip, played at `fps`. `frames` is discovered by the server from
+ * the image count in each set directory (config never declares it), so a clip may
+ * have any number of frames.
+ */
+export interface combatant_clip_dto {
+  frames?: number;
+  fps: number;
+  views?: Record<string, combatant_view_dto>;
+}
+
+/** Per-class animation clips, keyed by class id (combatant config `animations`). */
+export type combatant_animations_dto = Record<string, combatant_clip_dto>;
 
 export interface combat_configs_dto {
   rulesets: combat_ruleset_dto[];
   maps: combat_map_dto[];
+  opportunities: combat_opportunity_dto[];
+  structures?: Record<string, combat_structure_def_dto>;
+  formations?: Record<string, combat_formation_def_dto>;
+  /** Per-class directional sprite clips (only authored clips are sent). */
+  combatant_art?: Record<string, combatant_animations_dto>;
+  /** Per-class body radius in normalized board units (combatant config `size`). */
+  combatant_radius?: Record<string, number>;
 }
 
 export interface combat_match_result_dto {
   match_id: string;
   match_code: string;
   mode: string;
+  opportunity_id?: string;
+  offering_id?: string;
+  danger_band?: string;
+  tier?: number | string;
+}
+
+// ── Premium variety store (Platinum cosmetics; rts_design.md §15) ──
+
+/** A cosmetic appearance descriptor (visual only; no gameplay keys). */
+export interface cosmetic_appearance_dto {
+  palette?: string[];
+  pattern?: string;
+  emblem?: string;
+  trim?: string;
+  item_id?: string;
+  slot?: string;
+}
+
+export interface store_item_dto {
+  id: string;
+  name: string;
+  slot: string;
+  tier: string;
+  price_platinum: number;
+  source: string;
+  description?: string;
+  appearance?: cosmetic_appearance_dto;
+}
+
+export interface store_bundle_dto {
+  id: string;
+  name: string;
+  price_platinum: number;
+  description?: string;
+  items: string[];
+}
+
+export interface store_product_dto {
+  id: string;
+  name: string;
+  price_real: number;
+  platinum: number;
+  kind: string;
+  description?: string;
+}
+
+export interface store_dto {
+  items: store_item_dto[];
+  bundles: store_bundle_dto[];
+  products: store_product_dto[];
+  platinum: number;
+  owned: string[];
+}
+
+export interface cosmetics_state_dto {
+  owned: string[];
+  loadout: Record<string, string>;
+  platinum: number;
 }
 
 export interface retinue_member_dto {
@@ -1394,6 +1779,10 @@ export interface retinue_member_dto {
   is_knight: boolean;
   level: number;
   gender: string;
+  /** Relative headshot id (e.g. "male/03.png"); empty for the knight. */
+  headshot_id: string;
+  /** Server-resolved portrait URL (soldier headshot or the knight's PFP); may be "". */
+  portrait_url: string;
   health: number;
   health_updated: number;
   priority: number;
@@ -1427,10 +1816,54 @@ export interface recruit_candidate_dto {
   unit_class: string;
   display_name: string;
   gender: string;
+  /** Relative headshot id (e.g. "female/17.png"). */
+  headshot_id: string;
   level: number;
   hour_bucket: number;
   expires_at: number;
   fee: Record<string, number>;
+}
+
+/** One entry in the safe PFP pool (id + served URL). */
+export interface safe_avatar_dto {
+  id: string;
+  url: string;
+}
+
+/** Response from getAvatarPool. */
+export interface avatar_pool_dto {
+  safe: safe_avatar_dto[];
+  adult: boolean;
+}
+
+/** Partial character update returned by the avatar endpoints. */
+export interface avatar_update_dto {
+  avatar_safe_id?: string | null;
+  avatar_custom_id?: string | null;
+  avatar_changed_at?: number;
+  avatar_url?: string;
+}
+
+/** The rectangle (in frame-image pixels) a portrait image is mapped into. */
+export interface portrait_frame_rect_dto {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** One decorative portrait frame: the overlay image + portrait destination rect. */
+export interface portrait_frame_dto {
+  image: string;
+  image_width: number;
+  image_height: number;
+  portrait: portrait_frame_rect_dto;
+}
+
+/** Response from getPortraitFrames (game/config/portrait_frames.json). */
+export interface portrait_frames_dto {
+  format_version?: string;
+  frames: Record<string, portrait_frame_dto>;
 }
 
 export interface recruit_market_dto {
@@ -1496,24 +1929,34 @@ export interface retinue_gear_dto {
 }
 
 /**
- * Creates a new PvE combat match (host is the creating character).
+ * Creates a new PvE combat match from a mission opportunity (the warband is
+ * fixed at create per D62). The optional `unit_ids` roster subset is applied
+ * before the lobby opens; omit it to field the full fieldable roster.
  *
  * @param characterId - Host character id
- * @param options - Mode ('pve'), ruleset id, and map id
+ * @param options - Mode ('pve'), the chosen opportunity id, optional roster
  * @returns Promise<combat_match_result_dto> - Match id/code for the lobby
  *
- * Usage: Called from MatchLobby's create flow
+ * Usage: Called from the MissionPick create flow
  */
 export async function combatCreateRequest(
   characterId: number,
-  options: { mode: 'pve'; ruleset_id: string; map_id: string }
+  options: { mode: 'pve'; offering_id?: string; opportunity_id?: string; unit_ids?: number[] }
 ): Promise<combat_match_result_dto> {
-  return await authenticatedPost<combat_match_result_dto>('combatCreate', {
+  const body: Record<string, unknown> = {
     character_id: characterId,
-    mode: options.mode,
-    ruleset_id: options.ruleset_id,
-    map_id: options.map_id
-  });
+    mode: options.mode
+  };
+  if (options.offering_id) {
+    body.offering_id = options.offering_id;
+  }
+  if (options.opportunity_id) {
+    body.opportunity_id = options.opportunity_id;
+  }
+  if (options.unit_ids && options.unit_ids.length > 0) {
+    body.unit_ids = options.unit_ids;
+  }
+  return await authenticatedPost<combat_match_result_dto>('combatCreate', body);
 }
 
 /**
@@ -1569,6 +2012,134 @@ export async function combatMatchmakingRequest(): Promise<never> {
  */
 export async function combatGetConfigsRequest(): Promise<combat_configs_dto> {
   return await authenticatedPost<combat_configs_dto>('combatGetConfigs', {});
+}
+
+/**
+ * Fetches the character's current-hour auto-generated mission offerings,
+ * grouped by tier (rts_design.md §3.1). Completed offerings are excluded.
+ *
+ * @param characterId - The character whose board to fetch
+ * @returns Promise<combat_offerings_dto> - Tiers + offerings
+ *
+ * Usage: Called by MissionPick on open and after a victory
+ */
+export async function getCombatOfferingsRequest(
+  characterId: number
+): Promise<combat_offerings_dto> {
+  return await authenticatedPost<combat_offerings_dto>('getCombatOfferings', {
+    character_id: characterId
+  });
+}
+
+/**
+ * Fetches the premium store catalog plus the character's Platinum balance and
+ * owned cosmetic ids.
+ *
+ * @param characterId - The character whose balance/ownership to include
+ * @returns Promise<store_dto>
+ */
+export async function getStoreRequest(characterId: number): Promise<store_dto> {
+  return await authenticatedPost<store_dto>('getStore', { character_id: characterId });
+}
+
+/**
+ * Fetches the character's owned cosmetics and equipped loadout.
+ *
+ * @param characterId - The character id
+ * @returns Promise<cosmetics_state_dto>
+ */
+export async function getCosmeticsRequest(characterId: number): Promise<cosmetics_state_dto> {
+  return await authenticatedPost<cosmetics_state_dto>('getCosmetics', {
+    character_id: characterId
+  });
+}
+
+/**
+ * Buys a cosmetic or bundle with Platinum. Idempotent via `idempotency_key`.
+ *
+ * @param characterId - The buying character
+ * @param options - Exactly one of item_id / bundle_id, plus the idempotency key
+ * @returns Promise<{ result: string; platinum: number; owned: string[] }>
+ */
+export async function purchasePremiumItemRequest(
+  characterId: number,
+  options: { item_id?: string; bundle_id?: string; idempotency_key: string }
+): Promise<{ result: string; platinum: number; owned: string[] }> {
+  return await authenticatedPost<{ result: string; platinum: number; owned: string[] }>(
+    'purchasePremiumItem',
+    { character_id: characterId, ...options }
+  );
+}
+
+/**
+ * Starts a real-money Platinum purchase (gateway stub). Call settle afterward.
+ *
+ * @param characterId - The buying character
+ * @param options - Product id + idempotency key
+ * @returns Promise<{ result: string; platinum: number }>
+ */
+export async function purchasePlatinumRequest(
+  characterId: number,
+  options: { product_id: string; idempotency_key: string }
+): Promise<{ result: string; platinum: number; granted?: number }> {
+  return await authenticatedPost<{ result: string; platinum: number; granted?: number }>(
+    'purchasePlatinum',
+    { character_id: characterId, ...options }
+  );
+}
+
+/**
+ * Settles a pending Platinum purchase (mock gateway webhook), granting once.
+ *
+ * @param characterId - The buying character
+ * @param idempotencyKey - The key used at purchase time
+ * @returns Promise<{ result: string; granted?: number; platinum?: number }>
+ */
+export async function settlePlatinumRequest(
+  characterId: number,
+  idempotencyKey: string
+): Promise<{ result: string; granted?: number; platinum?: number }> {
+  return await authenticatedPost<{ result: string; granted?: number; platinum?: number }>(
+    'settlePlatinum',
+    { character_id: characterId, idempotency_key: idempotencyKey }
+  );
+}
+
+/**
+ * Equips an owned cosmetic into its loadout slot.
+ *
+ * @param characterId - The character id
+ * @param slot - One of the six cosmetic slots
+ * @param cosmeticId - An owned cosmetic whose slot matches
+ * @returns Promise<{ loadout: Record<string, string> }>
+ */
+export async function equipCosmeticRequest(
+  characterId: number,
+  slot: string,
+  cosmeticId: string
+): Promise<{ loadout: Record<string, string> }> {
+  return await authenticatedPost<{ loadout: Record<string, string> }>('equipCosmetic', {
+    character_id: characterId,
+    slot,
+    cosmetic_id: cosmeticId
+  });
+}
+
+/**
+ * Clears a cosmetic loadout slot (the item stays owned).
+ *
+ * @param characterId - The character id
+ * @param slot - One of the six cosmetic slots
+ * @returns Promise<{ loadout: Record<string, string> }>
+ */
+export async function deassignCosmeticRequest(
+  characterId: number,
+  slot: string
+): Promise<{ loadout: Record<string, string> }> {
+  return await authenticatedPost<{ loadout: Record<string, string> }>('deassignCosmetic', {
+    character_id: characterId,
+    slot
+  });
 }
 
 /**
@@ -1635,8 +2206,88 @@ export async function hireRecruitRequest(
     unit_class: candidate.unit_class,
     display_name: candidate.display_name,
     gender: candidate.gender,
+    headshot_id: candidate.headshot_id,
     level: candidate.level,
     hour_bucket: candidate.hour_bucket
+  });
+}
+
+/**
+ * Fetches the safe PFP pool for one gender (the character's own pool; the safe
+ * pools are gender-split like the retinue headshots).
+ *
+ * @param gender - "male" or "female" (the character's sex)
+ * @returns Promise<avatar_pool_dto> - That pool's avatars (id + URL) + adult flag
+ *
+ * Usage: AvatarPicker at creation and ProfilePanel, both with $currentCharacter.sex
+ */
+export async function getAvatarPoolRequest(gender: string): Promise<avatar_pool_dto> {
+  return await authenticatedPost<avatar_pool_dto>('getAvatarPool', { gender });
+}
+
+/**
+ * Fetches the decorative portrait-frame geometry catalog.
+ *
+ * @returns Promise<portrait_frames_dto> - Per-variant frame image + portrait rect
+ *
+ * Usage: RetinuePortrait, via the cached loader in lib/portrait_frames.ts
+ */
+export async function getPortraitFramesRequest(): Promise<portrait_frames_dto> {
+  return await authenticatedPost<portrait_frames_dto>('getPortraitFrames', {});
+}
+
+/**
+ * Sets a character's safe-pool PFP. Server-enforced 24h cooldown; the very
+ * first pick (character creation) is exempt.
+ *
+ * @param characterId - Owning character
+ * @param safeId - Safe avatar id from getAvatarPoolRequest
+ * @returns Promise<avatar_update_dto> - Updated avatar fields
+ *
+ * Usage: AvatarPicker confirm
+ */
+export async function setCharacterAvatarRequest(
+  characterId: number,
+  safeId: string
+): Promise<avatar_update_dto> {
+  return await authenticatedPost<avatar_update_dto>('setCharacterAvatar', {
+    character_id: characterId,
+    safe_id: safeId
+  });
+}
+
+/**
+ * Uploads a custom (18+) PFP. The client must pre-scale to 256x256 and pass a
+ * base64 data string. The upload UI is deferred — this is the documented seam.
+ *
+ * @param characterId - Owning character
+ * @param base64 - Base64 image data (optionally a data: URI)
+ * @param format - "png" | "jpg" | "jpeg" | "webp" | "avif"
+ * @returns Promise<avatar_update_dto> - Updated avatar fields
+ */
+export async function uploadCharacterAvatarRequest(
+  characterId: number,
+  base64: string,
+  format: string
+): Promise<avatar_update_dto> {
+  return await authenticatedPost<avatar_update_dto>('uploadCharacterAvatar', {
+    character_id: characterId,
+    image_base64: base64,
+    format
+  });
+}
+
+/**
+ * Removes a character's custom PFP (18+), reverting to the safe pick.
+ *
+ * @param characterId - Owning character
+ * @returns Promise<avatar_update_dto> - Updated avatar fields
+ */
+export async function removeCustomAvatarRequest(
+  characterId: number
+): Promise<avatar_update_dto> {
+  return await authenticatedPost<avatar_update_dto>('removeCustomAvatar', {
+    character_id: characterId
   });
 }
 

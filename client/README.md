@@ -19,14 +19,20 @@ client/
 │   ├── App.svelte            # Main Svelte component
 │   ├── main.ts               # Application entry point
 │   ├── combat/               # Realtime combat game (NOT a mini-game)
-│   │   ├── CombatScreen.svelte   # Top-level container: lobby → battle → results
+│   │   ├── CombatScreen.svelte   # Top-level journey: mission → lobby → deploy → battle → results
 │   │   ├── CombatNetClient.ts    # WebSocket client (auth, reconnect, typed sends)
 │   │   ├── protocol.ts           # Wire protocol types + combat_codec interface
-│   │   ├── CombatGame.svelte     # SimpleGame canvas: entity store + interpolation
+│   │   ├── MissionPick.svelte    # Opportunity browse + create + join-by-code + Store entry
+│   │   ├── RosterSelect.svelte   # Fieldable-member toggles (knight locked)
+│   │   ├── MatchLobby.svelte     # In-lobby roster + ready + code share
+│   │   ├── DeployView.svelte     # Deploy-zone placement + facing + Ready
+│   │   ├── CombatGame.svelte     # Battle canvas: sprites, selection, camera, damage ledger
+│   │   ├── CombatCommandBar.svelte # Selection info + order buttons + stance/construct/formation
 │   │   ├── CombatHud.svelte      # Bootstrap battle bar (timer, counts, actions)
 │   │   ├── CombatChat.svelte     # Team text chat over the WS
 │   │   ├── CombatVoice.svelte    # WebRTC mesh voice (WS-relayed signaling)
-│   │   └── MatchLobby.svelte     # PvE create/join-by-code
+│   │   ├── ResultsView.svelte    # Victory/defeat/draw + XP/level-ups/wounds
+│   │   └── StorePanel.svelte     # Premium store + loadout (Platinum cosmetics)
 │   ├── components/           # Shared UI + manor board
 │   │   ├── ManorMenu.svelte      # Manor board (roads, water power, construction)
 │   │   ├── LandPatentPanel.svelte # Baron-track patent/create UI
@@ -47,20 +53,34 @@ client/
 ## Realtime Combat
 
 The combat game is a server-authoritative RTS (see `docs/combat_protocol.md`).
-It is **not** a mini-game: it mounts from `App.svelte` as its own activity
-(there is no hub card — it will be reached through game flow later) and
-communicates over WebSocket `/ws/combat` instead of REST turns.
+It is **not** a mini-game: it mounts from `HubScreen.svelte` as its own activity
+(`activity_combat`, gated behind `land_patent`) and communicates over WebSocket
+`/ws/combat` instead of REST turns.
 
+- **Journey**: `CombatScreen` drives the design's flow — `MissionPick`
+  (opportunities + open lobbies + join-by-code, plus a Store button) →
+  `RosterSelect` → `MatchLobby` (roster/ready) → `DeployView` (placement in the
+  team `deploy_zone`, facing, Ready/auto-deploy) → `CombatGame` +
+  `CombatCommandBar` → `ResultsView`.
 - **Networking**: `CombatNetClient` opens the socket, authenticates with the
   REST session token in its first message, and auto-reconnects with backoff.
   The vite dev server proxies `/ws` → `localhost:2290` (`ws: true`); nginx
   needs the upgrade headers in production.
 - **State**: 10 Hz `match_state`/`match_update` messages; `CombatGame`
-  maintains a local entity store (entity-level overwrite — no merge) and
-  interpolates positions at rAF speed. Tick gaps trigger `request_state`.
+  maintains a local entity store with a pending-damage ledger (damage numbers
+  land with the drawn projectile, reconciled on full snapshots) and interpolates
+  positions at rAF speed. Tick gaps trigger `request_state`.
 - **Rendering**: the battle canvas uses SimpleGame's engine loop and
-  `afterDraw` for custom unit rendering (no engine classes needed — units are
-  server-simulated). Do not modify files under `SimpleGame/`.
+  `afterDraw` for custom rendering (no engine classes needed — units are
+  server-simulated): structures, procedural class sprites, mandatory team ring /
+  HP bar / facing chevron overlays, AoE blasts, hold-fire icons. Cosmetics render
+  as appearance descriptors (palette/pattern/emblem) from the welcome snapshot.
+  Do not modify files under `SimpleGame/`.
+- **Controls**: LMB select / drag-box, RMB context order (move/attack/Lob),
+  drag-pan, wheel zoom, WASD, minimap click-jump, Ctrl+1..9 control groups; a
+  select/pan touch toggle. Order buttons live in `CombatCommandBar`.
+- **Store**: `StorePanel` browses the Platinum catalog, buys/equips/deassigns
+  cosmetics, and mock-tops-up Platinum. All strings come from the text system.
 - **Voice**: WebRTC mesh (browser standard) — the server only relays
   signaling; media flows peer-to-peer. STUN is a placeholder; configure TURN
   in `CombatVoice.svelte` for production.
@@ -119,12 +139,33 @@ button always returns to the hub grid before leaving the app. Reloading
 restores the current screen from the URL; mobile app-switching fires no hash
 events and never disturbs the open screen.
 
+## Player identity (Profile)
+
+The hub **Profile** activity (`src/components/ProfilePanel.svelte`) manages the
+character's layered portrait, mirroring the safe/custom name model:
+
+- **Safe portrait** (`avatar_safe_id`): always present; shown to minors and used
+  as the fallback for every viewer. Picked from the approved, **gender-split**
+  pool in `game/images/avatars/safe/{male,female}/`; the client requests the
+  character's own sex's pool (scanned at server startup and auto-rescanned when
+  the pool directory changes — no restart needed).
+- **Custom portrait** (`avatar_custom_id`): an optional 18+ upload, shown only to
+  adult viewers of adult owners. The client center-crops to a square, scales to
+  256x256, and encodes WebP when the canvas supports it (else JPEG) before
+  uploading. Stored server-side outside the static tree and served via the
+  age-gated `GET /api/avatar/<id>`.
+
+Any change is rate-limited to once per 24h per character (the creation pick is
+exempt). The safe pool grid is shared with the creation picker
+(`SafeAvatarGrid.svelte`). Helpers live in `src/lib/avatars.ts`
+(`file_to_avatar_payload`, `avatar_cooldown_remaining`, `with_avatar_auth`).
+
 ## Getting Started
 
 ### Development
 
 ```bash
-npm run dev    # Start dev server at http://localhost:5173
+npm run dev    # Start dev server at http://localhost:8120
 npm run build  # Production build to dist/
 npm run preview  # Preview production build
 ```

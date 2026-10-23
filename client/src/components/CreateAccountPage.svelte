@@ -5,7 +5,8 @@
   import { handleError } from '../lib/errors';
   import * as auth from '../lib/auth';
   import { checkDigitalCredentialsSupport, requestAgeVerification, isBraveBrowser } from '../lib/digitalCredentials';
-  import { user, characters, currentCharacter, authLoading } from '../lib/stores';
+  import { user, characters, currentCharacter, authLoading, language } from '../lib/stores';
+  import { get } from 'svelte/store';
 
   const dispatch = createEventDispatcher<{
     switchToLogin: void;
@@ -223,7 +224,8 @@
         displayName || undefined,
         undefined,
         verifiedOverrideCode || undefined,
-        sex || undefined
+        sex || undefined,
+        get(language)
       );
 
       if (!response.token) {
@@ -239,6 +241,12 @@
         adult: response.adult
       });
       characters.set(response.characters);
+
+      // Persist the chosen interface / display language locally too.
+      if (response.language) {
+        language.set(response.language);
+        await auth.saveStoredLanguage(response.language);
+      }
 
       const lastCharId = await auth.loadCurrentCharacterId();
       const lastChar = response.characters.find(c => c.id === lastCharId) || response.characters[0];

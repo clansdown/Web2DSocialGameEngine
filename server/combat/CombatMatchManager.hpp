@@ -33,10 +33,10 @@ public:
                     std::function<void(std::function<void()>)> defer_fn);
 
     // Creates a PvE lobby match with the host as first player.
-    // Returns the match id, or "" with `error` set on failure.
-    std::string create_pve_match(const std::string& ruleset_id,
-                                 const nlohmann::json& ruleset,
-                                 const nlohmann::json& map_metadata,
+    // The `config` snapshot (ruleset, map, warband, class configs, rewards) is
+    // resolved by the caller on the loop thread — the match thread never touches
+    // GameConfigCache. Returns the match id, or "" with `error` set on failure.
+    std::string create_pve_match(combat_match_config config,
                                  int64_t host_character_id,
                                  const std::string& host_display_name,
                                  const std::vector<retinue_member_snapshot>& host_retinue,
@@ -59,6 +59,17 @@ public:
     std::vector<nlohmann::json> list_lobby_matches() const;
 
     const std::shared_ptr<combat_codec>& codec() const { return codec_; }
+
+    // Determinism replay (M10): when a dir is set, finished matches write a
+    // tick-exact command log to `<dir>/<match_id>.json` for `--combat-replay`.
+    void set_replay_dir(std::string dir) { replay_dir_ = std::move(dir); }
+    const std::string& replay_dir() const { return replay_dir_; }
+
+    // Stops accepting battle work, asks every active match to stop, and joins
+    // the worker threads. Idempotent. MUST be called before the uWS App/loop is
+    // destroyed so no producer can publish into a dead loop (uWS is not
+    // thread-safe; only Loop::defer may be used off the loop thread).
+    void shutdown();
 
     // Serializes and publishes a message to a match topic (called by match threads).
     void publish_match_message(const std::string& match_id, const combat_message& msg);
@@ -88,6 +99,7 @@ private:
 
     std::atomic<int64_t> next_match_number_{1};
     std::mt19937 code_rng_{std::random_device{}()};
+    std::string replay_dir_;
 };
 
 } // namespace combat

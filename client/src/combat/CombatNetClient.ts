@@ -144,12 +144,13 @@ export class CombatNetClient {
    * @param targetX - Normalized 0..1 map x
    * @param targetY - Normalized 0..1 map y
    */
-  move_units(unitIds: number[], targetX: number, targetY: number): void {
+  move_units(unitIds: number[], targetX: number, targetY: number, queued = false): void {
     this.send('command', {
       cmd: 'move',
       unit_ids: unitIds,
       target_x: targetX,
-      target_y: targetY
+      target_y: targetY,
+      queued
     });
   }
 
@@ -159,8 +160,13 @@ export class CombatNetClient {
    * @param unitIds - Attacking units
    * @param targetUnitId - Target unit id
    */
-  attack(unitIds: number[], targetUnitId: number): void {
-    this.send('command', { cmd: 'attack', unit_ids: unitIds, target_unit_id: targetUnitId });
+  attack(unitIds: number[], targetUnitId: number, queued = false): void {
+    this.send('command', {
+      cmd: 'attack',
+      unit_ids: unitIds,
+      target_unit_id: targetUnitId,
+      queued
+    });
   }
 
   /**
@@ -170,6 +176,148 @@ export class CombatNetClient {
    */
   ability(abilityId: string): void {
     this.send('command', { cmd: 'ability', ability_id: abilityId });
+  }
+
+  /**
+   * Sets the fielded roster subset (lobby/deploy only). The knight is always
+   * fielded server-side; an empty array means "field everything".
+   *
+   * @param unitIds - Chosen fieldable member ids (knight excluded)
+   */
+  set_roster(unitIds: number[]): void {
+    this.send('roster', { unit_ids: unitIds });
+  }
+
+  /**
+   * Places squad members inside the team deploy zone (§4.4). Positions are
+   * normalized 0..1 map coordinates; `facing` in radians defaults to the
+   * server's toward-the-enemy-camp angle when omitted.
+   *
+   * @param unitIds - Members to place
+   * @param targetX - Normalized map x inside the deploy zone
+   * @param targetY - Normalized map y inside the deploy zone
+   * @param facing - Optional facing in radians
+   */
+  deploy(unitIds: number[], targetX: number, targetY: number, facing?: number): void {
+    const payload: Record<string, unknown> = {
+      cmd: 'deploy',
+      unit_ids: unitIds,
+      x: targetX,
+      y: targetY
+    };
+    if (facing !== undefined) payload.facing = facing;
+    this.send('command', payload);
+  }
+
+  /**
+   * Issues a stance order (`aggressive` | `defensive` | `hold`).
+   *
+   * @param unitIds - Units affected
+   * @param stance - The new stance
+   */
+  stance(unitIds: number[], stance: string): void {
+    this.send('command', { cmd: 'stance', unit_ids: unitIds, stance });
+  }
+
+  /**
+   * Stops the given units (cancels orders; engage in aggro radius).
+   *
+   * @param unitIds - Units affected
+   */
+  stop(unitIds: number[]): void {
+    this.send('command', { cmd: 'stop', unit_ids: unitIds });
+  }
+
+  /**
+   * Holds position (engage within range but never leave the square).
+   *
+   * @param unitIds - Units affected
+   */
+  hold(unitIds: number[]): void {
+    this.send('command', { cmd: 'hold', unit_ids: unitIds });
+  }
+
+  /**
+   * Attack-move: move along a path while engaging hostiles en route (§9).
+   *
+   * @param unitIds - Units affected
+   * @param targetX - Normalized map x
+   * @param targetY - Normalized map y
+   * @param queued - Append rather than replace the order queue
+   */
+  attack_move(unitIds: number[], targetX: number, targetY: number, queued = false): void {
+    this.send('command', {
+      cmd: 'attack_move',
+      unit_ids: unitIds,
+      target_x: targetX,
+      target_y: targetY,
+      queued
+    });
+  }
+
+  /**
+   * Patrol: loop/ping-pong between the unit's position and a point, engaging
+   * along the path (§9).
+   *
+   * @param unitIds - Units affected
+   * @param targetX - Normalized far endpoint x
+   * @param targetY - Normalized far endpoint y
+   * @param queued - Append rather than replace the order queue
+   */
+  patrol(unitIds: number[], targetX: number, targetY: number, queued = false): void {
+    this.send('command', {
+      cmd: 'patrol',
+      unit_ids: unitIds,
+      target_x: targetX,
+      target_y: targetY,
+      queued
+    });
+  }
+
+  /**
+   * Explicit AoE Lob to a ground point (§6.3). Non-AoE units ignore the ground
+   * point and fall back to a normal attack.
+   *
+   * @param unitIds - AoE units (alchemists)
+   * @param targetX - Normalized blast center x
+   * @param targetY - Normalized blast center y
+   */
+  attack_ground(unitIds: number[], targetX: number, targetY: number, queued = false): void {
+    this.send('command', {
+      cmd: 'attack',
+      unit_ids: unitIds,
+      ground_x: targetX,
+      ground_y: targetY,
+      queued
+    });
+  }
+
+  /**
+   * Constructs a temporary structure at a point (builders channel the build).
+   *
+   * @param unitIds - Builder units
+   * @param structureType - Structure type id (barricade/spikes/wall/tower)
+   * @param targetX - Normalized map x
+   * @param targetY - Normalized map y
+   */
+  construct(unitIds: number[], structureType: string, targetX: number, targetY: number): void {
+    this.send('command', {
+      cmd: 'construct',
+      unit_ids: unitIds,
+      structure_type: structureType,
+      x: targetX,
+      y: targetY
+    });
+  }
+
+  /**
+   * Sets (or clears) the persistent formation modifier (§8.3).
+   *
+   * @param formationId - Shape id, or 'none' to clear
+   * @param rotation - Rotation handle in radians
+   */
+  formation(formationId: string, rotation = 0): void {
+    this.send('command', { cmd: 'formation', formation_id: formationId, rotation });
   }
 
   /**

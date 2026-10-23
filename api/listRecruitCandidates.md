@@ -34,6 +34,7 @@ After that, an offer expires and can never be hired.
                 "unit_class": "spearman",
                 "display_name": "William",
                 "gender": "male",
+                "headshot_id": "male/07.png",
                 "level": 2,
                 "hour_bucket": 242365,
                 "expires_at": 1750010400,
@@ -64,6 +65,14 @@ After that, an offer expires and can never be hired.
   market.max_candidate_level_offset` (clamped to the class `max_level`).
   Gender and name come from the per-class name pools
   `game/text/en/names_<class>_male.txt` / `_female.txt`.
+- **Identity roll (`class → sex → level → name → headshot`)** — names are drawn
+  from the class/sex pool, then walked forward deterministically to the first
+  name not already used by the roster. Headshots (`headshot_id`, a path under
+  `game/images/retinue/headshots/`) are drawn the same way from the sorted
+  `male`/`female` pools. Both the current and grace cohorts share one uniqueness
+  set, so the returned list has no internal duplicates either.
+- **`headshot_id`** — persistent member identity (fixed at creation). Supply it
+  back on `/api/hireRecruit` so the hired soldier keeps the portrait shown.
 - **`hour_bucket`** — `floor(now / 3600)`; the seed input for candidate
   generation. `next_refresh_at` is the unix ts when the pool advances (the
   current cohort becomes the grace cohort).

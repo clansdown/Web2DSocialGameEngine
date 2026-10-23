@@ -80,7 +80,7 @@
   let productionBtn: Button | null = null;
   let panelTop = $state(220);
   let manorTexts = $state<Record<string, string>>({});
-  let buildableIds: string[] = [];
+  let candidateIds: string[] = [];
   let buildButtons = new Map<string, Button>();
 
   let constructionRefreshInFlight = false;
@@ -636,9 +636,10 @@
 
   /**
    * Whether the player can currently build a new instance of the given type,
-   * mirroring the server's build checks: manor level, max_per_fiefdom,
-   * level-1 prerequisites (non-manor_level keys = required buildings), and
-   * level-1 cost affordability.
+   * mirroring the server's build checks: manor level, max_per_fiefdom, the
+   * exclusive group (only one building from the group may exist), level-1
+   * prerequisites (non-manor_level keys = required buildings), level-1 cost
+   * affordability, and the arable/forest land gates.
    *
    * @param typeId - Building type id from the config
    * @returns True if buildable right now
@@ -675,7 +676,71 @@
       const available = fiefdomData.forest_land?.available ?? 0;
       if (available + 0.0001 < forest) return false;
     }
+    // Exclusive group: only one building from the group may exist at a time.
+    const group = cfg.exclusive_group;
+    if (group && isExclusiveGroupOccupied(group)) return false;
     return true;
+  }
+
+  /**
+   * True when a building whose type belongs to `group` already exists in the
+   * fiefdom. Drives both the palette hiding and the `canBuild` guard.
+   *
+   * @param group - The `exclusive_group` value from the building config
+   * @returns True if any existing building shares the group
+   */
+  function isExclusiveGroupOccupied(group: string): boolean {
+    if (!fiefdomData) return false;
+    return (fiefdomData.buildings ?? []).some(
+      (b) => getCfg(b.name)?.exclusive_group === group
+    );
+  }
+
+  /**
+   * The build-palette entries currently shown: every candidate whose manor
+   * level is met and whose exclusive group is not already occupied, in
+   * `manor_ui.json` build_order. Level-locked and exclusive-group-conflicting
+   * types are hidden (not greyed); affordability/prerequisite/max-per-fiefdom
+   * still grey out via `updateBuildButtonStates`.
+   *
+   * @returns Ordered list of visible building type ids
+   */
+  function computeBuildableIds(): string[] {
+    if (!fiefdomData) return [];
+    return candidateIds.filter((typeId) => {
+      const cfg = getCfg(typeId);
+      if (!cfg) return false;
+      if (fiefdomData!.manor_level < (cfg.min_manor_level ?? 1)) return false;
+      const group = cfg.exclusive_group;
+      if (group && isExclusiveGroupOccupied(group)) return false;
+      return true;
+    });
+  }
+
+  /**
+   * Reconciles the build column's children with `computeBuildableIds()`.
+   * SimpleGame's `Column.layout()` sizes itself over all children (it does not
+   * skip invisible ones), so hidden entries must be removed from the column
+   * rather than toggled `visible`. Re-adds the wanted buttons in order so
+   * build_order is preserved, then re-lays out, re-anchors the HUD, and
+   * refreshes the grey-out states.
+   *
+   * @returns void - Updates the on-screen build column
+   */
+  function syncBuildColumn(): void {
+    if (!buildCol) return;
+    const wanted = computeBuildableIds();
+    for (const child of [...buildCol.children]) buildCol.removeChild(child);
+    for (const typeId of wanted) {
+      const btn = buildButtons.get(typeId);
+      if (btn) buildCol.addChild(btn);
+    }
+    buildCol.setGutter(10);
+    buildCol.setPadding(0);
+    buildCol.setJustify(LayoutJustify.START);
+    buildCol.layout();
+    apply_viewport();
+    updateBuildButtonStates();
   }
 
   /**
@@ -969,7 +1034,7 @@
       if (data.id && !fid) await setConfigKV('fiefdom_id', data.id);
       fiefdomData = data;
       economyReport = data.economy_report || null;
-      updateBuildButtonStates();
+      syncBuildColumn();
       if (data.reserves) {
         const next: Record<string, number> = {};
         for (const res of IMPORT_RESOURCES) {
@@ -1248,7 +1313,7 @@
     buildCol.hud = true;
     buildCol.visible = false;
 
-    for (const typeId of buildableIds) {
+    for (const typeId of candidateIds) {
       const cfg = getCfg(typeId);
       if (!cfg) continue;
       const bc = new ButtonClass('b_' + typeId);
@@ -1274,7 +1339,7 @@
     buildCol.setJustify(LayoutJustify.START);
     buildCol.layout();
 
-    updateBuildButtonStates();
+    syncBuildColumn();
 
     // Top-right action stack: all four HUD buttons as SimpleGame buttons so
     // they share one coordinate space and one glassy style.
@@ -1443,13 +1508,15 @@
     }
 
     // home_base is auto-built at start and there can be only one — never buildable.
-    // Level-locked buildings stay hidden (they appear when the manor levels up).
     // house is a leftover generic entry with no display_name/image, so the
     // display_name && image guard keeps it (and any placeholder) out of the palette.
-    // Order comes from manor_ui.json build_order; ids not listed sort last (stable).
-    buildableIds = Object.entries(buildingConfigs)
-      .filter(([id, cfg]) => id !== 'home_base' && cfg.display_name && cfg.image
-        && fiefdomData && fiefdomData.manor_level >= (cfg.min_manor_level ?? 1))
+    // `candidateIds` is every display-able type (level-locked ones included, so
+    // their buttons/texts exist up front); the *visible* set is computed per
+    // load by `computeBuildableIds()` (manor level + exclusive group), which is
+    // reconciled into the column by `syncBuildColumn()`. Order comes from
+    // manor_ui.json build_order; ids not listed sort last (stable).
+    candidateIds = Object.entries(buildingConfigs)
+      .filter(([id, cfg]) => id !== 'home_base' && cfg.display_name && cfg.image)
       .map(([id]) => id)
       .sort((a, b) => {
         const ia = buildingOrder.indexOf(a);
@@ -1464,7 +1531,7 @@
       'ui_manor_forest',
       'ui_manor_stage', 'ui_manor_upgrade', 'ui_manor_convert',
       'ui_manor_pond_type', 'ui_manor_demolish', 'ui_manor_demolish_confirm',
-      ...buildableIds.map(id => 'ui_building_' + id)
+      ...candidateIds.map(id => 'ui_building_' + id)
     ];
     manorTexts = await loadTexts(textIds);
 

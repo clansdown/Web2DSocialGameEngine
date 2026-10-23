@@ -301,6 +301,32 @@ The optional `max_per_fiefdom` field limits how many buildings of this type can 
   }
   ```
 
+### Exclusive Groups
+
+The optional `exclusive_group` field marks a set of building types where **at most one
+building from the whole group** may exist in a fiefdom. It is distinct from
+`max_per_fiefdom` (which caps a single type): an exclusive group caps *across* types.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `exclusive_group` | string | none (not exclusive) | Group id; all types sharing the value are mutually exclusive |
+
+- Enforced at build time and on stage **convert** by the server. Attempting to build a
+  second member returns error `exclusive_building_exists`.
+- Convert (stage upgrade) is allowed **within** the group: the row being converted is
+  excluded from the count, so `chapel → church → parish_church` works in place.
+- Types without this field are unaffected.
+- Example: only one of the chapel/church family may exist at a time:
+  ```json
+  "chapel":       { "exclusive_group": "chapel" },
+  "church":       { "exclusive_group": "chapel" },
+  "parish_church":{ "exclusive_group": "chapel" }
+  ```
+- The infirmary chain uses `"exclusive_group": "infirmary"`, so its three stages cannot
+  coexist (their `recovery_multiplier` bonuses no longer stack).
+- The client hides the other members of an occupied group from the build palette
+  (level-locked and group-conflicting types are hidden, not greyed).
+
 ### Structural Fields
 
 | Field | Type | Default | Description |

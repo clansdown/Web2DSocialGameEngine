@@ -50,7 +50,13 @@ building_type::building_type(const std::string& id, const json& config)
     arable_acres_ = config.value("arable_acres", 0);
     forest_acres_ = config.value("forest_acres", 0);
     class_ = config.value("class", "");
+    if (config.contains("exclusive_group") && config["exclusive_group"].is_string()) {
+        const std::string group = config["exclusive_group"].get<std::string>();
+        if (!group.empty()) exclusive_group_ = group;
+    }
 }
+
+const std::string building_type::empty_;
 
 double building_type::cost(const std::string& resource) const {
     const std::string key = resource + "_cost";

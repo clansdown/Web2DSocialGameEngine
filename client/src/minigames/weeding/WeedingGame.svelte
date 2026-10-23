@@ -644,7 +644,6 @@
     }
     const obj = new GameObject(cls, clickedX, clickedY);
     obj.spriteForwardVector = (toolCfg.sprite as any)?.animation_forward_vector || (toolCfg.sprite as any)?.forward_vector || [0, -1];
-    obj.mirrorOnDirection = true;
     if (img) {
       const toolSize = cellSize * 0.6;
       const aspect = img.naturalWidth / img.naturalHeight;
