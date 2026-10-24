@@ -21,8 +21,10 @@ export interface Character {
   sex: string | null;
   /** Safe-pool PFP id; null until the creation picker is answered. */
   avatar_safe_id?: string | null;
-  /** Custom (18+) PFP filename; null when none. */
+  /** Custom (18+) PFP storage key; null when none. */
   avatar_custom_id?: string | null;
+  /** Backend holding the custom key: `local` or `r2`. */
+  avatar_storage?: 'local' | 'r2';
   /** Unix ts of the last avatar change (24h cooldown). */
   avatar_changed_at?: number;
   /** Server-resolved display URL for this character's PFP (may be ""). */
@@ -1890,6 +1892,7 @@ export interface avatar_pool_dto {
 export interface avatar_update_dto {
   avatar_safe_id?: string | null;
   avatar_custom_id?: string | null;
+  avatar_storage?: 'local' | 'r2';
   avatar_changed_at?: number;
   avatar_url?: string;
 }

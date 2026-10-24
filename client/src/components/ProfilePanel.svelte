@@ -144,6 +144,7 @@
       ...c,
       avatar_safe_id: update.avatar_safe_id ?? c.avatar_safe_id,
       avatar_custom_id: cleared_custom ? null : (update.avatar_custom_id ?? c.avatar_custom_id),
+      avatar_storage: update.avatar_storage ?? c.avatar_storage,
       avatar_changed_at: update.avatar_changed_at ?? c.avatar_changed_at,
       avatar_url: update.avatar_url ?? c.avatar_url
     });

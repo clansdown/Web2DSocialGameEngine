@@ -1,5 +1,6 @@
 #include <iostream>
 #include <fstream>
+#include <memory>
 #include <optional>
 #include <algorithm>
 #include <cctype>
@@ -20,6 +21,7 @@
 #include <set>
 #include <filesystem>
 #include <nlohmann/json.hpp>
+#include <curl/curl.h>
 #include <uWebSockets/App.h>
 #include "Database.hpp"
 #include "ApiResponse.hpp"
@@ -60,6 +62,13 @@
 #include "RetinueMarket.hpp"
 #include "AvatarPool.hpp"
 #include "AvatarUrl.hpp"
+#include "Base64.hpp"
+#include "ThreadPool.hpp"
+#include "avatars/AvatarKey.hpp"
+#include "avatars/AvatarStore.hpp"
+#include "avatars/AvatarUploadManager.hpp"
+#include "avatars/AvatarValidation.hpp"
+#include "avatars/CloudflarePurge.hpp"
 #include "CosmeticsDB.hpp"
 #include "chat/ChatService.hpp"
 #include <sqlite_modern_cpp/errors.h>
@@ -550,9 +559,15 @@ ApiResponse handleLogin(GameConfigCache& config_cache, const json& body,
     }
 
     std::vector<json> characters_list;
-    db << "SELECT id, display_name, safe_display_name, level, archetype, sex, avatar_safe_id FROM characters WHERE user_id = ?;"
+    db << "SELECT id, display_name, safe_display_name, level, archetype, sex, "
+          "avatar_safe_id, avatar_custom_id, COALESCE(avatar_storage, 'local'), "
+          "avatar_changed_at FROM characters WHERE user_id = ?;"
        << user_id
-       >> [&](int id, std::string display_name, std::string safe_display_name, int level, std::unique_ptr<std::string> archetype, std::unique_ptr<std::string> sex, std::unique_ptr<std::string> avatar_safe_id) {
+       >> [&](int id, std::string display_name, std::string safe_display_name, int level,
+              std::unique_ptr<std::string> archetype, std::unique_ptr<std::string> sex,
+              std::unique_ptr<std::string> avatar_safe_id,
+              std::unique_ptr<std::string> avatar_custom_id, std::string avatar_storage,
+              int64_t avatar_changed_at) {
              json character;
              character["id"] = id;
              character["display_name"] = display_name;
@@ -569,6 +584,11 @@ ApiResponse handleLogin(GameConfigCache& config_cache, const json& body,
                  character["sex"] = nullptr;
              }
              character["avatar_safe_id"] = avatar_safe_id ? json(*avatar_safe_id) : json(nullptr);
+             character["avatar_custom_id"] =
+                 avatar_custom_id ? json(*avatar_custom_id) : json(nullptr);
+             character["avatar_storage"] = avatar_storage;
+             character["avatar_changed_at"] = avatar_changed_at;
+             character["avatar_url"] = resolve_avatar_url(id, adult);
              characters_list.push_back(character);
          };
 
@@ -649,14 +669,17 @@ ApiResponse handleGetCharacter(GameConfigCache& config_cache, const json& body,
     std::unique_ptr<std::string> sex;
     std::unique_ptr<std::string> avatar_safe_id;
     std::unique_ptr<std::string> avatar_custom_id;
+    std::string avatar_storage = "local";
     int64_t avatar_changed_at = 0;
 
     db << "SELECT display_name, safe_display_name, level, archetype, sex, "
-          "avatar_safe_id, avatar_custom_id, avatar_changed_at FROM characters WHERE id = ?;"
+          "avatar_safe_id, avatar_custom_id, COALESCE(avatar_storage, 'local'), "
+          "avatar_changed_at FROM characters WHERE id = ?;"
        << character_id
        >> [&](std::string dn, std::string sdn, int l, std::unique_ptr<std::string> a,
               std::unique_ptr<std::string> s, std::unique_ptr<std::string> av_safe,
-              std::unique_ptr<std::string> av_custom, int64_t changed) {
+              std::unique_ptr<std::string> av_custom, std::string storage,
+              int64_t changed) {
              display_name = dn;
              safe_display_name = sdn;
              level = l;
@@ -664,6 +687,7 @@ ApiResponse handleGetCharacter(GameConfigCache& config_cache, const json& body,
              sex = std::move(s);
              avatar_safe_id = std::move(av_safe);
              avatar_custom_id = std::move(av_custom);
+             avatar_storage = std::move(storage);
              avatar_changed_at = changed;
          };
 
@@ -683,6 +707,7 @@ ApiResponse handleGetCharacter(GameConfigCache& config_cache, const json& body,
     }
     response.data["avatar_safe_id"] = avatar_safe_id ? json(*avatar_safe_id) : json(nullptr);
     response.data["avatar_custom_id"] = avatar_custom_id ? json(*avatar_custom_id) : json(nullptr);
+    response.data["avatar_storage"] = avatar_storage;
     response.data["avatar_changed_at"] = avatar_changed_at;
     response.data["avatar_url"] = resolve_avatar_url(character_id, user_is_adult(username));
 
@@ -4466,52 +4491,10 @@ ApiResponse handleSetCharacterSex(GameConfigCache& config_cache, const json& bod
 namespace {
 
 constexpr int64_t kAvatarCooldownSeconds = 24 * 60 * 60;
-constexpr size_t kAvatarMaxUploadBytes = 1024 * 1024;   // 1 MB
 
-// Base64 decoder for upload payloads (standard alphabet; whitespace and data
-// URI prefixes are tolerated by the caller).
-std::string base64_decode(const std::string& input) {
-    static const char* alphabet =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    int lookup[256];
-    for (int i = 0; i < 256; ++i) lookup[i] = -1;
-    for (int i = 0; i < 64; ++i) lookup[static_cast<unsigned char>(alphabet[i])] = i;
-
-    std::string out;
-    unsigned int value = 0;
-    int bits = -8;
-    for (char c : input) {
-        if (c == '=') break;
-        const int decoded = lookup[static_cast<unsigned char>(c)];
-        if (decoded < 0) continue;  // skip whitespace/newlines
-        value = (value << 6) + static_cast<unsigned int>(decoded);
-        bits += 6;
-        if (bits >= 0) {
-            out.push_back(static_cast<char>((value >> bits) & 0xFF));
-            bits -= 8;
-        }
-    }
-    return out;
-}
-
-bool bytes_match_format(const std::string& bytes, const std::string& format) {
-    if (format == "png") {
-        return bytes.size() >= 8 && static_cast<unsigned char>(bytes[0]) == 0x89 &&
-               bytes.compare(0, 4, "\x89PNG") == 0;
-    }
-    if (format == "jpg") {
-        return bytes.size() >= 3 && static_cast<unsigned char>(bytes[0]) == 0xFF &&
-               static_cast<unsigned char>(bytes[1]) == 0xD8;
-    }
-    if (format == "webp") {
-        return bytes.size() >= 12 && bytes.compare(0, 4, "RIFF") == 0 &&
-               bytes.compare(8, 4, "WEBP") == 0;
-    }
-    if (format == "avif") {
-        return bytes.size() >= 12 && bytes.compare(4, 4, "ftyp") == 0;
-    }
-    return false;
-}
+// An upload request body is base64 JSON; keep the total parsed body bounded so
+// an unauthenticated client cannot force unbounded allocation before validation.
+constexpr size_t kMaxApiRequestBodyBytes = 2 * 1024 * 1024;
 
 // True while the character is inside the avatar-change cooldown. Fills
 // `remaining_seconds` when blocked.
@@ -4533,6 +4516,131 @@ std::string avatar_cooldown_message(int64_t remaining_seconds) {
     const int64_t hours = (remaining_seconds + 3599) / 3600;
     return "You may only change your portrait once every 24 hours (" +
            std::to_string(hours) + "h remaining).";
+}
+
+struct avatar_runtime {
+    avatar_store& store;
+    avatar_upload_manager& uploads;
+    thread_pool& maintenance_pool;
+    cloudflare_purge_config purge;
+};
+
+struct avatar_upload_context {
+    int character_id = 0;
+    int64_t started_changed_at = 0;
+    std::string old_key;
+    avatar_storage_kind old_storage = avatar_storage_kind::local;
+    std::string old_public_url;
+    uWS::HttpResponse<false>* res = nullptr;
+    uWS::Loop* loop = nullptr;
+    std::shared_ptr<std::atomic<bool>> aborted;
+    std::optional<std::string> new_token;
+};
+
+void queue_avatar_cleanup(thread_pool& maintenance_pool,
+                          avatar_store& store,
+                          const cloudflare_purge_config& purge,
+                          avatar_storage_kind kind,
+                          const std::string& key,
+                          const std::string& public_url) {
+    if (key.empty()) return;
+    const bool posted = maintenance_pool.post([&store, purge, kind, key, public_url]() {
+        std::string error;
+        if (!store.remove(kind, key, error)) {
+            std::cerr << "avatar cleanup failed for " << key << ": " << error << std::endl;
+        }
+        if (kind == avatar_storage_kind::r2 && purge.configured() && !public_url.empty()) {
+            std::string purge_error;
+            if (!cloudflare_purge_urls(purge, {public_url}, purge_error)) {
+                std::cerr << "avatar purge failed for " << public_url << ": "
+                          << purge_error << std::endl;
+            }
+        }
+    });
+    if (!posted) {
+        std::cerr << "avatar cleanup queue is full; leaving " << key << std::endl;
+    }
+}
+
+void complete_avatar_upload(avatar_upload_context context,
+                            avatar_upload_result result,
+                            avatar_upload_manager& uploads,
+                            avatar_store& store,
+                            thread_pool& maintenance_pool,
+                            const cloudflare_purge_config& purge) {
+    uploads.finish(context.character_id);
+
+    auto respond = [&context](const ApiResponse& response) {
+        if (context.aborted && context.aborted->load(std::memory_order_relaxed)) return;
+        if (context.res != nullptr) context.res->end(response.toJson().dump());
+    };
+
+    if (!result.ok) {
+        ApiResponse response;
+        response.error = result.error.empty() ? "avatar_upload_failed" : result.error;
+        if (context.new_token) response.data["token"] = *context.new_token;
+        respond(response);
+        return;
+    }
+
+    const bool same_storage_and_key =
+        result.key == context.old_key && store.active_kind() == context.old_storage;
+    try {
+        auto& db = Database::getInstance().gameDB();
+        bool avatar_locked = false;
+        int64_t changed_at = 0;
+        db << "SELECT avatar_locked, avatar_changed_at FROM characters WHERE id = ?;"
+           << context.character_id
+           >> [&](int locked, int64_t changed) {
+                  avatar_locked = locked != 0;
+                  changed_at = changed;
+              };
+        if (avatar_locked || changed_at != context.started_changed_at) {
+            if (!same_storage_and_key) {
+                queue_avatar_cleanup(maintenance_pool, store, purge,
+                                     store.active_kind(), result.key, result.public_url);
+            }
+            ApiResponse response;
+            response.error = avatar_locked ? "avatar_locked" : "avatar_upload_conflict";
+            if (context.new_token) response.data["token"] = *context.new_token;
+            respond(response);
+            return;
+        }
+
+        const int64_t now =
+            std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        const std::string storage_name = avatar_storage_kind_name(store.active_kind());
+        db << "UPDATE characters SET avatar_storage = ?, avatar_custom_id = ?, "
+              "avatar_changed_at = ? WHERE id = ?;"
+           << storage_name << result.key << now << context.character_id;
+
+        if (!context.old_key.empty() && !same_storage_and_key) {
+            queue_avatar_cleanup(maintenance_pool, store, purge, context.old_storage,
+                                 context.old_key, context.old_public_url);
+        }
+
+        std::string avatar_url = store.public_url(store.active_kind(), result.key);
+        if (avatar_url.empty()) {
+            avatar_url = "/api/avatar/" + std::to_string(context.character_id);
+        }
+        ApiResponse response;
+        response.data["avatar_custom_id"] = result.key;
+        response.data["avatar_storage"] = storage_name;
+        response.data["avatar_changed_at"] = now;
+        response.data["avatar_url"] = avatar_url;
+        if (context.new_token) response.data["token"] = *context.new_token;
+        respond(response);
+    } catch (const std::exception& e) {
+        log_error("complete_avatar_upload", e.what());
+        if (!same_storage_and_key) {
+            queue_avatar_cleanup(maintenance_pool, store, purge,
+                                 store.active_kind(), result.key, result.public_url);
+        }
+        ApiResponse response;
+        response.error = "avatar_upload_failed";
+        if (context.new_token) response.data["token"] = *context.new_token;
+        respond(response);
+    }
 }
 
 } // namespace
@@ -4661,127 +4769,166 @@ ApiResponse handleSetCharacterAvatar(GameConfigCache& config_cache, const json& 
     return response;
 }
 
-// Uploads a custom PFP (18+ only). The client is expected to pre-scale to
-// 256x256; the server enforces the format, a 1 MB size cap, an identity magic-
-// byte check, and (for PNG/JPEG) a 256x256 dimension cap. TODO: moderation —
-// there is no content review yet, so this is intentionally adult-gated only.
-ApiResponse handleUploadCharacterAvatar(GameConfigCache& config_cache, const json& body,
-                                        const std::optional<std::string>& username,
-                                        const ClientInfo& client,
-                                        const std::optional<std::string>& new_token)
-{
-    (void)config_cache; (void)client;
-    ApiResponse response;
+// Uploads a custom PFP (18+ only). Validation and the storage write run on the
+// bounded avatar pool; the completion is marshalled back to the uWS loop before
+// touching the response or SQLite. The client is expected to pre-scale to
+// 256x256; the server still enforces the format, a 1 MB size cap, magic bytes,
+// and a dimension cap. TODO: moderation — there is no content review yet, so
+// this is intentionally adult-gated only.
+void handle_upload_character_avatar_async(
+    const json& body,
+    const std::optional<std::string>& username,
+    const std::optional<std::string>& new_token,
+    uWS::HttpResponse<false>* res,
+    const std::shared_ptr<std::atomic<bool>>& aborted,
+    avatar_runtime& runtime) {
+    auto respond_now = [res, aborted](const ApiResponse& response) {
+        if (aborted && aborted->load(std::memory_order_relaxed)) return;
+        if (res != nullptr) res->end(response.toJson().dump());
+    };
+
     if (!username) {
+        ApiResponse response;
         response.needs_auth = true;
-        return response;
+        respond_now(response);
+        return;
     }
     if (!user_is_adult(username)) {
+        ApiResponse response;
         response.error = "adult_required";
-        return response;
+        respond_now(response);
+        return;
     }
     int64_t character_id = 0;
     std::string display_name;
     if (!character_owned_by(body, username, character_id, display_name)) {
+        ApiResponse response;
         response.error = "Character does not belong to this user";
-        return response;
+        respond_now(response);
+        return;
     }
 
-    std::string format = lower_ascii(body.value("format", ""));
-    if (format == "jpeg") format = "jpg";
-    if (!AvatarPool::allowed_extension("." + format)) {
+    const std::string format = lower_ascii(body.value("format", ""));
+    if (!parse_avatar_format(format)) {
+        ApiResponse response;
         response.error = "Unsupported image format (png, jpg, webp, avif).";
-        return response;
+        respond_now(response);
+        return;
     }
 
     std::string encoded = body.value("image_base64", "");
     if (encoded.empty()) {
+        ApiResponse response;
         response.error = "image_base64 required";
-        return response;
+        respond_now(response);
+        return;
     }
     const size_t comma = encoded.find(',');
     if (encoded.rfind("data:", 0) == 0 && comma != std::string::npos) {
         encoded = encoded.substr(comma + 1);
     }
-    const std::string bytes = base64_decode(encoded);
-    if (bytes.empty()) {
-        response.error = "Image data is missing or invalid.";
-        return response;
-    }
-    if (bytes.size() > kAvatarMaxUploadBytes) {
-        response.error = "Image is too large (max 1 MB).";
-        return response;
-    }
-    if (!bytes_match_format(bytes, format)) {
-        response.error = "Image does not look like a valid " + format + " file.";
-        return response;
+    if (encoded.size() > kMaxApiRequestBodyBytes) {
+        ApiResponse response;
+        response.error = "avatar_too_large";
+        respond_now(response);
+        return;
     }
 
     auto& db = Database::getInstance().gameDB();
-    const int64_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    std::string storage_name = "local";
+    std::unique_ptr<std::string> old_custom;
+    bool avatar_locked = false;
+    int64_t changed_at = 0;
+    db << "SELECT COALESCE(avatar_storage, 'local'), avatar_custom_id, "
+          "avatar_locked, avatar_changed_at FROM characters WHERE id = ?;"
+       << character_id
+       >> [&](std::string storage, std::unique_ptr<std::string> custom,
+              int locked, int64_t changed) {
+              storage_name = std::move(storage);
+              old_custom = std::move(custom);
+              avatar_locked = locked != 0;
+              changed_at = changed;
+          };
+    if (avatar_locked) {
+        ApiResponse response;
+        response.error = "avatar_locked";
+        respond_now(response);
+        return;
+    }
+
+    const int64_t now =
+        std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     int64_t remaining = 0;
     if (avatar_cooldown_active(db, character_id, now, remaining)) {
+        ApiResponse response;
         response.error = avatar_cooldown_message(remaining);
-        return response;
+        respond_now(response);
+        return;
     }
 
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    fs::create_directories("uploads/avatars", ec);
-    const std::string filename = std::to_string(character_id) + "." + format;
-    const std::string path = "uploads/avatars/" + filename;
-    {
-        std::ofstream out(path, std::ios::binary);
-        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-        if (!out) {
-            response.error = "Failed to store the image.";
-            return response;
-        }
+    const avatar_storage_kind old_storage =
+        storage_name == "r2" ? avatar_storage_kind::r2 : avatar_storage_kind::local;
+    const std::string old_key = old_custom ? *old_custom : "";
+    const std::string old_public_url =
+        old_key.empty() ? "" : runtime.store.public_url(old_storage, old_key);
+
+    avatar_upload_task task;
+    task.character_id = static_cast<int>(character_id);
+    task.format = format;
+    task.image_base64 = std::move(encoded);
+    task.old_key = old_key;
+    task.old_storage = old_storage;
+    task.started_changed_at = changed_at;
+
+    auto context = std::make_shared<avatar_upload_context>();
+    context->character_id = static_cast<int>(character_id);
+    context->started_changed_at = changed_at;
+    context->old_key = old_key;
+    context->old_storage = old_storage;
+    context->old_public_url = old_public_url;
+    context->res = res;
+    context->loop = uWS::Loop::get();
+    context->aborted = aborted;
+    context->new_token = new_token;
+
+    if (!runtime.uploads.try_begin(static_cast<int>(character_id))) {
+        ApiResponse response;
+        response.error = "avatar_upload_in_progress";
+        respond_now(response);
+        return;
     }
 
-    // PNG/JPEG expose dimensions cheaply; reject oversized images when known.
-    const ImageDimensions dim = get_image_dimensions(path);
-    if (dim.width > 256 || dim.height > 256) {
-        fs::remove(path, ec);
-        response.error = "Image is too large (max 256x256).";
-        return response;
+    bool posted = false;
+    try {
+        posted = runtime.uploads.submit(
+            std::move(task),
+            [context, &runtime](avatar_upload_result result) mutable {
+                uWS::Loop* loop = context->loop;
+                loop->defer([context, result = std::move(result), &runtime]() mutable {
+                    complete_avatar_upload(std::move(*context), std::move(result),
+                                           runtime.uploads, runtime.store,
+                                           runtime.maintenance_pool, runtime.purge);
+                });
+            });
+    } catch (const std::exception& e) {
+        log_error("handle_upload_character_avatar_async", e.what());
     }
-
-    // Admin identity lock: a locked avatar may only be changed by an admin.
-    bool avatar_locked = false;
-    db << "SELECT avatar_locked FROM characters WHERE id = ?;" << character_id
-       >> [&](int v) { avatar_locked = v; };
-    if (avatar_locked) {
-        fs::remove(path, ec);
-        response.error = "avatar_locked";
-        return response;
+    if (!posted) {
+        runtime.uploads.finish(static_cast<int>(character_id));
+        ApiResponse response;
+        response.error = "server_busy";
+        if (new_token) response.data["token"] = *new_token;
+        respond_now(response);
     }
-
-    // Drop a previous custom file under a different extension.
-    std::unique_ptr<std::string> old_custom;
-    db << "SELECT avatar_custom_id FROM characters WHERE id = ?;" << character_id
-       >> [&](std::unique_ptr<std::string> c) { old_custom = std::move(c); };
-    if (old_custom && !old_custom->empty() && *old_custom != filename) {
-        fs::remove("uploads/avatars/" + *old_custom, ec);
-    }
-
-    db << "UPDATE characters SET avatar_custom_id = ?, avatar_changed_at = ? WHERE id = ?;"
-       << filename << now << character_id;
-    response.data["avatar_custom_id"] = filename;
-    response.data["avatar_changed_at"] = now;
-    response.data["avatar_url"] = resolve_avatar_url(character_id, true);
-    if (new_token) response.data["token"] = *new_token;
-    return response;
 }
 
 // Removes the character's custom PFP (18+ only), reverting the display to the
-// safe pick. Rate-limited like every other avatar change.
-ApiResponse handleRemoveCustomAvatar(GameConfigCache& config_cache, const json& body,
-                                     const std::optional<std::string>& username,
-                                     const ClientInfo& client,
-                                     const std::optional<std::string>& new_token)
-{
-    (void)config_cache; (void)client;
+// safe pick. Rate-limited like every other avatar change. Storage deletion and
+// the Cloudflare purge are queued on the maintenance pool.
+ApiResponse handle_remove_custom_avatar(const json& body,
+                                        const std::optional<std::string>& username,
+                                        const std::optional<std::string>& new_token,
+                                        avatar_runtime& runtime) {
     ApiResponse response;
     if (!username) {
         response.needs_auth = true;
@@ -4798,41 +4945,72 @@ ApiResponse handleRemoveCustomAvatar(GameConfigCache& config_cache, const json& 
         return response;
     }
 
-    auto& db = Database::getInstance().gameDB();
-    bool avatar_locked = false;
-    db << "SELECT avatar_locked FROM characters WHERE id = ?;" << character_id
-       >> [&](int v) { avatar_locked = v; };
-    if (avatar_locked) {
-        response.error = "avatar_locked";
+    if (!runtime.uploads.try_begin(static_cast<int>(character_id))) {
+        response.error = "avatar_upload_in_progress";
         return response;
     }
-    std::unique_ptr<std::string> custom_id;
-    db << "SELECT avatar_custom_id FROM characters WHERE id = ?;" << character_id
-       >> [&](std::unique_ptr<std::string> c) { custom_id = std::move(c); };
-    if (!custom_id || custom_id->empty()) {
-        response.data["result"] = "no_custom";
+
+    try {
+        auto& db = Database::getInstance().gameDB();
+        std::string storage_name = "local";
+        std::unique_ptr<std::string> custom_id;
+        bool avatar_locked = false;
+        db << "SELECT COALESCE(avatar_storage, 'local'), avatar_custom_id, avatar_locked "
+              "FROM characters WHERE id = ?;"
+           << character_id
+           >> [&](std::string storage, std::unique_ptr<std::string> custom, int locked) {
+                  storage_name = std::move(storage);
+                  custom_id = std::move(custom);
+                  avatar_locked = locked != 0;
+              };
+        if (avatar_locked) {
+            runtime.uploads.finish(static_cast<int>(character_id));
+            response.error = "avatar_locked";
+            return response;
+        }
+        if (!custom_id || custom_id->empty()) {
+            runtime.uploads.finish(static_cast<int>(character_id));
+            response.data["result"] = "no_custom";
+            response.data["avatar_url"] = resolve_avatar_url(character_id, true);
+            if (new_token) response.data["token"] = *new_token;
+            return response;
+        }
+
+        const int64_t now =
+            std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        int64_t remaining = 0;
+        if (avatar_cooldown_active(db, character_id, now, remaining)) {
+            runtime.uploads.finish(static_cast<int>(character_id));
+            response.error = avatar_cooldown_message(remaining);
+            return response;
+        }
+
+        const avatar_storage_kind old_storage =
+            storage_name == "r2" ? avatar_storage_kind::r2 : avatar_storage_kind::local;
+        const std::string old_key = *custom_id;
+        const std::string old_public_url =
+            runtime.store.public_url(old_storage, old_key);
+
+        db << "UPDATE characters SET avatar_custom_id = NULL, avatar_storage = 'local', "
+              "avatar_changed_at = ? WHERE id = ?;"
+           << now << character_id;
+
+        queue_avatar_cleanup(runtime.maintenance_pool, runtime.store, runtime.purge,
+                             old_storage, old_key, old_public_url);
+        runtime.uploads.finish(static_cast<int>(character_id));
+
+        response.data["result"] = "removed";
+        response.data["avatar_storage"] = "local";
+        response.data["avatar_changed_at"] = now;
         response.data["avatar_url"] = resolve_avatar_url(character_id, true);
         if (new_token) response.data["token"] = *new_token;
         return response;
-    }
-
-    const int64_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    int64_t remaining = 0;
-    if (avatar_cooldown_active(db, character_id, now, remaining)) {
-        response.error = avatar_cooldown_message(remaining);
+    } catch (const std::exception& e) {
+        runtime.uploads.finish(static_cast<int>(character_id));
+        log_error("handle_remove_custom_avatar", e.what());
+        response.error = "avatar_remove_failed";
         return response;
     }
-
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    fs::remove("uploads/avatars/" + *custom_id, ec);
-    db << "UPDATE characters SET avatar_custom_id = NULL, avatar_changed_at = ? WHERE id = ?;"
-       << now << character_id;
-    response.data["result"] = "removed";
-    response.data["avatar_changed_at"] = now;
-    response.data["avatar_url"] = resolve_avatar_url(character_id, true);
-    if (new_token) response.data["token"] = *new_token;
-    return response;
 }
 
 ApiResponse handleAcknowledgeLandPatent(GameConfigCache& config_cache, const json& body,
@@ -7817,7 +7995,8 @@ ApiResponse handleApplyBookItem(GameConfigCache& config_cache, const json& body,
     return response;
 }
 
-void handleApiRequest(GameConfigCache& config_cache, auto* res, auto* req) {
+void handleApiRequest(GameConfigCache& config_cache, auto* res, auto* req,
+                      avatar_runtime& avatar_services) {
     // Extract req data NOW while req is still valid (uWS only guarantees req
     // lifetime during the synchronous handler call — the onData callback fires
     // later when the POST body arrives, at which point req may be freed).
@@ -7825,18 +8004,24 @@ void handleApiRequest(GameConfigCache& config_cache, auto* res, auto* req) {
     ClientInfo client = parseClientHeaders(req);
     std::string ip_address = std::string(client.real_ip);
 
-    // uWS requires an abort handler when using onData; without it, the
-    // process aborts with "Returning from a request handler without
-    // responding or attaching an abort handler is forbidden!"
-    res->onAborted([]() {
-        // No cleanup needed — the res object is already invalid.
-    });
+    // uWS requires an abort handler when using onData. One shared flag lets the
+    // asynchronous avatar completion skip a response after a client abort.
+    auto aborted = std::make_shared<std::atomic<bool>>(false);
+    res->onAborted([aborted]() { aborted->store(true, std::memory_order_relaxed); });
 
     std::string buffer;
     res->onData([res, endpoint = std::move(endpoint), client = std::move(client),
                  ip_address = std::move(ip_address), buffer = std::move(buffer),
-                 &config_cache]
+                 aborted, too_large = false, &config_cache, &avatar_services]
                 (std::string_view data, bool isLast) mutable {
+        if (too_large) return;
+        if (buffer.size() + data.size() > kMaxApiRequestBodyBytes) {
+            too_large = true;
+            ApiResponse response;
+            response.error = "request_too_large";
+            sendJsonResponse(res, response);
+            return;
+        }
         buffer += data;
         if (!isLast) return;
 
@@ -7879,7 +8064,22 @@ void handleApiRequest(GameConfigCache& config_cache, auto* res, auto* req) {
                 return;
             }
 
-            // Authenticated endpoints
+            // Authenticated endpoints with deferred or service-backed storage.
+            if (endpoint == "uploadCharacterAvatar") {
+                handle_upload_character_avatar_async(
+                    body, auth_result.username, auth_result.new_token, res, aborted,
+                    avatar_services);
+                increment_request_count();
+                return;
+            }
+            if (endpoint == "removeCustomAvatar") {
+                ApiResponse response = handle_remove_custom_avatar(
+                    body, auth_result.username, auth_result.new_token, avatar_services);
+                sendJsonResponse(res, response);
+                increment_request_count();
+                return;
+            }
+
             auto handlers = getEndpointHandlers(config_cache);
             if (handlers.count(endpoint)) {
                 ApiResponse response = handlers[endpoint](config_cache, body, auth_result.username, client, auth_result.new_token);
@@ -8272,6 +8472,53 @@ int main(int argc, char* argv[]) {
 
     load_cors_origins();
 
+    // ── Avatar storage ─────────────────────────────────────────────────────
+    // Local mode keeps development self-contained; r2 is the production path.
+    std::string avatar_config_error;
+    const auto avatar_config = load_avatar_store_config(avatar_config_error);
+    if (!avatar_config) {
+        std::cerr << "Failed to configure avatar storage: " << avatar_config_error << std::endl;
+        return 1;
+    }
+    std::string purge_config_error;
+    const auto purge_config = load_cloudflare_purge_config(purge_config_error);
+    if (!purge_config) {
+        std::cerr << "Failed to configure Cloudflare purge: " << purge_config_error << std::endl;
+        return 1;
+    }
+
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    avatar_store avatar_storage(*avatar_config);
+    std::size_t avatar_upload_threads = 2;
+    std::size_t avatar_maintenance_threads = 1;
+    std::size_t avatar_queue_max = 64;
+    if (const char* raw = std::getenv("RAVENEST_AVATAR_UPLOAD_THREADS")) {
+        avatar_upload_threads = static_cast<std::size_t>(std::clamp(std::atoi(raw), 1, 16));
+    }
+    if (const char* raw = std::getenv("RAVENEST_AVATAR_MAINTENANCE_THREADS")) {
+        avatar_maintenance_threads =
+            static_cast<std::size_t>(std::clamp(std::atoi(raw), 1, 8));
+    }
+    if (const char* raw = std::getenv("RAVENEST_AVATAR_QUEUE_MAX")) {
+        avatar_queue_max = static_cast<std::size_t>(std::clamp(std::atoi(raw), 1, 1024));
+    }
+    thread_pool avatar_upload_pool(avatar_upload_threads, avatar_queue_max);
+    thread_pool avatar_maintenance_pool(avatar_maintenance_threads, avatar_queue_max);
+    avatar_upload_manager avatar_uploads(avatar_storage, avatar_upload_pool,
+                                         avatar_maintenance_pool);
+    configure_avatar_urls({avatar_config->public_base_url, avatar_config->r2_prefix});
+    avatar_runtime avatar_services{
+        avatar_storage,
+        avatar_uploads,
+        avatar_maintenance_pool,
+        *purge_config,
+    };
+    if (!quiet) {
+        std::cout << "Avatar storage: " << avatar_storage_kind_name(avatar_config->kind)
+                  << " (upload threads " << avatar_upload_threads << ", queue "
+                  << avatar_queue_max << ")" << std::endl;
+    }
+
     uWS::App app;
 
     check_test_limits();
@@ -8304,6 +8551,8 @@ int main(int argc, char* argv[]) {
     // one synchronously and exits before the server starts listening.
     g_combat_manager.set_replay_dir(combat_replay_dir);
     if (!combat_replay_file.empty()) {
+        avatar_uploads.shutdown();
+        curl_global_cleanup();
         return run_combat_replay(combat_replay_file);
     }
 
@@ -8624,17 +8873,50 @@ int main(int argc, char* argv[]) {
     // Auth rides the query string (?username=&token=) because the browser
     // requests this via <img src>. TODO: moderation/review before release.
     app.get("/api/avatar/*", [](auto *res, auto *req) {
-        set_cors_headers(res, req);
-        res->writeHeader("Cache-Control", "private, no-store");
+        auto respond_not_found = [res, req]() {
+            // uWS's writeHeader implicitly selects 200, so set the status first.
+            res->writeStatus("404 Not Found");
+            set_cors_headers(res, req);
+            res->writeHeader("Cache-Control", "private, no-store");
+            res->end("Not found");
+        };
+        // getUrl() is the path only in this uWS version; getQuery() returns the
+        // raw query string without the leading '?'. Keep both (path parsing is
+        // tolerant if a future version includes the query in getUrl()).
         const std::string url(req->getUrl());
         const std::string prefix = "/api/avatar/";
         std::string rest = url.substr(prefix.length());
-        const size_t query = rest.find('?');
-        std::string query_string;
-        if (query != std::string::npos) {
-            query_string = rest.substr(query + 1);
-            rest = rest.substr(0, query);
+        const size_t path_query = rest.find('?');
+        if (path_query != std::string::npos) {
+            rest = rest.substr(0, path_query);
         }
+        const std::string query_string(req->getQuery());
+
+        // Query values are percent-encoded (the client uses encodeURIComponent).
+        auto decode_query_value = [](const std::string& value) -> std::string {
+            std::string out;
+            out.reserve(value.size());
+            for (size_t i = 0; i < value.size(); ++i) {
+                if (value[i] == '%' && i + 2 < value.size() &&
+                    std::isxdigit(static_cast<unsigned char>(value[i + 1])) != 0 &&
+                    std::isxdigit(static_cast<unsigned char>(value[i + 2])) != 0) {
+                    const auto hex_value = [](char c) -> int {
+                        if (c >= '0' && c <= '9') return c - '0';
+                        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                        return c - 'A' + 10;
+                    };
+                    out.push_back(static_cast<char>(
+                        (hex_value(value[i + 1]) << 4) | hex_value(value[i + 2])));
+                    i += 2;
+                } else if (value[i] == '+') {
+                    out.push_back(' ');
+                } else {
+                    out.push_back(value[i]);
+                }
+            }
+            return out;
+        };
+
         // Parse the id and the auth query params.
         int64_t character_id = 0;
         std::string username;
@@ -8652,7 +8934,7 @@ int main(int argc, char* argv[]) {
             const size_t eq = pair.find('=');
             if (eq != std::string::npos) {
                 const std::string key = pair.substr(0, eq);
-                const std::string value = pair.substr(eq + 1);
+                const std::string value = decode_query_value(pair.substr(eq + 1));
                 if (key == "username") username = value;
                 else if (key == "token") token = value;
             }
@@ -8662,20 +8944,24 @@ int main(int argc, char* argv[]) {
 
         if (character_id <= 0 || username.empty() || token.empty() ||
             !AuthManager::getInstance().authenticateWithToken(username, token)) {
-            res->writeStatus("404 Not Found")->end("Not found");
+            respond_not_found();
             return;
         }
 
         auto& db = Database::getInstance().gameDB();
         std::unique_ptr<std::string> custom_id;
+        std::string avatar_storage = "local";
         int owner_user_id = 0;
-        db << "SELECT avatar_custom_id, user_id FROM characters WHERE id = ?;" << character_id
-           >> [&](std::unique_ptr<std::string> c, int uid) {
+        db << "SELECT avatar_custom_id, COALESCE(avatar_storage, 'local'), user_id "
+              "FROM characters WHERE id = ?;"
+           << character_id
+           >> [&](std::unique_ptr<std::string> c, std::string storage, int uid) {
                   custom_id = std::move(c);
+                  avatar_storage = std::move(storage);
                   owner_user_id = uid;
               };
         if (!custom_id || custom_id->empty() || owner_user_id == 0) {
-            res->writeStatus("404 Not Found")->end("Not found");
+            respond_not_found();
             return;
         }
 
@@ -8688,10 +8974,32 @@ int main(int argc, char* argv[]) {
            >> [&](int id, bool a) { viewer_user_id = id; viewer_adult = a; };
         if (!owner_adult || viewer_user_id == 0 ||
             (viewer_user_id != owner_user_id && !viewer_adult)) {
-            res->writeStatus("404 Not Found")->end("Not found");
+            respond_not_found();
             return;
         }
 
+        if (avatar_storage == "r2") {
+            const std::string public_url = build_avatar_public_url("r2", *custom_id);
+            if (public_url.empty()) {
+                respond_not_found();
+                return;
+            }
+            // Set the status before any headers (uWS's writeHeader selects 200).
+            res->writeStatus("302 Found");
+            set_cors_headers(res, req);
+            res->writeHeader("Cache-Control", "private, no-store");
+            res->writeHeader("Location", public_url);
+            res->end();
+            return;
+        }
+
+        if (!std::ifstream("uploads/avatars/" + *custom_id, std::ios::binary)) {
+            respond_not_found();
+            return;
+        }
+        res->writeStatus("200 OK");
+        set_cors_headers(res, req);
+        res->writeHeader("Cache-Control", "private, no-store");
         serve_image_subtree(res, "/" + *custom_id, "/", "uploads/avatars/");
     });
 
@@ -8715,9 +9023,9 @@ int main(int argc, char* argv[]) {
     });
 
     // `mini_games` outlives the App (declared earlier in main); see W9 note.
-    app.post("/api/*", [&mini_games](auto *res, auto *req) {
+    app.post("/api/*", [&mini_games, &avatar_services](auto *res, auto *req) {
         set_cors_headers(res, req);
-        handleApiRequest(mini_games.config_cache(), res, req);
+        handleApiRequest(mini_games.config_cache(), res, req, avatar_services);
     });
 
     app.listen(port, [port, quiet](auto *listenSocket) {
@@ -8784,7 +9092,9 @@ int main(int argc, char* argv[]) {
     g_shutdown_requested.store(true, std::memory_order_relaxed);
     if (shutdown_monitor.joinable()) shutdown_monitor.join();
     app_slot->store(nullptr, std::memory_order_release);
+    avatar_uploads.shutdown();
     g_combat_manager.shutdown();
+    curl_global_cleanup();
 
     return 0;
 }

@@ -232,7 +232,9 @@ analyzer tech-tree transparency (economic sim unaffected).
   mirroring the safe/custom name model. `avatar_safe_id` is the always-present
   safe pick (forced pick at creation, or skipped when the pool is empty — no
   random assignment), shown to minors and used as the fallback; `avatar_custom_id`
-  is an optional 18+ upload layered on top for adult viewers. Any change is
+  is an optional 18+ upload layered on top for adult viewers. The upload is
+  content-addressed (`<character_id>/<sha256>.<ext>`) and `avatar_storage` selects
+  local (`uploads/avatars/`) or R2 (public assets bucket). Any change is
   rate-limited to once per 24h per character (`avatar_changed_at`); the creation
   pick is exempt.
 - **The safe pool is gender-split** (`game/images/avatars/safe/{male,female}/`,
@@ -259,9 +261,11 @@ analyzer tech-tree transparency (economic sim unaffected).
 - **Age gating is server-side.** Safe art is public
   (`/images/avatars/safe/{male,female}/*`, scanned at startup and auto-rescanned
   when the pool directory changes — no restart needed);
-  custom uploads live outside the static tree (`game/uploads/avatars/`) and are
-  served only by the age-gated `GET /api/avatar/<character_id>` (owner or adult
-  viewer). Under-18 viewers always receive the owner's safe pick.
+  custom uploads live outside the static tree. The local backend is served only
+  by the age-gated `GET /api/avatar/<character_id>` (owner or adult viewer); the
+  R2 backend resolves to a public content-addressed capability URL. Under-18
+  viewers always receive the owner's safe pick, and the custom URL is never
+  disclosed to them.
 - **RTS note:** the realtime game does NOT use these portraits. RTS player art is
   a separate, generic, directionally-animated system (with cosmetics), designed
   later; no combat DTO carries a portrait.

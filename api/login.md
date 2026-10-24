@@ -28,7 +28,12 @@ Authenticate a user and return all characters associated with the account.
         "id": 1,
         "display_name": "CloudDragon",
         "safe_display_name": "CloudDragon",
-        "level": 1
+        "level": 1,
+        "avatar_safe_id": "male/3.png",
+        "avatar_custom_id": null,
+        "avatar_storage": "local",
+        "avatar_changed_at": 0,
+        "avatar_url": "/images/avatars/safe/male/3.png"
       }
     ]
   },
@@ -47,6 +52,11 @@ Authenticate a user and return all characters associated with the account.
 | characters[].display_name | string | Character display name |
 | characters[].safe_display_name | string | Character safe display name |
 | characters[].level | integer | Character level |
+| characters[].avatar_safe_id | string \| null | Safe-pool PFP id |
+| characters[].avatar_custom_id | string \| null | Content-addressed custom PFP key, or null |
+| characters[].avatar_storage | string | `local` or `r2` |
+| characters[].avatar_changed_at | integer | Unix ts of the last PFP change (24h cooldown) |
+| characters[].avatar_url | string | Server-resolved PFP URL for this viewer (safe pick for minors) |
 | token | string | Authentication token (included if password used) |
 
 ### Error (400 Bad Request)

@@ -572,6 +572,12 @@ purchase rejected → `purchasePlatinum` (pending → duplicate) → `settlePlat
 `refundPremiumItem` (revokes + clears the loadout, replay `not_owned`). Exits 0
 on pass, 2 on failure; isolated per-port scratch DB.
 
+**Avatar smoke test** (`bash tools/avatar_smoke.sh [PORT]`): createAccount(adult)
+→ login avatar fields → content-addressed upload → age-gated fetch → cooldown /
+invalid-format errors. Defaults to the local backend; exporting
+`RAVENEST_AVATAR_STORAGE=r2` plus the R2 env runs the same flow against a test
+bucket. Exits 0 on pass, 2 on failure; isolated per-port scratch DB.
+
 **Combat determinism / replay** (`tools/replay_combat.sh [SEED] [PORT]`):
 records a scripted match with `--combat-replay-dir` + `--combat-seed`, then
 re-runs the tick-exact command/ready log through `--combat-replay` and asserts
@@ -991,6 +997,19 @@ Build the full game progression and content system with a working tower defense 
 - **Player avatars split from retinue portraits**: new `client/src/components/PlayerAvatar.svelte` renders the player's own PFP in a **1:1.5** portrait box with `object-fit: contain` (whole image, aspect preserved) and a mat background, separate from `RetinuePortrait.svelte` (retinue-only: square, framed). `ProfilePanel.svelte`'s "current portrait" now uses `PlayerAvatar`; the custom-upload preview is `64×96 contain`. `SafeAvatarGrid.svelte` (shared by the creation picker and the Profile panel) renders each pool entry in a 1:1.5 area with `contain` + mat.
 - **Warband assembly implemented** (`mission_gen::assemble_warband`): replaces the placeholder role/fraction generator. The offering id now freezes `(players, troop_count, power_bucket)` (7 fields), the board combines the character with the strongest `max_players − 1` barony members into one aggregate `S`, and assembly draws `ρ` (target `T = ρ·S`) and a horde/elite `e` (seed + party-size − log2 retinue-size), weights classes by `(p_L1/p_ref)^e`, rolls unmet `requires` prerequisites depth-first, and adds units at a random level in `[1, L_fit]` under `T + p_min` (first failure ends the round; dry pass ends assembly; 10 000-iteration backstop). Realized `R` drives `danger_ratio`/`danger_band`/XP. `encounter.composition`, `level_reference_power`, and `level_per_ratio` are gone; tier `anchor`s are gone; configs now carry `eliteness` + `prerequisite_depth`, and enemy classes carry `requires`. Combatant level arrays were reauthored to `m(L) = 1 + 0.1·(L−1)` (`√m` on damage/HP). New API fields: `target_power`, `realized_power`, `difficulty`, `eliteness`. Docs: `server/docs/combat_system.md` → "PvE Mission Offerings", `api/getCombatOfferings.md`, `api/combatCreate.md`.
 
+- **Custom avatar storage (local/R2)**: `characters.avatar_storage` selects `local`
+  (`uploads/avatars/`) or `r2` (public assets bucket). Keys are content-addressed
+  (`<character_id>/<sha256>.<ext>`); uploads validate/decode/hash/dimension-check
+  on a bounded `thread_pool`, write through a minimal SigV4 `r2_client`, and
+  complete on the uWS loop before updating SQLite. Authorized adults receive the
+  absolute `https://assets.../avatars/...` URL; minors always get the safe pick.
+  Local mode still serves via age-gated `GET /api/avatar/<id>`; R2 redirects to
+  the public capability URL. Replacement/removal deletes the old object and
+  purges the exact Cloudflare URL (browser copies accepted). `install.sh` writes
+  `RAVENEST_AVATAR_*`/`RAVENEST_R2_*` into `SERVER_ENV_PATH`; `.deploy` holds a
+  separate scoped token. No migration (no existing avatars). F7 age-isolation is
+  a separate production release gate.
+
 #### In Progress
 - (none)
 
@@ -1058,6 +1077,9 @@ Build the full game progression and content system with a working tower defense 
 - `game/config/manor_river.json` - River templates (meandering polyline `points` + band `width`)
 - `client/src/components/ManorMenu.svelte` - Manor board: roads, water power, construction, HUD, panels, building info card (upgrade/convert/demolish/pond-type)
 - `server/tables/fiefdom_river.md` - River table schema (lazy seeding, rotation)
+- `server/avatars/` - Avatar storage abstraction, SigV4 R2 client, upload manager, purge
+- `server/ThreadPool.hpp/.cpp` - Bounded worker pool for avatar upload/maintenance
+- `tools/avatar_smoke.sh` / `tools/avatar_smoke.mjs` - Local/R2 avatar smoke test
 - `game/config/fiefdom_building_types.json` - Building types incl. stage chains (`built_from`), level-indexed production arrays, production-resource build costs
 - `server/ActionHandlers.cpp` - Convert action, chain-aware counting, cost-system extension (charcoal/iron/ironwork/fancy_ironwork)
 - `server/docs/fiefdom_building_types.md` - Stage chains, level-scaled production, money-object amounts

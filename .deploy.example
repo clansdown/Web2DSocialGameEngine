@@ -51,6 +51,20 @@ SERVER_SSH_KEY=""
 # SERVER_ENV_PATH as RAVENEST_CORS_ORIGINS.
 SERVER_CORS_ORIGINS=""
 
+# --- Custom avatar storage ---------------------------------------------------
+# "local" (development/default) or "r2" (production). R2 uses the same bucket
+# as public assets, under AVATAR_R2_PREFIX, with a separate scoped token.
+SERVER_AVATAR_STORAGE="local"
+AVATAR_R2_ACCESS_KEY_ID=""
+AVATAR_R2_SECRET_ACCESS_KEY=""
+AVATAR_R2_PREFIX="avatars/"
+# Public origin serving the bucket; defaults to PUBLIC_ASSETS_ORIGIN.
+AVATAR_PUBLIC_BASE_URL=""
+# Optional cache-purge credentials. Without them, removal still deletes the R2
+# object but cannot purge an already-cached edge URL.
+AVATAR_CLOUDFLARE_ZONE_ID=""
+AVATAR_CLOUDFLARE_API_TOKEN=""
+
 # Defaults to ${SERVER_PATH}/ravenest.env. The service must read this file
 # (systemd EnvironmentFile or Docker env_file). Keep it outside game/.
 SERVER_ENV_PATH=""
@@ -60,6 +74,7 @@ SERVER_ENV_PATH=""
 # SERVER_RESTART_CMD="sudo systemctl restart ravenest"
 
 # --- Cloudflare API (reserved for purge-on-deploy) --------------------------
-# Not used yet. A future purge step will read these when the R2 TTL is raised.
+# CF_ZONE_ID is also the default AVATAR_CLOUDFLARE_ZONE_ID. Avatar purges use a
+# separate Cache Purge-only token (AVATAR_CLOUDFLARE_API_TOKEN).
 CF_API_TOKEN=""
 CF_ZONE_ID=""

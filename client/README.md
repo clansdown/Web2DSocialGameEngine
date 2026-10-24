@@ -156,8 +156,9 @@ character's layered portrait, mirroring the safe/custom name model:
 - **Custom portrait** (`avatar_custom_id`): an optional 18+ upload, shown only to
   adult viewers of adult owners. The client center-crops to a square, scales to
   256x256, and encodes WebP when the canvas supports it (else JPEG) before
-  uploading. Stored server-side outside the static tree and served via the
-  age-gated `GET /api/avatar/<id>`.
+  uploading. Stored server-side outside the static tree using a content-addressed
+  key; `avatar_storage` selects local (`/api/avatar/<id>`) or R2 (absolute public
+  asset URL). The client passes both through unchanged.
 
 Any change is rate-limited to once per 24h per character (the creation pick is
 exempt). The safe pool grid is shared with the creation picker

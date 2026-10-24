@@ -2289,14 +2289,15 @@ json ChatService::admin_lock_identity(int64_t admin_character_id, const json& bo
     std::string display_name;
     std::string safe_name;
     std::string avatar_safe;
-    int64_t avatar_custom = 0;
+    std::unique_ptr<std::string> avatar_custom;
     gdb << "SELECT display_name, safe_display_name, COALESCE(avatar_safe_id, ''), "
-           "COALESCE(avatar_custom_id, 0) FROM characters WHERE id = ?;"
-        << target >> [&](std::string dn, std::string sn, std::string as, int64_t ac) {
+           "avatar_custom_id FROM characters WHERE id = ?;"
+        << target >> [&](std::string dn, std::string sn, std::string as,
+                         std::unique_ptr<std::string> ac) {
                display_name = dn;
                safe_name = sn;
                avatar_safe = as;
-               avatar_custom = ac;
+               avatar_custom = std::move(ac);
            };
 
     std::string revert_to = body.value("revert_to", std::string("safe"));
@@ -2315,12 +2316,14 @@ json ChatService::admin_lock_identity(int64_t admin_character_id, const json& bo
     if (revert_avatar) {
         std::string prior = latest_identity_history(gdb, target, "avatar");
         record_identity_history(gdb, target, "avatar",
-                                avatar_custom != 0 ? std::string("custom") : avatar_safe);
+                                (avatar_custom && !avatar_custom->empty())
+                                    ? std::string("custom")
+                                    : avatar_safe);
         std::string new_avatar = (revert_to == "prior" && !prior.empty() && prior != "custom")
                                      ? prior
                                      : avatar_safe;
         gdb << "UPDATE characters SET avatar_safe_id = ?, avatar_custom_id = NULL, "
-               "avatar_changed_at = ? WHERE id = ?;"
+               "avatar_storage = 'local', avatar_changed_at = ? WHERE id = ?;"
             << new_avatar << now_seconds() << target;
     }
     if (lock_name || lock_avatar) {

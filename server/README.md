@@ -273,20 +273,25 @@ has its own Svelte screen and its own transport.
 - **Player PFP (variety only)**: a layered identity, mirroring the safe/custom
   name model. `characters.avatar_safe_id` is the always-present safe pick (shown
   to minors and used as the fallback for every viewer); `avatar_custom_id` is an
-  optional 18+ upload layered on top for adult viewers; `avatar_changed_at`
-  drives a 24h per-character cooldown (the creation pick is exempt). URL
-  resolution is shared by every surface (`server/AvatarUrl.cpp`,
+  optional 18+ upload layered on top for adult viewers; `avatar_storage` selects
+  `local` (under `uploads/avatars/`) or `r2` (the public assets bucket);
+  `avatar_changed_at` drives a 24h per-character cooldown (the creation pick is
+  exempt). URL resolution is shared by every surface (`server/AvatarUrl.cpp`,
   `resolve_avatar_url`): custom only when **both** owner and viewer are adults,
   else the safe pick. Safe art is public at `/images/avatars/safe/{male,female}/*`
   (gender-split like the headshots; the client requests the character's own pool;
   scanned at startup and auto-rescanned when the pool directory changes — no
-  restart needed); custom uploads are stored outside the
-  static tree (`game/uploads/avatars/`) and served only by the age-gated
-  `GET /api/avatar/<character_id>`. Endpoints: `getAvatarPool`,
+  restart needed). Custom keys are content-addressed
+  (`<character_id>/<sha256>.<ext>`); the local backend is served only by the
+  age-gated `GET /api/avatar/<character_id>`, while R2 returns an absolute
+  capability URL under the assets origin. Uploads are validated and written on a
+  bounded worker pool; R2 PUT/DELETE and Cloudflare PURGE use the minimal
+  SigV4 client in `server/avatars/`. Endpoints: `getAvatarPool`,
   `setCharacterAvatar`, `uploadCharacterAvatar`, `removeCustomAvatar`. The hub
   **Profile** activity (`client/src/components/ProfilePanel.svelte`) is the
   change/upload UI; the creation step picks a safe portrait (or skips when the
-  pool is empty). **Moderation of custom uploads is a TODO.**
+  pool is empty). **Moderation of custom uploads is a TODO.** Public capability
+  URLs require the separate F7 age-isolation gate before production.
 - **Configs**: `config/combat/rulesets.json` (hot-reloadable via
   GameConfigCache) and `config/combat/maps/` (CombatMapCache, stat()-based
   rescan). Both validated by `tools/check_configs.py`.
@@ -326,6 +331,10 @@ When touching `main.cpp`:
    and joined before the App/loop is destroyed (`combat_match_manager::shutdown`).
 4. **Use fall-through to stop the loop** — close all sockets + the listener. Do
    not invent a stop API.
+5. **Avatar uploads** run base64/decode/hash/dimension checks and the R2 PUT on
+   `avatar_upload_manager`'s bounded pool. The completion *always* returns via
+   `Loop::defer` before reading/writing SQLite or touching `res`. Join the pools
+   during shutdown, before the App/loop is destroyed.
 
 Concurrency regressions are covered by `tools/combat_shutdown_test.sh` (graceful
 shutdown with a live battle) and `tools/combat_broadcast_stress.sh` (repeated
@@ -713,6 +722,30 @@ RAVENEST_CORS_ORIGINS="https://app.example.com"
 
 `install.sh` writes this value to the server env file from `.deploy` and
 optionally restarts the service. See `docs/publishing.md`.
+
+### Avatar storage
+
+`RAVENEST_AVATAR_STORAGE=local` (default) writes to `uploads/avatars/` in the
+server's working directory. `r2` requires the complete R2 configuration:
+
+```bash
+RAVENEST_AVATAR_STORAGE=r2
+RAVENEST_R2_ENDPOINT=https://<account>.r2.cloudflarestorage.com
+RAVENEST_R2_BUCKET=ravenest-assets
+RAVENEST_R2_ACCESS_KEY_ID=...
+RAVENEST_R2_SECRET_ACCESS_KEY=...
+RAVENEST_AVATAR_R2_PREFIX=avatars/
+RAVENEST_AVATAR_PUBLIC_BASE_URL=https://assets.example.com
+RAVENEST_AVATAR_UPLOAD_THREADS=2
+RAVENEST_AVATAR_MAINTENANCE_THREADS=1
+RAVENEST_AVATAR_QUEUE_MAX=64
+```
+
+Optional purge credentials (`RAVENEST_CLOUDFLARE_ZONE_ID`,
+`RAVENEST_CLOUDFLARE_API_TOKEN`) delete the edge copy after removal. The server
+fails startup if `r2` is selected with incomplete configuration. Use a separate
+scoped token from the deploy token. See `docs/publishing.md` for the Cloudflare
+cache rule and production release gate.
 
 ### Cloudflare Tunnel / Nginx
 

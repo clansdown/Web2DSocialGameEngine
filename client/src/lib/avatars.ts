@@ -21,9 +21,10 @@ function is_custom_avatar_url(url: string): boolean {
  * be used directly as an <img> src. Safe-pool and static URLs are rebased onto
  * the asset origin and pass through unchanged (they are public).
  *
- * The server resolves custom avatars to `/api/avatar/<character_id>` and
- * requires `?username=&token=` because a browser image request cannot carry a
- * POST auth body.
+ * Local custom avatars resolve to `/api/avatar/<character_id>` and require
+ * `?username=&token=` because a browser image request cannot carry a POST auth
+ * body. R2 custom avatars are already absolute public capability URLs and pass
+ * through unchanged.
  *
  * @param url - Server-resolved avatar URL (possibly a custom-avatar route)
  * @returns The URL with credentials appended when required

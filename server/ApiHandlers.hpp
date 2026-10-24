@@ -229,16 +229,6 @@ ApiResponse handleSetCharacterAvatar(GameConfigCache& config_cache, const nlohma
                                      const ClientInfo& client,
                                      const std::optional<std::string>& new_token);
 
-ApiResponse handleUploadCharacterAvatar(GameConfigCache& config_cache, const nlohmann::json& body,
-                                        const std::optional<std::string>& username,
-                                        const ClientInfo& client,
-                                        const std::optional<std::string>& new_token);
-
-ApiResponse handleRemoveCustomAvatar(GameConfigCache& config_cache, const nlohmann::json& body,
-                                     const std::optional<std::string>& username,
-                                     const ClientInfo& client,
-                                     const std::optional<std::string>& new_token);
-
 ApiResponse handleTDRound(GameConfigCache& config_cache, const nlohmann::json& body,
                            const std::optional<std::string>& username,
                            const ClientInfo& client,
@@ -461,8 +451,6 @@ inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfi
     add("getAvatarPool",          [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetAvatarPool(c, b, u, cl, t); });
     add("getPortraitFrames",      [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetPortraitFrames(c, b, u, cl, t); });
     add("setCharacterAvatar",     [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSetCharacterAvatar(c, b, u, cl, t); });
-    add("uploadCharacterAvatar",  [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleUploadCharacterAvatar(c, b, u, cl, t); });
-    add("removeCustomAvatar",     [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleRemoveCustomAvatar(c, b, u, cl, t); });
     add("tdRound",                [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleTDRound(c, b, u, cl, t); });
     add("weedingStart",           [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleWeedingStart(c, b, u, cl, t); });
     add("weedingTurn",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleWeedingTurn(c, b, u, cl, t); });

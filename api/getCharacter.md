@@ -24,8 +24,9 @@ Retrieve character information.
     "level": 1,
     "archetype": null,
     "sex": "male",
-    "avatar_safe_id": "3.png",
+    "avatar_safe_id": "male/3.png",
     "avatar_custom_id": null,
+    "avatar_storage": "local",
     "avatar_changed_at": 1750006500,
     "avatar_url": "/images/avatars/safe/3.png"
   }
@@ -41,9 +42,10 @@ Retrieve character information.
 | archetype | string \| null | Starting path; null until chosen |
 | sex | string \| null | `"male"` / `"female"`; null until chosen |
 | avatar_safe_id | string \| null | Safe-pool PFP id; null until the creation picker is answered |
-| avatar_custom_id | string \| null | Custom (18+) PFP filename; null when none |
+| avatar_custom_id | string \| null | Content-addressed custom (18+) PFP key (`<id>/<sha256>.<ext>`); null when none |
+| avatar_storage | string | Backend holding a custom key: `local` or `r2` |
 | avatar_changed_at | integer | Unix ts of the last PFP change (24h cooldown) |
-| avatar_url | string | Server-resolved PFP URL for this (self) viewer; may be `""`. A custom image is returned as `/api/avatar/<id>` and needs session credentials |
+| avatar_url | string | Server-resolved PFP URL for this (self) viewer; may be `""`. Local custom storage returns `/api/avatar/<id>` (needs session credentials); R2 custom storage returns the absolute public URL. Minors always receive the safe pick |
 
 ### Error (400 Bad Request)
 

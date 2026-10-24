@@ -152,8 +152,15 @@ values are later used as literal paths.
 | `SERVER_CORS_ORIGINS` | server | optional override | no | comma-separated browser origins; empty uses `PUBLIC_SITE_ORIGIN` |
 | `SERVER_ENV_PATH` | server | optional | no | default `${SERVER_PATH}/ravenest.env`; must be outside `game/` |
 | `SERVER_RESTART_CMD` | server | optional | no | e.g. `sudo systemctl restart ravenest` |
+| `SERVER_AVATAR_STORAGE` | server | optional | no | `local` (default) or `r2` |
+| `AVATAR_R2_ACCESS_KEY_ID` | server | avatar r2 | **yes** | separate scoped R2 token access key |
+| `AVATAR_R2_SECRET_ACCESS_KEY` | server | avatar r2 | **yes** | separate scoped R2 token secret |
+| `AVATAR_R2_PREFIX` | server | optional | no | default `avatars/` |
+| `AVATAR_PUBLIC_BASE_URL` | server | avatar r2 | no | defaults to `PUBLIC_ASSETS_ORIGIN` |
+| `AVATAR_CLOUDFLARE_ZONE_ID` | server | optional | no | defaults to `CF_ZONE_ID` |
+| `AVATAR_CLOUDFLARE_API_TOKEN` | server | optional | **yes** | Cache Purge-only token; both zone+token required together |
 | `CF_API_TOKEN` | deferred | optional | **yes** | reserved for future purge-on-deploy |
-| `CF_ZONE_ID` | deferred | optional | no | reserved for future purge-on-deploy |
+| `CF_ZONE_ID` | deferred | optional | no | default for `AVATAR_CLOUDFLARE_ZONE_ID`; reserved for purge-on-deploy |
 
 A stage is enabled by setting its primary key:
 
@@ -509,9 +516,11 @@ re-uploads those objects on each run. WebP normally gets the right type from the
 AWS CLI; if `curl -I` shows otherwise, add a similar
 `--include '*.webp' --content-type image/webp` pass.
 
-The uploader does not set `Cache-Control`; the Cache Rule owns the TTL. It also
-sets the AWS CLI checksum calculation/validation to `when_required`, because
-recent CLI v2 releases otherwise add checksums that R2 does not accept.
+The public-asset uploader does not set `Cache-Control`; the Cache Rule owns the
+TTL. Avatar objects are different: the server sets
+`public, max-age=31536000, immutable` on upload. The uploader also sets the AWS
+CLI checksum calculation/validation to `when_required`, because recent CLI v2
+releases otherwise add checksums that R2 does not accept.
 
 ### Pages stage
 
@@ -579,6 +588,55 @@ restart command is configured, it writes the file and prints a gentle reminder.
 
 This stage does **not** deploy the server binary. Binary rollout is separate.
 
+### Avatar storage
+
+Custom player PFPs have their own backend switch:
+
+```bash
+SERVER_AVATAR_STORAGE=local   # development / no R2
+SERVER_AVATAR_STORAGE=r2      # production
+```
+
+With `r2`, `install.sh` adds these to the API env file (secrets are never
+printed):
+
+```bash
+RAVENEST_AVATAR_STORAGE=r2
+RAVENEST_R2_ENDPOINT=https://<account>.r2.cloudflarestorage.com
+RAVENEST_R2_BUCKET=ravenest-assets
+RAVENEST_R2_REGION=auto
+RAVENEST_R2_ACCESS_KEY_ID=...
+RAVENEST_R2_SECRET_ACCESS_KEY=...
+RAVENEST_AVATAR_R2_PREFIX=avatars/
+RAVENEST_AVATAR_PUBLIC_BASE_URL=https://assets.example.com
+```
+
+Use a **separate scoped R2 token** for the server (Object Read & Write on the
+bucket). Do not reuse the deploy token. The bucket is the same one used for
+public assets; avatars live under the `avatars/` prefix.
+
+Objects are content-addressed: `avatars/<character_id>/<sha256>.<ext>`.
+Uploads set `Cache-Control: public, max-age=31536000, immutable`. The public URL
+is a capability URL and is only disclosed to an adult owner or adult viewer.
+Removal/replacement deletes the object and purges the exact URL through the
+Cloudflare API. Configure a **Cache Purge**-only token:
+
+```bash
+AVATAR_CLOUDFLARE_ZONE_ID=...
+AVATAR_CLOUDFLARE_API_TOKEN=...
+```
+
+(The zone defaults to `CF_ZONE_ID`.) Without purge credentials the object is
+still deleted; an already-cached edge copy may remain until its TTL.
+
+R2 CORS is not required for `<img>` rendering. Add it only if avatars are later
+fetched or drawn into a canvas.
+
+**Release gate:** public capability URLs must not ship until the separate F7
+age-isolation audit/fix is complete (server-enforced separation of minors from
+adult messages, discovery, names, and avatars). The R2 path is not gated in code;
+do not enable `SERVER_AVATAR_STORAGE=r2` in production before that sign-off.
+
 ### Preflight checks
 
 Before building, `install.sh`:
@@ -595,6 +653,8 @@ Before building, `install.sh`:
   build is missing the API or asset origin;
 - validates `SERVER_CORS_ORIGINS` (or `PUBLIC_SITE_ORIGIN`) and
   `SERVER_ENV_PATH` when the server stage is enabled;
+- when `SERVER_AVATAR_STORAGE=r2`, validates the R2 endpoint/bucket/separate
+  token, the public avatar base origin, and the object prefix;
 - warns about tracked files larger than 50 MiB and refuses to run if any tracked
   file exceeds GitHub's 100 MiB limit.
 
@@ -608,8 +668,9 @@ These guard the repository, the build, and the publish destinations.
 | Pages `/sw.js` | `no-cache` via `_headers` (service worker updates) |
 | Pages `/assets/*` | `public, max-age=31536000, immutable` via `_headers` (hashed by Vite) |
 | `assets.example.com/*` | Cloudflare Cache Rule: Edge 1h, Browser 1h |
+| `assets.example.com/avatars/*` | object `Cache-Control: public, max-age=31536000, immutable`; purge exact URL on removal |
 | `api.example.com/*` | Cloudflare Cache Rule: bypass |
-| `/api/avatar/<id>` | origin also sends `Cache-Control: private, no-store` |
+| `/api/avatar/<id>` | origin sends `Cache-Control: private, no-store`; local streams bytes, R2 redirects |
 
 Raising the R2 TTL later is a Cache Rule edit, not a re-upload. Browsers that
 already cached an object keep it until their own copy expires; use **Purge
@@ -621,7 +682,7 @@ Cache** on the affected URL or prefix if an asset must change immediately.
 - **Content target:** `${SERVER_PATH}/game/`, the server's `--content` directory.
 - **Excludes:** `*.db`, `*.xcf`, `.git/`, `uploads/`, `*.md`, `.gitkeep`.
 - **Runtime env:** `${SERVER_ENV_PATH}` (default `${SERVER_PATH}/ravenest.env`),
-  containing `RAVENEST_CORS_ORIGINS`.
+  containing `RAVENEST_CORS_ORIGINS` and the avatar-storage variables above.
 - **Restart:** optional `SERVER_RESTART_CMD`.
 
 Why the server still needs a full `game/` copy:
@@ -657,6 +718,24 @@ curl -sI https://app.example.com/sw.js | grep -i cache-control
 curl -sI https://app.example.com/assets/<hashed-file>.js | grep -i cache-control
 # cache-control: public, max-age=31536000, immutable
 ```
+
+### Avatar uploads
+
+With `SERVER_AVATAR_STORAGE=r2`, log in as an adult character and upload a PNG.
+The response must contain a content-addressed key and an absolute
+`https://assets.../avatars/<id>/<sha256>.<ext>` URL:
+
+```bash
+curl -sI "https://assets.example.com/avatars/<id>/<sha256>.png"
+# HTTP/2 200
+# content-type: image/png
+# cache-control: public, max-age=31536000, immutable
+```
+
+Confirm `GET /api/avatar/<id>?username=...&token=...` returns `302` to that URL
+for an authorized adult, and `404` for an unauthenticated or minor viewer. After
+removal, the origin object should be gone (404) and the exact URL purged at the
+edge.
 
 ### R2 images
 

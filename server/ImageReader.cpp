@@ -1,10 +1,11 @@
 #include "ImageReader.hpp"
 #include <fstream>
+#include <sstream>
 #include <cstring>
 #include <cstdint>
 #include <vector>
 
-static ImageDimensions read_png_dimensions(std::ifstream& file) {
+static ImageDimensions read_png_dimensions(std::istream& file) {
     unsigned char header[24];
     if (!file.read(reinterpret_cast<char*>(header), 24)) return {};
 
@@ -22,7 +23,7 @@ static ImageDimensions read_png_dimensions(std::ifstream& file) {
     return { read_be32(16), read_be32(20) };
 }
 
-static ImageDimensions read_jpeg_dimensions(std::ifstream& file) {
+static ImageDimensions read_jpeg_dimensions(std::istream& file) {
     unsigned char soi[2];
     if (!file.read(reinterpret_cast<char*>(soi), 2)) return {};
     if (soi[0] != 0xFF || soi[1] != 0xD8) return {};
@@ -65,7 +66,7 @@ static ImageDimensions read_jpeg_dimensions(std::ifstream& file) {
 
 // WebP: RIFF container with a VP8/VP8L/VP8X chunk. Dimensions live in the chunk
 // header (VP8X) or the frame header (VP8 lossy / VP8L lossless).
-static ImageDimensions read_webp_dimensions(std::ifstream& file) {
+static ImageDimensions read_webp_dimensions(std::istream& file) {
     unsigned char header[30];
     if (!file.read(reinterpret_cast<char*>(header), 30)) return {};
     if (std::memcmp(header, "RIFF", 4) != 0) return {};
@@ -147,7 +148,7 @@ static void collect_ispe(const unsigned char* data, size_t size, ImageDimensions
     }
 }
 
-static ImageDimensions read_avif_dimensions(std::ifstream& file) {
+static ImageDimensions read_avif_dimensions(std::istream& file) {
     file.clear();
     file.seekg(0, std::ios::end);
     const std::streamoff file_size = file.tellg();
@@ -161,10 +162,7 @@ static ImageDimensions read_avif_dimensions(std::ifstream& file) {
     return best;
 }
 
-ImageDimensions get_image_dimensions(const std::string& filepath) {
-    std::ifstream file(filepath, std::ios::binary);
-    if (!file.is_open()) return {};
-
+static ImageDimensions get_image_dimensions_from_stream(std::istream& file) {
     unsigned char magic[12];
     if (!file.read(reinterpret_cast<char*>(magic), 12)) return {};
 
@@ -184,4 +182,16 @@ ImageDimensions get_image_dimensions(const std::string& filepath) {
         return read_avif_dimensions(file);
 
     return {};
+}
+
+ImageDimensions get_image_dimensions(const std::string& filepath) {
+    std::ifstream file(filepath, std::ios::binary);
+    if (!file.is_open()) return {};
+    return get_image_dimensions_from_stream(file);
+}
+
+ImageDimensions get_image_dimensions_from_memory(std::string_view bytes) {
+    if (bytes.empty()) return {};
+    std::istringstream stream{std::string(bytes)};
+    return get_image_dimensions_from_stream(stream);
 }

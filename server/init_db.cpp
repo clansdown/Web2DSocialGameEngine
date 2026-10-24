@@ -308,6 +308,11 @@ void migrate_character_avatar(sqlite::database& db) {
     } catch (const std::exception&) {
         // Column already exists — ignore
     }
+    try {
+        db << "ALTER TABLE characters ADD COLUMN avatar_storage TEXT NOT NULL DEFAULT 'local';";
+    } catch (const std::exception&) {
+        // Column already exists — ignore
+    }
 }
 
 // The safe-avatar pool became gender-split
@@ -423,6 +428,7 @@ void migrate_baron_character_id(sqlite::database& db) {
             "avatar_safe_id TEXT,"
             "avatar_custom_id TEXT,"
             "avatar_changed_at INTEGER NOT NULL DEFAULT 0,"
+            "avatar_storage TEXT NOT NULL DEFAULT 'local',"
             "FOREIGN KEY(user_id) REFERENCES users(id)"
         );
 

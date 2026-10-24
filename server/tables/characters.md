@@ -16,6 +16,7 @@ CREATE TABLE characters (
     avatar_safe_id TEXT,
     avatar_custom_id TEXT,
     avatar_changed_at INTEGER NOT NULL DEFAULT 0,
+    avatar_storage TEXT NOT NULL DEFAULT 'local',
     FOREIGN KEY(user_id) REFERENCES users(id)
 );
 ```
@@ -32,8 +33,9 @@ CREATE TABLE characters (
 | archetype | TEXT | NULLABLE | Starting path: `"wolf_warden"` or `"assarter"` (NULL = not yet chosen) |
 | sex | TEXT | NULLABLE | Biological sex: `"male"` or `"female"` (NULL = not yet set) |
 | avatar_safe_id | TEXT | NULLABLE | Safe-pool PFP id, gender-qualified (`male/1.png`, `female/1.png`) under `game/images/avatars/safe/{male,female}/`. Must match the character's own `sex` pool. NULL until the picker is answered |
-| avatar_custom_id | TEXT | NULLABLE | Custom (18+) PFP filename under `game/uploads/avatars/` (e.g. `12.png`). NULL when none. Never served statically — see `/api/avatar/<id>` |
+| avatar_custom_id | TEXT | NULLABLE | Content-addressed custom (18+) PFP storage key: `<character_id>/<sha256>.<ext>` (e.g. `12/4f2c...e91a.webp`). Relative to `uploads/avatars/` when `avatar_storage='local'`, or to the configured R2 prefix when `avatar_storage='r2'`. NULL when none |
 | avatar_changed_at | INTEGER | NOT NULL DEFAULT 0 | Unix ts of the last PFP change. Drives the per-character 24h cooldown; the first pick is exempt because it starts at 0 |
+| avatar_storage | TEXT | NOT NULL DEFAULT `'local'` | Backend holding `avatar_custom_id`: `local` (`uploads/avatars/`) or `r2` (public `https://<assets>/avatars/...`). Added by the idempotent avatar migration |
 
 ## Indexes
 
@@ -59,11 +61,13 @@ CREATE TABLE characters (
   `/images/avatars/safe/{male,female}/*` and is **gender-split** like the retinue
   headshots: a character only ever picks from its own `sex` pool, and the server
   validates the pick against the stored `sex` (never the request). The custom
-  upload (`avatar_custom_id`) is 18+ only,
-  stored outside the static tree, and served solely by the age-gated
-  `/api/avatar/<character_id>` route. Resolution: an under-18 viewer always gets
-  the owner's safe pick; a custom image is returned only when both the owner and
-  the viewer are 18+. Any change is rate-limited to once per 24h per character
+  upload (`avatar_custom_id`) is 18+ only and
+  stored outside the static tree. `avatar_storage` records the backend: the
+  local backend is served solely by the age-gated `/api/avatar/<character_id>`
+  route; the R2 backend resolves to an unguessable public capability URL under
+  the assets origin. Resolution: an under-18 viewer always gets the owner's safe
+  pick; a custom image URL is returned only when both the owner and the viewer
+  are 18+. Any change is rate-limited to once per 24h per character
   (`avatar_changed_at`). See `docs/retinue_design.md` §8.
 - `avatar_*` columns are added by the idempotent migration pattern
   (`ALTER TABLE characters ADD COLUMN ...`) used for `archetype`/`sex`.
