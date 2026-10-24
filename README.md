@@ -147,6 +147,13 @@ The uWebSockets server can access these headers via the HttpRequest object in en
 ```
 Builds server binary and Docker image locally. Saves Docker tar to `server/bin/ravenest-server.tar`. No network or authentication required.
 
+### Publishing (Cloudflare Pages + R2 + API tunnel)
+
+`./install.sh` builds the client, uploads public assets to R2, publishes the
+site repo to Cloudflare Pages, and mirrors `game/` to the API server. Deployment
+values live in a gitignored `.deploy`; see [`docs/publishing.md`](docs/publishing.md)
+for setup, the `.deploy` reference, cache policy, verification, and rollback.
+
 ### Build and Push Release
 
 ```bash

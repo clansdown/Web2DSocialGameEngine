@@ -1,0 +1,44 @@
+# .deploy.example — template for the private publishing configuration.
+#
+# Copy this file to .deploy, fill in the values for your deployment, then:
+#
+#     chmod 600 .deploy
+#
+# .deploy is gitignored and must never be committed. The values are sourced as
+# a shell fragment by install.sh, so keep it to simple assignments. See
+# docs/publishing.md for the full setup and verification procedure.
+
+# --- Pages site repo ---------------------------------------------------------
+# Private repository whose root is the generated Pages site (index.html at the
+# root). install.sh rsyncs client/dist here and then commits and pushes.
+# SITE_REPO="$HOME/src/example-site"
+
+# Private directory copied into the site repo after the build sync. It holds
+# _headers, robots.txt, favicon, and any _redirects file. Leave empty to skip.
+# SITE_OVERLAY="$HOME/src/example-ops/pages-overlay"
+
+# --- R2 public assets (S3 API) ----------------------------------------------
+# Private bucket. Public access is through the assets.app.example.com custom domain.
+R2_BUCKET=""
+
+# https://<account-id>.r2.cloudflarestorage.com
+R2_ENDPOINT=""
+
+# R2 API token with Object Read & Write on the bucket.
+R2_ACCESS_KEY_ID=""
+R2_SECRET_ACCESS_KEY=""
+
+# --- API server content mirror ----------------------------------------------
+# The build host must reach the API server over SSH/LAN. The Cloudflare Tunnel
+# is outbound only and does not provide an inbound rsync path.
+SERVER_HOST=""
+SERVER_PATH=""
+
+# Optional private key for the content mirror. Use $HOME, not ~ (the value is
+# used as a literal path).
+SERVER_SSH_KEY=""
+
+# --- Cloudflare API (reserved for purge-on-deploy) --------------------------
+# Not used yet. A future purge step will read these when the R2 TTL is raised.
+CF_API_TOKEN=""
+CF_ZONE_ID=""

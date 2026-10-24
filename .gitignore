@@ -60,6 +60,8 @@ push_to_production.sh
 /.game_name
 /.docker_repo
 /.docker_creds
+
+# Private publishing configuration (never commit)
 /.deploy
 
 # Local generation statistics
