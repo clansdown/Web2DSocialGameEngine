@@ -4,60 +4,75 @@ This document describes how the game is published:
 
 - the Svelte client is built into `client/dist` and uploaded to **Cloudflare Pages**;
 - public art (and later audio) is uploaded to a private **R2** bucket and served
-  through an R2 custom domain;
-- `/api/*` and `/ws/*` are routed to the C++ API server through a **Cloudflare
-  Tunnel**;
+  through the `assets.<zone>` custom domain;
+- the C++ API and `/ws/*` are exposed through a **Cloudflare Tunnel** at
+  `api.<zone>`;
 - `game/` is mirrored to the API server for `--content` (config, text, avatar
-  pools, and the server's `/images` fallback).
+  pools, and the server's `/images` fallback);
+- the API server's CORS allowlist is written to an env file from `.deploy`.
 
 One command, `./install.sh`, performs the build and all configured publishing
 stages. The engine stays generic: deployment values live in a gitignored
 `.deploy` file. The site repo, ops overlay, and `.deploy` are **private** and
 are not part of this repository.
 
-> The hostnames below (`app.example.com`, `api.app.example.com`,
-> `assets.app.example.com`) are placeholders. Replace `example.com` with your
+> The hostnames below (`app.example.com`, `api.example.com`,
+> `assets.example.com`) are placeholders. Replace `example.com` with your
 > Cloudflare zone.
 
 > **Quick start**
 >
 > ```bash
 > cp .deploy.example .deploy
-> $EDITOR .deploy          # fill in the destinations you use
+> $EDITOR .deploy          # fill in the destinations and public origins
 > chmod 600 .deploy
 > chmod +x install.sh      # once, if your checkout lacks the executable bit
 > DRY_RUN=1 ./install.sh   # prints the publish plan, writes nothing remote
-> ./install.sh             # build -> R2 -> Pages -> API server
+> ./install.sh             # build -> R2 -> Pages -> server content/env
 > ```
 >
 > `bash install.sh` works too if the executable bit is not set.
 
 ## 1. Topology
 
+The browser talks to three separate origins:
+
 ```
-Browser → https://app.example.com
-  /                 → Cloudflare Pages (site repo root)
-  /assets/*         → Cloudflare Pages (hashed Vite bundle)
-  /api/*            → Origin Rule → api.app.example.com (tunnel) → 127.0.0.1:2290
-  /ws/*             → Origin Rule → api.app.example.com (tunnel) → 127.0.0.1:2290
-  /images/*         → Origin Rule → assets.app.example.com (R2 bucket)
-  /sounds/*         → same, when audio exists
-  /music/*          → same, when audio exists
+Browser
+  https://app.example.com
+    /                     → Cloudflare Pages (site repo root)
+    /assets/*             → Cloudflare Pages (hashed Vite bundle)
+
+  https://api.example.com
+    /api/*                → Cloudflare Tunnel → 127.0.0.1:2290
+    /ws/*                 → same tunnel (WebSocket upgrade)
+    /images/*             → server fallback (normally not used by the client)
+
+  https://assets.example.com
+    /images/*             → R2 bucket key images/...
+    /sounds/*             → R2 bucket key sounds/... (future)
+    /music/*              → R2 bucket key music/... (future)
 ```
 
-The browser only ever talks to `app.example.com`. The Origin Rule changes the
-origin (Host header and DNS record) for matching paths; it does **not** rewrite
-the URL. That keeps `/api/...` and `/images/...` unchanged for the client and
-server, and keeps every request same-origin, so no CORS configuration is needed.
+There is **no path routing** between these hosts and no Origin Rule or Worker.
+The client is built with absolute API and asset origins:
 
-`/images/*` is entirely R2: every image path under `/images/...` maps to an R2
-key `images/...`. The client's `public/images` directory is empty by design;
-game UI images live in `game/images/ui/` and are uploaded to R2.
+- `VITE_API_BASE_URL` → `PUBLIC_API_ORIGIN`
+- `VITE_ASSETS_BASE_URL` → `PUBLIC_ASSETS_ORIGIN`
+- `VITE_WS_BASE_URL` → `PUBLIC_WS_ORIGIN`
+
+Because the API is on a different origin from the Pages shell, the API must
+answer CORS preflights and send the allowlist header. CORS is configured on the
+API server, not in Cloudflare.
+
+`/images/*` is entirely R2 in production. The server still serves a `/images`
+fallback for direct API access and local development, but the client points at
+`assets.example.com`.
 
 `cloudflared` runs **on the API server** and dials out; no inbound firewall
 ports are opened. The build host still reaches the API server over SSH/LAN for
-the `game/` mirror. The tunnel is outbound only and does not provide an inbound
-rsync path.
+the content mirror and env file. The tunnel is outbound only and does not
+provide an inbound rsync path.
 
 ## 2. Prerequisites
 
@@ -70,24 +85,23 @@ On the build host:
 - a complete working tree including the gitignored `client/SimpleGame` (the
   `file:./SimpleGame/ui` dependency) and the `game/` content tree (configs,
   text, images; only a few placeholders are tracked in the public engine);
-- SSH access to the API server, if the server mirror is enabled.
+- SSH access to the API server, if the server stages are enabled.
 
 Cloudflare:
 
 - a zone (for example `example.com`);
 - a Pages project;
-- a private R2 bucket;
+- a private R2 bucket with a custom domain;
 - a tunnel (`cloudflared`) on the API server.
 
 > The `client/SimpleGame` checkout is required for the build. It is not tracked
 > in this repository. Follow `README.md` to clone it into `client/SimpleGame`.
 
-> **Certificate note:** Universal SSL covers `example.com` and
-> `*.example.com`, but **not** two-level names such as
-> `api.app.example.com` or `assets.app.example.com`. Enable Total TLS or
-> Advanced Certificate Manager for those names, or use one-level hostnames
-> (`api.example.com`, `assets.example.com`) and update the Origin Rules and the
-> R2 custom domain accordingly.
+> **Certificate note:** `app.example.com`, `api.example.com`, and
+> `assets.example.com` are one-level names, covered by normal Universal SSL.
+> No Total TLS or Advanced Certificate Manager is required. If you choose
+> deeper names such as `api.app.example.com`, they are not covered by
+> Universal SSL and need ACM.
 
 ## 3. Repository roles
 
@@ -96,7 +110,7 @@ Cloudflare:
 | Engine repo (this repository) | public | source, configs, `install.sh`, `docs/publishing.md`, `.deploy.example` |
 | Site repo | **private** | generated Pages site only: `index.html`, `assets/`, `_headers`, `robots.txt`, favicon |
 | Ops overlay | **private** | files copied into the site repo after the build sync (`_headers`, `robots.txt`, favicon, optional `_redirects`) |
-| `.deploy` | **private** | real site repo path, R2 credentials, API server host/path |
+| `.deploy` | **private** | real site repo path, R2 credentials, public origins, API server host/path/CORS/restart command |
 | `push_to_production.sh` / `backup.sh` | local only | legacy manual server rsync fallback |
 
 Do not commit the site repo, the overlay, `.deploy`, or real deployment values
@@ -128,9 +142,16 @@ values are later used as literal paths.
 | `R2_ENDPOINT` | R2 | R2 enabled | no | `https://<account-id>.r2.cloudflarestorage.com` |
 | `R2_ACCESS_KEY_ID` | R2 | R2 enabled | **yes** | R2 API token access key |
 | `R2_SECRET_ACCESS_KEY` | R2 | R2 enabled | **yes** | R2 API token secret |
+| `PUBLIC_SITE_ORIGIN` | build/CORS | server enabled (CORS default) | no | `https://app.example.com` |
+| `PUBLIC_API_ORIGIN` | build | Pages build | no | `https://api.example.com` — origin only, no `/api` |
+| `PUBLIC_ASSETS_ORIGIN` | build | Pages build | no | `https://assets.example.com` — origin only, no `/images` |
+| `PUBLIC_WS_ORIGIN` | build | optional | no | `wss://api.example.com`; empty derives from the API origin |
 | `SERVER_HOST` | server | server enabled | no | `api-host.example.net` or an SSH config alias |
 | `SERVER_PATH` | server | server enabled | no | parent of the server's `--content` dir; for `run_server.sh`, the directory containing `game/` |
 | `SERVER_SSH_KEY` | server | optional | no | private key path; omit to use the SSH agent/config |
+| `SERVER_CORS_ORIGINS` | server | optional override | no | comma-separated browser origins; empty uses `PUBLIC_SITE_ORIGIN` |
+| `SERVER_ENV_PATH` | server | optional | no | default `${SERVER_PATH}/ravenest.env`; must be outside `game/` |
+| `SERVER_RESTART_CMD` | server | optional | no | e.g. `sudo systemctl restart ravenest` |
 | `CF_API_TOKEN` | deferred | optional | **yes** | reserved for future purge-on-deploy |
 | `CF_ZONE_ID` | deferred | optional | no | reserved for future purge-on-deploy |
 
@@ -142,6 +163,11 @@ A stage is enabled by setting its primary key:
 
 If none of the three primary keys is set, `install.sh` fails before publishing.
 `--skip-*` flags can disable an otherwise-configured stage.
+
+`install.sh` is the **single place** that turns `.deploy` into:
+
+- the three public origins baked into `client/dist`;
+- the server's `RAVENEST_CORS_ORIGINS` env file.
 
 Security notes:
 
@@ -156,10 +182,11 @@ Checklist:
 
 - [ ] private site repo + private overlay (`_headers`, `robots.txt`, favicon);
 - [ ] Pages project connected to the site repo + `app.example.com`;
-- [ ] R2 bucket + `assets.app.example.com` custom domain + API token;
-- [ ] `cloudflared` tunnel + `api.app.example.com` public hostname;
-- [ ] Origin Rules for `/api/*`, `/ws/*`, `/images/*`;
-- [ ] Cache Rules (bypass API/WS, cache assets at 1h);
+- [ ] R2 bucket + `assets.example.com` custom domain + API token;
+- [ ] R2 CORS policy for the Pages origin;
+- [ ] `cloudflared` tunnel + `api.example.com` public hostname;
+- [ ] API service reads `SERVER_ENV_PATH` and allows `RAVENEST_CORS_ORIGINS`;
+- [ ] Cache Rules (bypass API host, cache assets host at 1h);
 - [ ] `.deploy` filled in and `chmod 600`;
 - [ ] `DRY_RUN=1 ./install.sh`;
 - [ ] staging publish + verification checklist (§9);
@@ -215,7 +242,7 @@ Optional overlay files:
 - `robots.txt`;
 - favicon and other root static files;
 - `_redirects` for **real redirects only**. It cannot proxy `/api/*` or
-  `/images/*`; that is the Origin Rule's job.
+  `/images/*`; the client uses absolute origins for those.
 
 The overlay is copied **after** the `client/dist` sync, so `rsync --delete`
 cannot remove it before it is re-added. The overlay copy is additive: removing
@@ -225,7 +252,7 @@ the site repo (or reset the repo) if you need to retire an overlay file.
 ### 5.2 R2 bucket and custom domain
 
 1. Create a private R2 bucket (for example `example-assets`).
-2. Bind the custom domain `assets.app.example.com` to the bucket.
+2. Bind the custom domain `assets.example.com` to the bucket.
 3. Create an R2 API token with Object Read & Write on the bucket.
 4. Put the endpoint and token in `.deploy`.
 
@@ -237,16 +264,39 @@ sounds/...
 music/...
 ```
 
-That matches the browser path after the Origin Rule, so no URL rewrite is
-needed. `install.sh` uploads `game/images`, `game/sounds`, and `game/music`
-when those directories exist.
+The browser URL is therefore:
 
-Do **not** upload `game/config` or `game/text` to R2. Those are server content
-and are mirrored to the API server instead.
+```
+https://assets.example.com/images/...
+https://assets.example.com/sounds/...
+https://assets.example.com/music/...
+```
 
-No bucket CORS configuration is needed while the browser stays on
-`app.example.com`: the Origin Rule makes the request same-origin from the
-browser's point of view.
+`install.sh` uploads `game/images`, `game/sounds`, and `game/music` when those
+directories exist. Do **not** upload `game/config` or `game/text` to R2. Those
+are server content and are mirrored to the API server instead.
+
+Add an R2 CORS policy for the Pages origin:
+
+```json
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": ["https://app.example.com"],
+        "methods": ["GET", "HEAD"],
+        "headers": ["*"]
+      },
+      "exposeHeaders": ["ETag", "Content-Length", "Content-Type"],
+      "maxAgeSeconds": 86400
+    }
+  ]
+}
+```
+
+The current client displays images with `<img>` and canvas drawing, which do not
+require CORS, but the policy is harmless and makes future `fetch`/font/audio use
+work. Do not add `http://localhost` origins; development uses the Vite proxy.
 
 Do not set `Cache-Control` on the objects. The Cloudflare Cache Rule owns the
 TTL, so it can be raised later without re-uploading. See §7.
@@ -257,7 +307,7 @@ Install `cloudflared` on the API server and create a tunnel:
 
 ```bash
 cloudflared tunnel create example-api
-cloudflared tunnel route dns example-api api.app.example.com
+cloudflared tunnel route dns example-api api.example.com
 ```
 
 Use a config such as `/etc/cloudflared/config.yml`:
@@ -267,14 +317,13 @@ tunnel: <tunnel-id>
 credentials-file: /etc/cloudflared/<tunnel-id>.json
 
 ingress:
-  - hostname: api.app.example.com
-    path: ^/api/.*
-    service: http://127.0.0.1:2290
-  - hostname: api.app.example.com
-    path: ^/ws/.*
+  - hostname: api.example.com
     service: http://127.0.0.1:2290
   - service: http_status:404
 ```
+
+No path regexes: the whole API host goes to the server, including `/api/*`,
+`/ws/*`, and the `/images` fallback.
 
 Run it as a service (`cloudflared service install`, or a systemd unit). The
 C++ server still listens on plain HTTP on `127.0.0.1:2290`; TLS terminates at
@@ -284,52 +333,69 @@ WebSockets work through the tunnel without extra options. Cloudflare closes an
 idle WebSocket after roughly 100 seconds; in-match 10 Hz ticks keep it alive,
 and lobby sockets rely on the client's reconnect logic.
 
-`api.app.example.com` is itself a public hostname. If a direct API entry point
-is not desired, protect it with Cloudflare Access or a service token and have
-the Origin Rule carry the token. Otherwise, accept it as an alternate API
-entry point.
+`api.example.com` is itself a public hostname. If a direct API entry point is
+not desired, protect it with Cloudflare Access or a service token. CORS is not
+an access-control boundary.
 
-### 5.4 Origin Rules (the path router)
+### 5.4 API CORS
 
-On the `example.com` zone, create Origin Rules scoped to the Pages hostname.
-Each rule sets **Host header** and **DNS record** to the target, with no URL
-rewrite:
+The API reads `RAVENEST_CORS_ORIGINS` at startup. It is a comma-separated
+allowlist of browser origins; empty/unset means `*`.
 
-| Rule | Match | Origin parameters |
-|---|---|---|
-| API | `http.host eq "app.example.com"` and `starts_with(http.request.uri.path, "/api/")` | Host header → `api.app.example.com`; DNS record → `api.app.example.com` |
-| WebSocket | same host and `starts_with(http.request.uri.path, "/ws/")` | same |
-| Images | same host and `starts_with(http.request.uri.path, "/images/")` | Host header → `assets.app.example.com`; DNS record → `assets.app.example.com` |
-| Sounds (later) | same host and `starts_with(http.request.uri.path, "/sounds/")` | same as images |
-| Music (later) | same host and `starts_with(http.request.uri.path, "/music/")` | same as images |
+- `install.sh` writes this value to `SERVER_ENV_PATH` from `.deploy`
+  (`SERVER_CORS_ORIGINS`, defaulting to `PUBLIC_SITE_ORIGIN`).
+- The service must read that file. Systemd:
 
-Notes:
+  ```ini
+  [Service]
+  EnvironmentFile=/home/ctl/example/ravenest.env
+  ExecStart=/home/ctl/example/server --content /home/ctl/example/game
+  ```
 
-- Do not rewrite the path. The C++ server expects `/api/...` and `/ws/...`, and
-  the R2 key prefix is `images/...`.
-- Both targets are in the same zone, so the DNS record override is allowed
-  without an Enterprise plan. SNI override is Enterprise and is not needed.
-- Verify that these rules take precedence over the Pages origin for matching
-  paths. If a matching path still returns a Pages 404 or a 522, use a Worker
-  route for that path as a fallback.
-- Test `/ws/combat` end to end after the rule is in place; the rule must
-  preserve the `Upgrade` header.
+- Docker Compose:
+
+  ```yaml
+  services:
+    ravenest:
+      env_file:
+        - /home/ctl/example/ravenest.env
+  ```
+
+The env file is mode `600` and contains no secrets, only the public allowlist.
+`install.sh` backs up the previous file to `<path>.previous` and skips the write
+and restart when the contents are unchanged.
+
+The API answers `OPTIONS /api/*` with `204 No Content` and includes:
+
+```
+Access-Control-Allow-Origin: <allowed origin>
+Access-Control-Allow-Methods: POST, GET, OPTIONS
+Access-Control-Allow-Headers: Content-Type
+Access-Control-Max-Age: 86400
+Vary: Origin
+```
+
+`GET /api/avatar/<id>` also sends `Cache-Control: private, no-store`.
+
+`SERVER_RESTART_CMD` is optional. When it is empty and the env file changes,
+`install.sh` writes the file and prints a reminder to restart the API server;
+the publish still succeeds. Set it to apply the change during publishing.
 
 ### 5.5 Cache Rules
 
 Create two Cache Rules on the zone:
 
-**Bypass API and WebSocket**
+**Bypass the API host**
 
-- Match: `http.host eq "app.example.com"` and (`starts_with(http.request.uri.path, "/api/")` or `starts_with(http.request.uri.path, "/ws/")`).
+- Match: `http.host eq "api.example.com"`.
 - Action: **Bypass cache**.
 
-This is required for `GET /api/avatar/<character_id>`, which is age-gated and
-must never be cached by Cloudflare.
+This includes `/api/*` and `/ws/*`. It is required for `GET /api/avatar/...`,
+which is age-gated and must never be cached by Cloudflare.
 
 **Cache public assets**
 
-- Match: `http.host eq "app.example.com"` and (`starts_with(http.request.uri.path, "/images/")`, or `/sounds/`, `/music/` when present).
+- Match: `http.host eq "assets.example.com"`.
 - Action: **Cache eligible**.
 - Edge TTL: **1 hour** (override origin).
 - Browser TTL: **1 hour** (override origin).
@@ -342,15 +408,19 @@ Pages caching is controlled by the site's `_headers`, not by these rules:
 
 ### 5.6 Staging
 
-Before the production cutover, publish to a staging hostname (for example
-`staging.app.example.com`) with its own Pages project or preview deployment.
-Run the full verification checklist in §9 against staging. The same R2 bucket
-can be used; only the hostname and Pages project differ.
+Before the production cutover, publish to staging hostnames, for example:
 
-`install.sh` publishes to the destination named in `.deploy`. To stage, use a
-second working copy with a staging `.deploy` (staging site repo + staging Pages
-project), or temporarily switch `SITE_REPO`/`SERVER_HOST` to staging values.
-Do not point a staging run at the production site repo.
+- `staging.example.com` for Pages;
+- `staging-api.example.com` for the tunnel;
+- `staging-assets.example.com` for R2 (or reuse the production asset host).
+
+Run the full verification checklist in §9 against staging. Use a second
+working copy with a staging `.deploy` (staging site repo + staging Pages
+project), or temporarily switch `SITE_REPO`/`SERVER_HOST` and the public
+origins. Do not point a staging run at the production site repo.
+
+If staging uses a different Pages origin, include it in
+`SERVER_CORS_ORIGINS` and the R2 CORS policy.
 
 ## 6. Publishing
 
@@ -364,26 +434,32 @@ DRY_RUN=1 ./install.sh
 
 The order is fixed:
 
-1. **build** — `npm ci` and `npm run build` write `client/dist`.
+1. **build** — `npm ci` and `npm run build` write `client/dist`, with the public
+   origins baked in.
 2. **R2** — public art is uploaded before the shell that references it.
 3. **Pages** — `client/dist` is synced to the site repo, the overlay is copied,
    then the site repo is committed and pushed.
-4. **server** — `game/` is mirrored to the API server.
+4. **server content** — `game/` is mirrored to the API server.
+5. **server env** — `RAVENEST_CORS_ORIGINS` is written to the server env file.
+6. **restart** — `SERVER_RESTART_CMD` runs after an env change, if configured.
 
 ### Options
 
 | Option | Effect |
 |---|---|
 | `--dry-run` / `DRY_RUN=1` | No writes to R2, the site repo, or the API server. The local build still runs unless `--skip-build` is also given. |
-| `--skip-build` | Reuse `client/dist`; it must contain `index.html`. |
+| `--skip-build` | Reuse `client/dist`; it must contain `index.html` and its public-origin stamp must match `.deploy`. |
 | `--skip-r2` | Skip the R2 stage even if `R2_BUCKET` is set. |
 | `--skip-pages` | Skip the Pages stage even if `SITE_REPO` is set. |
-| `--skip-server` | Skip the server mirror even if `SERVER_HOST` is set. |
+| `--skip-server` | Skip the server content, env, and restart stages even if `SERVER_HOST` is set. |
 | `--help` | Show usage. |
 
 ### Build stage
 
 ```bash
+export VITE_API_BASE_URL="$PUBLIC_API_ORIGIN"
+export VITE_ASSETS_BASE_URL="$PUBLIC_ASSETS_ORIGIN"
+export VITE_WS_BASE_URL="$PUBLIC_WS_ORIGIN"
 npm --prefix client ci --no-audit --no-fund
 npm --prefix client run build
 ```
@@ -391,6 +467,18 @@ npm --prefix client run build
 `npm ci` requires `client/package-lock.json` and a complete `client/SimpleGame`
 checkout. Vite writes to `client/dist`; the engine never points Vite's `outDir`
 at the site repo, because Vite empties its output directory.
+
+When Pages is enabled and the build is running, `install.sh` hard-fails if
+`PUBLIC_API_ORIGIN` or `PUBLIC_ASSETS_ORIGIN` is missing. `PUBLIC_WS_ORIGIN`
+may be empty; the client derives `wss://` from the API origin.
+
+After a successful build, `install.sh` writes
+`client/.build-public-origins`. With `--skip-build`, it compares that stamp
+with `.deploy` and refuses to publish a shell built for different origins.
+
+The values are also documented in `client/.env.example`. Local development
+uses `client/.env.development.local` (gitignored); empty values use the Vite
+proxy to `localhost:2290`.
 
 ### R2 stage
 
@@ -447,7 +535,7 @@ traceable to the source revision. If the sync produces no changes, no new commit
 is created, but the push still runs so a commit left behind by an earlier failed
 push can complete.
 
-### Server stage
+### Server content stage
 
 ```bash
 SERVER_PATH="${SERVER_PATH%/}"
@@ -469,6 +557,28 @@ to mirror an empty `game/` tree, which would otherwise wipe the remote content.
 
 Run `DRY_RUN=1 ./install.sh` before the first real mirror.
 
+### Server env stage
+
+`install.sh` generates the env file from `.deploy`:
+
+```bash
+# Generated by install.sh from .deploy; do not edit.
+RAVENEST_CORS_ORIGINS=https://app.example.com
+```
+
+It writes a local mode-`600` temp file, compares its SHA-256 with the remote
+file, and skips the write/restart when unchanged. On a change it:
+
+1. backs up the remote file to `${SERVER_ENV_PATH}.previous`;
+2. copies the new file to `${SERVER_ENV_PATH}.new`;
+3. atomically moves it into place and sets mode `600`;
+4. runs `SERVER_RESTART_CMD` if configured.
+
+If the restart fails, it restores `.previous` and retries the restart. If no
+restart command is configured, it writes the file and prints a gentle reminder.
+
+This stage does **not** deploy the server binary. Binary rollout is separate.
+
 ### Preflight checks
 
 Before building, `install.sh`:
@@ -481,10 +591,14 @@ Before building, `install.sh`:
   a source repo, a non-empty site repo without `index.html`, or a site repo
   that is, contains, or lives inside the engine checkout; refuses an overlay
   inside the site repo (the Pages sync uses `--delete`);
+- validates public origins (scheme + host only) and hard-fails if the Pages
+  build is missing the API or asset origin;
+- validates `SERVER_CORS_ORIGINS` (or `PUBLIC_SITE_ORIGIN`) and
+  `SERVER_ENV_PATH` when the server stage is enabled;
 - warns about tracked files larger than 50 MiB and refuses to run if any tracked
   file exceeds GitHub's 100 MiB limit.
 
-These guard the repository and the local sync, not the publish destinations.
+These guard the repository, the build, and the publish destinations.
 
 ## 7. Cache policy
 
@@ -493,28 +607,35 @@ These guard the repository and the local sync, not the publish destinations.
 | Pages `/` and `/index.html` | `no-cache` via `_headers` |
 | Pages `/sw.js` | `no-cache` via `_headers` (service worker updates) |
 | Pages `/assets/*` | `public, max-age=31536000, immutable` via `_headers` (hashed by Vite) |
-| R2 `/images/*`, `/sounds/*`, `/music/*` | Cloudflare Cache Rule: Edge 1h, Browser 1h |
-| `/api/*` and `/ws/*` | Cloudflare Cache Rule: bypass |
+| `assets.example.com/*` | Cloudflare Cache Rule: Edge 1h, Browser 1h |
+| `api.example.com/*` | Cloudflare Cache Rule: bypass |
+| `/api/avatar/<id>` | origin also sends `Cache-Control: private, no-store` |
 
 Raising the R2 TTL later is a Cache Rule edit, not a re-upload. Browsers that
 already cached an object keep it until their own copy expires; use **Purge
 Cache** on the affected URL or prefix if an asset must change immediately.
 
-## 8. Server mirror details
+## 8. Server mirror and runtime details
 
-- **Source:** `game/` — `config/`, `text/`, `images/`, and future audio.
-- **Target:** `${SERVER_PATH}/game/`, the server's `--content` directory.
+- **Content source:** `game/` — `config/`, `text/`, `images/`, and future audio.
+- **Content target:** `${SERVER_PATH}/game/`, the server's `--content` directory.
 - **Excludes:** `*.db`, `*.xcf`, `.git/`, `uploads/`, `*.md`, `.gitkeep`.
+- **Runtime env:** `${SERVER_ENV_PATH}` (default `${SERVER_PATH}/ravenest.env`),
+  containing `RAVENEST_CORS_ORIGINS`.
+- **Restart:** optional `SERVER_RESTART_CMD`.
 
 Why the server still needs a full `game/` copy:
 
 - `GameConfigCache` reads `config/`;
 - `TextManager` reads `text/`;
 - `AvatarPool` scans `images/avatars/safe/` and `images/retinue/headshots/`;
-- the server's `/images` routes remain available as a fallback (for example, if
-  the Origin Rule is removed or when using the API host directly).
+- the server's `/images` routes remain available as a fallback (for example,
+  when using the API host directly or during local development).
 
 `game/config` and `game/text` are never published to R2 or Pages.
+
+The env file must live outside `game/`; the content mirror uses `--delete` and
+would remove anything under it.
 
 ## 9. Verification
 
@@ -540,38 +661,67 @@ curl -sI https://app.example.com/assets/<hashed-file>.js | grep -i cache-control
 ### R2 images
 
 ```bash
-curl -sI https://app.example.com/images/manor/grass.png
-# HTTP/2 200, content-type: image/png, cf-cache-status present
+curl -sI https://assets.example.com/images/manor/grass.png
+# HTTP/2 200, content-type: image/png
 
-curl -sI https://app.example.com/images/<file>.avif
+curl -sI https://assets.example.com/images/<file>.avif
 # content-type: image/avif
+
+curl -sI -H 'Origin: https://app.example.com' \
+  https://assets.example.com/images/manor/grass.png | grep -i access-control
+# access-control-allow-origin: https://app.example.com
 ```
 
 If `content-type` is `application/octet-stream`, the AVIF pass did not run or
 the file has a different extension.
 
-### API
+### API and CORS
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' \
-  -X POST https://app.example.com/api/getTexts \
+# Preflight
+curl -si -X OPTIONS https://api.example.com/api/getTexts \
+  -H 'Origin: https://app.example.com' \
+  -H 'Access-Control-Request-Method: POST' \
+  -H 'Access-Control-Request-Headers: content-type'
+# HTTP/2 204, access-control-allow-origin: https://app.example.com
+
+# Actual request
+curl -si -X POST https://api.example.com/api/getTexts \
+  -H 'Origin: https://app.example.com' \
   -H 'content-type: application/json' \
   -d '{"language":"en","text_ids":["ui_login_title"]}'
-# 200
+# HTTP/2 200, access-control-allow-origin: https://app.example.com
 ```
 
 `/api/*` must return `cf-cache-status: BYPASS` or `DYNAMIC`, not `HIT`.
 `GET /api/avatar/<character_id>` must remain uncached and age-gated.
 
+A `No 'Access-Control-Allow-Origin' header` browser error means the origin is
+not in `RAVENEST_CORS_ORIGINS`, or the env file was written but the server was
+not restarted.
+
 ### WebSocket
 
 Open the game in a browser and start combat, or use a WebSocket client against
-`wss://app.example.com/ws/combat`. The handshake must return `101 Switching
+`wss://api.example.com/ws/combat`. The handshake must return `101 Switching
 Protocols`; the first client message is the auth envelope. The local
 `tools/combat_smoke.sh` verifies the protocol against a local server, not the
 remote host.
 
-### Server content
+### Client bundle
+
+Check that the built shell points at the intended hosts:
+
+```bash
+grep -R "api.example.com" client/dist/assets | head
+grep -R "assets.example.com" client/dist/assets | head
+```
+
+With `--skip-build`, `install.sh` already compared the build stamp. A manual
+`npm run build` does not write a stamp; rebuild through `install.sh` before a
+real publish.
+
+### Server content and env
 
 ```bash
 ssh "$SERVER_HOST" ls -d \
@@ -579,15 +729,12 @@ ssh "$SERVER_HOST" ls -d \
   "$SERVER_PATH/game/text" \
   "$SERVER_PATH/game/images/avatars/safe" \
   "$SERVER_PATH/game/images/retinue/headshots"
+
+ssh "$SERVER_HOST" cat "$SERVER_ENV_PATH"
+# RAVENEST_CORS_ORIGINS=https://app.example.com
 ```
 
 Removed art must be gone from the remote tree (the mirror uses `--delete`).
-
-### Origin Rule behavior
-
-- `/api/...` reaches the API server, not a Pages 404;
-- `/images/...` reaches R2, not Pages;
-- `/ws/...` upgrades, not a Pages response.
 
 ## 10. Rollback
 
@@ -622,6 +769,17 @@ re-upload.
 Restore the `game/` directory from your content backup, then re-run the server
 stage. `--delete` makes the next publish authoritative.
 
+**Server env**
+
+Restore `${SERVER_ENV_PATH}.previous` and restart the service. `install.sh`
+creates that backup before each env change.
+
+**Client public origins**
+
+Changing `PUBLIC_API_ORIGIN`, `PUBLIC_ASSETS_ORIGIN`, or `PUBLIC_WS_ORIGIN`
+requires a rebuild (or a `--skip-build` stamp match). There is no runtime config
+file in the Pages shell.
+
 Every Pages deploy commit includes the engine SHA, so the source revision for a
 published site is always recoverable.
 
@@ -629,22 +787,28 @@ published site is always recoverable.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `/api/*` returns a Pages 404 | Origin Rule did not match, or the DNS record override is missing | Check the rule expression, Host header action, and DNS record action; test with `curl -I` |
-| `/api/*` returns 522 or 1033 | Tunnel is down or ingress does not match the path | Check `cloudflared` status and the ingress `path` regexes; confirm `127.0.0.1:2290` is listening |
-| `/ws/*` returns 400/426 or disconnects immediately | Origin Rule or proxy did not preserve `Upgrade` | Confirm the WS rule exists and points at the tunnel; test `/ws/combat` directly against `api.app...` |
-| `/images/*` returns a Pages 404 | Images Origin Rule is missing or ordered after a broader rule | Add the rule or reorder it; verify the path prefix |
-| Images return `application/octet-stream` | AVIF MIME pass skipped, or the AWS CLI guessed the type | Run the stage again; inspect with `curl -I`; add a WebP pass if needed |
-| Stale shell after a deploy | `index.html` is cached | Confirm `_headers` is served from the site repo root and says `no-cache`; purge the Pages URL |
+| Browser reports a CORS error on `/api/*` | Origin missing from `RAVENEST_CORS_ORIGINS`, or env changed but server not restarted | Check `$SERVER_ENV_PATH`, preflight with `curl`, restart the service |
+| `OPTIONS /api/*` returns 404/405 | Server binary does not have the CORS routes | Rebuild and deploy the server binary; confirm the prefix `OPTIONS /api/*` |
+| API 404 | `PUBLIC_API_ORIGIN` includes `/api`, or points at Pages | Use the API origin only (`https://api.example.com`) |
+| Images 404 | `PUBLIC_ASSETS_ORIGIN` empty/wrong, or R2 key missing | Check the build stamp, the R2 path, and `curl -I` on the asset host |
+| Images return `application/octet-stream` | AVIF/WebP MIME pass skipped | Re-run the stage; inspect with `curl -I` |
+| Mixed-content or blocked WS | Page is https but API/WS is http/ws | Use `https://` and `wss://` |
+| WebSocket disconnects immediately | Tunnel/proxy did not preserve `Upgrade` | Confirm the tunnel host routes all paths; test `/ws/combat` directly |
+| Stale shell after a deploy | `index.html` cached | Confirm `_headers` is served from the site repo root and says `no-cache`; purge Pages |
 | Stale image after an upload | Browser/edge cache still within 1h | Purge the URL or prefix, or wait for the TTL |
-| `install.sh` says `no publish destination configured` | `.deploy` is missing or has no `SITE_REPO`/`R2_BUCKET`/`SERVER_HOST` | Create `.deploy` from `.deploy.example` |
+| `install.sh` says `PUBLIC_API_ORIGIN is required` | Missing build origin | Add it to `.deploy`; this is intentional for split-host Pages |
+| `client/dist public origins do not match .deploy` | `--skip-build` reused a differently configured build | Re-run without `--skip-build` |
+| `SERVER_CORS_ORIGINS or PUBLIC_SITE_ORIGIN is required` | Server enabled without an allowlist | Set `SERVER_CORS_ORIGINS` or `PUBLIC_SITE_ORIGIN` |
+| `install.sh` says `no publish destination configured` | `.deploy` missing or has no primary key | Create `.deploy` from `.deploy.example` |
 | `.deploy` not loaded | File missing, unreadable, or a shell syntax error | Confirm it is at the engine root; `chmod 600 .deploy`; check with `bash -n .deploy` |
 | `npm ci` fails | Missing lockfile or `client/SimpleGame` | Restore `client/package-lock.json`; clone SimpleGame into `client/SimpleGame` |
 | Site repo push fails | No remote, no credentials, or no permission | Add a remote / configure credentials; `install.sh` sets the upstream on the first push |
 | Site repo push rejected (non-fast-forward) | Remote has commits the local site repo lacks | Pull/rebase the site repo, then re-run |
 | Site repo commit fails | Git user name/email not configured | Set `user.name` and `user.email` in the site repo (or globally) |
-| Server mirror fails | SSH key, host, or path wrong | Test `ssh "$SERVER_HOST"`; confirm `SERVER_PATH` contains `game/`; try `DRY_RUN=1` |
-| Avatar 404 | Missing from R2 or the API returned an age-gate error | Check `game/images/avatars/safe/...`; request through `/api/avatar/<id>` with a valid session |
-| Origin Rules unavailable on the plan | Plan limitation | Use a Worker route for the matching paths as a fallback |
+| Server restart failed | `SERVER_RESTART_CMD` wrong, sudo needs a TTY, or service failed to start | Test the command over SSH; `install.sh` restored the previous env and retried |
+| Server content mirror fails | SSH key, host, or path wrong | Test `ssh "$SERVER_HOST"`; confirm `SERVER_PATH` contains `game/`; try `DRY_RUN=1` |
+| `SERVER_ENV_PATH must be outside game/` | Env file placed under the mirrored content tree | Move it to `${SERVER_PATH}/ravenest.env` or another path outside `game/` |
+| Avatar 404 | Missing from R2/API, or age-gate error | Check `game/images/avatars/safe/...`; request `/api/avatar/<id>` with a valid session |
 
 ## 12. Security
 
@@ -654,15 +818,19 @@ published site is always recoverable.
 - Use SSH or a Git credential helper for the site repo. A token embedded in the
   remote URL can appear in Git error output.
 - The R2 bucket is private. Public reads happen only through the
-  `assets.app.example.com` custom domain.
+  `assets.example.com` custom domain.
+- `api.example.com` is a public API entry point. CORS is a browser policy, not
+  authentication; the API still requires explicit JSON/query credentials.
+- The server env file contains only a public origin allowlist, not secrets. It
+  is still written mode `600`.
 - The site repo is private; the engine repo contains no deployment values.
-- `api.app.example.com` is a public API entry point. If that is undesirable,
-  put Cloudflare Access or a service token in front of it and have the Origin
-  Rule carry the token.
 - Rotate the R2 API token if it is exposed; update `.deploy` and re-run.
 - If `.deploy` was ever committed, rotate the exposed credentials and remove
   the file from history before pushing.
 - Do not serve `game/config` or `game/text` from Pages or R2.
+- Custom-avatar URLs carry `username` and `token` in the query string (browser
+  image requests cannot send a JSON auth body). They are never cached by the
+  server or Cloudflare.
 
 ## 13. Generic vs site-specific
 
@@ -674,17 +842,20 @@ published site is always recoverable.
 | client/server source | R2 bucket, token, custom domain |
 | game configs and text | tunnel credentials and hostname |
 | `.gitignore` entries | `backup.sh` / `push_to_production.sh` |
+| `client/.env.example` | `client/.env.development.local` |
 
 The engine's build still works on its own with `npm run build`; publishing is an
-optional layer on top.
+optional layer on top. A manual `npm run build` with no `VITE_*` values produces
+a same-origin shell (the legacy reverse-proxy layout).
 
 ## 14. Deferred work
 
 - **Purge-on-deploy** when the R2 TTL is raised (Cloudflare API token and
   URL/prefix purge).
 - **Audio prefixes** (`sounds/`, `music/`) — `install.sh` already uploads them
-  when the directories exist; add Origin Rules and Cache Rules at the same time.
+  when the directories exist; add them to the R2 CORS policy and cache rule.
 - **R2 versioning / object lock** for asset rollback.
-- **Cloudflare Access** on `api.app.example.com`.
-- **Worker fallback** if Origin Rules cannot route away from Pages as needed.
+- **Cloudflare Access** on `api.example.com`.
 - **`wrangler pages deploy`** as an alternative to the Git-integrated site repo.
+- **Server binary deployment** — `install.sh` mirrors content and writes the
+  runtime env, but does not build or copy the server binary.

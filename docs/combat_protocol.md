@@ -7,9 +7,11 @@ contract between `server/combat/` and `client/src/combat/`.
 ## Transport
 
 - WebSocket (RFC 6455) via uWebSockets' `app.ws()`, same listener as HTTP.
-- Production: nginx terminates TLS and proxies with the WebSocket upgrade
-  headers (see `server/README.md` Deployment). Vite dev proxy forwards
-  `/ws` with `ws: true`.
+- Production: `wss://api.<zone>/ws/combat` through a Cloudflare Tunnel (or an
+  nginx reverse proxy with the WebSocket upgrade headers). The client resolves
+  this from `VITE_WS_BASE_URL`, or derives it from `VITE_API_BASE_URL`.
+- Development: empty public origins use the Vite dev proxy, which forwards
+  `/ws` with `ws: true` to `localhost:2290`.
 - **Auth**: the FIRST message from the client must be `auth` with the same
   session token the REST API uses. The server validates it and only then
   subscribes the socket to the match's pub/sub topics.

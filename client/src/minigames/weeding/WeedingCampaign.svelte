@@ -3,6 +3,7 @@
   import { loadTexts } from '../../lib/text';
   import GameText from '../../components/GameText.svelte';
   import Book from '../../components/Book.svelte';
+  import { asset_url } from '../../lib/public_urls';
 
   interface Props {
     campaignId: string;
@@ -22,7 +23,7 @@
       : 'wd_weeding_marche'
   );
 
-  const mapImageUrl = '/images/tower_defense/wolf_warden_map1.jpg';
+  const mapImageUrl = asset_url('/images/tower_defense/wolf_warden_map1.jpg');
 
   const bookPages: { image: string; textId: string }[] = [
     { image: '', textId: 'wd_plant_bindweed' },

@@ -687,17 +687,46 @@ plus named soldiers with class/level/gear; see `server/tables/retinue_members.md
 ## Deployment
 
 - **Port**: 2290 (HTTP + WebSocket on the same listener)
-- **HTTPS**: Handled by reverse proxy (nginx)
+- **HTTPS**: Cloudflare Tunnel in production (or nginx as an alternative)
 - **Databases**: Created in `--db-dir` (default: the working directory) on first run
 - **Assets**: `config/`, `images/`, and `text/` are read from the `--content` root
   (default: the working directory). Pointing `--content` at `game/` while running
   from a scratch directory keeps databases and uploads out of the synced assets
   (see `run_server.sh`).
-- **Nginx config**: See project root README.md
+- **Publishing / tunnel setup**: See `docs/publishing.md`
 
-### Nginx WebSocket Proxy
+### CORS
 
-The combat game needs the WebSocket upgrade headers proxied through:
+The browser client is served from a separate origin (Cloudflare Pages) than
+the API. The API answers CORS preflights and includes the allowlist header on
+API responses. Configure the allowlist in the server service environment:
+
+```bash
+RAVENEST_CORS_ORIGINS="https://app.example.com"
+```
+
+- Comma-separated origins (scheme + host, no trailing slash).
+- Empty/unset means `*`; this is safe for the current API because it uses
+  explicit JSON/query credentials and no cookies.
+- `OPTIONS /api/*` returns `204 No Content`.
+- `GET /api/avatar/<id>` is sent with `Cache-Control: private, no-store`.
+
+`install.sh` writes this value to the server env file from `.deploy` and
+optionally restarts the service. See `docs/publishing.md`.
+
+### Cloudflare Tunnel / Nginx
+
+Production usually enters through a Cloudflare Tunnel:
+
+```yaml
+ingress:
+  - hostname: api.example.com
+    service: http://127.0.0.1:2290
+  - service: http_status:404
+```
+
+The tunnel forwards both `/api/*` and `/ws/*` on the API host, including the
+WebSocket upgrade. As an alternative, terminate TLS with nginx and proxy:
 
 ```nginx
 location /ws/ {

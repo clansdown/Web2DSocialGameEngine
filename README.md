@@ -72,6 +72,12 @@ Example usage:
 
 ## Nginx Configuration
 
+> The current production deployment uses Cloudflare Pages, R2, and a Cloudflare
+> Tunnel with separate `app`, `api`, and `assets` origins; see
+> [`docs/publishing.md`](docs/publishing.md). The nginx configuration below is a
+> same-origin/self-hosting alternative. If you split the API onto its own
+> origin, configure `RAVENEST_CORS_ORIGINS` as described there.
+
 The uWebSockets server listens on HTTP only (port 2290). HTTPS termination should be handled by a reverse proxy such as nginx, with certificates managed by certbot (Let's Encrypt).
 
 ### Example Nginx Configuration
@@ -150,9 +156,11 @@ Builds server binary and Docker image locally. Saves Docker tar to `server/bin/r
 ### Publishing (Cloudflare Pages + R2 + API tunnel)
 
 `./install.sh` builds the client, uploads public assets to R2, publishes the
-site repo to Cloudflare Pages, and mirrors `game/` to the API server. Deployment
-values live in a gitignored `.deploy`; see [`docs/publishing.md`](docs/publishing.md)
-for setup, the `.deploy` reference, cache policy, verification, and rollback.
+site repo to Cloudflare Pages, mirrors `game/` to the API server, and writes the
+API server's CORS env file. The Pages site, API, and assets are three separate
+origins; the client bakes their addresses in at build time from `.deploy`.
+See [`docs/publishing.md`](docs/publishing.md) for setup, the `.deploy`
+reference, CORS, cache policy, verification, and rollback.
 
 ### Build and Push Release
 

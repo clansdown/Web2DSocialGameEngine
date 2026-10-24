@@ -5,6 +5,7 @@
   import type { EndMiniGameResponse } from '../../lib/api';
   import { loadTexts } from '../../lib/text';
   import { getConfig, deleteConfig } from '../../lib/storage';
+  import { asset_url, rewrite_asset_urls } from '../../lib/public_urls';
   import { marked } from 'marked';
 
   import {
@@ -141,11 +142,11 @@
   async function preloadImages(): Promise<void> {
     const loads: Promise<void>[] = [];
     for (const p of plants) {
-      const url = `/images/weeding/plants/${p.sprite.image_file}`;
+      const url = asset_url(`/images/weeding/plants/${p.sprite.image_file}`);
       loads.push(loadImage(url).then((img: HTMLImageElement) => { spriteCache.set(p.id, img); }));
     }
     for (const t of tools) {
-      const url = `/images/weeding/tools/${t.sprite.image_file}`;
+      const url = asset_url(`/images/weeding/tools/${t.sprite.image_file}`);
       loads.push(loadImage(url).then((img: HTMLImageElement) => { spriteCache.set(`tool_${t.id}`, img); }));
     }
     await Promise.all(loads);
@@ -282,13 +283,13 @@
     setCameraFollowsPlayer(false);
 
     if (mapMeta && mapMeta.image_file) {
-      setBackground([`/images/weeding/maps/${mapMeta.image_file}`]);
+      setBackground([asset_url(`/images/weeding/maps/${mapMeta.image_file}`)]);
       setBackgroundMode('stretch');
     }
 
     plantClasses.clear();
     for (const plant of plants) {
-      const url = `/images/weeding/plants/${plant.sprite.image_file}`;
+      const url = asset_url(`/images/weeding/plants/${plant.sprite.image_file}`);
       const plantHp = plant.hp || 100;
       const gc = new GameObjectClass(plant.id, url, null, plantHp);
       if (plant.damage_sprites) {
@@ -296,13 +297,13 @@
         const base = dotIdx >= 0 ? plant.sprite.image_file.slice(0, dotIdx) : plant.sprite.image_file;
         const ext = dotIdx >= 0 ? plant.sprite.image_file.slice(dotIdx) : '';
         for (const threshold of plant.damage_sprites) {
-          gc.addDamageSprite(threshold, `/images/weeding/plants/${base}-${threshold}${ext}`);
+          gc.addDamageSprite(threshold, asset_url(`/images/weeding/plants/${base}-${threshold}${ext}`));
         }
       }
       plantClasses.set(plant.id, gc);
     }
     if (!plantClasses.has('rye')) {
-      const gc = new GameObjectClass('rye', '/images/weeding/plants/rye.png', null, 1);
+      const gc = new GameObjectClass('rye', asset_url('/images/weeding/plants/rye.png'), null, 1);
       plantClasses.set('rye', gc);
     }
     emptyCellClass = new GameObjectClass('weed_empty', null, null, 1);
@@ -403,7 +404,7 @@
       const btn = btnClass.spawn(
         0, 0,
         null,
-        tool.sprite.image_file ? `/images/weeding/tools/${tool.sprite.image_file}` : null,
+        tool.sprite.image_file ? asset_url(`/images/weeding/tools/${tool.sprite.image_file}`) : null,
         {
           width: btnW,
           height: btnH,
@@ -443,7 +444,7 @@
       const btn = btnClass.spawn(
         0, 0,
         null,
-        plant.sprite.image_file ? `/images/weeding/plants/${plant.sprite.image_file}` : null,
+        plant.sprite.image_file ? asset_url(`/images/weeding/plants/${plant.sprite.image_file}`) : null,
         {
           width: btnW,
           height: btnH,
@@ -1233,7 +1234,7 @@
         <div class="position-absolute top-0 start-0 w-100 h-100 d-flex justify-content-center align-items-center" style="z-index: 1000; background: rgba(0,0,0,0.75);">
           <div class="card bg-dark border-secondary mx-3" style="max-width: 600px;">
             <div class="card-body text-center">
-              <p class="card-text text-light fs-5 mb-4 intro-text">{@html marked.parse(introText ?? '')}</p>
+              <p class="card-text text-light fs-5 mb-4 intro-text">{@html rewrite_asset_urls(marked.parse(introText ?? '') as string)}</p>
               <button class="btn btn-primary px-4" onclick={() => showIntro = false}>Begin</button>
             </div>
           </div>
@@ -1241,7 +1242,7 @@
       {/if}
       {#if won && outroText}
         <div class="position-absolute start-50 translate-middle-x bg-dark bg-opacity-90 border border-secondary rounded p-2" style="z-index: 999; top: 8px; max-width: 500px;">
-          <p class="text-light mb-0 text-center intro-text" style="font-size: 0.9rem;">{@html marked.parse(outroText ?? '')}</p>
+          <p class="text-light mb-0 text-center intro-text" style="font-size: 0.9rem;">{@html rewrite_asset_urls(marked.parse(outroText ?? '') as string)}</p>
         </div>
       {/if}
     </div>

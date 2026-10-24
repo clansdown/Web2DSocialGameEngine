@@ -3,8 +3,9 @@
  * first-message auth, typed sends, and automatic reconnect with backoff.
  *
  * Transport notes:
- *  - The socket URL is same-origin (the vite dev proxy forwards /ws to the
- *    server; nginx terminates TLS in production). See docs/combat_protocol.md.
+ *  - The socket URL comes from VITE_WS_BASE_URL (or is derived from the API
+ *    origin). Empty values fall back to the page origin, which the Vite dev
+ *    proxy forwards to the local server. See docs/combat_protocol.md.
  *  - Auth happens in the FIRST message ({type:'auth'}) using the session
  *    token from auth.ts — the same credentials the REST API uses.
  *  - On unexpected close the client reconnects with exponential backoff and
@@ -12,6 +13,7 @@
  *    sends a fresh full state snapshot.
  */
 import { getSessionToken, getStoredUsername } from '../lib/auth';
+import { websocket_url } from '../lib/public_urls';
 import { json_codec, type combat_codec, type combat_envelope } from './protocol';
 
 export type combat_connection_status = 'connecting' | 'open' | 'reconnecting' | 'closed';
@@ -50,8 +52,7 @@ export class CombatNetClient {
   connect(): void {
     this.closed_by_user = false;
     this.set_status('connecting');
-    const proto = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-    const ws_url = `${proto}${window.location.host}/ws/combat`;
+    const ws_url = websocket_url('/ws/combat');
 
     try {
       this.ws = new WebSocket(ws_url);

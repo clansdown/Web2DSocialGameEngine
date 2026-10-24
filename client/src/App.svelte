@@ -19,6 +19,7 @@
   import { user, characters, currentCharacter, authLoading, playerGameState, language, isAuthenticated } from './lib/stores';
   import { loginRequest, refreshToken, setCharacterArchetypeRequest, setCharacterSexRequest, acknowledgeLandPatentRequest } from './lib/api';
   import { loadTexts, loadText } from './lib/text';
+  import { asset_url } from './lib/public_urls';
   import { fetchPlayerState } from './lib/game_state';
   import { route_store, navigate, replace_route } from './lib/router';
   import type { EndMiniGameResponse } from './lib/api';
@@ -319,7 +320,7 @@
     if (results.baron_right_earned) {
       loadText('barony_patent_earned').then((raw) => {
         let text = raw;
-        text = text.replace(/\<seal\>/g, `\n\n<img src="/images/ui/kings_seal.png" style="width: 10em; height: auto;" alt="King's Seal" />`);
+        text = text.replace(/\<seal\>/g, `\n\n<img src="${asset_url('/images/ui/kings_seal.png')}" style="width: 10em; height: auto;" alt="King's Seal" />`);
         baronyPatentText = text;
         showBaronyPatent = true;
       });
@@ -360,7 +361,7 @@
     if ((state as any).land_patent_earned && !showLandPatent) {
       loadText('land_patent_earned').then((raw) => {
         let text = raw;
-        text = text.replace(/\<seal\>/g, `\n\n<img src="/images/ui/kings_seal.png" style="width: 10em; height: auto;" alt="King's Seal" />`);
+        text = text.replace(/\<seal\>/g, `\n\n<img src="${asset_url('/images/ui/kings_seal.png')}" style="width: 10em; height: auto;" alt="King's Seal" />`);
         landPatentText = text;
         showLandPatent = true;
       });

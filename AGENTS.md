@@ -606,7 +606,7 @@ Use `tools/set_march_progress.sh` to set a character's march progress to an exac
 3. **Concurrent Access**: Three independent database connections allow simultaneous read/write operations
 4. **Error Handling**: All errors return JSON with format `{ "error": "description" }`
 5. **API Documentation**: Every endpoint has a corresponding `.md` file in `api/` directory with detailed request/response examples
-6. **Assets vs working directory**: the read-only assets `config/`, `images/`, and `text/` are read from the `--content` root (default: the working directory). `run_server.sh` runs the server from `test_run/` and passes `--content <repo>/game`, so databases and uploads land in `test_run/` and `game/` stays pristine for `push_to_production.sh`. Image paths like `images/ui/` resolve under the content root, so assets at `game/images/ui/book.png` are served from `/images/ui/book.png`. The Vite dev proxy (`/images` → `localhost:2290`) follows the same path resolution.
+6. **Assets vs working directory**: the read-only assets `config/`, `images/`, and `text/` are read from the `--content` root (default: the working directory). `run_server.sh` runs the server from `test_run/` and passes `--content <repo>/game`, so databases and uploads land in `test_run/` and `game/` stays pristine for `push_to_production.sh`. Image paths like `images/ui/` resolve under the content root, so assets at `game/images/ui/book.png` are served from `/images/ui/book.png`. The client resolves API/asset/WebSocket origins from `VITE_API_BASE_URL`, `VITE_ASSETS_BASE_URL`, and `VITE_WS_BASE_URL` at build time (`install.sh` fills them from `.deploy`); empty values fall back to same-origin, which keeps the Vite dev proxy (`/api`, `/images`, `/ws` → `localhost:2290`) working. Production serves the client from Pages, the API from `api.<zone>`, and assets from `assets.<zone>`; the API uses `RAVENEST_CORS_ORIGINS` (see `docs/publishing.md`).
 
 ### Coding Standards
 
@@ -1020,7 +1020,7 @@ Build the full game progression and content system with a working tower defense 
 - Monetization: real payment-gateway integration (replace the `purchasePlatinum`/`settlePlatinum` stub); adventure-access purchase + monthly-pass fulfilment (deferred — `rts_design.md` §18)
 
 ### Critical Context
-- **Server compiles** with `./compile_server.sh` (no arguments). Client `npm run check` passes with only pre-existing WeedingGame errors.
+- **Server compiles** with `./compile_server.sh` (no arguments). Client `npm run check` passes with 0 errors (3 pre-existing a11y/self-closing-tag warnings in `RetinuePanel.svelte` and `GameBoard.svelte`).
 - **SimpleGame is never modified** — all changes in our code (`TowerDefense.svelte`). Required changes documented in `docs/SimpleGame_changes.md`.
 - **Tower defense maps** live in `game/config/tower_defense/maps/` as JSON. Only `map_1.json` exists (level 1). Map metadata normalized server-side from camelCase to snake_case.
 - **`TowerDefenseMapCache`** uses POSIX `stat()` with `time_t` (not `std::filesystem::file_time_type` — broken on this Linux).

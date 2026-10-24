@@ -13,6 +13,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <unordered_set>
+#include <string_view>
+#include <vector>
 #include <random>
 #include <map>
 #include <set>
@@ -370,6 +372,69 @@ void increment_request_count() {
 
 void sendJsonResponse(auto* res, const ApiResponse& response) {
     res->end(response.toJson().dump());
+}
+
+// ── CORS ────────────────────────────────────────────────────────────────────
+// The browser client is served from a different origin (Pages) than the API.
+// RAVENEST_CORS_ORIGINS is a comma-separated allowlist; empty/unset = "*".
+// The API authenticates with explicit JSON/query credentials (no cookies), so
+// the wildcard fallback does not enable cookie-based CSRF.
+static std::vector<std::string> g_cors_origins;
+
+static std::string trim_ascii(std::string value) {
+    const auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
+    while (!value.empty() && is_space(static_cast<unsigned char>(value.front()))) {
+        value.erase(value.begin());
+    }
+    while (!value.empty() && is_space(static_cast<unsigned char>(value.back()))) {
+        value.pop_back();
+    }
+    return value;
+}
+
+static void load_cors_origins() {
+    g_cors_origins.clear();
+    const char* raw = std::getenv("RAVENEST_CORS_ORIGINS");
+    if (raw == nullptr) return;
+
+    const std::string value(raw);
+    size_t start = 0;
+    while (start <= value.size()) {
+        const size_t comma = value.find(',', start);
+        std::string item = trim_ascii(value.substr(
+            start, comma == std::string::npos ? std::string::npos : comma - start));
+        if (!item.empty()) {
+            if (item == "*") {
+                g_cors_origins.clear();
+                return;
+            }
+            g_cors_origins.push_back(std::move(item));
+        }
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+    }
+}
+
+template <typename Res, typename Req>
+static void set_cors_headers(Res* res, Req* req) {
+    const std::string_view origin_view = req->getHeader("origin");
+    if (origin_view.empty()) return;
+
+    const std::string origin(origin_view);
+    std::string allow_origin = "*";
+    if (!g_cors_origins.empty()) {
+        // Always vary on Origin once an allowlist is configured, including the
+        // denial path, so an intermediary cannot reuse a headerless response.
+        res->writeHeader("Vary", "Origin");
+        const auto found = std::find(g_cors_origins.begin(), g_cors_origins.end(), origin);
+        if (found == g_cors_origins.end()) return;
+        allow_origin = origin;
+    }
+
+    res->writeHeader("Access-Control-Allow-Origin", allow_origin);
+    res->writeHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+    res->writeHeader("Access-Control-Allow-Headers", "Content-Type");
+    res->writeHeader("Access-Control-Max-Age", "86400");
 }
 
 std::string extractEndpointName(std::string_view path) {
@@ -7952,6 +8017,10 @@ void print_usage(const char* program_name) {
     std::cout << "  --verbose                  Enable verbose logging" << std::endl;
     std::cout << "  --quiet                    Minimal logging" << std::endl;
     std::cout << "  -h, --help                 Show this help message" << std::endl;
+    std::cout << std::endl;
+    std::cout << "Environment:" << std::endl;
+    std::cout << "  RAVENEST_CORS_ORIGINS      Comma-separated browser origins allowed by CORS" << std::endl;
+    std::cout << "                             (default: *; no cookies are used by the API)" << std::endl;
 }
 
 // Serves a file from `root` (relative to the server working directory) for a
@@ -8200,6 +8269,8 @@ int main(int argc, char* argv[]) {
     // Register all manor action handlers (build, demolish, move, upgrade, walls,
     // train, research) into the registry used by /api/Build and friends.
     GameLogic::registerAllActionHandlers(GameLogic::ActionRegistry::getInstance());
+
+    load_cors_origins();
 
     uWS::App app;
 
@@ -8553,6 +8624,8 @@ int main(int argc, char* argv[]) {
     // Auth rides the query string (?username=&token=) because the browser
     // requests this via <img src>. TODO: moderation/review before release.
     app.get("/api/avatar/*", [](auto *res, auto *req) {
+        set_cors_headers(res, req);
+        res->writeHeader("Cache-Control", "private, no-store");
         const std::string url(req->getUrl());
         const std::string prefix = "/api/avatar/";
         std::string rest = url.substr(prefix.length());
@@ -8630,8 +8703,20 @@ int main(int argc, char* argv[]) {
         });
     }
 
+    // CORS preflight for every API endpoint. The browser sends OPTIONS before
+    // a JSON POST because Content-Type: application/json is not a simple
+    // request. The API host is a separate origin from the Pages shell.
+    app.options("/api/*", [](auto *res, auto *req) {
+        // Set the status before adding headers: uWS's writeHeader implicitly
+        // selects 200, so a later writeStatus is otherwise ignored.
+        res->writeStatus("204 No Content");
+        set_cors_headers(res, req);
+        res->end();
+    });
+
     // `mini_games` outlives the App (declared earlier in main); see W9 note.
     app.post("/api/*", [&mini_games](auto *res, auto *req) {
+        set_cors_headers(res, req);
         handleApiRequest(mini_games.config_cache(), res, req);
     });
 

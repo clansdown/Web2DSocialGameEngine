@@ -35,7 +35,8 @@ Stages (run in this order):
   build   npm ci && npm run build -> client/dist
   r2      game/images, game/sounds, game/music -> R2 bucket
   pages   client/dist + overlay -> private Pages site repo, then commit and push
-  server  game/ -> API server content mirror (rsync --delete)
+  server  game/ -> API server content mirror (rsync --delete), then write
+          RAVENEST_CORS_ORIGINS and restart if configured
 
 Options:
   --dry-run       Print publish actions without writing to R2, the site repo,
@@ -43,16 +44,16 @@ Options:
   --skip-build    Reuse an existing client/dist (it must contain index.html).
   --skip-r2       Skip the R2 upload stage.
   --skip-pages    Skip the Pages site-repo stage.
-  --skip-server   Skip the API server mirror stage.
+  --skip-server   Skip the API server content/env/restart stage.
   -h, --help      Show this help.
 
 Environment:
   DRY_RUN=1       Same as --dry-run.
 
 Destinations are enabled by setting their keys in .deploy: SITE_REPO (Pages),
-R2_BUCKET (R2), and SERVER_HOST (API server). Each enabled stage validates its
-own keys. R2 credentials are exported only for the aws commands and are never
-printed.
+R2_BUCKET (R2), and SERVER_HOST (API server). Public origins and the server CORS
+allowlist also come from .deploy. Each enabled stage validates its own keys.
+R2 credentials are exported only for the aws commands and are never printed.
 EOF
 }
 
@@ -103,9 +104,20 @@ default_config() {
     SERVER_HOST="${SERVER_HOST:-}"
     SERVER_PATH="${SERVER_PATH:-}"
     SERVER_SSH_KEY="${SERVER_SSH_KEY:-}"
+    PUBLIC_SITE_ORIGIN="${PUBLIC_SITE_ORIGIN:-}"
+    PUBLIC_API_ORIGIN="${PUBLIC_API_ORIGIN:-}"
+    PUBLIC_ASSETS_ORIGIN="${PUBLIC_ASSETS_ORIGIN:-}"
+    PUBLIC_WS_ORIGIN="${PUBLIC_WS_ORIGIN:-}"
+    SERVER_CORS_ORIGINS="${SERVER_CORS_ORIGINS:-}"
+    SERVER_ENV_PATH="${SERVER_ENV_PATH:-}"
+    SERVER_RESTART_CMD="${SERVER_RESTART_CMD:-}"
     CF_API_TOKEN="${CF_API_TOKEN:-}"
     CF_ZONE_ID="${CF_ZONE_ID:-}"
 }
+
+# The local stamp records the public origins baked into client/dist, so
+# --skip-build can refuse to publish a shell built for a different .deploy.
+BUILD_STAMP="client/.build-public-origins"
 
 parse_args() {
     while [ "$#" -gt 0 ]; do
@@ -159,6 +171,127 @@ aws_run() {
     fi
 }
 
+# Run SSH with the configured private key, if any.
+ssh_run() {
+    if [ -n "$SERVER_SSH_KEY" ]; then
+        ssh -i "$SERVER_SSH_KEY" "$@"
+    else
+        ssh "$@"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Public origin validation
+# ---------------------------------------------------------------------------
+
+# Validate one origin (scheme + host, no path). Path routing is intentionally
+# not supported here: the three services live on separate hostnames.
+validate_origin_value() {
+    local name="$1"
+    local value="$2"
+    local scheme="$3"
+
+    [ -n "$value" ] || die "$name is not set; add it to .deploy"
+    case "$value" in
+        *[[:space:]]*) die "$name must not contain whitespace: $value" ;;
+    esac
+    case "$value" in
+        "$scheme"://*) ;;
+        *) die "$name must start with $scheme://: $value" ;;
+    esac
+    case "$value" in
+        *://*/* | *\?* | *#*) die "$name must be an origin (no path, query, or fragment): $value" ;;
+    esac
+}
+
+# Validate a comma-separated CORS allowlist and normalise surrounding spaces.
+validate_origin_list() {
+    local name="$1"
+    local list="$2"
+    local item
+    local normalized=""
+    local -a items=()
+
+    [ -n "$list" ] || die "$name is empty"
+    IFS=',' read -r -a items <<< "$list"
+    for item in "${items[@]}"; do
+        item="${item#"${item%%[![:space:]]*}"}"
+        item="${item%"${item##*[![:space:]]}"}"
+        [ -n "$item" ] || die "$name contains an empty origin"
+        validate_origin_value "$name entry" "$item" "https"
+        normalized="${normalized:+$normalized,}$item"
+    done
+    SERVER_CORS_ORIGINS="$normalized"
+}
+
+# Validate everything that is baked into the build or written to the server.
+preflight_public_origins() {
+    if [ -n "$PUBLIC_SITE_ORIGIN" ]; then
+        validate_origin_value "PUBLIC_SITE_ORIGIN" "$PUBLIC_SITE_ORIGIN" "https"
+    fi
+    if [ -n "$PUBLIC_API_ORIGIN" ]; then
+        validate_origin_value "PUBLIC_API_ORIGIN" "$PUBLIC_API_ORIGIN" "https"
+    fi
+    if [ -n "$PUBLIC_ASSETS_ORIGIN" ]; then
+        validate_origin_value "PUBLIC_ASSETS_ORIGIN" "$PUBLIC_ASSETS_ORIGIN" "https"
+    fi
+    if [ -n "$PUBLIC_WS_ORIGIN" ]; then
+        validate_origin_value "PUBLIC_WS_ORIGIN" "$PUBLIC_WS_ORIGIN" "wss"
+    fi
+
+    if [ "$RUN_PAGES" = "1" ] && [ "$SKIP_BUILD" != "1" ]; then
+        [ -n "$PUBLIC_API_ORIGIN" ] ||
+            die "PUBLIC_API_ORIGIN is required when building the Pages client; add it to .deploy"
+        [ -n "$PUBLIC_ASSETS_ORIGIN" ] ||
+            die "PUBLIC_ASSETS_ORIGIN is required when building the Pages client; add it to .deploy"
+    fi
+
+    if [ "$RUN_SERVER" = "1" ]; then
+        SERVER_PATH="${SERVER_PATH%/}"
+        [ -n "$SERVER_PATH" ] ||
+            die "SERVER_PATH must name the parent of the server's game/ directory"
+        SERVER_ENV_PATH="${SERVER_ENV_PATH:-${SERVER_PATH}/ravenest.env}"
+
+        case "$SERVER_ENV_PATH" in
+            /*) ;;
+            *) die "SERVER_ENV_PATH must be an absolute path: $SERVER_ENV_PATH" ;;
+        esac
+        case "$SERVER_ENV_PATH" in
+            */) die "SERVER_ENV_PATH must name a file, not a directory: $SERVER_ENV_PATH" ;;
+            *[[:space:]\'\"\\:]* | *..*)
+                die "SERVER_ENV_PATH contains unsupported characters: $SERVER_ENV_PATH"
+                ;;
+        esac
+        case "$SERVER_ENV_PATH/" in
+            "$SERVER_PATH/game/"*)
+                die "SERVER_ENV_PATH must be outside game/ (the content mirror uses --delete)"
+                ;;
+        esac
+
+        if [ -z "$SERVER_CORS_ORIGINS" ]; then
+            SERVER_CORS_ORIGINS="$PUBLIC_SITE_ORIGIN"
+        fi
+        [ -n "$SERVER_CORS_ORIGINS" ] ||
+            die "SERVER_CORS_ORIGINS or PUBLIC_SITE_ORIGIN is required when SERVER_HOST is set"
+        validate_origin_list "SERVER_CORS_ORIGINS" "$SERVER_CORS_ORIGINS"
+    fi
+}
+
+# Refuse to reuse a client/dist built for different public origins.
+check_build_stamp() {
+    local expected
+    local actual
+
+    [ -f "$BUILD_STAMP" ] ||
+        die "client/dist has no public-origin stamp; rebuild without --skip-build"
+    expected="$(printf 'api=%s\nassets=%s\nws=%s\n' \
+        "$PUBLIC_API_ORIGIN" "$PUBLIC_ASSETS_ORIGIN" "$PUBLIC_WS_ORIGIN")"
+    actual="$(cat "$BUILD_STAMP")"
+    if [ "$expected" != "$actual" ]; then
+        die "client/dist public origins do not match .deploy; rebuild without --skip-build"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Preflight
 # ---------------------------------------------------------------------------
@@ -174,6 +307,7 @@ preflight() {
     done
 
     preflight_git
+    preflight_public_origins
 }
 
 preflight_git() {
@@ -212,6 +346,9 @@ preflight_git() {
 
 stage_build() {
     if [ "$SKIP_BUILD" = "1" ]; then
+        if [ "$RUN_PAGES" = "1" ]; then
+            check_build_stamp
+        fi
         log "build: skipped"
         return
     fi
@@ -221,6 +358,16 @@ stage_build() {
         die "client/SimpleGame/ui is missing; clone SimpleGame into client/SimpleGame (see README.md)"
     [ -f client/package-lock.json ] || die "client/package-lock.json is missing; npm ci requires it"
 
+    # Vite bakes these into the bundle. Empty values preserve the same-origin
+    # dev proxy/reverse-proxy behaviour; production Pages builds require the
+    # API and asset origins (validated in preflight_public_origins).
+    export VITE_API_BASE_URL="$PUBLIC_API_ORIGIN"
+    export VITE_ASSETS_BASE_URL="$PUBLIC_ASSETS_ORIGIN"
+    export VITE_WS_BASE_URL="$PUBLIC_WS_ORIGIN"
+    log "build: api=${PUBLIC_API_ORIGIN:-same-origin} assets=${PUBLIC_ASSETS_ORIGIN:-same-origin} ws=${PUBLIC_WS_ORIGIN:-derived}"
+
+    rm -f "$BUILD_STAMP"
+
     log "build: npm ci"
     npm --prefix client ci --no-audit --no-fund
 
@@ -228,6 +375,8 @@ stage_build() {
     npm --prefix client run build
 
     [ -f client/dist/index.html ] || die "build did not produce client/dist/index.html"
+    printf 'api=%s\nassets=%s\nws=%s\n' \
+        "$PUBLIC_API_ORIGIN" "$PUBLIC_ASSETS_ORIGIN" "$PUBLIC_WS_ORIGIN" > "$BUILD_STAMP"
     log "build: client/dist/index.html present"
 }
 
@@ -419,7 +568,7 @@ stage_pages() {
 # Stage 4 — API server content mirror
 # ---------------------------------------------------------------------------
 
-stage_server() {
+stage_server_content() {
     require_var SERVER_HOST SERVER_PATH
     command -v rsync >/dev/null 2>&1 || die "rsync not found"
     [ -d game ] || die "game/ not found"
@@ -465,6 +614,82 @@ stage_server() {
             --exclude='*.md' \
             --exclude='.gitkeep' \
             game/ "$SERVER_HOST:${SERVER_PATH}/game/"
+    fi
+}
+
+# Write RAVENEST_CORS_ORIGINS to the API server's env file. The file is
+# generated from .deploy (the single source) and installed atomically. A
+# restart is optional: without SERVER_RESTART_CMD the file is still updated, but
+# the running process keeps the old allowlist until it is restarted.
+stage_server_runtime() {
+    require_var SERVER_HOST SERVER_CORS_ORIGINS SERVER_ENV_PATH
+    command -v ssh >/dev/null 2>&1 || die "ssh not found"
+    command -v rsync >/dev/null 2>&1 || die "rsync not found"
+    if [ -n "$SERVER_SSH_KEY" ] && [ ! -f "$SERVER_SSH_KEY" ]; then
+        die "SERVER_SSH_KEY does not exist: $SERVER_SSH_KEY"
+    fi
+
+    local env_path="$SERVER_ENV_PATH"
+    local remote_dir
+    remote_dir="$(dirname -- "$env_path")"
+
+    local temp
+    temp="$(mktemp "${TMPDIR:-/tmp}/ravenest-env.XXXXXX")"
+    {
+        printf '# Generated by install.sh from .deploy; do not edit.\n'
+        printf 'RAVENEST_CORS_ORIGINS=%s\n' "$SERVER_CORS_ORIGINS"
+    } > "$temp"
+    chmod 600 "$temp"
+
+    if [ "$DRY_RUN" = "1" ]; then
+        log "server: would write $env_path"
+        log "server: RAVENEST_CORS_ORIGINS=$SERVER_CORS_ORIGINS"
+        if [ -n "$SERVER_RESTART_CMD" ]; then
+            log "server: would restart: $SERVER_RESTART_CMD"
+        fi
+        rm -f "$temp"
+        return
+    fi
+
+    local local_hash
+    local remote_hash=""
+    local_hash="$(sha256sum "$temp" | awk '{print $1}')"
+    remote_hash="$(ssh_run "$SERVER_HOST" \
+        "sha256sum '$env_path' 2>/dev/null | awk '{print \$1}'" 2>/dev/null || true)"
+
+    if [ "$local_hash" = "$remote_hash" ]; then
+        log "server: env unchanged ($env_path)"
+        rm -f "$temp"
+        return
+    fi
+
+    local -a ssh_opt=()
+    if [ -n "$SERVER_SSH_KEY" ]; then
+        ssh_opt=(-e "ssh -i $SERVER_SSH_KEY")
+    fi
+
+    log "server: writing $env_path"
+    ssh_run "$SERVER_HOST" "mkdir -p '$remote_dir'"
+    ssh_run "$SERVER_HOST" \
+        "if [ -f '$env_path' ]; then cp -p '$env_path' '$env_path.previous'; fi"
+    rsync_run -a "${ssh_opt[@]}" "$temp" "$SERVER_HOST:${env_path}.new"
+    ssh_run "$SERVER_HOST" \
+        "chmod 600 '$env_path.new' && mv '$env_path.new' '$env_path'"
+    rm -f "$temp"
+
+    if [ -n "$SERVER_RESTART_CMD" ]; then
+        log "server: restarting API service"
+        if ! ssh_run "$SERVER_HOST" "$SERVER_RESTART_CMD"; then
+            warn "server: restart failed; restoring the previous environment"
+            ssh_run "$SERVER_HOST" \
+                "if [ -f '$env_path.previous' ]; then mv '$env_path.previous' '$env_path'; fi" || true
+            ssh_run "$SERVER_HOST" "$SERVER_RESTART_CMD" || true
+            die "server restart failed after writing $env_path"
+        fi
+    else
+        printf 'note: API server env was updated but the server was not restarted.\n' >&2
+        printf '      Restart it when convenient to apply RAVENEST_CORS_ORIGINS.\n' >&2
+        printf '      Set SERVER_RESTART_CMD in .deploy to automate this.\n' >&2
     fi
 }
 
@@ -518,7 +743,8 @@ else
 fi
 
 if [ "$RUN_SERVER" = "1" ]; then
-    stage_server
+    stage_server_content
+    stage_server_runtime
 else
     log "server: skipped (not configured or --skip-server)"
 fi

@@ -8,6 +8,7 @@
    */
 
   import { loadTexts as fetchTexts } from '../lib/text';
+  import { asset_url } from '../lib/public_urls';
   import StoryText from './StoryText.svelte';
 
   interface Props {
@@ -93,7 +94,7 @@
           onclick={() => handleCardClick('wolf_warden')}
           onkeydown={(e) => { if (e.key === 'Enter') handleCardClick('wolf_warden'); }}
         >
-          <img src="/images/ui/path_wolf_warden.png" alt="Wolf Warden" class="img-fluid rounded mx-auto mt-3 d-block" style="width: 200px; height: 200px; object-fit: cover;" />
+          <img src={asset_url('/images/ui/path_wolf_warden.png')} alt="Wolf Warden" class="img-fluid rounded mx-auto mt-3 d-block" style="width: 200px; height: 200px; object-fit: cover;" />
           <div class="card-body">
             <h4 class="card-title">{texts['ui_path_wolf_warden'] || 'Wolf Warden'}</h4>
           </div>
@@ -110,7 +111,7 @@
           onclick={() => handleCardClick('assarter')}
           onkeydown={(e) => { if (e.key === 'Enter') handleCardClick('assarter'); }}
         >
-          <img src="/images/ui/path_assarter.png" alt="Assarter" class="img-fluid rounded mx-auto mt-3 d-block" style="width: 200px; height: 200px; object-fit: cover;" />
+          <img src={asset_url('/images/ui/path_assarter.png')} alt="Assarter" class="img-fluid rounded mx-auto mt-3 d-block" style="width: 200px; height: 200px; object-fit: cover;" />
           <div class="card-body">
             <h4 class="card-title">{texts['ui_path_assarter'] || 'Assarter of the Wildlands'}</h4>
           </div>

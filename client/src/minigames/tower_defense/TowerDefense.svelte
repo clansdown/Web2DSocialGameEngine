@@ -14,6 +14,7 @@
   } from '../../lib/tower_defense_types';
   import { loadMap } from '../../lib/tower_defense_map';
   import type { BoardMapData, BoardMapExclusionZone } from '../../lib/tower_defense_map';
+  import { asset_url } from '../../lib/public_urls';
 
   import {
     initEngine, setCameraFollowsPlayer, setBoardSize, setButtonDebugLevel,
@@ -371,7 +372,7 @@
     const clsName = `pool_${aeConfig.id}`;
     let cls = poolClasses[clsName];
     if (!cls) {
-      cls = new GameObjectClass(clsName, `/images/tower_defense/projectiles/${aeConfig.image_file}`, null);
+      cls = new GameObjectClass(clsName, asset_url(`/images/tower_defense/projectiles/${aeConfig.image_file}`), null);
       cls.defaultWidth = radiusPx * 2;
       cls.defaultHeight = radiusPx * 2;
       cls.setBoundingBox(cls.defaultWidth, cls.defaultHeight);
@@ -618,7 +619,7 @@
 
     // Background - map image stretched to fill board
     const mapUrl = mapMetadata.imageFilename
-      ? `/images/tower_defense/maps/${mapMetadata.imageFilename}`
+      ? asset_url(`/images/tower_defense/maps/${mapMetadata.imageFilename}`)
       : null;
     if (mapUrl) {
       setBackground([mapUrl]);
@@ -644,7 +645,7 @@
     const projConfig = data.projectiles?.projectiles || {};
     for (const [id, cfg] of Object.entries(projConfig)) {
       const entry = cfg as any;
-      const cls = new ProjectileClass(`proj_${id}`, `/images/tower_defense/projectiles/${entry.image_file}`);
+      const cls = new ProjectileClass(`proj_${id}`, asset_url(`/images/tower_defense/projectiles/${entry.image_file}`));
       cls.defaultWidth = entry.width || 16;
       cls.defaultHeight = entry.height || 8;
       cls.setBoundingBox(cls.defaultWidth, cls.defaultHeight);
@@ -674,7 +675,7 @@
     const cX = sX + sW / 2;
 
     const copperImages: InlineImageMap = {
-      copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
+      copper: { image: asset_url('/images/ui/coin_copper.png'), width: 20, height: 20 }
     };
     resourceText = createText(
       `{img:copper} ${currentGold}`,
@@ -1093,7 +1094,7 @@
     if (resourceText) {
       resourceText.text = `{img:copper} ${currentGold}`;
       resourceText.setInlineImages({
-        copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
+        copper: { image: asset_url('/images/ui/coin_copper.png'), width: 20, height: 20 }
       });
     }
     refreshButtonStates();
@@ -1151,7 +1152,7 @@
     if (resourceText) {
       resourceText.text = `{img:copper} ${currentGold}`;
       resourceText.setInlineImages({
-        copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
+        copper: { image: asset_url('/images/ui/coin_copper.png'), width: 20, height: 20 }
       });
     }
     refreshButtonStates();
@@ -1171,7 +1172,7 @@
     if (resourceText) {
       resourceText.text = `{img:copper} ${currentGold}`;
       resourceText.setInlineImages({
-        copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
+        copper: { image: asset_url('/images/ui/coin_copper.png'), width: 20, height: 20 }
       });
     }
     refreshButtonStates();
@@ -1520,7 +1521,7 @@
       if (resourceText) {
         resourceText.text = `{img:copper} ${currentGold}`;
         resourceText.setInlineImages({
-          copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
+          copper: { image: asset_url('/images/ui/coin_copper.png'), width: 20, height: 20 }
         });
       }
       refreshButtonStates();
@@ -1591,7 +1592,7 @@
         if (resourceText) {
           resourceText.text = `{img:copper} ${currentGold}`;
           resourceText.setInlineImages({
-            copper: { image: '/images/ui/coin_copper.png', width: 20, height: 20 }
+            copper: { image: asset_url('/images/ui/coin_copper.png'), width: 20, height: 20 }
           });
         }
         if (livesText) livesText.text = `Lives: ${currentLives}`;

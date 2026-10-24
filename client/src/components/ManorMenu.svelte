@@ -3,6 +3,7 @@
   import { currentCharacter } from '../lib/stores';
   import { getFiefdomRequest, buildRequest, getBuildingConfigsRequest, setFiefdomImportRequest, setFiefdomReserveRequest, setBuildingOutputRateRequest, upgradeBuildingRequest, convertBuildingRequest, demolishBuildingRequest, upgradePondTypeRequest } from '../lib/api';
   import type { FiefdomResponse, FiefdomBuilding, BuildingTypeConfig, EconomyReport } from '../lib/api';
+  import { asset_url } from '../lib/public_urls';
   import RetinuePanel from './RetinuePanel.svelte';
   import { loadTexts } from '../lib/text';
   import { getSessionToken, getInMemoryCredentials } from '../lib/auth';
@@ -1538,7 +1539,7 @@
     debugDiv = document.createElement('div');
     initEngine(canvasEl, debugDiv, false, setupGame);
     setBoardSize(BW, BH);
-    setBackground(['/images/manor/ground/grass.jpg']);
+    setBackground([asset_url('/images/manor/ground/grass.jpg')]);
     setBackgroundMode('tile');
     setBackgroundTileSize(GRASS_TILE, GRASS_TILE);
     setCameraFollowsPlayer(false);

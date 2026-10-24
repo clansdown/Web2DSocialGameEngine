@@ -56,6 +56,11 @@ push_to_production.sh
 # Checkout of the SimpleGame engine
 /client/SimpleGame/
 
+# Client-local public-origin overrides and the last build stamp
+/client/.env.local
+/client/.env.*.local
+/client/.build-public-origins
+
 # Game configuration files (create these for your game)
 /.game_name
 /.docker_repo

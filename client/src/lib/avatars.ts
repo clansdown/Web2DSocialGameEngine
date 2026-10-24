@@ -1,9 +1,25 @@
 import * as auth from './auth';
+import { resolve_server_url } from './public_urls';
+
+/**
+ * True when a URL points at the age-gated custom-avatar route, whether the URL
+ * is relative or has already been rebased onto the API origin.
+ *
+ * @param url - Absolute or relative avatar URL
+ * @returns Whether it is the custom-avatar endpoint
+ */
+function is_custom_avatar_url(url: string): boolean {
+  try {
+    return new URL(url, window.location.origin).pathname.startsWith('/api/avatar/');
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Appends the session credentials to an age-gated custom-avatar URL so it can
- * be used directly as an <img> src. Safe-pool and static URLs pass through
- * unchanged (they are public).
+ * be used directly as an <img> src. Safe-pool and static URLs are rebased onto
+ * the asset origin and pass through unchanged (they are public).
  *
  * The server resolves custom avatars to `/api/avatar/<character_id>` and
  * requires `?username=&token=` because a browser image request cannot carry a
@@ -13,12 +29,14 @@ import * as auth from './auth';
  * @returns The URL with credentials appended when required
  */
 export function with_avatar_auth(url: string): string {
-  if (!url.startsWith('/api/avatar/')) return url;
+  if (!url) return url;
+  const resolved = resolve_server_url(url);
+  if (!is_custom_avatar_url(resolved)) return resolved;
   const creds = auth.getInMemoryCredentials();
   const token = auth.getSessionToken();
-  if (!creds || !token) return url;
-  const separator = url.includes('?') ? '&' : '?';
-  return `${url}${separator}username=${encodeURIComponent(creds.username)}&token=${encodeURIComponent(token)}`;
+  if (!creds || !token) return resolved;
+  const separator = resolved.includes('?') ? '&' : '?';
+  return `${resolved}${separator}username=${encodeURIComponent(creds.username)}&token=${encodeURIComponent(token)}`;
 }
 
 /** Largest source file we will attempt to decode client-side (5 MB). */

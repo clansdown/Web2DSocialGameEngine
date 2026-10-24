@@ -44,9 +44,11 @@ client/
 │   │   └── weeding/
 │   └── lib/
 │       ├── router.ts         # Hash-based in-app router (hub/activity/game routes)
+│       ├── public_urls.ts    # API/asset/WebSocket origin resolution
 │       └── storage.ts        # OPFS storage utilities
 ├── index.html                # Bootstrap 5.3.8 CDN (dark mode enabled)
 ├── package.json              # References simplegame via "file:./SimpleGame/ui"
+├── .env.example              # Local origin overrides (copy to .env.development.local)
 └── vite.config.ts            # Vite configuration (proxies /api, /images, /ws)
 ```
 
@@ -64,8 +66,10 @@ It is **not** a mini-game: it mounts from `HubScreen.svelte` as its own activity
   `CombatCommandBar` → `ResultsView`.
 - **Networking**: `CombatNetClient` opens the socket, authenticates with the
   REST session token in its first message, and auto-reconnects with backoff.
-  The vite dev server proxies `/ws` → `localhost:2290` (`ws: true`); nginx
-  needs the upgrade headers in production.
+  The client uses `VITE_WS_BASE_URL` (or derives it from `VITE_API_BASE_URL`);
+  with empty values the vite dev server proxies `/ws` → `localhost:2290`
+  (`ws: true`). Production uses a Cloudflare Tunnel or nginx with the upgrade
+  headers.
 - **State**: 10 Hz `match_state`/`match_update` messages; `CombatGame`
   maintains a local entity store with a pending-damage ledger (damage numbers
   land with the drawn projectile, reconciled on full snapshots) and interpolates
@@ -169,6 +173,16 @@ npm run dev    # Start dev server at http://localhost:8120
 npm run build  # Production build to dist/
 npm run preview  # Preview production build
 ```
+
+Public origins are build-time Vite variables:
+
+- `VITE_API_BASE_URL`
+- `VITE_ASSETS_BASE_URL`
+- `VITE_WS_BASE_URL`
+
+Leave them empty to use the dev proxy. To override locally, copy
+`client/.env.example` to `client/.env.development.local` (gitignored). Production
+values come from `.deploy` via `install.sh`; never commit real deployment values.
 
 ### Type Checking
 

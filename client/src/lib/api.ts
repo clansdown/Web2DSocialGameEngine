@@ -1,5 +1,4 @@
-const API_BASE = '';
-
+import { api_url, resolve_server_url } from './public_urls';
 import * as auth from './auth';
 import { get } from 'svelte/store';
 import { language } from './stores';
@@ -56,6 +55,56 @@ interface RequestOptions {
 }
 
 /**
+ * Response fields that carry a public URL. Rebasing is key-scoped so ordinary
+ * text (chat bodies, letters, Markdown) is never rewritten even if a user
+ * coincidence starts with `/images/`.
+ */
+const URL_FIELDS = new Set<string>([
+  'url',
+  'avatar_url',
+  'portrait_url',
+  'image',
+  'image_url',
+  'construction_image',
+]);
+
+/**
+ * Recursively rebases root-relative server URLs onto their public origins.
+ * The API deliberately returns host-agnostic paths; this is the single place
+ * that maps `/images/...` to the asset host and `/api/avatar/...` to the API
+ * host.
+ *
+ * @param value - Parsed response value
+ * @param field - Parent object key, when known
+ * @returns The same value with URL fields rebased
+ */
+function rebase_value(value: unknown, field?: string): unknown {
+  if (typeof value === 'string') {
+    return field && URL_FIELDS.has(field) ? resolve_server_url(value) : value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry: unknown): unknown => rebase_value(entry, field));
+  }
+  if (value !== null && typeof value === 'object') {
+    const object = value as Record<string, unknown>;
+    for (const key of Object.keys(object)) {
+      object[key] = rebase_value(object[key], key);
+    }
+  }
+  return value;
+}
+
+/**
+ * Rebases public URL fields in an API response.
+ *
+ * @param response - Parsed API response
+ * @returns The response with URL fields rebased
+ */
+function rebase_response_urls<T>(response: ApiResponse<T>): ApiResponse<T> {
+  return rebase_value(response) as ApiResponse<T>;
+}
+
+/**
  * Makes a POST request to the API endpoint with optional authentication.
  * Constructs request body with auth credentials if provided.
  * Returns parsed JSON response or throws on error.
@@ -87,14 +136,15 @@ export async function apiPost<T = unknown>(
     }
   }
 
-  const response = await fetch(`${API_BASE}/api/${endpoint}`, {
+  const response = await fetch(api_url(`/api/${endpoint}`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(requestBody)
   });
 
   try {
-    return await response.json() as ApiResponse<T>;
+    const parsed = await response.json() as ApiResponse<T>;
+    return rebase_response_urls(parsed);
   } catch {
     // Server returned a non-JSON response (e.g. 500 with empty body).
     // Return a structured error instead of throwing an unhandled SyntaxError.

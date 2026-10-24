@@ -28,15 +28,36 @@ R2_ENDPOINT=""
 R2_ACCESS_KEY_ID=""
 R2_SECRET_ACCESS_KEY=""
 
-# --- API server content mirror ----------------------------------------------
+# --- Public origins baked into the client build ------------------------------
+# Origins only: scheme + host, no trailing slash and no path. PUBLIC_API_ORIGIN
+# and PUBLIC_ASSETS_ORIGIN are required whenever the Pages client is built.
+PUBLIC_SITE_ORIGIN="https://app.example.com"
+PUBLIC_API_ORIGIN="https://api.example.com"
+PUBLIC_ASSETS_ORIGIN="https://assets.example.com"
+PUBLIC_WS_ORIGIN="wss://api.example.com"
+
+# --- API server content mirror + runtime env --------------------------------
 # The build host must reach the API server over SSH/LAN. The Cloudflare Tunnel
 # is outbound only and does not provide an inbound rsync path.
 SERVER_HOST=""
 SERVER_PATH=""
 
-# Optional private key for the content mirror. Use $HOME, not ~ (the value is
-# used as a literal path).
+# Optional private key for the content mirror and env write. Use $HOME, not ~
+# (the value is used as a literal path).
 SERVER_SSH_KEY=""
+
+# Browser origins allowed by the API's CORS layer. Comma-separated. Defaults
+# to PUBLIC_SITE_ORIGIN when empty. install.sh writes the value to
+# SERVER_ENV_PATH as RAVENEST_CORS_ORIGINS.
+SERVER_CORS_ORIGINS=""
+
+# Defaults to ${SERVER_PATH}/ravenest.env. The service must read this file
+# (systemd EnvironmentFile or Docker env_file). Keep it outside game/.
+SERVER_ENV_PATH=""
+
+# Optional. Run after the env file changes; if empty, install.sh writes the
+# file and prints a reminder to restart the API server manually.
+# SERVER_RESTART_CMD="sudo systemctl restart ravenest"
 
 # --- Cloudflare API (reserved for purge-on-deploy) --------------------------
 # Not used yet. A future purge step will read these when the R2 TTL is raised.

@@ -39,9 +39,10 @@
  */
 
 import type { combatant_animations_dto, combatant_clip_dto } from '../lib/api';
+import { asset_url } from '../lib/public_urls';
 
-/** Root URL for combatant sprites (served by the server at /images/combatants/*). */
-const COMBATANT_SPRITE_ROOT = '/images/combatants';
+/** Root URL for combatant sprites (public assets, /images/combatants/*). */
+const COMBATANT_SPRITE_ROOT = asset_url('/images/combatants');
 
 /**
  * Compass direction order indexed by `direction_index`, matching the server's

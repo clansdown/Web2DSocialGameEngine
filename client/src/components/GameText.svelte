@@ -18,6 +18,7 @@
   import { language, currentCharacter } from '../lib/stores';
   import { getUITexturesRequest } from '../lib/api';
   import { loadText } from '../lib/text';
+  import { rewrite_asset_urls } from '../lib/public_urls';
   import type { UITexture, UITexturesResponse } from '../lib/api';
 
   interface Props {
@@ -31,7 +32,9 @@
   let { text, id, tokens, children, class: className = '' }: Props = $props();
 
   let fetchedText = $state('');
-  let htmlContent = $derived(marked.parse(applyTokens(id ? fetchedText : (text ?? ''), tokens)));
+  let htmlContent = $derived(
+    rewrite_asset_urls(marked.parse(applyTokens(id ? fetchedText : (text ?? ''), tokens)) as string)
+  );
   let containerEl: HTMLDivElement;
   let textures: UITexture[] = $state([]);
   let texturesLoaded = $state(false);

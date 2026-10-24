@@ -6,6 +6,7 @@
    */
   import { currentCharacter } from '../lib/stores';
   import { markLetterReadRequest, type UnreadLetter } from '../lib/api';
+  import { asset_url } from '../lib/public_urls';
   import * as auth from '../lib/auth';
   import StoryText from './StoryText.svelte';
   import DialogOverlay from './DialogOverlay.svelte';
@@ -19,7 +20,7 @@
   let dismissing = $state(false);
 
   // The <seal> token becomes the king's-seal image (matches other royal letters).
-  const SEAL_TOKEN = `<img src="/images/ui/kings_seal.png" style="width: 10em; height: auto;" alt="King's Seal" />`;
+  const SEAL_TOKEN = `<img src="${asset_url('/images/ui/kings_seal.png')}" style="width: 10em; height: auto;" alt="King's Seal" />`;
 
   /**
    * Marks the letter read server-side (best effort) and closes the overlay.

@@ -13,6 +13,7 @@
   import { currentCharacter, playerGameState } from '../lib/stores';
   import { acknowledgeLandPatentRequest } from '../lib/api';
   import { loadTexts, loadText } from '../lib/text';
+  import { asset_url } from '../lib/public_urls';
   import type { StartMiniGameResponse, EndMiniGameResponse, UnlockItem } from '../lib/api';
   import * as storage from '../lib/storage';
 
@@ -229,7 +230,7 @@
         queue.push({
           id: u.id,
           textKey: u.text_key,
-          imageUrl: `/images/tower_defense/units/${u.id}.png`
+          imageUrl: asset_url(`/images/tower_defense/units/${u.id}.png`)
         });
         textKeysToFetch.push(u.text_key);
       }
@@ -238,7 +239,7 @@
         queue.push({
           id: t.id,
           textKey: t.text_key,
-          imageUrl: `/images/tower_defense/towers/${t.id}.png`
+          imageUrl: asset_url(`/images/tower_defense/towers/${t.id}.png`)
         });
         textKeysToFetch.push(t.text_key);
       }
@@ -276,7 +277,7 @@
     let msg = kingsMsgTemplate
         .replace(/\{unit_name\}/g, unitName)
         .replace(/\<unit\>/g, `\n\n![](${item.imageUrl})\n\n${itemText}`)
-        .replace(/\<seal\>/g, `\n\n<img src="/images/ui/kings_seal.png" style="width: 10em; height: auto;" alt="King's Seal" />`);
+        .replace(/\<seal\>/g, `\n\n<img src="${asset_url('/images/ui/kings_seal.png')}" style="width: 10em; height: auto;" alt="King's Seal" />`);
 
     return msg;
   }
@@ -306,7 +307,7 @@
   }
 
   async function showLandPatentOverlay() {
-    const seal = `<img src="/images/ui/kings_seal.png" style="width: 10em; height: auto;" alt="King's Seal" />`;
+    const seal = `<img src="${asset_url('/images/ui/kings_seal.png')}" style="width: 10em; height: auto;" alt="King's Seal" />`;
     let raw = await loadText('land_patent_earned');
     landPatentText = raw.replace(/\<seal\>/g, `\n\n${seal}`);
     showLandPatent = true;

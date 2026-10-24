@@ -13,6 +13,7 @@
    */
   import { marked } from 'marked';
   import { loadTexts as fetchTexts } from '../lib/text';
+  import { asset_url, rewrite_asset_urls } from '../lib/public_urls';
 
   interface BookPage {
     image: string;
@@ -128,7 +129,7 @@
   onkeydown={(e) => { if (e.key === 'Enter') open(); }}
 >
   <img
-    src="/images/ui/book_on_podium.png"
+    src={asset_url('/images/ui/book_on_podium.png')}
     alt="Open book"
     style="width: 100%; height: 100%; object-fit: contain; pointer-events: none; display: block;"
   />
@@ -149,7 +150,7 @@
   >
       <div class="book-panel" style="position: relative; width: min(90vw, calc(90vh * 1102 / 731)); max-width: 1102px; aspect-ratio: 1102 / 731; user-select: none;" onclick={(e) => e.stopPropagation()}>
         <img
-          src="/images/ui/book_opened.png"
+          src={asset_url('/images/ui/book_opened.png')}
           alt=""
           style="width: 100%; height: 100%; display: block; pointer-events: none;"
         />
@@ -162,7 +163,7 @@
             <div class="book-text" class:fading style="transition: opacity 0.1s;">
               {#key contentKey}
                 {#if textsLoaded}
-                  {@html marked.parse(pageTexts[pages[currentPage].textId] ?? '')}
+                  {@html rewrite_asset_urls(marked.parse(pageTexts[pages[currentPage].textId] ?? '') as string)}
                 {:else}
                   <div style="text-align: center; padding-top: 20%; opacity: 0.5;">Loading...</div>
                 {/if}
@@ -182,7 +183,7 @@
             <div class="book-text" class:fading style="transition: opacity 0.1s;">
               {#key contentKey}
                 {#if textsLoaded}
-                  {@html marked.parse(pageTexts[pages[currentPage + 1].textId] ?? '')}
+                  {@html rewrite_asset_urls(marked.parse(pageTexts[pages[currentPage + 1].textId] ?? '') as string)}
                 {:else}
                   <div style="text-align: center; padding-top: 20%; opacity: 0.5;">Loading...</div>
                 {/if}

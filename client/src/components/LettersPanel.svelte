@@ -7,6 +7,7 @@
   import { currentCharacter } from '../lib/stores';
   import { getLettersRequest, markLetterReadRequest, type Letter } from '../lib/api';
   import { loadTexts } from '../lib/text';
+  import { asset_url } from '../lib/public_urls';
   import * as auth from '../lib/auth';
   import { handleError } from '../lib/errors';
   import StoryText from './StoryText.svelte';
@@ -23,7 +24,7 @@
   let selected = $state<Letter | null>(null);
 
   // The <seal> token becomes the king's-seal image (matches other royal letters).
-  const SEAL_TOKEN = `<img src="/images/ui/kings_seal.png" style="width: 10em; height: auto;" alt="King's Seal" />`;
+  const SEAL_TOKEN = `<img src="${asset_url('/images/ui/kings_seal.png')}" style="width: 10em; height: auto;" alt="King's Seal" />`;
 
   const TEXT_IDS: string[] = [
     'ui_letters_title', 'ui_letters_empty', 'ui_letters_unread', 'ui_letters_read', 'ui_back_button'

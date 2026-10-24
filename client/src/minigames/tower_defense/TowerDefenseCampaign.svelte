@@ -3,6 +3,7 @@
   import { loadTexts as fetchTexts } from '../../lib/text';
   import Book from '../../components/Book.svelte';
   import GameText from '../../components/GameText.svelte';
+  import { asset_url } from '../../lib/public_urls';
 
   interface Props {
     campaignId: string;
@@ -18,23 +19,23 @@
   let displayName = $state('');
 
   const bookPages: { image: string; textId: string }[] = [
-    { image: '/images/tower_defense/mobs/dire_rat.png', textId: 'td_book_enemy_dire_rat' },
-    { image: '/images/tower_defense/mobs/wolf.png', textId: 'td_book_enemy_wolf' },
-    { image: '/images/tower_defense/mobs/great_wolf.png', textId: 'td_book_enemy_great_wolf' },
-    { image: '/images/tower_defense/mobs/wild_boar.png', textId: 'td_book_enemy_boar' },
-    { image: '/images/tower_defense/mobs/matted_wolf.png', textId: 'td_book_enemy_matted_wolf' },
-    { image: '/images/tower_defense/mobs/tri_boar.png', textId: 'td_book_enemy_triboar' },
-    { image: '/images/tower_defense/mobs/dire_wolf.png', textId: 'td_book_enemy_dire_wolf' },
-    { image: '/images/tower_defense/units/shortbow_archer.png', textId: 'td_book_unit_shortbow_archer' },
-    { image: '/images/tower_defense/units/longbow_archer.png', textId: 'td_book_unit_longbow_archer' },
-    { image: '/images/tower_defense/units/swordsman.png', textId: 'td_book_unit_swordsman' },
-    { image: '/images/tower_defense/units/alchemist.png', textId: 'td_book_unit_alchemist' },
-    { image: '/images/tower_defense/towers/single_archer_tower.png', textId: 'td_book_tower_single_archer_tower' },
-    { image: '/images/tower_defense/towers/three_archer_tower.png', textId: 'td_book_tower_three_archer_tower' },
-    { image: '/images/tower_defense/towers/ballista.png', textId: 'td_book_tower_ballista' },
+    { image: asset_url('/images/tower_defense/mobs/dire_rat.png'), textId: 'td_book_enemy_dire_rat' },
+    { image: asset_url('/images/tower_defense/mobs/wolf.png'), textId: 'td_book_enemy_wolf' },
+    { image: asset_url('/images/tower_defense/mobs/great_wolf.png'), textId: 'td_book_enemy_great_wolf' },
+    { image: asset_url('/images/tower_defense/mobs/wild_boar.png'), textId: 'td_book_enemy_boar' },
+    { image: asset_url('/images/tower_defense/mobs/matted_wolf.png'), textId: 'td_book_enemy_matted_wolf' },
+    { image: asset_url('/images/tower_defense/mobs/tri_boar.png'), textId: 'td_book_enemy_triboar' },
+    { image: asset_url('/images/tower_defense/mobs/dire_wolf.png'), textId: 'td_book_enemy_dire_wolf' },
+    { image: asset_url('/images/tower_defense/units/shortbow_archer.png'), textId: 'td_book_unit_shortbow_archer' },
+    { image: asset_url('/images/tower_defense/units/longbow_archer.png'), textId: 'td_book_unit_longbow_archer' },
+    { image: asset_url('/images/tower_defense/units/swordsman.png'), textId: 'td_book_unit_swordsman' },
+    { image: asset_url('/images/tower_defense/units/alchemist.png'), textId: 'td_book_unit_alchemist' },
+    { image: asset_url('/images/tower_defense/towers/single_archer_tower.png'), textId: 'td_book_tower_single_archer_tower' },
+    { image: asset_url('/images/tower_defense/towers/three_archer_tower.png'), textId: 'td_book_tower_three_archer_tower' },
+    { image: asset_url('/images/tower_defense/towers/ballista.png'), textId: 'td_book_tower_ballista' },
   ];
 
-  const mapImageUrl = '/images/tower_defense/wolf_warden_map1.jpg';
+  const mapImageUrl = asset_url('/images/tower_defense/wolf_warden_map1.jpg');
 
   let infoTextId = $derived(
     campaignId === 'great_wolf_marche'
