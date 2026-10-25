@@ -35,6 +35,12 @@ Retrieves the current player's game state including phase, active mini-game, lev
     "unread_notifications": 0,
     "unread_support": 0,
     "support_locked": false,
+    "invitations": {
+      "enabled": true,
+      "can_generate": true,
+      "daily_remaining": 2,
+      "lifetime_remaining": 6
+    },
     "progress": [
       {
         "id": 1,
@@ -114,6 +120,7 @@ clears it. The `honor` activity (shown in `freehold_qualified`) opens the
 | `unread_notifications` | int | Unread account notifications (hub bell badge). |
 | `unread_support` | int | Tickets with unread player-visible messages (muted Support utility badge). |
 | `support_locked` | boolean | True when the account cannot create/reply to support tickets. |
+| `invitations` | object | Muted hub Invitations utility visibility. `enabled` is true only in `invite_only` with player generation configured; `can_generate` is false once either remaining limit is 0. |
 | `progress` | array | Array of MiniGameProgress objects for all mini-games |
 
 ### `available_activities` by phase

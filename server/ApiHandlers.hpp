@@ -434,6 +434,10 @@ void register_chat_handlers(std::unordered_map<std::string, ApiHandler>& handler
 // and the staff console endpoints.
 void register_staff_handlers(std::unordered_map<std::string, ApiHandler>& handlers);
 
+// Defined in registration/InvitationHandlers.cpp; registers player invitation
+// status/generation and the staff invite-management endpoints.
+void register_invitation_handlers(std::unordered_map<std::string, ApiHandler>& handlers);
+
 inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfigCache& config_cache) {
     using Json = const nlohmann::json&;
     using Username = const std::optional<std::string>&;
@@ -516,5 +520,6 @@ inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfi
     add("applyBookItem",          [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleApplyBookItem(c, b, u, cl, t); });
     register_chat_handlers(handlers);
     register_staff_handlers(handlers);
+    register_invitation_handlers(handlers);
     return handlers;
 }

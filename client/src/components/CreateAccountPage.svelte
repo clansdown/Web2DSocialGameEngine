@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { createEventDispatcher } from 'svelte';
-  import { createAccountRequest } from '../lib/api';
+  import { createAccountRequest, getRegistrationConfigRequest, type registration_mode } from '../lib/api';
+  import { loadTexts } from '../lib/text';
   import { handleError } from '../lib/errors';
   import * as auth from '../lib/auth';
   import { checkDigitalCredentialsSupport, requestAgeVerification, isBraveBrowser } from '../lib/digitalCredentials';
@@ -28,6 +29,14 @@
 
   let sex = $state('');
   let submitting = $state(false);
+  let reg_mode = $state<registration_mode>('off');
+  let invitation_required = $state(false);
+  let invitation_code = $state('');
+  let registration_texts = $state<Record<string, string>>({});
+
+  function registration_text(id: string): string {
+    return registration_texts[id] ?? id;
+  }
 
   /**
    * Updates the safe display name preview when word selections change.
@@ -58,6 +67,28 @@
 
     dcApiSupported = await checkDigitalCredentialsSupport();
     isBrave = await isBraveBrowser();
+
+    try {
+      const registration = await getRegistrationConfigRequest();
+      reg_mode = registration.mode;
+      invitation_required = registration.invite_required;
+    } catch (err) {
+      console.error('Failed to load registration config:', err);
+      handleError('Failed to load registration configuration', err, {
+        category: 'general',
+        context: 'loadRegistrationConfig'
+      });
+    }
+
+    try {
+      registration_texts = await loadTexts([
+        'ui_registration_invitation_code',
+        'ui_registration_invitation_required',
+        'ui_registration_invitation_help'
+      ]);
+    } catch (err) {
+      console.error('Failed to load registration texts:', err);
+    }
   });
 
   /**
@@ -178,6 +209,16 @@
       return;
     }
 
+    if (invitation_required && !invitation_code.trim()) {
+      handleError(
+        registration_text('ui_registration_invitation_required'),
+        new Error('Invitation code required'),
+        { category: 'validation', context: 'handleCreateAccount' }
+      );
+      submitting = false;
+      return;
+    }
+
     try {
       const response = await createAccountRequest(
         formUsername,
@@ -188,7 +229,8 @@
         displayName || undefined,
         undefined,
         sex || undefined,
-        get(language)
+        get(language),
+        invitation_code.trim() || undefined
       );
 
       if (!response.token) {
@@ -396,6 +438,25 @@
           <div class="form-text">
             Only available for verified adults. Leave blank to use safe name.
           </div>
+        </div>
+      {/if}
+
+      {#if reg_mode !== 'off'}
+        <div class="mb-3">
+          <label for="invitationCode" class="form-label">
+            {registration_text('ui_registration_invitation_code')}
+          </label>
+          <input
+            type="text"
+            class="form-control text-uppercase"
+            id="invitationCode"
+            bind:value={invitation_code}
+            disabled={submitting || ageVerificationPending}
+            required={invitation_required}
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <div class="form-text">{registration_text('ui_registration_invitation_help')}</div>
         </div>
       {/if}
 

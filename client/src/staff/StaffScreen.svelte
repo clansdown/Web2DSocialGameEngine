@@ -10,6 +10,7 @@
   import { onMount } from 'svelte';
   import { loadTexts } from '../lib/text';
   import { navigate } from '../lib/router';
+  import StaffInvitationsPanel from './StaffInvitationsPanel.svelte';
   import type { support_message_dto, support_ticket_dto } from '../support/support_api';
   import {
     staffBanAvatarHashRequest,
@@ -75,7 +76,8 @@
     'ui_staff_roles', 'ui_staff_loading', 'ui_staff_error', 'ui_staff_saved',
     'ui_staff_create_ticket', 'ui_staff_ticket_subject', 'ui_staff_ticket_body',
     'ui_staff_cancel', 'ui_staff_safe_name_id', 'ui_staff_safe_tag_ids',
-    'ui_staff_accepts_minors', 'ui_staff_identity_history', 'ui_staff_moderation_mode'
+    'ui_staff_accepts_minors', 'ui_staff_identity_history', 'ui_staff_moderation_mode',
+    'ui_staff_invitations'
   ];
 
   let texts = $state<Record<string, string>>({});
@@ -138,7 +140,7 @@
   function section_from_route(): void {
     if (rest.length > 0) {
       const first = rest[0];
-      if (['accounts', 'baronies', 'support', 'audit', 'unstick', 'chats'].includes(first)) {
+      if (['accounts', 'baronies', 'support', 'audit', 'unstick', 'chats', 'invitations'].includes(first)) {
         section = first;
       }
       if (first === 'accounts' && rest[1]) void open_account(Number(rest[1]));
@@ -441,7 +443,7 @@
     const route_key = rest.join('/');
     if (route_key.length === 0) return;
     const first = rest[0];
-    if (['accounts', 'baronies', 'support', 'audit', 'unstick', 'chats'].includes(first)) {
+    if (['accounts', 'baronies', 'support', 'audit', 'unstick', 'chats', 'invitations'].includes(first)) {
       section = first;
     }
     if (first === 'accounts' && rest[1] && selected_account?.account_id !== Number(rest[1])) {
@@ -485,6 +487,7 @@
       {#if has('account.view')}<li class="nav-item"><button class="nav-link" class:active={section === 'accounts'} onclick={() => go_section('accounts')}>{t('ui_staff_accounts')}</button></li>{/if}
       {#if has('barony.view')}<li class="nav-item"><button class="nav-link" class:active={section === 'baronies'} onclick={() => go_section('baronies')}>{t('ui_staff_baronies')}</button></li>{/if}
       {#if has('support.ticket.view')}<li class="nav-item"><button class="nav-link" class:active={section === 'support'} onclick={() => go_section('support')}>{t('ui_staff_support')}</button></li>{/if}
+      {#if context?.invitations_enabled && has('registration.invites.view')}<li class="nav-item"><button class="nav-link" class:active={section === 'invitations'} onclick={() => go_section('invitations')}>{t('ui_staff_invitations')}</button></li>{/if}
       {#if has('staff.audit.read')}<li class="nav-item"><button class="nav-link" class:active={section === 'audit'} onclick={() => go_section('audit')}>{t('ui_staff_audit')}</button></li>{/if}
       {#if has('staff.audit.read')}<li class="nav-item"><button class="nav-link" class:active={section === 'stafflist'} onclick={() => go_section('stafflist')}>{t('ui_staff_roles')}</button></li>{/if}
       <li class="nav-item"><button class="nav-link" class:active={section === 'unstick'} onclick={() => go_section('unstick')}>{t('ui_staff_unstick')}</button></li>
@@ -646,6 +649,12 @@
           <button class="btn btn-primary" onclick={create_ticket}>{t('ui_staff_create_ticket')}</button>
         </div></div>
       {/if}
+    {:else if section === 'invitations'}
+      <StaffInvitationsPanel
+        can_generate={has('registration.invites.generate')}
+        can_revoke={has('registration.invites.revoke')}
+        {reason}
+      />
     {:else if section === 'audit'}
       <div class="input-group mb-3">
         <input class="form-control" placeholder={t('ui_staff_search_placeholder')} bind:value={query} onkeydown={(e) => { if (e.key === 'Enter') load_journal(); }} />

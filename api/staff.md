@@ -14,7 +14,8 @@ only (`staff_admin`), never an HTTP endpoint.
 ### `/api/staffGetContext`
 
 Response: `{ is_staff, account_id, roles, capabilities, unread_notifications,
-support_unread, chat_moderation_mode, roles_catalog }`.
+support_unread, chat_moderation_mode, registration_mode, invitations_enabled,
+roles_catalog }`.
 
 ### `/api/staffListStaff`
 
@@ -96,9 +97,27 @@ Request `{ enabled }`; requires `chat.moderate_any`. Response
 
 ## Chat
 
+See the chat endpoint docs in `api/` (`banFromChat`, `unbanFromChat`,
+`getModerationLog`, `staffGetIdentityHistory`, `staffLockIdentity`).
+
 - `/api/staffSearchChats` — `{ query }` → `{ chats }` by id/name.
 - `/api/staffGetDeletedMessages` — `{ limit? }` → `{ messages }` (forensic
   demotion copies); logs `read.deleted_messages`.
+
+## Invitations
+
+See `api/invitations.md` for the full contract.
+
+- `/api/staffListInvitationCodes` — requires `registration.invites.view`; logs
+  `read.invitation_codes`.
+- `/api/staffCreateInvitationCode` — requires
+  `registration.invites.generate`; `invite_only` only; journal
+  `registration.invite_generate`.
+- `/api/staffRevokeInvitationCode` — requires
+  `registration.invites.revoke`; unused codes only; journal
+  `registration.invite_revoke`.
+
+Plaintext invitation codes are never stored in the staff journal.
 
 ## Migration note
 

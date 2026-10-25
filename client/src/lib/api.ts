@@ -253,7 +253,8 @@ export async function createAccountRequest(
   displayName?: string,
   digitalCredential?: { protocol: string; data: unknown },
   sex?: string,
-  language?: string
+  language?: string,
+  invitationCode?: string
 ): Promise<AuthResponse> {
   const body: Record<string, unknown> = {
     username,
@@ -274,12 +275,39 @@ export async function createAccountRequest(
   if (language) {
     body.language = language;
   }
+  if (invitationCode) {
+    body.invitation_code = invitationCode;
+  }
 
   const res = await apiPost<AuthResponse>('createAccount', body);
   if (res.error) {
     throw new Error(res.error);
   }
   return res.data as AuthResponse;
+}
+
+export type registration_mode = 'off' | 'global_code' | 'invite_only';
+
+export interface registration_config_dto {
+  mode: registration_mode;
+  invite_required: boolean;
+  players_can_generate: boolean;
+}
+
+/**
+ * Fetches the public registration configuration.
+ *
+ * The server never returns the shared global code or individual codes here;
+ * this response is safe for the pre-auth create-account screen.
+ *
+ * @returns Promise<registration_config_dto> - Mode and invitation requirement
+ */
+export async function getRegistrationConfigRequest(): Promise<registration_config_dto> {
+  const res = await apiPost<registration_config_dto>('getRegistrationConfig', {});
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  return res.data as registration_config_dto;
 }
 
 /**
@@ -412,6 +440,12 @@ export interface PlayerGameState {
   unread_notifications?: number;
   unread_support?: number;
   support_locked?: boolean;
+  invitations?: {
+    enabled: boolean;
+    can_generate: boolean;
+    daily_remaining: number;
+    lifetime_remaining: number;
+  };
 }
 
 export interface MiniGameLevelConfig {

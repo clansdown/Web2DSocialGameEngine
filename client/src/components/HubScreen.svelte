@@ -17,6 +17,7 @@
   import SupportScreen from '../support/SupportScreen.svelte';
   import NotificationInbox from '../support/NotificationInbox.svelte';
   import StaffScreen from '../staff/StaffScreen.svelte';
+  import InvitationPanel from '../invitations/InvitationPanel.svelte';
 
   interface Props {
     activities?: string[];
@@ -54,11 +55,17 @@
     'ui_activity_barony_blurb',
     'ui_activity_staff_blurb',
     'ui_support_link',
-    'ui_staff_badge'
+    'ui_staff_badge',
+    'activity_invitations',
+    'ui_activity_invitations_blurb'
   ];
 
   let gridActivities = $derived(activities.filter(id => id !== 'land_patent'));
-  const UTILITY_ACTIVITIES: string[] = ['support'];
+  let utilityActivities = $derived(
+    $playerGameState?.invitations?.can_generate
+      ? ['support', 'invitations']
+      : ['support']
+  );
 
   /**
    * Returns the hub-card subtitle for an activity id from the text system.
@@ -80,7 +87,12 @@
   // whose id is not available in the current phase falls back to the hub grid.
   let activity = $derived(
     $route_store.type === 'activity' &&
-      (gridActivities.includes($route_store.id) || UTILITY_ACTIVITIES.includes($route_store.id))
+      (gridActivities.includes($route_store.id) ||
+        utilityActivities.includes($route_store.id) ||
+        // Keep the invitation screen mounted after the last code is generated
+        // (the hub button itself is still gated by can_generate). The server
+        // remains authoritative if the URL is entered directly.
+        $route_store.id === 'invitations')
       ? $route_store.id
       : null
   );
@@ -149,6 +161,11 @@
     </div>
 
     <div class="d-flex justify-content-end align-items-center gap-3 mb-3 small hub-utilities">
+      {#if $playerGameState?.invitations?.can_generate}
+        <button class="btn btn-sm btn-link text-secondary p-0" onclick={() => selectActivity('invitations')}>
+          {blurbTexts['activity_invitations'] ?? ''}
+        </button>
+      {/if}
       <button class="btn btn-sm btn-link text-secondary p-0" onclick={() => selectActivity('support')}>
         {blurbTexts['ui_support_link'] ?? ''}
         {#if unreadSupport > 0}<span class="badge text-bg-secondary ms-1">{unreadSupport}</span>{/if}
@@ -240,6 +257,13 @@
   <CombatScreen mode="pve" on_close={goBackToHub} />
 {:else if activity === 'support'}
   <SupportScreen onBack={goBackToHub} rest={activityRest} />
+{:else if activity === 'invitations'}
+  <InvitationPanel
+    onBack={goBackToHub}
+    onChanged={() => {
+      if ($currentCharacter) fetchPlayerState($currentCharacter.id).catch(() => {});
+    }}
+  />
 {:else if activity === 'staff'}
   <StaffScreen onBack={goBackToHub} rest={activityRest} />
 {:else}

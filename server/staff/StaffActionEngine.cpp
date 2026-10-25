@@ -1,5 +1,7 @@
 #include "staff/StaffActionEngine.hpp"
 
+#include "registration/InvitationStore.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <set>
@@ -290,6 +292,12 @@ std::string capability_for_action(const std::string& action_type) {
     if (action_type == "support.adjust_fiefdom_resource") {
         return "support.adjust_fiefdom_resource";
     }
+    if (action_type == "registration.invite_generate") {
+        return "registration.invites.generate";
+    }
+    if (action_type == "registration.invite_revoke") {
+        return "registration.invites.revoke";
+    }
     return std::string();
 }
 
@@ -501,6 +509,23 @@ staff_action_result StaffActionEngine::execute(const staff_context& context,
         if (!found) return fail("fiefdom_not_found");
         entry.before_state = {{"fiefdom_id", std::stoll(request.target_id)},
                               {"resource", resource}, {"value", value}};
+    } else if (request.action_type == "registration.invite_generate") {
+        const std::string code = request.parameters.value("code", std::string());
+        const std::string canonical = canonicalize_invitation_code(code);
+        if (canonical.empty() || canonical != code) {
+            return fail("invalid_invitation_code");
+        }
+        entry.before_state = {{"code_id", request.target_id}, {"exists", false}};
+    } else if (request.action_type == "registration.invite_revoke") {
+        const std::string code_id = request.parameters.value("code_id", std::string());
+        if (code_id.empty() || code_id != request.target_id) {
+            return fail("invalid_invitation_code");
+        }
+        const auto existing = InvitationStore::instance().find_by_id(code_id);
+        if (!existing) return fail("invitation_code_not_found");
+        if (existing->used_at > 0) return fail("invitation_code_used");
+        if (existing->revoked_at > 0) return fail("invitation_code_already_revoked");
+        entry.before_state = {{"code_id", code_id}, {"revoked_at", 0}};
     }
 
     std::string append_error;
@@ -812,6 +837,31 @@ staff_action_result StaffActionEngine::execute(const staff_context& context,
             after_state = {{"fiefdom_id", fiefdom_id}, {"resource", resource}, {"value", value}};
             entry.undo.reversible = true;
         }
+    } else if (request.action_type == "registration.invite_generate") {
+        const std::string code = request.parameters.value("code", std::string());
+        const invitation_code_draft draft{request.target_id, code};
+        std::string insert_error;
+        if (!InvitationStore::instance().insert_code(
+                draft, context.account_id, "staff", now_seconds(), insert_error)) {
+            apply_error = insert_error;
+        } else {
+            // Never put the plaintext code in the journal: invites.db is
+            // temporary and may be deleted when the feature is retired.
+            after_state = {{"code_id", request.target_id},
+                           {"created_by_kind", "staff"}};
+            entry.undo.reversible = true;
+        }
+    } else if (request.action_type == "registration.invite_revoke") {
+        const std::string code_id = request.parameters.value("code_id", std::string());
+        const std::int64_t revoked_at = now_seconds();
+        std::string revoke_error;
+        if (!InvitationStore::instance().revoke_code(
+                code_id, context.account_id, revoked_at, revoke_error)) {
+            apply_error = revoke_error;
+        } else {
+            after_state = {{"code_id", code_id}, {"revoked_at", revoked_at}};
+            entry.undo.reversible = true;
+        }
     }
 
     } catch (const std::exception& e) {
@@ -1019,6 +1069,39 @@ staff_preflight_result StaffActionEngine::preflight_undo(const std::string& acti
             result.reason = "resource_changed";
             return result;
         }
+    } else if (type == "registration.invite_generate") {
+        const std::string code_id = before.value("code_id", std::string());
+        const auto current = InvitationStore::instance().find_by_id(code_id);
+        if (!current) {
+            result.status = staff_preflight_status::target_missing;
+            result.reason = "invitation_code_not_found";
+            return result;
+        }
+        if (current->used_at > 0 ||
+            InvitationStore::instance().is_redeemed_in_game(code_id)) {
+            result.status = staff_preflight_status::target_changed;
+            result.reason = "invitation_code_used";
+            return result;
+        }
+    } else if (type == "registration.invite_revoke") {
+        const std::string code_id = before.value("code_id", std::string());
+        const auto current = InvitationStore::instance().find_by_id(code_id);
+        if (!current) {
+            result.status = staff_preflight_status::target_missing;
+            result.reason = "invitation_code_not_found";
+            return result;
+        }
+        if (current->used_at > 0) {
+            result.status = staff_preflight_status::target_changed;
+            result.reason = "invitation_code_used";
+            return result;
+        }
+        if (current->revoked_at !=
+            after.value("revoked_at", static_cast<std::int64_t>(0))) {
+            result.status = staff_preflight_status::target_changed;
+            result.reason = "invitation_code_changed";
+            return result;
+        }
     } else if (type == "chat.ban_member" || type == "chat.unban_member" ||
                type == "chat.kick_member" || type == "chat.delete_message" ||
                type == "chat.set_moderator" || type == "chat.rename_group") {
@@ -1213,6 +1296,34 @@ staff_action_result StaffActionEngine::undo(const staff_context& context,
             game_db << "UPDATE fiefdoms SET " + resource + " = ? WHERE id = ?;"
                     << before.value("value", 0.0) << std::stoll(original->target_id);
             after = before;
+        } else if (type == "registration.invite_generate") {
+            const std::string code_id = before.value("code_id", std::string());
+            auto& idb = Database::getInstance().invitesDB();
+            idb << "DELETE FROM invitation_codes WHERE id = ? AND used_at IS NULL;"
+                << code_id;
+            int changed = 0;
+            idb << "SELECT changes();" >> changed;
+            if (changed == 0) {
+                error = "invitation_code_used";
+            } else {
+                after = before;
+            }
+        } else if (type == "registration.invite_revoke") {
+            const std::string code_id = before.value("code_id", std::string());
+            const std::int64_t revoked_at =
+                original->after_state.value("revoked_at", static_cast<std::int64_t>(0));
+            auto& idb = Database::getInstance().invitesDB();
+            idb << "UPDATE invitation_codes SET revoked_at = NULL, "
+                   "revoked_by_account_id = NULL "
+                   "WHERE id = ? AND used_at IS NULL AND revoked_at = ?;"
+                << code_id << revoked_at;
+            int changed = 0;
+            idb << "SELECT changes();" >> changed;
+            if (changed == 0) {
+                error = "invitation_code_changed";
+            } else {
+                after = before;
+            }
         } else if (type == "chat.ban_member") {
             auto& cdb = chat::ChatDB::instance().db();
             const std::string chat_id = before.value("chat_id", std::string());

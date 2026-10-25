@@ -68,6 +68,7 @@ public:
     nlohmann::json& getSafeBanReasons();
     nlohmann::json& getTranslationConfig();
     nlohmann::json& getPushConfig();
+    nlohmann::json& getRegistrationConfig();
     std::optional<nlohmann::json> loadWeedingMap(const std::string& filename);
     std::optional<nlohmann::json> loadWeedingLevelConfig(const std::string& filename);
 

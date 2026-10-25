@@ -17,7 +17,8 @@ CREATE TABLE users (
     language TEXT NOT NULL DEFAULT 'en',
     social_restricted INTEGER NOT NULL DEFAULT 0,
     support_locked INTEGER NOT NULL DEFAULT 0,
-    restriction_updated_at INTEGER NOT NULL DEFAULT 0
+    restriction_updated_at INTEGER NOT NULL DEFAULT 0,
+    invitation_code_id TEXT
 );
 ```
 
@@ -37,10 +38,12 @@ CREATE TABLE users (
 | social_restricted | INTEGER | NOT NULL DEFAULT 0 | Staff-set social restriction: blocks chat/DMs/friends/groups/barony joins; solo play remains |
 | support_locked | INTEGER | NOT NULL DEFAULT 0 | Staff-set support lock: read tickets/notifications only; staff can still send a final message |
 | restriction_updated_at | INTEGER | NOT NULL DEFAULT 0 | Unix ts of the last account-restriction change |
+| invitation_code_id | TEXT | NULLABLE, UNIQUE | The `invites.db` invitation row redeemed for this account. NULL for `off`/global-code registrations. The unique index is the single-use race guard. |
 
 ## Indexes
 
 - Unique index on `username`
+- Unique index `idx_users_invitation_code_id` on `invitation_code_id` (multiple NULLs allowed)
 
 ## Relationships
 
@@ -56,4 +59,7 @@ CREATE TABLE users (
 - `language` is chosen at first launch and persisted at account creation; the
   client adopts it on every device and the server uses it as the display
   language for chat translation (see `server/docs/chat.md`)
+- `invitation_code_id` is the redemption ledger for individual invitation
+  codes. The referenced row lives in the separate, lazily-opened `invites.db`;
+  see `server/tables/invitation_codes.md` and `docs/registration.md`.
 - Accessed by `/api/login`, `/api/createAccount`, `/api/updateUserProfile` endpoints

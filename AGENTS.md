@@ -51,6 +51,7 @@ The server is a C++23 application built with CMake that:
 
 The `server/tables/` directory contains detailed schema documentation for each SQL table:
 - `server/tables/users.md` - users table
+- `server/tables/invitation_codes.md` - invitation codes (invites.db; lazily opened)
 - `server/tables/characters.md` - characters table (renamed from players)
 - `server/tables/fiefdoms.md` - fiefdoms table
 - `server/tables/fiefdom_buildings.md` - fiefdom_buildings table (level, x/y, construction, `pond_type`, `output_rates`)
@@ -117,6 +118,16 @@ The server uses **four independent SQLite databases** for maximum concurrency:
      `docs/support_tickets.md`, `docs/notifications.md`, and
      `server/tables/staff.md`.
 
+4. **invites.db** - Registration invitation codes (lazily opened)
+   - `invitation_codes`: single-use plaintext codes (`created_by_kind`
+     staff/player, used/revoked metadata)
+   - Opened only when registration mode is `global_code`/`invite_only` and an
+     invite lookup/generation/staff list actually runs. `off` mode never
+     creates the file; switching to `off` and deleting `invites.db` retires the
+     feature. The redemption ledger is `game.db` `users.invitation_code_id`
+     (UNIQUE). See `server/tables/invitation_codes.md` and
+     `docs/registration.md`.
+
 **Design Notes:**
 - No joins across databases - they are completely independent
 - Concurrent writes possible to all databases simultaneously
@@ -132,7 +143,8 @@ CREATE TABLE users (
     password_hash TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     adult INTEGER NOT NULL DEFAULT 0,
-    language TEXT NOT NULL DEFAULT 'en'
+    language TEXT NOT NULL DEFAULT 'en',
+    invitation_code_id TEXT  -- UNIQUE index; redemption ledger for invites.db
 );
 
 CREATE TABLE characters (
@@ -365,6 +377,8 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - See `api/getSafeContent.md` for `/api/getSafeContent` documentation
 - See `api/setBaronyAcceptsMinors.md` for `/api/setBaronyAcceptsMinors` documentation
 - See `api/staff.md` for the staff console endpoint family
+- See `api/invitations.md` for registration/invitation player + staff endpoints
+- See `api/getRegistrationConfig.md` for the public registration mode endpoint
 - See `api/support.md` for player support + notifications
 - See `api/getNotifications.md` for `/api/getNotifications` documentation
 - Legacy `api/admin*.md` files document removed endpoints; use the `staff*`
@@ -377,6 +391,10 @@ All endpoints accept POST requests with JSON bodies and respond with:
 #### Endpoint Overview
 
 - **/api/login**: Authenticate user and return all characters
+- **/api/createAccount**: Create an account; in `global_code`/`invite_only` registration modes requires `invitation_code`
+- **/api/getRegistrationConfig**: Public registration mode/flags (never returns the global code)
+- **/api/getInvitationStatus**: Player invitation allowance + own codes
+- **/api/createInvitationCode**: Player generates a single-use invitation code (config-limited)
 - **/api/getCharacter**: Retrieve character information
 - **/api/updateUserProfile**: Update non-age account settings; adult status is rejected here (CS/DC only via `staffSetAdultStatus`)
 - **/api/updateCharacterProfile**: Update character profile (display names)
@@ -428,6 +446,7 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - **/api/staffGetDeletedMessages**: Staff forensic message_deletions reader
 - **/api/staffSetBaronyIdentity**: Staff reassignment of a barony's safe name/tags (and optional custom text)
 - **/api/staffListJournal** / **/api/staffPreflightUndo** / **/api/staffUndo**: Shared action journal, preflight, and compensating undo (requires `staff.undo`)
+- **/api/staffListInvitationCodes** / **/api/staffCreateInvitationCode** / **/api/staffRevokeInvitationCode**: Staff invite management (`registration.invites.view/generate/revoke`); journaled without plaintext codes
 - **/api/staff* support/unstick**: Queue, ticket replies/notes, session unstick, phase/march/construction/resource corrections
 - **/api/getSupportContext**, **/api/listSupportTickets**, **/api/getSupportTicket**, **/api/createSupportTicket**, **/api/replySupportTicket**, **/api/reopenSupportTicket**: Account-level support tickets
 - **/api/getNotifications**, **/api/markNotificationRead**, **/api/markAllNotificationsRead**: Account-level notification inbox
@@ -638,6 +657,14 @@ player notifications, the shared journal, preflight + undo, and chat moderation
 delete → journal → undo (message restored). Exits 0 on pass, 2 on failure;
 isolated per-port scratch DB.
 
+**Invitation smoke test** (`bash tools/invites_smoke.sh [PORT]`): uses a temporary
+content root to exercise `off` (no invitation input/`invites.db` is not
+created), `global_code` (shared + existing individual code), `invite_only`
+(staff-generated bootstrap, player generation/limits, single-use redemption),
+staff generate/revoke + journal/undo without plaintext codes, and the bounded
+rate limiter (X-Forwarded-For networks + LRU eviction). Exits 0 on pass, 2 on
+failure.
+
 **Avatar smoke test** (`bash tools/avatar_smoke.sh [PORT]`): createAccount(adult)
 → login avatar fields → content-addressed upload → age-gated fetch → cooldown /
 invalid-format errors. Defaults to the local backend; exporting
@@ -674,8 +701,8 @@ Use `tools/set_march_progress.sh` to set a character's march progress to an exac
 ### Deployment Notes
 
 1. **HTTP Only**: The server listens on HTTP (port 2290). TLS/HTTPS is handled by a reverse proxy (nginx, etc.)
-2. **Databases**: `game.db`, `chat.db`, and `staff.db` (and `messages.db` is retired) are created in `--db-dir` (default: the working directory) on first run
-3. **Concurrent Access**: Four independent database connections allow simultaneous read/write operations
+2. **Databases**: `game.db`, `chat.db`, and `staff.db` are created in `--db-dir` (default: the working directory) on first run. `invites.db` is created lazily only when registration mode is `global_code`/`invite_only` and an invite operation actually runs; `off` mode leaves it absent. (`messages.db` is retired.)
+3. **Concurrent Access**: Four independent database connections allow simultaneous read/write operations (`invites.db` opens lazily)
 4. **Error Handling**: All errors return JSON with format `{ "error": "description" }`
 5. **API Documentation**: Every endpoint has a corresponding `.md` file in `api/` directory with detailed request/response examples
 6. **Assets vs working directory**: the read-only assets `config/`, `images/`, and `text/` are read from the `--content` root (default: the working directory). `run_server.sh` runs the server from `test_run/` and passes `--content <repo>/game`, so databases and uploads land in `test_run/` and `game/` stays pristine for `push_to_production.sh`. Image paths like `images/ui/` resolve under the content root, so assets at `game/images/ui/book.png` are served from `/images/ui/book.png`. The client resolves API/asset/WebSocket origins from `VITE_API_BASE_URL`, `VITE_ASSETS_BASE_URL`, and `VITE_WS_BASE_URL` at build time (`install.sh` fills them from `.deploy`); empty values fall back to same-origin, which keeps the Vite dev proxy (`/api`, `/images`, `/ws` → `localhost:2290`) working. Production serves the client from Pages, the API from `api.<zone>`, and assets from `assets.<zone>`; the API uses `RAVENEST_CORS_ORIGINS` (see `docs/publishing.md`).
@@ -904,12 +931,14 @@ Validates all JSON configuration files against their schema rules. Written in Py
 - `cosmetics.json` items are validated by a **deny-by-default whitelist** (`id, name, slot, tier, price_platinum, source, description, appearance, sort`; appearance keys `palette/pattern/emblem/trim`) — any unknown key is an ERROR, so a cosmetic can never carry a gameplay key (no pay-to-win; rts_design.md §15.5.1)
 - `portrait_frames.json` `frames` entries must carry `image` (a served `/images/...` path), positive integer `image_width`/`image_height`, and a `portrait` rect (`x,y >= 0`, `width,height > 0`, contained within the image); a missing frame image is a WARN until the art is authored
 - `progression.json` must carry a `mesne_lord.requirements` object (`manor_level` a non-negative integer, `milestones` an array of non-empty strings); `milestones` (optional) is an array of counter-based conditions (`{id, counter, min}`; a `slain.<class>` counter is cross-checked against `enemy_combatants.json`, unknown class = WARN); `barony.join_cooldown_days` (optional) a non-negative integer
+- `registration.json` `mode` must be `off`/`global_code`/`invite_only`; `global_code` a string (non-empty in `global_code` mode); `players_can_generate` a bool; both player limits non-negative ints (either `0` disables generation); `create_account_rate_limit` an object with bool `enabled`, positive `window_seconds`/`max_attempts_per_network`/`max_entries`/`prune_interval_seconds`, and `ipv6_prefix_bits` in 1..128. `max_entries` has **no upper bound**.
 
 **Config Files Validated:**
 - `game/config/damage_types.json` - Damage type definitions
 - `game/config/player_combatants.json` - Player unit definitions (level arrays follow the `m(L) = 1 + 0.1·(L−1)` curve: `√m` on `damage` and `max_hp`, flat defense/range/interval/speed)
 - `game/config/enemy_combatants.json` - Enemy unit definitions (includes the boss-tier `ettin`, source of the `ettin_slain` milestone); the same level curve, plus optional `requires: [{unit_class, count}]` prerequisites that warband assembly rolls up recursively
 - `game/config/progression.json` - Progression gates: `mesne_lord.requirements` (`manor_level` + `milestones`), counter-based `milestones` (`{id, counter, min}`; `slain.<class>` cross-checked against `enemy_combatants.json`), and `barony.join_cooldown_days`
+- `game/config/registration.json` - Registration gate: `mode` (`off`/`global_code`/`invite_only`), shared `global_code`, player-generation flag + UTC daily/lifetime limits, and the bounded in-memory `create_account_rate_limit` block (IPv6 prefix, max entries, prune interval). Server-only: never included in `getGameInfo`/`getAllConfigs`.
 - `game/config/fiefdom_building_types.json` - Building type definitions
 - `game/config/heroes.json` - Hero definitions with equipment, skills, and status effects
 - `game/config/fiefdom_officials.json` - Fiefdom official templates with stats and roles

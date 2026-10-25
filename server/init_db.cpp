@@ -117,6 +117,20 @@ ensureIndex(db, "idx_fiefdom_walls_fiefdom", "fiefdom_walls", "fiefdom_id");
         }
     }
 
+    // Invitation redemption ledger. The unique index is the hard single-use
+    // race guard across concurrent account creations. SQLite permits multiple
+    // NULLs in a UNIQUE index, so accounts created in `off`/`global_code` mode
+    // remain unaffected.
+    void migrate_user_invitation_code(sqlite::database& db) {
+        try {
+            db << "ALTER TABLE users ADD COLUMN invitation_code_id TEXT;";
+        } catch (const std::exception&) {
+            // Column already exists — ignore
+        }
+        db << "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_invitation_code_id "
+              "ON users(invitation_code_id);";
+    }
+
     // Adult status is account-level and customer-service/digital-credential
     // verified. The provenance columns are admin-only and audited in chat.db.
     void migrate_adult_verification(sqlite::database& db) {
@@ -510,7 +524,8 @@ void migrate_baron_character_id(sqlite::database& db) {
             "adult INTEGER NOT NULL DEFAULT 0,"
             "adult_verified_at INTEGER NOT NULL DEFAULT 0,"
             "adult_verified_by INTEGER,"
-            "adult_verification_method TEXT"
+            "adult_verification_method TEXT,"
+            "invitation_code_id TEXT"
         );
 
         createTable(db, "characters",
@@ -1127,6 +1142,33 @@ void migrate_baron_character_id(sqlite::database& db) {
     // and banned avatar hashes. This database is deliberately independent from
     // game.db and chat.db: actions can span both, so the journal cannot live in
     // either. There are no cross-database FOREIGN KEYs.
+    // invites.db is a separate, lazily-created database. Codes are stored in
+    // plaintext (the feature needs recall), and used_by_account_id is UNIQUE so
+    // one account can only redeem one individual code. Multiple NULLs are
+    // allowed by SQLite.
+    void createInvitesDBTables(sqlite::database& db) {
+        createTable(db, "invitation_codes",
+            "id TEXT PRIMARY KEY,"
+            "code TEXT NOT NULL UNIQUE,"
+            "created_by_account_id INTEGER NOT NULL,"
+            "created_by_kind TEXT NOT NULL,"
+            "created_at INTEGER NOT NULL,"
+            "used_at INTEGER,"
+            "used_by_account_id INTEGER UNIQUE,"
+            "revoked_at INTEGER,"
+            "revoked_by_account_id INTEGER"
+        );
+    }
+
+    void ensureInvitesDBIndexes_private(sqlite::database& db) {
+        ensureIndex(db, "idx_invitation_codes_creator_created",
+                    "invitation_codes", "created_by_account_id, created_at");
+        ensureIndex(db, "idx_invitation_codes_created",
+                    "invitation_codes", "created_at");
+        ensureIndex(db, "idx_invitation_codes_used_by",
+                    "invitation_codes", "used_by_account_id");
+    }
+
     void createStaffDBTables(sqlite::database& db) {
         createTable(db, "staff_roles",
             "id TEXT PRIMARY KEY,"
@@ -1275,7 +1317,8 @@ void migrate_baron_character_id(sqlite::database& db) {
             "support.ticket.manage", "support.ticket.internal_notes",
             "support.unstick_session", "support.set_game_phase", "support.set_march_progress",
             "support.cancel_construction", "support.adjust_fiefdom_resource", "staff.undo",
-            "staff.audit.read", "staff.read_sensitive"
+            "staff.audit.read", "staff.read_sensitive", "registration.invites.view",
+            "registration.invites.generate", "registration.invites.revoke"
         };
         const struct { const char* id; const char* name; const char* description; } roles[] = {
             {"superadmin", "Superadmin", "Full staff access."},
@@ -1356,6 +1399,7 @@ void initializeGameDB(sqlite::database& db) {
     migrate_safe_avatar_gender(db);
     migrate_identity_lock(db);
     migrate_user_language(db);
+    migrate_user_invitation_code(db);
     migrate_adult_verification(db);
     migrate_account_restrictions(db);
     migrate_safe_barony_identity(db);
@@ -1400,6 +1444,11 @@ void initializeStaffDB(sqlite::database& db) {
     ensureStaffDBIndexes_private(db);
 }
 
+void initializeInvitesDB(sqlite::database& db) {
+    createInvitesDBTables(db);
+    ensureInvitesDBIndexes_private(db);
+}
+
 void ensureGameDBIndexes(sqlite::database& db) {
     ensureGameDBIndexes_private(db);
 }
@@ -1410,6 +1459,10 @@ void ensureChatDBIndexes(sqlite::database& db) {
 
 void ensureStaffDBIndexes(sqlite::database& db) {
     ensureStaffDBIndexes_private(db);
+}
+
+void ensureInvitesDBIndexes(sqlite::database& db) {
+    ensureInvitesDBIndexes_private(db);
 }
 
 void initializeAllDatabases(sqlite::database& game_db, sqlite::database& chat_db,

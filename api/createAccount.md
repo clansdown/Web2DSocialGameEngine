@@ -12,7 +12,8 @@ Create a new user account and automatically log in.
   "word1": "Cloud",
   "word2": "Dragon",
   "displayName": "CoolPlayer123",
-  "language": "en"
+  "language": "en",
+  "invitation_code": "ABCD-EFGH-JKLM"
 }
 ```
 
@@ -46,6 +47,7 @@ With age verification (adult=true requires digitalCredential):
 | digitalCredential | object | Conditional | Digital credential for age verification (required if adult=true) |
 | sex | string | No | Character sex: `"male"` or `"female"` for gender-substituted text |
 | language | string | No | Chosen interface / display language (default `"en"`); also the default chat translation target |
+| invitation_code | string | Conditional | Required when the server is in `global_code` or `invite_only` registration mode. Ignored in `off` mode. Dashes/spaces are optional. |
 
 ### digitalCredential Structure
 
@@ -128,6 +130,30 @@ No authentication required for this endpoint.
   "status": "ok",
   "data": {},
   "error": "Invalid word1 or word2 - words must exist in safe word lists"
+}
+```
+
+```json
+{
+  "status": "ok",
+  "data": {},
+  "error": "invitation_code_required"
+}
+```
+
+```json
+{
+  "status": "ok",
+  "data": {},
+  "error": "invalid_invitation_code"
+}
+```
+
+```json
+{
+  "status": "ok",
+  "data": { "retry_after_seconds": 600 },
+  "error": "rate_limited"
 }
 ```
 

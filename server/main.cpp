@@ -74,6 +74,11 @@
 #include "staff/StaffActionEngine.hpp"
 #include "staff/StaffAuth.hpp"
 #include "staff/StaffStore.hpp"
+#include "registration/InvitationHandlers.hpp"
+#include "registration/InvitationService.hpp"
+#include "registration/InvitationStore.hpp"
+#include "registration/RegistrationRateLimiter.hpp"
+#include "registration/RegistrationSettings.hpp"
 #include "Visibility.hpp"
 #include <sqlite_modern_cpp/errors.h>
 
@@ -346,6 +351,7 @@ std::string g_text_dir = "";  // derived from g_content_dir unless --text-dir ov
 // Public endpoints that don't require authentication
 const std::unordered_set<std::string> PUBLIC_ENDPOINTS = {
     "createAccount",
+    "getRegistrationConfig",
     "getTexts",
     "getUITextures"
 };
@@ -1005,6 +1011,24 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
     std::string word1 = body.value("word1", "");
     std::string word2 = body.value("word2", "");
     std::string displayName = body.value("displayName", "");
+    std::string invitation_code = body.value("invitation_code", "");
+
+    // The account-creation rate limiter is config-driven and in-memory. It
+    // applies in every registration mode (including `off`).
+    const registration_settings registration =
+        parse_registration_settings(config_cache.getRegistrationConfig());
+    {
+        std::int64_t retry_after_seconds = 0;
+        const std::int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+                                        .count();
+        if (!registration_rate_limiter::instance().allow(
+                client, registration.rate_limit, now_ms, retry_after_seconds)) {
+            response.error = "rate_limited";
+            response.data["retry_after_seconds"] = retry_after_seconds;
+            return response;
+        }
+    }
 
     // Interface / display language, chosen at first launch. Shape-validated and
     // stored on the account; missing text dirs fall back to English downstream.
@@ -1066,6 +1090,21 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
     }
 
     std::cout << "[DEBUG] handleCreateAccount: passed validation checks" << std::endl;
+
+    // Resolve the invitation gate before touching the database. `off` ignores
+    // any supplied code; global/invite_only require a valid one.
+    const registration_code_resolution registration_code =
+        resolve_registration_code(registration, invitation_code);
+    if (!registration_code.ok) {
+        response.error = registration_code.error.empty()
+                             ? "invalid_invitation_code"
+                             : registration_code.error;
+        return response;
+    }
+    const std::optional<std::string> invitation_code_id =
+        registration_code.kind == registration_code_kind::individual_code
+            ? std::optional<std::string>(registration_code.invitation_code_id)
+            : std::optional<std::string>();
 
     std::string existing;
     try {
@@ -1158,11 +1197,27 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
         std::cout << "[DEBUG] handleCreateAccount: gameDB() OK for writes" << std::endl;
         auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 
+        auto rollback = [&]() {
+            try {
+                db << "ROLLBACK;";
+            } catch (const std::exception&) {
+            }
+        };
+
+        try {
+            db << "BEGIN IMMEDIATE;";
+        } catch (const std::exception& e) {
+            log_error("handleCreateAccount", std::string("BEGIN failed: ") + e.what());
+            response.error = std::string("Account creation failed: ") + e.what();
+            return response;
+        }
+
         // Step 1: insert user
         {
             std::string sql = "INSERT INTO users (username, password_hash, created_at, adult, "
-                              "adult_verified_at, adult_verification_method, language) "
-                              "VALUES (?, ?, ?, ?, ?, ?, ?)";
+                              "adult_verified_at, adult_verification_method, language, "
+                              "invitation_code_id) "
+                              "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
             std::cout << "[DEBUG] handleCreateAccount: Step 1 - INSERT user" << std::endl;
             log_sql("handleCreateAccount", sql);
             try {
@@ -1173,14 +1228,24 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
                                   ? std::optional<std::string>("test_only")
                                   : std::optional<std::string>("digital_credential"))
                            : std::optional<std::string>())
-                   << language;
+                   << language << invitation_code_id;
                 std::cout << "[DEBUG] handleCreateAccount: Step 1 done" << std::endl;
             } catch (const std::exception& e) {
+                rollback();
                 std::cerr << "[DEBUG] handleCreateAccount: Step 1 exception type=" << typeid(e).name() << " what=" << e.what() << std::endl;
                 log_error("handleCreateAccount",
                     std::string("Step 1 (insert user) exception: type=") + typeid(e).name() +
                     " what=" + e.what());
-                response.error = std::string("Account creation failed: ") + e.what();
+                const std::string message = e.what();
+                if (message.find("invitation_code_id") != std::string::npos) {
+                    // Another request redeemed the same code between our
+                    // lookup and this insert. The unique index is the guard.
+                    response.error = "invalid_invitation_code";
+                } else if (message.find("users.username") != std::string::npos) {
+                    response.error = "Username already exists";
+                } else {
+                    response.error = std::string("Account creation failed: ") + message;
+                }
                 return response;
             }
         }
@@ -1203,6 +1268,7 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
                 db << sql << user_id << display_name << safe_display_name << sex_ptr;
                 std::cout << "[DEBUG] handleCreateAccount: Step 2 done" << std::endl;
             } catch (const std::exception& e) {
+                rollback();
                 std::cerr << "[DEBUG] handleCreateAccount: Step 2 exception type=" << typeid(e).name() << " what=" << e.what() << std::endl;
                 log_error("handleCreateAccount",
                     std::string("Step 2 (insert character) exception: type=") + typeid(e).name() +
@@ -1223,12 +1289,34 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
                 player_state_db::create_player_game_state(db, character_id);
                 std::cout << "[DEBUG] handleCreateAccount: Step 3 done" << std::endl;
             } catch (const std::exception& e) {
+                rollback();
                 std::cerr << "[DEBUG] handleCreateAccount: Step 3 exception type=" << typeid(e).name() << " what=" << e.what() << std::endl;
                 log_error("handleCreateAccount",
                     std::string("Step 3 (player game state) exception: type=") + typeid(e).name() +
                     " what=" + e.what());
                 response.error = std::string("Account creation failed: ") + e.what();
                 return response;
+            }
+        }
+
+        try {
+            db << "COMMIT;";
+        } catch (const std::exception& e) {
+            rollback();
+            log_error("handleCreateAccount", std::string("COMMIT failed: ") + e.what());
+            response.error = std::string("Account creation failed: ") + e.what();
+            return response;
+        }
+
+        // The redemption ledger (users.invitation_code_id) is already
+        // committed. Marking the invite row used is bookkeeping; if it fails,
+        // is_redeemed_in_game() still makes the code unusable.
+        if (invitation_code_id) {
+            std::string mark_error;
+            if (!InvitationStore::instance().mark_used(
+                    *invitation_code_id, user_id, now, mark_error)) {
+                std::cerr << "Warning: failed to mark invitation code used: "
+                          << mark_error << std::endl;
             }
         }
 
@@ -1622,6 +1710,41 @@ ApiResponse handleGetPlayerState(GameConfigCache& config_cache, const json& body
         response.data["unread_support"] =
             staff::StaffStore::instance().unread_tickets_for_player(account_id);
         response.data["support_locked"] = staff::account_is_support_locked(account_id);
+
+        // Invitation utility visibility. Only computed when player generation
+        // is actually available, so `off`/global mode never opens invites.db
+        // during hub state polling.
+        try {
+            const registration_settings registration =
+                parse_registration_settings(config_cache.getRegistrationConfig());
+            const invitation_allowance invite_allowance =
+                get_invitation_allowance(account_id, registration);
+            if (invite_allowance.enabled) {
+                response.data["invitations"] = {
+                    {"enabled", true},
+                    {"can_generate", invite_allowance.can_generate},
+                    {"daily_remaining", invite_allowance.daily_remaining},
+                    {"lifetime_remaining", invite_allowance.lifetime_remaining},
+                };
+            } else {
+                response.data["invitations"] = {
+                    {"enabled", false},
+                    {"can_generate", false},
+                    {"daily_remaining", 0},
+                    {"lifetime_remaining", 0},
+                };
+            }
+        } catch (const std::exception& e) {
+            // A broken/removed invites.db must not break the hub. Hide the
+            // utility; the dedicated invitation endpoints surface the error.
+            log_error("handleGetPlayerState", std::string("invitation status: ") + e.what());
+            response.data["invitations"] = {
+                {"enabled", false},
+                {"can_generate", false},
+                {"daily_remaining", 0},
+                {"lifetime_remaining", 0},
+            };
+        }
 
         // Flag for client: land patent needs acknowledgment
         if (state.game_phase == "land_patent" && !state.land_patent_acknowledged) {
@@ -8593,6 +8716,9 @@ void handleApiRequest(GameConfigCache& config_cache, auto* res, auto* req,
                 ApiResponse response;
                 if (endpoint == "createAccount") {
                     response = handleCreateAccount(config_cache, body, std::nullopt, client, std::nullopt);
+                } else if (endpoint == "getRegistrationConfig") {
+                    response = handleGetRegistrationConfig(config_cache, body, std::nullopt,
+                                                           client, std::nullopt);
                 } else if (endpoint == "getTexts") {
                     response = handleGetTexts(config_cache, body, std::nullopt, client, std::nullopt);
                 } else if (endpoint == "getUITextures") {
@@ -8940,13 +9066,16 @@ int main(int argc, char* argv[]) {
 
     std::string game_db_path = g_db_dir + "/game.db";
     std::string chat_db_path = g_db_dir + "/chat.db";
+    std::string staff_db_path = g_db_dir + "/staff.db";
+    std::string invites_db_path = g_db_dir + "/invites.db";
 
     if (!quiet) {
         std::cout << "Opening databases..." << std::endl;
     }
 
     try {
-        Database::getInstance().init(game_db_path, chat_db_path);
+        Database::getInstance().init(game_db_path, chat_db_path, staff_db_path,
+                                     invites_db_path);
     } catch (const std::exception& e) {
         std::cerr << "Failed to initialize databases: " << e.what() << std::endl;
         return 1;

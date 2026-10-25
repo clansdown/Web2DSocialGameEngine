@@ -25,6 +25,8 @@ export interface staff_context_dto {
   support_unread: number;
   chat_moderation_mode: boolean;
   roles_catalog: staff_role_dto[];
+  registration_mode?: 'off' | 'global_code' | 'invite_only';
+  invitations_enabled?: boolean;
 }
 
 export interface staff_character_dto {
@@ -106,6 +108,47 @@ export interface staff_banned_hash_dto {
 
 export async function staffGetContextRequest(): Promise<staff_context_dto> {
   return authenticatedPost<staff_context_dto>('staffGetContext', {});
+}
+
+export interface staff_invitation_code_dto {
+  id: string;
+  code: string;
+  created_by_kind: 'staff' | 'player';
+  created_by_account_id: number;
+  created_by_username: string;
+  created_at: number;
+  used: boolean;
+  used_at: number;
+  used_by_account_id: number;
+  used_by_username: string;
+  revoked: boolean;
+  revoked_at: number;
+  revoked_by_account_id: number;
+}
+
+export async function staffListInvitationCodesRequest(filter: {
+  status?: string;
+  created_by_kind?: string;
+  query?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<{ mode: string; invitations_enabled: boolean; codes: staff_invitation_code_dto[] }> {
+  return authenticatedPost('staffListInvitationCodes', filter);
+}
+
+export async function staffCreateInvitationCodeRequest(reason: string): Promise<{
+  action_id: string;
+  code: string;
+  invitation: staff_invitation_code_dto;
+}> {
+  return authenticatedPost('staffCreateInvitationCode', { reason });
+}
+
+export async function staffRevokeInvitationCodeRequest(
+  code_id: string,
+  reason: string
+): Promise<{ action_id: string; invitation: staff_invitation_code_dto }> {
+  return authenticatedPost('staffRevokeInvitationCode', { code_id, reason });
 }
 
 export async function staffListStaffRequest(): Promise<{

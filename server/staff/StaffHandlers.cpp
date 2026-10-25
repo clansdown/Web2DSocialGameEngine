@@ -6,7 +6,9 @@
 #include <vector>
 
 #include "Database.hpp"
+#include "GameConfigCache.hpp"
 #include "Visibility.hpp"
+#include "registration/RegistrationSettings.hpp"
 #include "staff/StaffActionEngine.hpp"
 #include "staff/StaffAuth.hpp"
 #include "staff/StaffStore.hpp"
@@ -606,6 +608,10 @@ ApiResponse handleStaffGetContext(GameConfigCache& config_cache, const json& bod
     response.data["unread_notifications"] = StaffStore::instance().unread_notifications(context.account_id);
     response.data["support_unread"] = StaffStore::instance().unread_tickets_for_staff(context.account_id);
     response.data["chat_moderation_mode"] = StaffStore::instance().chat_moderation_mode(context.account_id);
+    const registration_settings registration =
+        parse_registration_settings(config_cache.getRegistrationConfig());
+    response.data["registration_mode"] = registration_mode_name(registration.mode);
+    response.data["invitations_enabled"] = registration.mode != registration_mode::off;
     response.data["roles_catalog"] = json::array();
     for (const auto& role : StaffStore::instance().list_roles()) {
         response.data["roles_catalog"].push_back(

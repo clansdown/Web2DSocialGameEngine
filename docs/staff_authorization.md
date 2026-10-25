@@ -49,6 +49,8 @@ Capabilities:
   `support.set_march_progress`, `support.cancel_construction`,
   `support.adjust_fiefdom_resource`
 - `staff.undo`, `staff.audit.read`, `staff.read_sensitive`
+- `registration.invites.view`, `registration.invites.generate`,
+  `registration.invites.revoke`
 
 Every staff endpoint calls `staff::require_capability`; hiding a button in the
 client is cosmetic only.

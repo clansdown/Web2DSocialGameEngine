@@ -6014,6 +6014,104 @@ class ConfigValidator:
             self._add_issue(file, 1, None, "'default_ttl' must be a positive integer", Severity.ERROR)
         self.validated_files.append(file)
 
+    def validate_registration(self, file: Path, content: str) -> None:
+        """Validate registration.json (registration gate + rate limiter)."""
+        data = self._validate_json(content, file)
+        if data is None:
+            return
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected an object", Severity.ERROR)
+            return
+
+        mode = data.get("mode")
+        if mode not in ("off", "global_code", "invite_only"):
+            self._add_issue(
+                file, 1, None,
+                "'mode' must be one of 'off', 'global_code', 'invite_only'",
+                Severity.ERROR,
+            )
+
+        global_code = data.get("global_code")
+        if not isinstance(global_code, str):
+            self._add_issue(file, 1, None, "'global_code' must be a string", Severity.ERROR)
+        elif mode == "global_code" and not global_code.strip():
+            self._add_issue(
+                file, 1, None,
+                "'global_code' must be non-empty when mode is 'global_code'",
+                Severity.ERROR,
+            )
+        elif isinstance(global_code, str) and global_code.strip() and mode != "global_code":
+            self._add_issue(
+                file, 1, None,
+                "'global_code' is set but mode is not 'global_code'",
+                Severity.WARN,
+            )
+
+        if not isinstance(data.get("players_can_generate"), bool):
+            self._add_issue(file, 1, None, "'players_can_generate' must be a boolean", Severity.ERROR)
+
+        for field in ("player_daily_limit", "player_lifetime_limit"):
+            value = data.get(field)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                self._add_issue(
+                    file, 1, None, f"'{field}' must be a non-negative integer", Severity.ERROR
+                )
+
+        players_can_generate = data.get("players_can_generate")
+        daily_limit = data.get("player_daily_limit")
+        lifetime_limit = data.get("player_lifetime_limit")
+        if players_can_generate is True:
+            if mode != "invite_only":
+                self._add_issue(
+                    file, 1, None,
+                    "'players_can_generate' is only effective in 'invite_only' mode",
+                    Severity.WARN,
+                )
+            if (isinstance(daily_limit, int) and not isinstance(daily_limit, bool)
+                    and daily_limit == 0) or (
+                    isinstance(lifetime_limit, int) and not isinstance(lifetime_limit, bool)
+                    and lifetime_limit == 0):
+                self._add_issue(
+                    file, 1, None,
+                    "player generation is disabled because at least one player limit is 0",
+                    Severity.WARN,
+                )
+
+        rate_limit = data.get("create_account_rate_limit")
+        if not isinstance(rate_limit, dict):
+            self._add_issue(
+                file, 1, None, "'create_account_rate_limit' must be an object", Severity.ERROR
+            )
+        else:
+            if not isinstance(rate_limit.get("enabled"), bool):
+                self._add_issue(
+                    file, 1, None,
+                    "'create_account_rate_limit.enabled' must be a boolean",
+                    Severity.ERROR,
+                )
+            positive_fields = (
+                "window_seconds", "max_attempts_per_network", "max_entries",
+                "prune_interval_seconds",
+            )
+            for field in positive_fields:
+                value = rate_limit.get(field)
+                if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                    self._add_issue(
+                        file, 1, None,
+                        f"'create_account_rate_limit.{field}' must be a positive integer",
+                        Severity.ERROR,
+                    )
+            prefix_bits = rate_limit.get("ipv6_prefix_bits")
+            if (not isinstance(prefix_bits, int) or isinstance(prefix_bits, bool)
+                    or not (1 <= prefix_bits <= 128)):
+                self._add_issue(
+                    file, 1, None,
+                    "'create_account_rate_limit.ipv6_prefix_bits' must be an integer in 1..128",
+                    Severity.ERROR,
+                )
+
+        self.validated_files.append(file)
+
     def validate_combat_offerings(self, file: Path) -> None:
         """Validate combat/offerings.json — auto-generated PvE mission offerings.
 
@@ -6585,6 +6683,21 @@ class ConfigValidator:
                     self._add_issue(push_file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
             else:
                 self._add_issue(push_file, 1, None, "Config file not found", Severity.WARN)
+
+            registration_file: Path = game_config_dir / "registration.json"
+            if registration_file.exists():
+                try:
+                    self.validate_registration(
+                        registration_file, registration_file.read_text(encoding="utf-8")
+                    )
+                except Exception as e:
+                    self._add_issue(
+                        registration_file, 1, None, f"Failed to read file: {e}", Severity.ERROR
+                    )
+            else:
+                self._add_issue(
+                    registration_file, 1, None, "Config file not found", Severity.ERROR
+                )
 
             mini_games_file: Path = game_config_dir / "mini_games.json"
             if mini_games_file.exists():

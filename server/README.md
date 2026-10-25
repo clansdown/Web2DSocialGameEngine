@@ -545,7 +545,7 @@ Chat endpoints: `getChats`, `getChatMessages`, `pollChats`, `pollWildlands`,
 
 ## Database Architecture
 
-Three independent SQLite databases for maximum concurrency:
+Four independent SQLite databases for maximum concurrency:
 
 ### game.db
 - `users`: User accounts (id, username, password_hash, created_at, adult)
@@ -569,6 +569,17 @@ Three independent SQLite databases for maximum concurrency:
   (`push_subscriptions`, `push_preferences`), and `chat_language_prefs`.
 - Full reference: `server/docs/chat.md` and `server/tables/*.md`.
 
+### staff.db
+- Staff identity/roles, the shared action journal, support tickets,
+  notifications, and avatar hash bans. See `server/tables/staff.md`.
+
+### invites.db (lazy)
+- `invitation_codes`: single-use registration invitation codes (plaintext,
+  staff/player creator, used/revoked metadata).
+- Opened lazily only when registration mode is `global_code`/`invite_only` and
+  an invite lookup/generation/list actually runs. `off` mode never creates it.
+  See `docs/registration.md` and `server/tables/invitation_codes.md`.
+
 **Design:**
 - No joins across databases
 - Concurrent writes to all simultaneously
@@ -579,7 +590,10 @@ Three independent SQLite databases for maximum concurrency:
 - Schema creation and index management handled by `init_db.cpp`
 - `initializeGameDB()` creates tables + indexes for game.db
 - `initializeChatDB()` creates tables + indexes for chat.db
-- `initializeAllDatabases()` calls both for complete initialization
+- `initializeStaffDB()` creates tables + indexes for staff.db
+- `initializeInvitesDB()` is called lazily by `InvitationStore::ensure_ready()`
+  when invites.db is first needed
+- `initializeAllDatabases()` initializes game.db, chat.db, and staff.db
 
 ### game.db Schema
 
@@ -702,7 +716,7 @@ plus named soldiers with class/level/gear; see `server/tables/retinue_members.md
 
 - **Port**: 2290 (HTTP + WebSocket on the same listener)
 - **HTTPS**: Cloudflare Tunnel in production (or nginx as an alternative)
-- **Databases**: `game.db`, `chat.db`, and `staff.db` are created in `--db-dir` (default: the working directory) on first run. `staff.db` holds staff roles/accounts, the shared action journal, support tickets, notifications, and banned avatar hashes.
+- **Databases**: `game.db`, `chat.db`, and `staff.db` are created in `--db-dir` (default: the working directory) on first run. `staff.db` holds staff roles/accounts, the shared action journal, support tickets, notifications, and banned avatar hashes. `invites.db` is created lazily only in `global_code`/`invite_only` registration modes; `off` mode never creates it (see `docs/registration.md`).
 - **Assets**: `config/`, `images/`, and `text/` are read from the `--content` root
   (default: the working directory). Pointing `--content` at `game/` while running
   from a scratch directory keeps databases and uploads out of the synced assets

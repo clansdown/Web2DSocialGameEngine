@@ -163,17 +163,25 @@ events and never disturbs the open screen.
 
 - `src/staff/StaffScreen.svelte` is the staff console (hub card `staff`, only
   added by the server for staff accounts). Sub-sections are driven by the
-  `#/activity/staff/<section>[/<id>]` route: accounts, baronies, support, audit,
-  unstick, chats. `staff_api.ts` wraps the capability-checked endpoints.
+  `#/activity/staff/<section>[/<id>]` route: accounts, baronies, support,
+  invitations, audit, unstick, chats. `staff_api.ts` wraps the
+  capability-checked endpoints.
 - `src/support/SupportScreen.svelte` is the muted player Support utility
   (`#/activity/support[/<ticket_id>]`); it is a utility, not a hub grid card.
+- `src/invitations/InvitationPanel.svelte` is the muted player Invitations
+  utility (`#/activity/invitations`). It is visible only while
+  `getPlayerState().invitations.can_generate` is true. `invitation_api.ts`
+  wraps `getInvitationStatus` / `createInvitationCode`.
+- `src/staff/StaffInvitationsPanel.svelte` lists/generates/revokes invitation
+  codes for staff with `registration.invites.view/generate/revoke`.
 - `src/support/NotificationInbox.svelte` is the hub bell drawer. Notifications
   persist until read; `text_id` + `text_args` are rendered through the text
   system.
 - The Chat screen shows a Staff toggle for accounts with `chat.moderate_any`.
   The toggle persists a UI preference only; server authorization is always on.
-- The staff card, Support link, and bell are driven by `getPlayerState`
-  (`is_staff`, `unread_notifications`, `unread_support`).
+- The staff card, Support link, Invitations link, and bell are driven by
+  `getPlayerState` (`is_staff`, `unread_notifications`, `unread_support`,
+  `invitations`).
 
 ## Player identity (Profile)
 

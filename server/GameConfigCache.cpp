@@ -94,6 +94,10 @@ bool GameConfigCache::initialize(const std::string& config_dir) {
     add("safe_ban_reasons.json");
     add("translation.json");
     add("push.json");
+    // Server-only config. It contains the optional shared global registration
+    // code, so it is deliberately NOT added to getAllConfigs() (which backs
+    // getGameInfo). Only the server reads the raw JSON.
+    add("registration.json");
 
     for (auto& [name, entry] : configs_) {
         struct stat st;
@@ -300,6 +304,7 @@ nlohmann::json& GameConfigCache::getSafeGifs() { return getConfig("safe_gifs.jso
 nlohmann::json& GameConfigCache::getSafeBanReasons() { return getConfig("safe_ban_reasons.json"); }
 nlohmann::json& GameConfigCache::getTranslationConfig() { return getConfig("translation.json"); }
 nlohmann::json& GameConfigCache::getPushConfig() { return getConfig("push.json"); }
+nlohmann::json& GameConfigCache::getRegistrationConfig() { return getConfig("registration.json"); }
 
 std::optional<nlohmann::json> GameConfigCache::getTowerDefenseSpawnSchedule(const std::string& filename) {
     nlohmann::json& data = getConfig("tower_defense/spawn_schedules/" + filename);
