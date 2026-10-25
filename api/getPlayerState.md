@@ -31,6 +31,10 @@ Retrieves the current player's game state including phase, active mini-game, lev
     "last_updated": 1700000000,
     "has_letters": false,
     "barony_join_cooldown_until": 0,
+    "is_staff": false,
+    "unread_notifications": 0,
+    "unread_support": 0,
+    "support_locked": false,
     "progress": [
       {
         "id": 1,
@@ -106,6 +110,10 @@ clears it. The `honor` activity (shown in `freehold_qualified`) opens the
 | `unread_letter` | object or absent | Present when an unread letter exists: `{ id, letter_key }` of the **oldest** unread letter (one-time overlay) |
 | `barony_join_cooldown_until` | int | Unix timestamp the barony join cooldown expires; `0` when the character has never left a barony (or the cooldown is disabled) |
 | `barony` | object or absent | Present while a barony member: `{ id, name, description, safe_name_id, safe_tag_ids, tags, accepts_minors, role, member_count }`. A minor receives the safe name/tags and an empty description. |
+| `is_staff` | boolean | True when the account has an active staff record. The hub shows the distinct Staff card when true. |
+| `unread_notifications` | int | Unread account notifications (hub bell badge). |
+| `unread_support` | int | Tickets with unread player-visible messages (muted Support utility badge). |
+| `support_locked` | boolean | True when the account cannot create/reply to support tickets. |
 | `progress` | array | Array of MiniGameProgress objects for all mini-games |
 
 ### `available_activities` by phase
@@ -123,6 +131,8 @@ of the phase's base set:
 - `honor` is exposed in `freehold_qualified` (opens `/api/applyForMesneLord`).
 - `barony` is exposed while the character is a member of a barony. It is a
   viewer-relative projection; custom barony text is hidden from minors.
+- `staff` is appended only when the authenticated account has an active staff
+  record. It is a separate authorization domain from chat roles.
 - The endpoint is owner-only (`character_id` must belong to the authenticated
   account).
 

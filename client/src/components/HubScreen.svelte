@@ -2,6 +2,7 @@
   import { playerGameState, currentCharacter } from '../lib/stores';
   import { loadTexts } from '../lib/text';
   import { route_store, navigate, go_back } from '../lib/router';
+  import { fetchPlayerState } from '../lib/game_state';
   import MiniGameSelect from '../minigames/MiniGameSelect.svelte';
   import ManorMenu from './ManorMenu.svelte';
   import Chat from './Chat.svelte';
@@ -13,6 +14,9 @@
   import HonorPanel from './HonorPanel.svelte';
   import BaronyPanel from './BaronyPanel.svelte';
   import CombatScreen from '../combat/CombatScreen.svelte';
+  import SupportScreen from '../support/SupportScreen.svelte';
+  import NotificationInbox from '../support/NotificationInbox.svelte';
+  import StaffScreen from '../staff/StaffScreen.svelte';
 
   interface Props {
     activities?: string[];
@@ -36,6 +40,9 @@
 
   let displayNames = $state<Record<string, string>>({});
   let blurbTexts = $state<Record<string, string>>({});
+  let showNotifications = $state(false);
+  let unreadNotifications = $state($playerGameState?.unread_notifications ?? 0);
+  let unreadSupport = $state($playerGameState?.unread_support ?? 0);
 
   // Hub-card subtitle text ids (never hardcode user-facing strings).
   const BLURB_IDS: string[] = [
@@ -44,10 +51,14 @@
     'ui_activity_profile_blurb',
     'ui_activity_letters_blurb',
     'ui_activity_honor_blurb',
-    'ui_activity_barony_blurb'
+    'ui_activity_barony_blurb',
+    'ui_activity_staff_blurb',
+    'ui_support_link',
+    'ui_staff_badge'
   ];
 
   let gridActivities = $derived(activities.filter(id => id !== 'land_patent'));
+  const UTILITY_ACTIVITIES: string[] = ['support'];
 
   /**
    * Returns the hub-card subtitle for an activity id from the text system.
@@ -61,13 +72,15 @@
     if (id === 'letters') return blurbTexts['ui_activity_letters_blurb'] ?? '';
     if (id === 'honor') return blurbTexts['ui_activity_honor_blurb'] ?? '';
     if (id === 'barony') return blurbTexts['ui_activity_barony_blurb'] ?? '';
+    if (id === 'staff') return blurbTexts['ui_activity_staff_blurb'] ?? '';
     return blurbTexts['ui_activity_coming_soon'] ?? '';
   }
 
   // The open activity comes from the hash route (#/activity/<id>). A route
   // whose id is not available in the current phase falls back to the hub grid.
   let activity = $derived(
-    $route_store.type === 'activity' && gridActivities.includes($route_store.id)
+    $route_store.type === 'activity' &&
+      (gridActivities.includes($route_store.id) || UTILITY_ACTIVITIES.includes($route_store.id))
       ? $route_store.id
       : null
   );
@@ -105,6 +118,9 @@
 
   function goBackToHub() {
     go_back();
+    if ($currentCharacter) {
+      fetchPlayerState($currentCharacter.id).catch(() => {});
+    }
   }
 
   $effect(() => {
@@ -112,12 +128,17 @@
       loadActivityNames();
     }
   });
+
+  $effect(() => {
+    unreadNotifications = $playerGameState?.unread_notifications ?? 0;
+    unreadSupport = $playerGameState?.unread_support ?? 0;
+  });
 </script>
 
 {#if activity === null}
-  <div class="container py-4">
+  <div class="container py-4 position-relative">
     <!-- Activity grid -->
-    <div class="text-center mb-5">
+    <div class="text-center mb-4">
       <h1>Ravenest</h1>
       {#if $currentCharacter}
         <p class="text-muted">
@@ -126,6 +147,28 @@
         </p>
       {/if}
     </div>
+
+    <div class="d-flex justify-content-end align-items-center gap-3 mb-3 small hub-utilities">
+      <button class="btn btn-sm btn-link text-secondary p-0" onclick={() => selectActivity('support')}>
+        {blurbTexts['ui_support_link'] ?? ''}
+        {#if unreadSupport > 0}<span class="badge text-bg-secondary ms-1">{unreadSupport}</span>{/if}
+      </button>
+      <button class="btn btn-sm btn-outline-secondary position-relative" onclick={() => (showNotifications = !showNotifications)}>
+        🔔
+        {#if unreadNotifications > 0}
+          <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill text-bg-primary">
+            {unreadNotifications}
+          </span>
+        {/if}
+      </button>
+    </div>
+
+    {#if showNotifications}
+      <NotificationInbox
+        onClose={() => (showNotifications = false)}
+        onChanged={(unread) => (unreadNotifications = unread)}
+      />
+    {/if}
 
     <div class="row g-4 justify-content-center">
       {#if activities.includes('land_patent') && onJoinBarony && onBaronTrackStarted && onFreeholdFounded}
@@ -140,7 +183,10 @@
       {#each gridActivities as id}
         <div class="col-md-5 col-lg-4">
           <div
-            class="card h-100 border-primary cursor-pointer"
+            class="card h-100 cursor-pointer"
+            class:border-primary={id !== 'staff'}
+            class:border-warning={id === 'staff'}
+            class:staff-card={id === 'staff'}
             style="cursor: pointer;"
             role="button"
             tabindex="0"
@@ -148,7 +194,10 @@
             onkeydown={(e) => { if (e.key === 'Enter') selectActivity(id); }}
           >
             <div class="card-body text-center p-5">
-              <h3 class="card-title mb-3">{displayNames[id] || id}</h3>
+              <h3 class="card-title mb-3">
+                {displayNames[id] || id}
+                {#if id === 'staff'}<span class="badge text-bg-warning ms-2">{blurbTexts['ui_staff_badge'] ?? ''}</span>{/if}
+              </h3>
               <span class="text-muted">{activityBlurb(id)}</span>
             </div>
           </div>
@@ -189,6 +238,10 @@
 {:else if activity === 'combat'}
   <!-- Full-bleed realtime tactics (rts_design.md §4). PvE via the lobby. -->
   <CombatScreen mode="pve" on_close={goBackToHub} />
+{:else if activity === 'support'}
+  <SupportScreen onBack={goBackToHub} rest={activityRest} />
+{:else if activity === 'staff'}
+  <StaffScreen onBack={goBackToHub} rest={activityRest} />
 {:else}
   <div class="container py-4">
     <button class="btn btn-outline-secondary mb-4" onclick={goBackToHub}>
@@ -197,3 +250,12 @@
     <div class="alert alert-warning">Unknown activity: {activity}</div>
   </div>
 {/if}
+
+<style>
+  .staff-card {
+    background-image: linear-gradient(135deg, rgba(255, 193, 7, 0.08), transparent 65%);
+  }
+  .hub-utilities {
+    min-height: 1.75rem;
+  }
+</style>

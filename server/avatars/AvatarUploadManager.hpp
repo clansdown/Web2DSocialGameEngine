@@ -24,6 +24,7 @@ struct avatar_upload_result {
     std::string detail;
     std::string key;
     std::string public_url;
+    std::string sha256;
     int character_id = 0;
 };
 

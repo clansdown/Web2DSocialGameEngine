@@ -1,4 +1,7 @@
-# `/api/adminGetIdentityHistory`
+# `/api/adminGetIdentityHistory` (removed)
+
+> **Deprecated/removed:** this endpoint is no longer registered. Use
+> `/api/staffGetIdentityHistory`. See `api/staff.md`.
 
 Returns a character's prior names/avatars for admin review. **Admins only.**
 

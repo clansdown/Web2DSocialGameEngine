@@ -1,4 +1,7 @@
-# `/api/adminLockIdentity`
+# `/api/adminLockIdentity` (removed)
+
+> **Deprecated/removed:** this endpoint is no longer registered. Use
+> `/api/staffLockIdentity`. See `api/staff.md`.
 
 Locks and/or force-reverts a character's name/avatar. **Admins only.** See
 `server/docs/chat_identity_lock.md`.

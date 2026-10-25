@@ -430,6 +430,10 @@ ApiResponse handleApplyBookItem(GameConfigCache& config_cache, const nlohmann::j
 // Defined in chat/ChatHandlers.cpp; registers the chat endpoint family.
 void register_chat_handlers(std::unordered_map<std::string, ApiHandler>& handlers);
 
+// Defined in staff/StaffHandlers.cpp; registers player support/notifications
+// and the staff console endpoints.
+void register_staff_handlers(std::unordered_map<std::string, ApiHandler>& handlers);
+
 inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfigCache& config_cache) {
     using Json = const nlohmann::json&;
     using Username = const std::optional<std::string>&;
@@ -475,9 +479,6 @@ inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfi
     add("getAvatarPool",          [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetAvatarPool(c, b, u, cl, t); });
     add("getPortraitFrames",      [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetPortraitFrames(c, b, u, cl, t); });
     add("getSafeContent",         [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetSafeContent(c, b, u, cl, t); });
-    add("adminSetAdultStatus",    [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleAdminSetAdultStatus(c, b, u, cl, t); });
-    add("adminGetDeletedMessages",[&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleAdminGetDeletedMessages(c, b, u, cl, t); });
-    add("adminSetBaronyIdentity", [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleAdminSetBaronyIdentity(c, b, u, cl, t); });
     add("setCharacterAvatar",     [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSetCharacterAvatar(c, b, u, cl, t); });
     add("tdRound",                [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleTDRound(c, b, u, cl, t); });
     add("weedingStart",           [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleWeedingStart(c, b, u, cl, t); });
@@ -514,5 +515,6 @@ inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfi
     add("hireTeacher",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleHireTeacher(c, b, u, cl, t); });
     add("applyBookItem",          [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleApplyBookItem(c, b, u, cl, t); });
     register_chat_handlers(handlers);
+    register_staff_handlers(handlers);
     return handlers;
 }

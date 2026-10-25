@@ -48,6 +48,7 @@ avatar_upload_result process_avatar_upload(avatar_upload_task task,
     }
 
     const std::string digest = sha256_hex(bytes);
+    result.sha256 = digest;
     result.key = make_avatar_key(task.character_id, digest, avatar_extension(*format));
 
     std::string store_error;

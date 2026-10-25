@@ -1,4 +1,8 @@
-# `/api/adminGetDeletedMessages`
+# `/api/adminGetDeletedMessages` (removed)
+
+> **Deprecated/removed:** this endpoint is no longer registered. Use
+> `/api/staffGetDeletedMessages`; authorization now comes from `staff.db`
+> capabilities. See `api/staff.md`.
 
 Admin-only forensic endpoint for messages deleted during an account demotion.
 Normal readers never query this data.

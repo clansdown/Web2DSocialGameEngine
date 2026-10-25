@@ -71,6 +71,9 @@
 #include "avatars/CloudflarePurge.hpp"
 #include "CosmeticsDB.hpp"
 #include "chat/ChatService.hpp"
+#include "staff/StaffActionEngine.hpp"
+#include "staff/StaffAuth.hpp"
+#include "staff/StaffStore.hpp"
 #include "Visibility.hpp"
 #include <sqlite_modern_cpp/errors.h>
 
@@ -1604,8 +1607,21 @@ ApiResponse handleGetPlayerState(GameConfigCache& config_cache, const json& body
                 checkBaronPromotion(member_barony_id);
             }
         }
+        // Staff is a separate authorization domain from chat roles. The hub
+        // card and support/notification utilities are server-driven.
+        const staff::staff_context staff_ctx = staff::context_for_username(username);
+        const int64_t account_id = staff::account_id_for_username(*username).value_or(0);
+        if (staff_ctx.is_staff()) {
+            ensure_activity("staff");
+        }
         state.available_activities = activities;
         response.data = state.toJson();
+        response.data["is_staff"] = staff_ctx.is_staff();
+        response.data["unread_notifications"] =
+            staff::StaffStore::instance().unread_notifications(account_id);
+        response.data["unread_support"] =
+            staff::StaffStore::instance().unread_tickets_for_player(account_id);
+        response.data["support_locked"] = staff::account_is_support_locked(account_id);
 
         // Flag for client: land patent needs acknowledgment
         if (state.game_phase == "land_patent" && !state.land_patent_acknowledged) {
@@ -4928,6 +4944,22 @@ void complete_avatar_upload(avatar_upload_context context,
 
     const bool same_storage_and_key =
         result.key == context.old_key && store.active_kind() == context.old_storage;
+
+    // Banned avatar hashes are an exact-match speed bump: byte-identical
+    // re-uploads never reach storage/DB even if the ban was applied after the
+    // bytes were fetched. Checked on the loop thread (staff.db connection).
+    if (staff::StaffStore::instance().is_hash_banned(result.sha256)) {
+        if (!same_storage_and_key) {
+            queue_avatar_cleanup(maintenance_pool, store, purge,
+                                 store.active_kind(), result.key, result.public_url);
+        }
+        ApiResponse response;
+        response.error = "avatar_hash_banned";
+        if (context.new_token) response.data["token"] = *context.new_token;
+        respond(response);
+        return;
+    }
+
     try {
         auto& db = Database::getInstance().gameDB();
         bool avatar_locked = false;
@@ -5618,6 +5650,10 @@ ApiResponse handleJoinBarony(GameConfigCache& config_cache, const json& body,
             response.error = "Character does not belong to this user";
             return response;
         }
+        if (staff::character_is_social_restricted(character_id)) {
+            response.error = "social_restricted";
+            return response;
+        }
 
         // Verify barony exists and is not defunct
         int barony_exists = 0;
@@ -5737,6 +5773,10 @@ ApiResponse handleCreateBarony(GameConfigCache& config_cache, const json& body,
         }
     }
     int character_id = body["character_id"].get<int>();
+    if (staff::character_is_social_restricted(character_id)) {
+        response.error = "social_restricted";
+        return response;
+    }
     const bool adult = visibility::character_is_adult(character_id);
     std::string name = body.value("name", "");
     if (!adult && !name.empty()) {
@@ -8915,13 +8955,14 @@ int main(int argc, char* argv[]) {
     if (init_db_mode || create_tables_mode || ensure_indexes_mode) {
         auto& game_db = Database::getInstance().gameDB();
         auto& chat_db = Database::getInstance().chatDB();
+        auto& staff_db = Database::getInstance().staffDB();
 
         if (init_db_mode) {
             if (!quiet) {
                 std::cout << "Initializing all database tables and indexes..." << std::endl;
             }
             try {
-                initializeAllDatabases(game_db, chat_db);
+                initializeAllDatabases(game_db, chat_db, staff_db);
                 if (!quiet) {
                     std::cout << "Database initialization complete." << std::endl;
                 }
@@ -8936,6 +8977,7 @@ int main(int argc, char* argv[]) {
             try {
                 initializeGameDB(game_db);
                 initializeChatDB(chat_db);
+                initializeStaffDB(staff_db);
                 if (!quiet) {
                     std::cout << "Tables created." << std::endl;
                 }
@@ -8950,6 +8992,7 @@ int main(int argc, char* argv[]) {
             try {
                 ensureGameDBIndexes(game_db);
                 ensureChatDBIndexes(chat_db);
+                ensureStaffDBIndexes(staff_db);
                 if (!quiet) {
                     std::cout << "Indexes ensured." << std::endl;
                 }
@@ -8965,11 +9008,15 @@ int main(int argc, char* argv[]) {
         std::cout << "Initializing database schemas..." << std::endl;
     }
     try {
-        initializeAllDatabases(Database::getInstance().gameDB(), Database::getInstance().chatDB());
+        initializeAllDatabases(Database::getInstance().gameDB(), Database::getInstance().chatDB(),
+                               Database::getInstance().staffDB());
     } catch (const std::exception& e) {
         std::cerr << "Failed to initialize database schemas: " << e.what() << std::endl;
         return 1;
     }
+
+    staff::StaffActionEngine::instance().initialize(&mini_games.config_cache());
+    staff::StaffActionEngine::instance().recover_interrupted_actions();
 
     // Chat: bind the config cache and materialize barony/dukedom membership.
     chat::ChatService::instance().initialize(&mini_games.config_cache());

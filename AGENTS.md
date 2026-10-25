@@ -68,6 +68,10 @@ The `server/tables/` directory contains detailed schema documentation for each S
   `character_relation_counts.md`, `chat_bans.md`, `moderation_log.md`,
   `rate_limit_violations.md`, `rate_limit_timeouts.md`, `push_subscriptions.md`,
   `push_preferences.md`, `chat_language_prefs.md` - the chat system (chat.db)
+- `server/tables/staff.md` - staff roles/accounts/preferences and the shared action journal (`staff.db`)
+- `server/tables/support.md` - support tickets/messages/action links (`staff.db`)
+- `server/tables/notifications.md` - account notifications (`staff.db`)
+- `server/tables/banned_avatar_hashes.md` - exact SHA-256 avatar upload bans (`staff.db`)
 - `server/tables/platinum_ledger.md` - premium currency balance (non-fungible; variety only)
 - `server/tables/platinum_transactions.md` - idempotent premium purchase records
 - `server/tables/character_cosmetics.md` - character-bound owned cosmetics (revoke flag)
@@ -77,7 +81,7 @@ Each `.md` file documents the table's purpose, full schema, field descriptions, 
 
 ### Database Architecture
 
-The server uses **three independent SQLite databases** for maximum concurrency:
+The server uses **four independent SQLite databases** for maximum concurrency:
 
 1. **game.db** - Game state and persistent data
    - `users`: User accounts and authentication
@@ -99,6 +103,19 @@ The server uses **three independent SQLite databases** for maximum concurrency:
    - Push: `push_subscriptions`, `push_preferences`
    - `chat_language_prefs`
    - Full reference: `server/docs/chat.md`
+
+3. **staff.db** - Game staff, audit, support, and notifications
+   - Staff identity/roles: `staff_roles`, `staff_role_capabilities`,
+     `staff_accounts`, `staff_account_roles`, `staff_preferences`
+   - Audit: `staff_action_journal`, `staff_action_events`, `staff_action_links`
+   - Support: `support_tickets`, `support_ticket_messages`,
+     `support_ticket_action_links`
+   - Notifications: `notifications`
+   - Avatar moderation: `banned_avatar_hashes`
+   - Staff actions can span game.db and chat.db, so the shared journal lives in
+     its own database. Full reference: `docs/staff_action_journal.md`,
+     `docs/support_tickets.md`, `docs/notifications.md`, and
+     `server/tables/staff.md`.
 
 **Design Notes:**
 - No joins across databases - they are completely independent
@@ -347,9 +364,11 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - See `api/getPortraitFrames.md` for `/api/getPortraitFrames` documentation
 - See `api/getSafeContent.md` for `/api/getSafeContent` documentation
 - See `api/setBaronyAcceptsMinors.md` for `/api/setBaronyAcceptsMinors` documentation
-- See `api/adminSetAdultStatus.md` for `/api/adminSetAdultStatus` documentation
-- See `api/adminGetDeletedMessages.md` for `/api/adminGetDeletedMessages` documentation
-- See `api/adminSetBaronyIdentity.md` for `/api/adminSetBaronyIdentity` documentation
+- See `api/staff.md` for the staff console endpoint family
+- See `api/support.md` for player support + notifications
+- See `api/getNotifications.md` for `/api/getNotifications` documentation
+- Legacy `api/admin*.md` files document removed endpoints; use the `staff*`
+  equivalents
 - See `api/setCharacterAvatar.md` for `/api/setCharacterAvatar` documentation
 - See `api/uploadCharacterAvatar.md` for `/api/uploadCharacterAvatar` documentation
 - See `api/removeCustomAvatar.md` for `/api/removeCustomAvatar` documentation
@@ -359,7 +378,7 @@ All endpoints accept POST requests with JSON bodies and respond with:
 
 - **/api/login**: Authenticate user and return all characters
 - **/api/getCharacter**: Retrieve character information
-- **/api/updateUserProfile**: Update non-age account settings; adult status is rejected here (CS/DC only via `adminSetAdultStatus`)
+- **/api/updateUserProfile**: Update non-age account settings; adult status is rejected here (CS/DC only via `staffSetAdultStatus`)
 - **/api/updateCharacterProfile**: Update character profile (display names)
 - **/api/Build**: Building construction/management (actions: `build`/`create`, `demolish`, `move`, `upgrade`, `upgrade_pond_type`; buildings may never overlap river cells)
 - **/api/getWorld**: Get world state (STUB - TODO: implement)
@@ -404,9 +423,14 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - **/api/getPortraitFrames**: Decorative portrait-frame geometry (`game/config/portrait_frames.json`): overlay image + pixel size + portrait destination rect per variant
 - **/api/getSafeContent**: Server-owned safe catalogs for the viewer (messages, barony names/tags, reactions, GIFs, ban reasons); minors receive only `minor_safe` reactions/GIFs
 - **/api/setBaronyAcceptsMinors**: Owner/admin toggle; rejects `false` while a minor is a member
-- **/api/adminSetAdultStatus**: Admin/CS adult-status change; `false` runs the demotion scrub + forensic message deletion
-- **/api/adminGetDeletedMessages**: Admin-only forensic message_deletions reader
-- **/api/adminSetBaronyIdentity**: Admin-only reassignment of a barony's safe name/tags (and optional custom text)
+- **/api/staffGetContext**: Staff roles/capabilities + unread support/notification counts
+- **/api/staffSetAdultStatus**: Staff adult-status change; `false` runs the demotion scrub + forensic message deletion (not reversible)
+- **/api/staffGetDeletedMessages**: Staff forensic message_deletions reader
+- **/api/staffSetBaronyIdentity**: Staff reassignment of a barony's safe name/tags (and optional custom text)
+- **/api/staffListJournal** / **/api/staffPreflightUndo** / **/api/staffUndo**: Shared action journal, preflight, and compensating undo (requires `staff.undo`)
+- **/api/staff* support/unstick**: Queue, ticket replies/notes, session unstick, phase/march/construction/resource corrections
+- **/api/getSupportContext**, **/api/listSupportTickets**, **/api/getSupportTicket**, **/api/createSupportTicket**, **/api/replySupportTicket**, **/api/reopenSupportTicket**: Account-level support tickets
+- **/api/getNotifications**, **/api/markNotificationRead**, **/api/markAllNotificationsRead**: Account-level notification inbox
 - **/api/setCharacterAvatar**: Set the character's safe-pool PFP (validated against the character's own sex pool; always present; shown to minors and as the fallback; 24h cooldown, creation pick exempt; does not clear a custom upload)
 - **/api/uploadCharacterAvatar**: 18+-only custom PFP upload (format/size/dimension checks; surfaced by the hub Profile activity; moderation TODO)
 - **/api/removeCustomAvatar**: 18+-only removal of a custom PFP (reverts to the safe pick)
@@ -442,7 +466,7 @@ identity locks. Full reference: `server/docs/chat.md`. Config:
 - **Presence**: `chatHeartbeat`, `getFriendPresence`, `setChatTyping`
 - **Push**: `getPushConfig`, `subscribePush`, `unsubscribePush`,
   `setPushPreferences`
-- **Admin**: `adminGetIdentityHistory`, `adminLockIdentity`
+- **Staff**: `staffGetIdentityHistory`, `staffLockIdentity` (see `api/staff.md`)
 
 Each endpoint has a doc in `api/`; the SQL tables are documented under
 `server/tables/`; the translation sidecar lives in `server/translation/`.
@@ -457,11 +481,13 @@ lives in `server/Visibility.{hpp,cpp}` and `server/chat/ChatService.cpp`.
   sent to a minor.
 - Minors author only server-owned safe catalog ids. Custom names/avatars,
   free-text messages, custom reactions/GIFs, group chats, and voice are
-  adult-only.
+  adult-only. **Support tickets are the explicit exception**: a minor may write
+  free text in a private support ticket and staff may reply in kind. Ticket
+  bodies are never projected into public surfaces or notifications.
 - Hidden custom messages produce no unread count, preview, mention, bookmark, or
   push for minors.
 - Adult status is account-level, set by Digital Credentials or
-  `adminSetAdultStatus`; there is no client age override.
+  `staffSetAdultStatus`; there is no client age override.
 - `accepts_minors` gates barony joins. Minor founders/successors force it true.
 - On demotion, identity/titles are scrubbed, group memberships are removed, and
   all messages authored by every character on the account are tombstoned with an
@@ -605,6 +631,13 @@ purchase rejected → `purchasePlatinum` (pending → duplicate) → `settlePlat
 `refundPremiumItem` (revokes + clears the loadout, replay `not_owned`). Exits 0
 on pass, 2 on failure; isolated per-port scratch DB.
 
+**Staff/support smoke test** (`tools/staff_smoke.sh [PORT]`): creates a staff and
+player account, grants staff with `staff_admin`, then verifies staffGetContext,
+non-staff denial, social/support restrictions, staff-created support tickets +
+player notifications, the shared journal, preflight + undo, and chat moderation
+delete → journal → undo (message restored). Exits 0 on pass, 2 on failure;
+isolated per-port scratch DB.
+
 **Avatar smoke test** (`bash tools/avatar_smoke.sh [PORT]`): createAccount(adult)
 → login avatar fields → content-addressed upload → age-gated fetch → cooldown /
 invalid-format errors. Defaults to the local backend; exporting
@@ -641,8 +674,8 @@ Use `tools/set_march_progress.sh` to set a character's march progress to an exac
 ### Deployment Notes
 
 1. **HTTP Only**: The server listens on HTTP (port 2290). TLS/HTTPS is handled by a reverse proxy (nginx, etc.)
-2. **Databases**: `game.db`, `chat.db` (and `messages.db` is retired) are created in `--db-dir` (default: the working directory) on first run
-3. **Concurrent Access**: Three independent database connections allow simultaneous read/write operations
+2. **Databases**: `game.db`, `chat.db`, and `staff.db` (and `messages.db` is retired) are created in `--db-dir` (default: the working directory) on first run
+3. **Concurrent Access**: Four independent database connections allow simultaneous read/write operations
 4. **Error Handling**: All errors return JSON with format `{ "error": "description" }`
 5. **API Documentation**: Every endpoint has a corresponding `.md` file in `api/` directory with detailed request/response examples
 6. **Assets vs working directory**: the read-only assets `config/`, `images/`, and `text/` are read from the `--content` root (default: the working directory). `run_server.sh` runs the server from `test_run/` and passes `--content <repo>/game`, so databases and uploads land in `test_run/` and `game/` stays pristine for `push_to_production.sh`. Image paths like `images/ui/` resolve under the content root, so assets at `game/images/ui/book.png` are served from `/images/ui/book.png`. The client resolves API/asset/WebSocket origins from `VITE_API_BASE_URL`, `VITE_ASSETS_BASE_URL`, and `VITE_WS_BASE_URL` at build time (`install.sh` fills them from `.deploy`); empty values fall back to same-origin, which keeps the Vite dev proxy (`/api`, `/images`, `/ws` → `localhost:2290`) working. Production serves the client from Pages, the API from `api.<zone>`, and assets from `assets.<zone>`; the API uses `RAVENEST_CORS_ORIGINS` (see `docs/publishing.md`).
@@ -980,6 +1013,17 @@ Build the full game progression and content system with a working tower defense 
 ### Progress
 
 #### Done
+- **Game staff console, shared audit journal, support tickets, and notifications**:
+  staff are normal accounts with `staff.db` records and capability roles
+  (`staffGetContext`, `staff_admin` CLI grant/revoke only). The shared
+  append-only journal covers staff actions and scoped chat moderation, with
+  preflight + compensating undo (`staff.undo`), pending recovery, sensitive-read
+  events, and reversal notifications. Support is account-level/text-only
+  (`support_tickets`, internal notes, read cursors, support lock), and
+  notifications are system-generated with unread badges. Staff hub card is
+  visible only to staff; Support is a muted utility. Exact avatar SHA-256 bans
+  block byte-identical re-uploads. Docs: `docs/staff_*.md`, `docs/support_tickets.md`,
+  `docs/notifications.md`; smoke: `tools/staff_smoke.sh`.
 - **Minor content visibility (server-enforced)**: viewer-relative projection in
   `server/Visibility.{hpp,cpp}` + `server/chat/ChatService.cpp`. Minors receive
   only safe names/avatars/messages/barony names+tags/`minor_safe` reactions+GIFs;
@@ -987,13 +1031,13 @@ Build the full game progression and content system with a working tower defense 
   unread/preview/mention/push. Group chats are adult-only; minors never use voice.
   Barony `accepts_minors` + safe name/tags are mandatory; custom text is
   adult-only. Fiefdoms are unnamed. Adult status is CS/DC only via
-  `adminSetAdultStatus` (public override removed). Demotion scrubs identity and
-  tombstones every message by every account character with admin-only forensic
+  `staffSetAdultStatus` (public override removed). Demotion scrubs identity and
+  tombstones every message by every account character with staff-only forensic
   copies in `message_deletions`. New catalogs `safe_messages.json`,
   `safe_barony_names.json`, `safe_barony_tags.json`, `safe_reactions.json`,
   `safe_gifs.json`, `safe_ban_reasons.json`; new endpoints `getSafeContent`,
-  `setBaronyAcceptsMinors`, `adminSetBaronyIdentity`, `adminSetAdultStatus`,
-  `adminGetDeletedMessages`. Canonical policy:
+  `setBaronyAcceptsMinors`, `staffSetBaronyIdentity`, `staffSetAdultStatus`,
+  `staffGetDeletedMessages`. Canonical policy:
   `docs/minor_content_visibility.md`. Smoke: `tools/minor_visibility_smoke.sh`.
 - **Multi-round system**: Each level in `mini_games.json` has a configurable `rounds` field (3-8 per level). Server tracks current_round in game_sessions. On win, if more rounds remain, server returns `next_round: true` with fresh `spawn_schedule` instead of ending the game. Client shows "Round N/M" indicator, clears enemies between rounds, and offers "Next Round" button or auto-advance after 2s delay.
 - Created `text/` directory with translation system

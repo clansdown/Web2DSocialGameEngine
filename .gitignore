@@ -1,5 +1,7 @@
 /tmp/
 /test_run/
+# Root-level SQLite databases when the server/CLI runs from the repo root.
+/*.db
 
 # Prerequisites
 *.d

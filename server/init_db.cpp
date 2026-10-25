@@ -49,6 +49,22 @@ ensureIndex(db, "idx_fiefdom_walls_fiefdom", "fiefdom_walls", "fiefdom_id");
     ensureIndex(db, "idx_character_identity_history_character", "character_identity_history", "character_id");
     }
 
+    void ensureStaffDBIndexes_private(sqlite::database& db) {
+        ensureIndex(db, "idx_staff_journal_created", "staff_action_journal", "created_at");
+        ensureIndex(db, "idx_staff_journal_action_type", "staff_action_journal", "action_type");
+        ensureIndex(db, "idx_staff_journal_target", "staff_action_journal", "target_type, target_id");
+        ensureIndex(db, "idx_staff_journal_status", "staff_action_journal", "status");
+        ensureIndex(db, "idx_staff_journal_undo_of", "staff_action_journal", "undo_of");
+        ensureIndex(db, "idx_staff_events_action", "staff_action_events", "action_id");
+        ensureIndex(db, "idx_support_tickets_account", "support_tickets", "account_id");
+        ensureIndex(db, "idx_support_tickets_status", "support_tickets", "status");
+        ensureIndex(db, "idx_support_tickets_updated", "support_tickets", "updated_at");
+        ensureIndex(db, "idx_support_messages_ticket", "support_ticket_messages", "ticket_id, created_at");
+        ensureIndex(db, "idx_notifications_account", "notifications", "account_id, created_at");
+        ensureIndex(db, "idx_notifications_unread", "notifications", "account_id, read_at");
+        ensureIndex(db, "idx_avatar_hash_bans_active", "banned_avatar_hashes", "revoked_at");
+    }
+
     void ensureChatDBIndexes_private(sqlite::database& db) {
         // messages(chat_id, seq) is UNIQUE at the table level, so no separate
         // index is needed for that pair.
@@ -112,6 +128,21 @@ ensureIndex(db, "idx_fiefdom_walls_fiefdom", "fiefdom_walls", "fiefdom_id");
         } catch (const std::exception&) {}
         try {
             db << "ALTER TABLE users ADD COLUMN adult_verification_method TEXT;";
+        } catch (const std::exception&) {}
+    }
+
+    // Account-level social/support restrictions (staff console). They are
+    // deliberately separate: a social restriction keeps solo play available,
+    // while a support lock only blocks creating/replying to support tickets.
+    void migrate_account_restrictions(sqlite::database& db) {
+        try {
+            db << "ALTER TABLE users ADD COLUMN social_restricted INTEGER NOT NULL DEFAULT 0;";
+        } catch (const std::exception&) {}
+        try {
+            db << "ALTER TABLE users ADD COLUMN support_locked INTEGER NOT NULL DEFAULT 0;";
+        } catch (const std::exception&) {}
+        try {
+            db << "ALTER TABLE users ADD COLUMN restriction_updated_at INTEGER NOT NULL DEFAULT 0;";
         } catch (const std::exception&) {}
     }
 
@@ -1092,6 +1123,181 @@ void migrate_baron_character_id(sqlite::database& db) {
         );
     }
 
+    // Game-staff, the shared action journal, support tickets, notifications,
+    // and banned avatar hashes. This database is deliberately independent from
+    // game.db and chat.db: actions can span both, so the journal cannot live in
+    // either. There are no cross-database FOREIGN KEYs.
+    void createStaffDBTables(sqlite::database& db) {
+        createTable(db, "staff_roles",
+            "id TEXT PRIMARY KEY,"
+            "name TEXT NOT NULL UNIQUE,"
+            "description TEXT NOT NULL DEFAULT '',"
+            "created_at INTEGER NOT NULL"
+        );
+
+        createTable(db, "staff_role_capabilities",
+            "role_id TEXT NOT NULL,"
+            "capability TEXT NOT NULL,"
+            "PRIMARY KEY (role_id, capability)"
+        );
+
+        createTable(db, "staff_accounts",
+            "account_id INTEGER PRIMARY KEY,"
+            "created_at INTEGER NOT NULL,"
+            "created_by_label TEXT,"
+            "revoked_at INTEGER"
+        );
+
+        createTable(db, "staff_account_roles",
+            "account_id INTEGER NOT NULL,"
+            "role_id TEXT NOT NULL,"
+            "PRIMARY KEY (account_id, role_id)"
+        );
+
+        createTable(db, "staff_preferences",
+            "account_id INTEGER PRIMARY KEY,"
+            "chat_moderation_mode INTEGER NOT NULL DEFAULT 0,"
+            "updated_at INTEGER NOT NULL"
+        );
+
+        createTable(db, "staff_action_journal",
+            "id TEXT PRIMARY KEY,"
+            "operation TEXT NOT NULL,"
+            "actor_account_id INTEGER,"
+            "actor_character_id INTEGER,"
+            "actor_type TEXT NOT NULL,"
+            "authority TEXT NOT NULL,"
+            "capability TEXT,"
+            "action_type TEXT NOT NULL,"
+            "action_version INTEGER NOT NULL,"
+            "target_type TEXT NOT NULL,"
+            "target_id TEXT NOT NULL,"
+            "scope TEXT,"
+            "reason TEXT,"
+            "before_state TEXT,"
+            "after_state TEXT,"
+            "undo_descriptor TEXT,"
+            "status TEXT NOT NULL,"
+            "error TEXT,"
+            "parent_action_id TEXT,"
+            "undo_of TEXT,"
+            "created_at INTEGER NOT NULL,"
+            "updated_at INTEGER NOT NULL,"
+            "applied_at INTEGER"
+        );
+
+        createTable(db, "staff_action_events",
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "action_id TEXT NOT NULL,"
+            "event_type TEXT NOT NULL,"
+            "detail TEXT,"
+            "created_at INTEGER NOT NULL"
+        );
+
+        createTable(db, "staff_action_links",
+            "action_id TEXT NOT NULL,"
+            "resource_type TEXT NOT NULL,"
+            "resource_id TEXT NOT NULL,"
+            "link_role TEXT NOT NULL,"
+            "created_at INTEGER NOT NULL,"
+            "PRIMARY KEY (action_id, resource_type, resource_id, link_role)"
+        );
+
+        createTable(db, "banned_avatar_hashes",
+            "sha256 TEXT PRIMARY KEY,"
+            "reason TEXT,"
+            "banned_by_account_id INTEGER NOT NULL,"
+            "created_at INTEGER NOT NULL,"
+            "revoked_at INTEGER,"
+            "revoked_by_account_id INTEGER,"
+            "action_id TEXT"
+        );
+
+        createTable(db, "support_tickets",
+            "id TEXT PRIMARY KEY,"
+            "account_id INTEGER NOT NULL,"
+            "character_id INTEGER,"
+            "category TEXT NOT NULL,"
+            "subject TEXT NOT NULL,"
+            "status TEXT NOT NULL,"
+            "priority TEXT NOT NULL DEFAULT 'normal',"
+            "assigned_account_id INTEGER,"
+            "player_last_read_at INTEGER NOT NULL DEFAULT 0,"
+            "staff_last_read_at INTEGER NOT NULL DEFAULT 0,"
+            "created_at INTEGER NOT NULL,"
+            "updated_at INTEGER NOT NULL,"
+            "closed_at INTEGER"
+        );
+
+        createTable(db, "support_ticket_messages",
+            "id TEXT PRIMARY KEY,"
+            "ticket_id TEXT NOT NULL,"
+            "author_kind TEXT NOT NULL,"
+            "author_account_id INTEGER,"
+            "author_character_id INTEGER,"
+            "body TEXT NOT NULL,"
+            "is_internal INTEGER NOT NULL DEFAULT 0,"
+            "created_at INTEGER NOT NULL"
+        );
+
+        createTable(db, "support_ticket_action_links",
+            "ticket_id TEXT NOT NULL,"
+            "action_id TEXT NOT NULL,"
+            "created_by_account_id INTEGER NOT NULL,"
+            "created_at INTEGER NOT NULL,"
+            "PRIMARY KEY (ticket_id, action_id)"
+        );
+
+        createTable(db, "notifications",
+            "id TEXT PRIMARY KEY,"
+            "account_id INTEGER NOT NULL,"
+            "character_id INTEGER,"
+            "kind TEXT NOT NULL,"
+            "text_id TEXT NOT NULL,"
+            "text_args TEXT NOT NULL DEFAULT '{}',"
+            "ticket_id TEXT,"
+            "action_id TEXT,"
+            "route TEXT,"
+            "created_at INTEGER NOT NULL,"
+            "read_at INTEGER"
+        );
+
+        // Seed starter roles. v1 intentionally enables every capability on every
+        // role; capability checks are already live so roles can be tightened
+        // later without a schema change.
+        const std::string capabilities[] = {
+            "account.view", "account.set_adult_status", "account.set_social_restriction",
+            "account.set_support_lock", "identity.view_history", "identity.set_name_lock",
+            "identity.set_avatar_lock", "identity.revert_name", "identity.revert_avatar",
+            "identity.remove_custom_avatar", "avatar.ban_hash", "barony.view",
+            "barony.set_safe_identity", "barony.set_accepts_minors", "barony.reassign_owner",
+            "chat.moderate_any", "support.ticket.view", "support.ticket.reply",
+            "support.ticket.manage", "support.ticket.internal_notes",
+            "support.unstick_session", "support.set_game_phase", "support.set_march_progress",
+            "support.cancel_construction", "support.adjust_fiefdom_resource", "staff.undo",
+            "staff.audit.read", "staff.read_sensitive"
+        };
+        const struct { const char* id; const char* name; const char* description; } roles[] = {
+            {"superadmin", "Superadmin", "Full staff access."},
+            {"customer_service", "Customer Service", "Account, identity, and support tools."},
+            {"moderator", "Moderator", "Chat and identity moderation."},
+            {"avatar_moderator", "Avatar Moderator", "Identity and avatar moderation."},
+            {"support_agent", "Support Agent", "Support queue and unstick tools."}
+        };
+        const int64_t now = 0;  // Roles are static; timestamp is informational.
+        for (const auto& role : roles) {
+            db << "INSERT OR IGNORE INTO staff_roles (id, name, description, created_at) "
+                  "VALUES (?, ?, ?, ?);"
+               << std::string(role.id) << std::string(role.name)
+               << std::string(role.description) << now;
+            for (const auto& capability : capabilities) {
+                db << "INSERT OR IGNORE INTO staff_role_capabilities (role_id, capability) "
+                      "VALUES (?, ?);"
+                   << std::string(role.id) << capability;
+            }
+        }
+    }
+
 }
 
 void migrate_spawn_schedule(sqlite::database& db) {
@@ -1151,6 +1357,7 @@ void initializeGameDB(sqlite::database& db) {
     migrate_identity_lock(db);
     migrate_user_language(db);
     migrate_adult_verification(db);
+    migrate_account_restrictions(db);
     migrate_safe_barony_identity(db);
     migrate_manor_level(db);
     migrate_spawn_schedule(db);
@@ -1188,6 +1395,11 @@ void initializeChatDB(sqlite::database& db) {
     ensureChatDBIndexes_private(db);
 }
 
+void initializeStaffDB(sqlite::database& db) {
+    createStaffDBTables(db);
+    ensureStaffDBIndexes_private(db);
+}
+
 void ensureGameDBIndexes(sqlite::database& db) {
     ensureGameDBIndexes_private(db);
 }
@@ -1196,7 +1408,13 @@ void ensureChatDBIndexes(sqlite::database& db) {
     ensureChatDBIndexes_private(db);
 }
 
-void initializeAllDatabases(sqlite::database& game_db, sqlite::database& chat_db) {
+void ensureStaffDBIndexes(sqlite::database& db) {
+    ensureStaffDBIndexes_private(db);
+}
+
+void initializeAllDatabases(sqlite::database& game_db, sqlite::database& chat_db,
+                            sqlite::database& staff_db) {
     initializeGameDB(game_db);
     initializeChatDB(chat_db);
+    initializeStaffDB(staff_db);
 }

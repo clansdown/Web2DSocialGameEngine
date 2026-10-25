@@ -1,4 +1,8 @@
-# `/api/adminSetAdultStatus`
+# `/api/adminSetAdultStatus` (removed)
+
+> **Deprecated/removed:** this endpoint is no longer registered. Use
+> `/api/staffSetAdultStatus`; authorization now comes from `staff.db`
+> capabilities, not `game/config/chat_admins.json`. See `api/staff.md`.
 
 Admin/customer-service-only endpoint that sets an account's adult status.
 Setting it to `false` performs the full demotion scrub and deletes all messages

@@ -1,7 +1,10 @@
 # Chat Identity Lock
 
-Admins can lock and/or force-revert a character's **display name** and
+Game staff can lock and/or force-revert a character's **display name** and
 **avatar** in response to abuse. This is a moderation tool, not a gameplay one.
+Authorization comes from `staff.db` capabilities (`identity.*`), not the legacy
+`chat_admins.json` allowlist. Each change is journaled in `staff.db` and can be
+undone while the captured identity still matches.
 
 ## Data
 
@@ -12,10 +15,10 @@ Admins can lock and/or force-revert a character's **display name** and
 |---|---|
 | `name_locked` | 1 = the player cannot change their display name |
 | `avatar_locked` | 1 = the player cannot change their avatar (safe or custom) |
-| `identity_locked_by` | account id of the admin who applied the lock |
+| `identity_locked_by` | account id of the staff member who applied the lock |
 | `identity_locked_at` | unix time the lock was applied |
 
-`character_identity_history` records prior values so an admin can revert to any
+`character_identity_history` records prior values so staff can revert to any
 earlier one:
 
 | Column | Meaning |
@@ -34,25 +37,31 @@ History rows are appended whenever a player changes their name/avatar (see
   change with `{ "error": "name_locked" }`.
 - While `avatar_locked` is set, `setCharacterAvatar`, `uploadCharacterAvatar`
   and `removeCustomAvatar` reject with `{ "error": "avatar_locked" }`.
-- Locks are **permanent** until an admin clears them (an admin action can set
-  the flags back to 0).
+- Locks are **permanent** until staff clears them (a staff action can set the
+  flags back to 0).
 
-## Admin endpoints
+## Staff endpoints
 
-- `adminGetIdentityHistory { character_id }` — the prior values, newest first.
-- `adminLockIdentity { character_id, lock_name?, lock_avatar?, revert_name?,
-  revert_avatar?, revert_to? }`:
+- `staffGetIdentityHistory { target_character_id }` — prior values, newest first.
+  Requires `identity.view_history` and logs a sensitive read.
+- `staffLockIdentity { character_id, lock_name?, lock_avatar?, revert_name?,
+  revert_avatar?, revert_to?, reason? }`:
   - `lock_name` / `lock_avatar` set the lock flags.
   - `revert_name` / `revert_avatar` replace the current value. `revert_to`
     selects `"prior"` (the previous history value) or `"safe"` (the default:
     `characters.safe_display_name` for names, the safe avatar pool for avatars).
   - Reverting without locking is possible but is **not** the default.
-  - Every call appends to `moderation_log`.
+  - The combined change is one journaled action (all-or-nothing undo).
+- `staffRemoveCustomAvatar { character_id, reason }` clears the custom avatar
+  reference and reverts to the safe pick. The stored object is retained so the
+  action remains reversible; storage garbage collection is separate.
+- `staffBanAvatarHash` / `staffUnbanAvatarHash` manage exact SHA-256 bans.
 
-Both endpoints require the caller's account id to be listed in
-`game/config/chat_admins.json`.
+Authorization comes from `staff.db` capabilities (`identity.*`,
+`avatar.ban_hash`), not `game/config/chat_admins.json`.
 
-## Deferred
+## Appeals
 
-Appeals route through a separate admin-contact subsystem (its own tab and
-channels), which is deferred. The lock itself is applied by an admin directly.
+Appeals use the support ticket system (`docs/support_tickets.md`). Staff can
+link the original journal action to the ticket, and undoing the action generates
+a `moderation_reversal` notification.

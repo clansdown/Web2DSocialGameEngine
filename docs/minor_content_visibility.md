@@ -56,6 +56,15 @@ custom form:
 - Group chats are adult-only.
 - A minor-founded barony forces `accepts_minors = 1` and has no custom text.
 
+### Support-ticket exception
+
+Support tickets are a private, staff-only channel and are an explicit exception
+to the minor free-text authoring rule. A minor may write free text in a support
+ticket and staff may reply in kind for support purposes. Ticket content is
+never projected into public chat, barony, combat, or notification surfaces; only
+the ticket owner and authorized staff can read it. Notifications generated for
+support replies contain the ticket subject and a link, not the free-text body.
+
 ## Baronies
 
 - `baronies.safe_name_id` and `safe_tag_ids` are mandatory.

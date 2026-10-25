@@ -17,10 +17,16 @@
 #include "chat/Presence.hpp"
 #include "chat/PushSender.hpp"
 #include "chat/StubLlmTranslationEngine.hpp"
+#include "staff/StaffActionEngine.hpp"
+#include "staff/StaffAuth.hpp"
+#include "staff/StaffStore.hpp"
 
 namespace chat {
 
 namespace {
+staff::staff_context staff_context_for_character(int64_t character_id);
+bool character_is_staff_moderator(int64_t character_id);
+
 
 // ── Small utilities ─────────────────────────────────────────────────────────
 
@@ -659,6 +665,7 @@ bool ChatService::can_view_chat(int64_t character_id, const std::string& chat_id
     if (!load_chat_meta(chat_id, meta)) return false;
     if (meta.type == "group" && !visibility::character_is_adult(character_id)) return false;
     if (meta.type == "wildlands") return true;
+    if (character_is_staff_moderator(character_id)) return true;
     return ChatDB::instance().is_member(chat_id, character_id);
 }
 
@@ -785,6 +792,11 @@ json ChatService::get_messages(int64_t character_id, const std::string& chat_id,
                                const std::string& viewer_lang) {
     if (!can_view_chat(character_id, chat_id)) {
         throw chat_error("not_a_member");
+    }
+    if (!ChatDB::instance().is_member(chat_id, character_id) &&
+        character_is_staff_moderator(character_id)) {
+        staff::record_read_event(staff_context_for_character(character_id),
+                                 "read.chat_messages", "chat", chat_id, chat_id);
     }
     if (limit <= 0 || limit > 200) limit = 50;
 
@@ -1135,6 +1147,47 @@ void log_moderation(int64_t actor, const std::string& action, const std::string&
         << (target > 0 ? std::optional<int64_t>(target) : std::optional<int64_t>(std::nullopt))
         << payload.dump();
 }
+
+staff::staff_context staff_context_for_character(int64_t character_id) {
+    int64_t account_id = 0;
+    if (!staff::character_account_id(character_id, account_id)) return staff::staff_context{};
+    return staff::StaffStore::instance().load_context(account_id);
+}
+
+bool character_is_staff_moderator(int64_t character_id) {
+    return staff::staff_can_moderate_chat(staff_context_for_character(character_id));
+}
+
+bool character_is_social_restricted(int64_t character_id) {
+    return staff::character_is_social_restricted(character_id);
+}
+
+void require_socially_allowed(int64_t character_id) {
+    if (character_is_social_restricted(character_id)) throw chat_error("social_restricted");
+}
+
+std::string chat_label(const std::string& chat_id) {
+    auto& db = ChatDB::instance().db();
+    std::string label;
+    db << "SELECT COALESCE(name, type) FROM chats WHERE id = ?;" << chat_id >> label;
+    return label;
+}
+
+std::string character_safe_name(int64_t character_id) {
+    auto& db = Database::getInstance().gameDB();
+    std::string name;
+    db << "SELECT safe_display_name FROM characters WHERE id = ?;" << character_id >> name;
+    return name;
+}
+
+void notify_chat_moderation(int64_t target_character_id, const std::string& text_id,
+                            const std::string& chat_id, const std::string& action_id) {
+    if (target_character_id <= 0) return;
+    staff::notify_character(target_character_id, "moderation_action", text_id,
+                            {{"character_name", character_safe_name(target_character_id)},
+                             {"chat_name", chat_label(chat_id)}},
+                            std::string(), action_id);
+}
 }  // namespace
 
 json ChatService::send_message(int64_t character_id, const std::string& chat_id,
@@ -1144,6 +1197,7 @@ json ChatService::send_message(int64_t character_id, const std::string& chat_id,
                                const std::string& client_id,
                                const std::string& sender_language) {
     (void)client_id;
+    require_socially_allowed(character_id);
     auto& db = ChatDB::instance().db();
     const bool author_is_adult = visibility::character_is_adult(character_id);
 
@@ -1415,21 +1469,46 @@ json ChatService::delete_message(int64_t character_id, const std::string& messag
     auto& db = ChatDB::instance().db();
     std::string chat_id;
     int64_t author = 0;
-    db << "SELECT chat_id, COALESCE(author_character_id, 0) FROM messages WHERE id = ?;"
-       << message_id >> [&](std::string c, int64_t a) {
+    std::string body;
+    std::string safe_message_id;
+    std::string gif_id;
+    int64_t prior_deleted_at = 0;
+    db << "SELECT chat_id, COALESCE(author_character_id, 0), COALESCE(body, ''), "
+          "COALESCE(safe_message_id, ''), COALESCE(gif_id, ''), COALESCE(deleted_at, 0) "
+          "FROM messages WHERE id = ?;"
+       << message_id >> [&](std::string c, int64_t a, std::string b, std::string safe,
+                            std::string gif, int64_t deleted_at) {
               chat_id = c;
               author = a;
+              body = b;
+              safe_message_id = safe;
+              gif_id = gif;
+              prior_deleted_at = deleted_at;
           };
     if (chat_id.empty()) throw chat_error("message_not_found");
     bool privileged = false;
     if (author != character_id) {
         std::string role = ChatDB::instance().member_role(chat_id, character_id);
-        privileged = (role == "owner" || role == "moderator");
+        privileged = (role == "owner" || role == "moderator") ||
+                     character_is_staff_moderator(character_id);
         if (!privileged) throw chat_error("not_author");
     }
+    const json before = {{"message_id", message_id},
+                         {"chat_id", chat_id},
+                         {"body", body},
+                         {"safe_message_id", safe_message_id},
+                         {"gif_id", gif_id},
+                         {"deleted_at", prior_deleted_at}};
     int64_t change_id = ChatDB::instance().allocate_change_id();
     db << "UPDATE messages SET deleted_at = ?, body = NULL, change_id = ? WHERE id = ?;"
        << now_seconds() << change_id << message_id;
+    int64_t actor_account = 0;
+    staff::character_account_id(character_id, actor_account);
+    const std::string action_id =
+        staff::record_scoped_chat_action(character_id, actor_account, "chat.delete_message",
+                                         chat_id, author, before,
+                                         {{"deleted_at", now_seconds()}}, before, std::string());
+    notify_chat_moderation(author, "ui_notification_message_deleted", chat_id, action_id);
     json result;
     result["id"] = message_id;
     result["change_id"] = change_id;
@@ -1482,6 +1561,7 @@ json ChatService::set_settings(int64_t character_id, const std::string& chat_id,
 }
 
 json ChatService::open_direct_chat(int64_t character_id, int64_t target_character_id) {
+    require_socially_allowed(character_id);
     if (target_character_id == character_id) throw chat_error("cannot_dm_self");
     if (!character_exists(target_character_id)) throw chat_error("character_not_found");
     if (is_blocked_either(character_id, target_character_id)) throw chat_error("blocked");
@@ -1779,6 +1859,7 @@ json ChatService::get_bookmarks(int64_t character_id) {
 // ── Social graph ────────────────────────────────────────────────────────────
 
 json ChatService::send_friend_request(int64_t character_id, int64_t target_character_id) {
+    require_socially_allowed(character_id);
     if (target_character_id == character_id) throw chat_error("cannot_friend_self");
     if (!character_exists(target_character_id)) throw chat_error("character_not_found");
     if (is_blocked_either(character_id, target_character_id)) throw chat_error("blocked");
@@ -2165,6 +2246,7 @@ void ChatService::dispatch_push(const std::string& chat_id, int64_t author,
 // ── Groups ──────────────────────────────────────────────────────────────────
 
 json ChatService::create_group(int64_t character_id, const std::string& name) {
+    require_socially_allowed(character_id);
     if (!visibility::can_create_group(character_id)) throw chat_error("group_adults_only");
     if (name.empty() || utf8_length(name) > 64) throw chat_error("invalid_group_name");
     auto& db = ChatDB::instance().db();
@@ -2191,6 +2273,7 @@ json ChatService::create_group(int64_t character_id, const std::string& name) {
 
 json ChatService::invite_to_group(int64_t character_id, const std::string& chat_id,
                                   int64_t target_character_id) {
+    require_socially_allowed(character_id);
     if (!visibility::character_is_adult(character_id)) throw chat_error("group_adults_only");
     ChatMeta meta;
     if (!load_chat_meta(chat_id, meta) || meta.type != "group") throw chat_error("not_a_group");
@@ -2350,13 +2433,25 @@ json ChatService::set_moderator(int64_t character_id, const std::string& chat_id
                                 int64_t target_character_id, bool moderator) {
     ChatMeta meta;
     if (!load_chat_meta(chat_id, meta) || meta.type != "group") throw chat_error("not_a_group");
-    if (meta.owner != character_id) throw chat_error("not_owner");
+    if (meta.owner != character_id && !character_is_staff_moderator(character_id)) {
+        throw chat_error("not_owner");
+    }
     if (target_character_id == meta.owner) throw chat_error("cannot_change_owner");
     if (!ChatDB::instance().is_member(chat_id, target_character_id)) throw chat_error("not_a_member");
+    std::string before_role = ChatDB::instance().member_role(chat_id, target_character_id);
+    const json before = {{"chat_id", chat_id},
+                         {"target_character_id", target_character_id},
+                         {"before_role", before_role}};
     int64_t change_id = ChatDB::instance().allocate_change_id();
     ChatDB::instance().db()
         << "UPDATE chat_members SET role = ?, change_id = ? WHERE chat_id = ? AND character_id = ?;"
        << (moderator ? "moderator" : "member") << change_id << chat_id << target_character_id;
+    int64_t actor_account = 0;
+    staff::character_account_id(character_id, actor_account);
+    staff::record_scoped_chat_action(character_id, actor_account, "chat.set_moderator", chat_id,
+                                     target_character_id, before,
+                                     {{"role", moderator ? "moderator" : "member"}}, before,
+                                     std::string());
     json result;
     result["chat_id"] = chat_id;
     result["moderator"] = moderator;
@@ -2368,15 +2463,30 @@ json ChatService::kick_member(int64_t character_id, const std::string& chat_id,
     ChatMeta meta;
     if (!load_chat_meta(chat_id, meta)) throw chat_error("chat_not_found");
     std::string role = ChatDB::instance().member_role(chat_id, character_id);
-    if (role != "owner" && role != "moderator") throw chat_error("not_permitted");
+    const bool staff_mod = character_is_staff_moderator(character_id);
+    if (role != "owner" && role != "moderator" && !staff_mod) throw chat_error("not_permitted");
     if (target_character_id == meta.owner) throw chat_error("cannot_kick_owner");
     if (!ChatDB::instance().is_member(chat_id, target_character_id)) throw chat_error("not_a_member");
+    int64_t prior_left_at = 0;
+    ChatDB::instance().db() << "SELECT COALESCE(left_at, 0) FROM chat_members "
+                               "WHERE chat_id = ? AND character_id = ?;"
+                            << chat_id << target_character_id >> prior_left_at;
+    const json before = {{"chat_id", chat_id},
+                         {"target_character_id", target_character_id},
+                         {"left_at", prior_left_at}};
     int64_t change_id = ChatDB::instance().allocate_change_id();
     ChatDB::instance().db()
         << "UPDATE chat_members SET left_at = ?, change_id = ? WHERE chat_id = ? AND character_id = ?;"
        << now_seconds() << change_id << chat_id << target_character_id;
     insert_system_message(chat_id, "member_kicked", {{"character_id", target_character_id}});
     log_moderation(character_id, "kick", chat_id, target_character_id, json::object());
+    int64_t actor_account = 0;
+    staff::character_account_id(character_id, actor_account);
+    const std::string action_id =
+        staff::record_scoped_chat_action(character_id, actor_account, "chat.kick_member", chat_id,
+                                         target_character_id, before,
+                                         {{"left_at", now_seconds()}}, before, std::string());
+    notify_chat_moderation(target_character_id, "ui_notification_chat_kick", chat_id, action_id);
     json result;
     result["chat_id"] = chat_id;
     return result;
@@ -2387,17 +2497,30 @@ json ChatService::rename_group(int64_t character_id, const std::string& chat_id,
     if (name.empty() || utf8_length(name) > 64) throw chat_error("invalid_group_name");
     ChatMeta meta;
     if (!load_chat_meta(chat_id, meta) || meta.type != "group") throw chat_error("not_a_group");
-    if (meta.owner != character_id) throw chat_error("not_owner");
+    const bool staff_mod = character_is_staff_moderator(character_id);
+    if (meta.owner != character_id && !staff_mod) throw chat_error("not_owner");
     auto& db = ChatDB::instance().db();
     int64_t name_changed_at = 0;
-    db << "SELECT COALESCE(name_changed_at, 0) FROM chats WHERE id = ?;" << chat_id >> name_changed_at;
+    std::string before_name;
+    db << "SELECT COALESCE(name, ''), COALESCE(name_changed_at, 0) FROM chats WHERE id = ?;"
+       << chat_id >> [&](std::string current_name, int64_t changed_at) {
+              before_name = std::move(current_name);
+              name_changed_at = changed_at;
+          };
     int cooldown = cfg_int(chat_cfg(config_), "group_name_change_cooldown_seconds", 86400);
-    if (name_changed_at > 0 && now_seconds() - name_changed_at < cooldown) {
+    if (!staff_mod && name_changed_at > 0 && now_seconds() - name_changed_at < cooldown) {
         throw chat_error("name_change_cooldown");
     }
+    const json before = {{"chat_id", chat_id},
+                         {"name", before_name},
+                         {"name_changed_at", name_changed_at}};
     int64_t change_id = ChatDB::instance().allocate_change_id();
     db << "UPDATE chats SET name = ?, name_changed_at = ?, change_id = ? WHERE id = ?;"
        << name << now_seconds() << change_id << chat_id;
+    int64_t actor_account = 0;
+    staff::character_account_id(character_id, actor_account);
+    staff::record_scoped_chat_action(character_id, actor_account, "chat.rename_group", chat_id,
+                                     0, before, {{"name", name}}, before, std::string());
     json result;
     result["chat_id"] = chat_id;
     result["name"] = name;
@@ -2426,10 +2549,36 @@ json ChatService::ban_from_chat(int64_t character_id, const std::string& chat_id
     ChatMeta meta;
     if (!load_chat_meta(chat_id, meta)) throw chat_error("chat_not_found");
     std::string role = ChatDB::instance().member_role(chat_id, character_id);
-    if (role != "owner" && role != "moderator") throw chat_error("not_permitted");
+    if (role != "owner" && role != "moderator" && !character_is_staff_moderator(character_id)) {
+        throw chat_error("not_permitted");
+    }
     if (target_character_id == meta.owner) throw chat_error("cannot_ban_owner");
     if (!character_exists(target_character_id)) throw chat_error("character_not_found");
     auto& db = ChatDB::instance().db();
+    bool had_ban = false;
+    std::string old_reason;
+    int64_t old_banned_by = 0;
+    int64_t old_ban_created_at = 0;
+    db << "SELECT COALESCE(reason, ''), COALESCE(banned_by_character_id, 0), created_at "
+          "FROM chat_bans WHERE chat_id = ? AND character_id = ?;"
+       << chat_id << target_character_id
+       >> [&](std::string r, int64_t by, int64_t created_at) {
+              had_ban = true;
+              old_reason = std::move(r);
+              old_banned_by = by;
+              old_ban_created_at = created_at;
+          };
+    int64_t member_left_at = 0;
+    db << "SELECT COALESCE(left_at, 0) FROM chat_members WHERE chat_id = ? AND character_id = ?;"
+       << chat_id << target_character_id >> member_left_at;
+    const json before = {{"chat_id", chat_id},
+                         {"target_character_id", target_character_id},
+                         {"had_ban", had_ban},
+                         {"ban_reason", old_reason},
+                         {"banned_by_character_id", old_banned_by},
+                         {"ban_created_at", old_ban_created_at},
+                         {"member_left_at", member_left_at},
+                         {"applied_reason", reason}};
     int64_t change_id = ChatDB::instance().allocate_change_id();
     db << "INSERT OR REPLACE INTO chat_bans (chat_id, character_id, banned_by_character_id, reason, "
           "created_at, change_id) VALUES (?, ?, ?, ?, ?, ?);"
@@ -2437,6 +2586,14 @@ json ChatService::ban_from_chat(int64_t character_id, const std::string& chat_id
     db << "UPDATE chat_members SET left_at = ?, change_id = ? WHERE chat_id = ? AND character_id = ?;"
        << now_seconds() << change_id << chat_id << target_character_id;
     log_moderation(character_id, "ban", chat_id, target_character_id, {{"reason", reason}});
+    int64_t actor_account = 0;
+    staff::character_account_id(character_id, actor_account);
+    const std::string action_id =
+        staff::record_scoped_chat_action(character_id, actor_account, "chat.ban_member", chat_id,
+                                         target_character_id, before,
+                                         {{"left_at", now_seconds()}, {"reason", reason}}, before,
+                                         reason);
+    notify_chat_moderation(target_character_id, "ui_notification_chat_ban", chat_id, action_id);
     json result;
     result["chat_id"] = chat_id;
     result["banned_character_id"] = target_character_id;
@@ -2446,11 +2603,37 @@ json ChatService::ban_from_chat(int64_t character_id, const std::string& chat_id
 json ChatService::unban_from_chat(int64_t character_id, const std::string& chat_id,
                                   int64_t target_character_id) {
     std::string role = ChatDB::instance().member_role(chat_id, character_id);
-    if (role != "owner" && role != "moderator") throw chat_error("not_permitted");
-    ChatDB::instance().db()
-        << "DELETE FROM chat_bans WHERE chat_id = ? AND character_id = ?;"
-        << chat_id << target_character_id;
+    if (role != "owner" && role != "moderator" && !character_is_staff_moderator(character_id)) {
+        throw chat_error("not_permitted");
+    }
+    auto& db = ChatDB::instance().db();
+    bool had_ban = false;
+    std::string old_reason;
+    int64_t old_banned_by = 0;
+    int64_t old_ban_created_at = 0;
+    db << "SELECT COALESCE(reason, ''), COALESCE(banned_by_character_id, 0), created_at "
+          "FROM chat_bans WHERE chat_id = ? AND character_id = ?;"
+       << chat_id << target_character_id
+       >> [&](std::string r, int64_t by, int64_t created_at) {
+              had_ban = true;
+              old_reason = std::move(r);
+              old_banned_by = by;
+              old_ban_created_at = created_at;
+          };
+    const json before = {{"chat_id", chat_id},
+                         {"target_character_id", target_character_id},
+                         {"had_ban", had_ban},
+                         {"ban_reason", old_reason},
+                         {"banned_by_character_id", old_banned_by},
+                         {"ban_created_at", old_ban_created_at}};
+    db << "DELETE FROM chat_bans WHERE chat_id = ? AND character_id = ?;"
+       << chat_id << target_character_id;
     log_moderation(character_id, "unban", chat_id, target_character_id, json::object());
+    int64_t actor_account = 0;
+    staff::character_account_id(character_id, actor_account);
+    staff::record_scoped_chat_action(character_id, actor_account, "chat.unban_member", chat_id,
+                                     target_character_id, before, {{"unbanned", true}}, before,
+                                     std::string());
     json result;
     result["chat_id"] = chat_id;
     result["unbanned_character_id"] = target_character_id;

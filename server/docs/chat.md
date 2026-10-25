@@ -78,7 +78,7 @@ Per-endpoint docs live in `api/`.
 | Moderation | `banFromChat`, `unbanFromChat`, `getModerationLog` |
 | Presence | `chatHeartbeat`, `getFriendPresence`, `setChatTyping` |
 | Push | `getPushConfig`, `subscribePush`, `unsubscribePush`, `setPushPreferences` |
-| Admin | `adminGetIdentityHistory`, `adminLockIdentity` |
+| Staff | `staffGetIdentityHistory`, `staffLockIdentity`, `staffSearchChats` (see `api/staff.md`) |
 
 ## Polling protocol
 
@@ -136,13 +136,31 @@ never a blocking LLM call). If only an LLM translation would exist, the body
 falls back to the original; the recipient still sees the LLM translation when
 they open the chat.
 
-## Moderation & admin
+## Moderation, staff, and admin
 
 Chat-level bans (`chat_bans`) and an append-only `moderation_log` retained
 forever. `mods_see_blocked` (config, default true) lets moderators see blocked
-users in chats they moderate. Admins are account ids in
-`game/config/chat_admins.json`. Admin identity locks are documented in
-`server/docs/chat_identity_lock.md`.
+users in chats they moderate.
+
+Three separate authorization domains:
+
+1. **Scoped chat moderation** — `chat_members.role` (`owner`/`moderator`), one
+   chat.
+2. **Chat-wide admin allowlist** — `game/config/chat_admins.json`, chat-only.
+3. **Game staff** — `staff.db` roles/capabilities. Staff with
+   `chat.moderate_any` can view and moderate any chat server-side, independent
+   of the client's opt-in moderation-mode toggle. Staff identity locks live in
+   `server/docs/chat_identity_lock.md`.
+
+Every scoped moderation action (ban/unban, kick, delete message, set/clear
+moderator, rename group) and every staff-wide moderation action is written to
+the shared append-only journal in `staff.db`; staff with `staff.undo` can undo
+it. The journal also records sensitive staff chat reads. See
+`docs/staff_action_journal.md`.
+
+`social_restricted` accounts cannot send chat messages, open DMs, send friend
+requests, create/invite to groups, or join/create baronies; solo play remains
+available.
 
 ## Rate limiting
 

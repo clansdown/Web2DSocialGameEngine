@@ -407,6 +407,11 @@ export interface PlayerGameState {
   unread_letter?: UnreadLetter | null;
   barony_join_cooldown_until?: number;
   barony?: BaronySummary | null;
+  /** True when the account has a staff record. UI visibility only. */
+  is_staff?: boolean;
+  unread_notifications?: number;
+  unread_support?: number;
+  support_locked?: boolean;
 }
 
 export interface MiniGameLevelConfig {

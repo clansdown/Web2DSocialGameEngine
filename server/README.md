@@ -702,7 +702,7 @@ plus named soldiers with class/level/gear; see `server/tables/retinue_members.md
 
 - **Port**: 2290 (HTTP + WebSocket on the same listener)
 - **HTTPS**: Cloudflare Tunnel in production (or nginx as an alternative)
-- **Databases**: Created in `--db-dir` (default: the working directory) on first run
+- **Databases**: `game.db`, `chat.db`, and `staff.db` are created in `--db-dir` (default: the working directory) on first run. `staff.db` holds staff roles/accounts, the shared action journal, support tickets, notifications, and banned avatar hashes.
 - **Assets**: `config/`, `images/`, and `text/` are read from the `--content` root
   (default: the working directory). Pointing `--content` at `game/` while running
   from a scratch directory keeps databases and uploads out of the synced assets

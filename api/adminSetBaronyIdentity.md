@@ -1,4 +1,8 @@
-# `/api/adminSetBaronyIdentity`
+# `/api/adminSetBaronyIdentity` (removed)
+
+> **Deprecated/removed:** this endpoint is no longer registered. Use
+> `/api/staffSetBaronyIdentity`; authorization now comes from `staff.db`
+> capabilities. See `api/staff.md`.
 
 Admin-only endpoint to reassign a barony's mandatory safe name/tags and
 optionally replace its adult custom name/description. Used for support and

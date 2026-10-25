@@ -274,6 +274,14 @@ export function banFromChatRequest(
   return authenticatedPost('banFromChat', { character_id, chat_id, target_character_id, reason });
 }
 
+export function unbanFromChatRequest(
+  character_id: number,
+  chat_id: string,
+  target_character_id: number
+): Promise<unknown> {
+  return authenticatedPost('unbanFromChat', { character_id, chat_id, target_character_id });
+}
+
 export function requestTranslationsRequest(
   character_id: number,
   message_ids: string[],

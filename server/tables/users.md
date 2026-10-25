@@ -14,7 +14,10 @@ CREATE TABLE users (
     adult_verified_at INTEGER NOT NULL DEFAULT 0,
     adult_verified_by INTEGER,
     adult_verification_method TEXT,
-    language TEXT NOT NULL DEFAULT 'en'
+    language TEXT NOT NULL DEFAULT 'en',
+    social_restricted INTEGER NOT NULL DEFAULT 0,
+    support_locked INTEGER NOT NULL DEFAULT 0,
+    restriction_updated_at INTEGER NOT NULL DEFAULT 0
 );
 ```
 
@@ -31,6 +34,9 @@ CREATE TABLE users (
 | adult_verified_by | INTEGER | NULLABLE | Admin account id that made the change (NULL for self-service Digital Credentials) |
 | adult_verification_method | TEXT | NULLABLE | `digital_credential`, `customer_service`, or similar audit value |
 | language | TEXT | NOT NULL DEFAULT 'en' | Chosen interface / display language (also the default chat translation target) |
+| social_restricted | INTEGER | NOT NULL DEFAULT 0 | Staff-set social restriction: blocks chat/DMs/friends/groups/barony joins; solo play remains |
+| support_locked | INTEGER | NOT NULL DEFAULT 0 | Staff-set support lock: read tickets/notifications only; staff can still send a final message |
+| restriction_updated_at | INTEGER | NOT NULL DEFAULT 0 | Unix ts of the last account-restriction change |
 
 ## Indexes
 

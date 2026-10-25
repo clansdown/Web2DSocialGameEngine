@@ -392,7 +392,4 @@ void register_chat_handlers(std::unordered_map<std::string, ApiHandler>& handler
     reg("banFromChat", handleBanFromChat);
     reg("unbanFromChat", handleUnbanFromChat);
     reg("getModerationLog", handleGetModerationLog);
-
-    reg("adminGetIdentityHistory", handleAdminGetIdentityHistory);
-    reg("adminLockIdentity", handleAdminLockIdentity);
 }

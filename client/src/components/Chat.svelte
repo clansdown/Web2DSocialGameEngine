@@ -8,7 +8,7 @@
    * open. All user-facing text comes from the text system.
    */
   import { onMount, onDestroy } from 'svelte';
-  import { currentCharacter, language } from '../lib/stores';
+  import { currentCharacter, language, playerGameState } from '../lib/stores';
   import { loadTexts } from '../lib/text';
   import * as auth from '../lib/auth';
   import { render_markdown } from '../chat/markdown';
@@ -29,6 +29,11 @@
   } from '../chat/chat_protocol';
   import { register_push } from '../chat/push';
   import { navigate } from '../lib/router';
+  import {
+    staffGetContextRequest,
+    staffSetChatModerationModeRequest,
+    type staff_context_dto
+  } from '../staff/staff_api';
 
   interface Props {
     onBack: () => void;
@@ -48,7 +53,9 @@
     'ui_chat_settings', 'ui_chat_language_prefs', 'ui_chat_push_enable',
     'ui_chat_push_group_mentions', 'ui_chat_loading', 'ui_chat_error', 'ui_chat_chars_left',
     'ui_chat_too_long', 'ui_chat_too_many_lines', 'ui_chat_send_failed', 'ui_chat_no_messages',
-    'ui_chat_cancel', 'ui_chat_markdown_hint', 'ui_chat_safe_message'
+    'ui_chat_cancel', 'ui_chat_markdown_hint', 'ui_chat_safe_message',
+    'ui_staff_badge', 'ui_staff_chat_tools', 'ui_staff_character_id', 'ui_staff_ban',
+    'ui_staff_unban', 'ui_staff_kick', 'ui_staff_rename_group', 'ui_staff_apply'
   ];
 
   let texts = $state<Record<string, string>>({});
@@ -92,6 +99,12 @@
   let expandedTranslations = $state<string[]>([]);
   let blockedIds = $state<number[]>([]);
   let mutedIds = $state<number[]>([]);
+  let staffContext = $state<staff_context_dto | null>(null);
+  let staffMode = $state(false);
+  let showStaffTools = $state(false);
+  let staffTarget = $state(0);
+  let externalChat = $state<chat_summary | null>(null);
+  let staffRename = $state('');
 
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -101,7 +114,10 @@
   let is_minor = $derived($currentCharacter?.is_adult !== true);
   let safeMessages = $derived<safe_catalog_entry[]>(safeContent?.messages ?? []);
   let reactionChoices = $derived<safe_catalog_entry[]>(safeContent?.reactions ?? []);
-  let activeChat = $derived(chats.find((c) => c.id === active_chat_id) ?? null);
+  let activeChat = $derived(
+    chats.find((c) => c.id === active_chat_id) ??
+      (externalChat?.id === active_chat_id ? externalChat : null)
+  );
   let activeMembership = $derived(active_chat_id ? memberships[active_chat_id] : undefined);
   let activeMessages = $derived(active_chat_id ? (messages[active_chat_id] ?? []) : []);
 
@@ -266,6 +282,22 @@
       limit: 50,
       lang: $language
     });
+    if (!chats.some((chat) => chat.id === chat_id)) {
+      externalChat = {
+        id: chat_id,
+        type: 'group',
+        name: chat_id,
+        owner_character_id: 0,
+        direct_key: '',
+        members_can_invite: false,
+        created_at: 0,
+        name_changed_at: 0,
+        archived: false,
+        last_seq: 0,
+        source_kind: '',
+        source_id: 0
+      };
+    }
     messages = { ...messages, [chat_id]: result.messages };
     const directory = { ...characters };
     for (const message of result.messages) {
@@ -398,6 +430,54 @@
     try {
       await api.deleteChatMessageRequest(character_id, message.id);
       await poll_once();
+    } catch (e) {
+      actionError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  function can_use_staff_moderation(): boolean {
+    return !!staffContext?.capabilities.includes('chat.moderate_any');
+  }
+
+  async function toggle_staff_mode(): Promise<void> {
+    staffMode = !staffMode;
+    try {
+      await staffSetChatModerationModeRequest(staffMode);
+    } catch {
+      /* the server capability still applies; preference persistence is best-effort */
+    }
+  }
+
+  async function staff_ban_or_unban(ban: boolean): Promise<void> {
+    if (!active_chat_id || !staffTarget) return;
+    try {
+      if (ban) {
+        await api.banFromChatRequest(character_id, active_chat_id, staffTarget, 'staff moderation');
+      } else {
+        await api.unbanFromChatRequest(character_id, active_chat_id, staffTarget);
+      }
+      await poll_once();
+    } catch (e) {
+      actionError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async function staff_kick(): Promise<void> {
+    if (!active_chat_id || !staffTarget) return;
+    try {
+      await api.kickMemberRequest(character_id, active_chat_id, staffTarget);
+      await poll_once();
+    } catch (e) {
+      actionError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async function staff_rename(): Promise<void> {
+    if (!active_chat_id || !staffRename.trim()) return;
+    try {
+      await api.renameGroupRequest(character_id, active_chat_id, staffRename.trim());
+      staffRename = '';
+      await load_all();
     } catch (e) {
       actionError = e instanceof Error ? e.message : String(e);
     }
@@ -661,6 +741,14 @@
 
   onMount(async () => {
     texts = await loadTexts(TEXT_IDS);
+    if ($playerGameState?.is_staff) {
+      try {
+        staffContext = await staffGetContextRequest();
+        staffMode = staffContext.chat_moderation_mode;
+      } catch {
+        staffContext = null;
+      }
+    }
     await load_all();
     // Opening the route's chat is handled by the $effect above, once the list
     // has loaded.
@@ -691,7 +779,31 @@
     <button class="btn btn-sm btn-outline-secondary" onclick={() => (showSettings = !showSettings)}>
       {t('ui_chat_settings')}
     </button>
+    {#if can_use_staff_moderation()}
+      <button
+        class="btn btn-sm"
+        class:btn-warning={staffMode}
+        class:btn-outline-warning={!staffMode}
+        onclick={toggle_staff_mode}
+      >
+        {t('ui_staff_badge')}
+      </button>
+    {/if}
   </div>
+
+  {#if staffMode && can_use_staff_moderation()}
+    <div class="border-bottom p-2 small d-flex flex-wrap gap-2 align-items-center">
+      <span class="text-warning fw-semibold">{t('ui_staff_chat_tools')}</span>
+      <input class="form-control form-control-sm" style="max-width: 10rem;" type="number" placeholder={t('ui_staff_character_id')} bind:value={staffTarget} />
+      <button class="btn btn-sm btn-outline-danger" onclick={() => staff_ban_or_unban(true)}>{t('ui_staff_ban')}</button>
+      <button class="btn btn-sm btn-outline-secondary" onclick={() => staff_ban_or_unban(false)}>{t('ui_staff_unban')}</button>
+      <button class="btn btn-sm btn-outline-danger" onclick={staff_kick}>{t('ui_staff_kick')}</button>
+      {#if activeChat?.type === 'group'}
+        <input class="form-control form-control-sm" style="max-width: 14rem;" placeholder={t('ui_staff_rename_group')} bind:value={staffRename} />
+        <button class="btn btn-sm btn-outline-secondary" onclick={staff_rename}>{t('ui_staff_apply')}</button>
+      {/if}
+    </div>
+  {/if}
 
   {#if fatal}
     <div class="alert alert-danger m-3">{t('ui_chat_error')}: {fatal}</div>
@@ -924,6 +1036,8 @@
                         <button class="btn btn-link btn-sm p-0 me-2" onclick={() => start_edit(message)}>
                           {t('ui_chat_edit')}
                         </button>
+                      {/if}
+                      {#if message.author_character_id === character_id || (staffMode && can_use_staff_moderation())}
                         <button class="btn btn-link btn-sm p-0 me-2" onclick={() => remove_message(message)}>
                           {t('ui_chat_delete')}
                         </button>
