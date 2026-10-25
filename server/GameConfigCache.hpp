@@ -60,6 +60,12 @@ public:
     nlohmann::json& getProgression();
     nlohmann::json& getChatConfig();
     nlohmann::json& getChatAdmins();
+    nlohmann::json& getSafeMessages();
+    nlohmann::json& getSafeBaronyNames();
+    nlohmann::json& getSafeBaronyTags();
+    nlohmann::json& getSafeReactions();
+    nlohmann::json& getSafeGifs();
+    nlohmann::json& getSafeBanReasons();
     nlohmann::json& getTranslationConfig();
     nlohmann::json& getPushConfig();
     std::optional<nlohmann::json> loadWeedingMap(const std::string& filename);

@@ -16,6 +16,7 @@
     selected_count: number;
     on_toggle_chat: () => void;
     on_toggle_voice: () => void;
+    show_voice?: boolean;
     on_leave: () => void;
     chat_open: boolean;
     voice_active: boolean;
@@ -31,6 +32,7 @@
     selected_count,
     on_toggle_chat,
     on_toggle_voice,
+    show_voice = true,
     on_leave,
     chat_open,
     voice_active
@@ -96,12 +98,14 @@
     >
       {texts.combat_chat_btn}
     </button>
-    <button
-      class="btn btn-sm {voice_active ? 'btn-success' : 'btn-outline-success'}"
-      onclick={on_toggle_voice}
-    >
-      {voice_active ? texts.combat_voice_off_btn : texts.combat_voice_btn}
-    </button>
+    {#if show_voice}
+      <button
+        class="btn btn-sm {voice_active ? 'btn-success' : 'btn-outline-success'}"
+        onclick={on_toggle_voice}
+      >
+        {voice_active ? texts.combat_voice_off_btn : texts.combat_voice_btn}
+      </button>
+    {/if}
     <button class="btn btn-sm btn-outline-danger" onclick={on_leave}>
       {texts.combat_leave_btn}
     </button>

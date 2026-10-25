@@ -10,14 +10,20 @@ Transitions the player to sandbox phase.
 ```json
 {
     "character_id": 1,
+    "safe_name_id": "stormhold",
+    "safe_tag_ids": ["laid_back", "pve_focused"],
     "name": "Stormhold",
     "description": "A fortress in the north",
+    "accepts_minors": true,
     "auth": {
         "username": "player",
         "token": "session_token_hex"
     }
 }
 ```
+
+`name` and `description` are adult-only custom text. A minor must omit them;
+the server uses the safe name/tags and forces `accepts_minors = true`.
 
 ## Success Response
 
@@ -28,7 +34,10 @@ Transitions the player to sandbox phase.
         "barony_id": 1,
         "fiefdom_id": 5,
         "game_phase": "sandbox",
-        "base_unlocked": true
+        "base_unlocked": true,
+        "name": "Stormhold",
+        "safe_name_id": "stormhold",
+        "accepts_minors": true
     }
 }
 ```
@@ -36,21 +45,19 @@ Transitions the player to sandbox phase.
 ## Error Responses
 
 ```json
-{ "error": "name required" }
+{ "error": "safe_name_id required" }
+{ "error": "invalid_safe_barony_tag" }
+{ "error": "custom_name_adults_only" }
 { "error": "A barony with that name already exists" }
 { "error": "Must complete the baron track to start a barony" }
 ```
 
 ## Notes
 
-- Character must be in `baron_right` game phase (all 25 levels completed)
-- Founder is added as `mesne_lord` role
-- Barony name must be unique — checked case-insensitively, matching the
-  capture-time uniqueness rule in `/api/startBaronTrack`. Tombstoned (defunct)
-  barony names still count as taken.
-- An existing fiefdom is **reused**; a new one is created only if the character
-  has none (one fiefdom per character). New fiefdoms start at `manor_level = 0`
-  (home_base under construction) with the `economy.json.starting_resources`
-  balance.
-- `player_game_state.honor_name` is synced to the final barony name, so a name
-  edited here overrides the name captured at track start
+- `safe_name_id` and `safe_tag_ids` are mandatory server-owned picks from
+  `/api/getSafeContent`.
+- A barony's safe name is unique among active baronies; its display name
+  remains unique case-insensitively (tombstoned names stay reserved).
+- A minor founder cannot provide custom text and is forced to accept minors.
+- An existing fiefdom is reused; a new one is created only if the character has
+  none.

@@ -1,8 +1,7 @@
 # `/api/startBaronTrack`
 
-Opts into the baron track — a 4x4 grid of 16 harder missions — to earn the right
-to start a barony instead of joining one. Captures the aspiring barony's **honor
-name** up front, which the player carries through the whole track.
+Opts into the baron track and captures the aspiring barony's safe name plus an
+optional adult custom honor name.
 
 **Requires authentication.**
 
@@ -11,6 +10,7 @@ name** up front, which the player carries through the whole track.
 ```json
 {
     "character_id": 1,
+    "safe_barony_name_id": "stormhold",
     "honor_name": "Stormhold",
     "auth": {
         "username": "player",
@@ -19,6 +19,8 @@ name** up front, which the player carries through the whole track.
 }
 ```
 
+A minor must omit `honor_name`; the server uses the safe name label.
+
 ## Success Response
 
 ```json
@@ -26,7 +28,8 @@ name** up front, which the player carries through the whole track.
     "status": "ok",
     "data": {
         "game_phase": "baron_track",
-        "honor_name": "Stormhold"
+        "honor_name": "Stormhold",
+        "safe_barony_name_id": "stormhold"
     }
 }
 ```
@@ -35,7 +38,8 @@ name** up front, which the player carries through the whole track.
 
 ```json
 { "error": "character_id required" }
-{ "error": "honor_name required" }
+{ "error": "safe_barony_name_id required" }
+{ "error": "custom_honor_name_adults_only" }
 { "error": "honor_name must be 64 characters or fewer" }
 { "error": "Must have a land patent to start the baron track" }
 { "error": "A barony with that name already exists" }
@@ -43,12 +47,8 @@ name** up front, which the player carries through the whole track.
 
 ## Notes
 
-- Character must be in `land_patent`, `freehold`, or `freehold_qualified` game
-  phase (a land-patent holder or a freeholder may start the baron track)
-- `honor_name` is required, trimmed, capped at 64 characters, and **must be
-  unique** (case-insensitive) against existing barony names — this is a hard
-  requirement, not a warning. The name is stored in `player_game_state.honor_name`
-  and is reused as the prefill for `/api/createBarony`.
-- Transitions to `baron_track` phase
-- Client should show a 4x4 level grid
-- After completing all 25 levels, the player transitions to `baron_right` phase
+- `safe_barony_name_id` must be a catalog entry from `/api/getSafeContent`.
+- A minor receives the safe name in `{honor_name}` text substitutions.
+- The custom honor name (adult only) is trimmed, capped at 64 characters, and
+  must be unique case-insensitively against barony names.
+- Transitions to `baron_track`; after all levels the player enters `baron_right`.

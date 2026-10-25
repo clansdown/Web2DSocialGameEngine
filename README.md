@@ -1,6 +1,13 @@
 # Web2DSocialGameEngine
 A game engine for Social 2D (Sprite-based) Web games. Client + Server.
 
+## Safety and age visibility
+
+Player-authored content is projected per viewer. Minors receive only
+server-owned safe names/avatars/messages/baronies/reactions/GIFs and may author
+only safe catalog content. See
+[`docs/minor_content_visibility.md`](docs/minor_content_visibility.md).
+
 ## Prerequisites
 
 Before running the game engine, clone SimpleGame into the SimpleGame/ directory:

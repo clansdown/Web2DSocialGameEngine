@@ -29,8 +29,8 @@ CREATE TABLE chats (
 | Field | Purpose |
 |---|---|
 | `id` | `c_<hex>` chat id. |
-| `type` | direct / group / barony / dukedom / wildlands. |
-| `name` | Group/barony display name (NULL for direct/wildlands). |
+| `type` | direct / group / barony / dukedom / wildlands. **Group is adult-only**; minors cannot create, join, or be invited. |
+| `name` | Group display name (adult-only groups) / denormalized barony fallback. Barony chat titles are resolved from the barony's viewer-relative safe/custom identity, never serialized raw. |
 | `name_changed_at` | Group rename cooldown anchor. |
 | `owner_character_id` | Group owner / barony baron. |
 | `direct_key` | `"<min>:<max>"` for direct chats; NULL otherwise (UNIQUE allows many NULLs). |

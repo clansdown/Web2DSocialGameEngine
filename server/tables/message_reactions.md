@@ -20,7 +20,7 @@ CREATE TABLE message_reactions (
 |---|---|
 | `message_id` | The reacted message. |
 | `character_id` | Reacting character. |
-| `emoji` | Any Unicode emoji (≤ 8 code points). |
+| `emoji` | **Reaction catalog id** (`safe_reactions.json`, e.g. `thumbs_up`). The legacy column name is retained; arbitrary emoji are rejected. Minor authoring/visibility requires `minor_safe`. |
 
 ## Notes
 

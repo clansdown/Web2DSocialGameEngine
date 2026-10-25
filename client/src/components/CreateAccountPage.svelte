@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { createEventDispatcher } from 'svelte';
-  import { createAccountRequest, verifyAgeOverrideRequest } from '../lib/api';
+  import { createAccountRequest } from '../lib/api';
   import { handleError } from '../lib/errors';
   import * as auth from '../lib/auth';
   import { checkDigitalCredentialsSupport, requestAgeVerification, isBraveBrowser } from '../lib/digitalCredentials';
@@ -25,10 +25,7 @@
   let isBrave = $state(false);
   let ageVerificationPending = $state(false);
   let ageVerified = $state(false);
-  let showOverrideInput = $state(false);
-  let overrideCode = $state('');
-  let overrideVerifying = $state(false);
-  let verifiedOverrideCode = $state('');
+
   let sex = $state('');
   let submitting = $state(false);
 
@@ -110,7 +107,6 @@
     if (!checked) {
       adult = false;
       ageVerified = false;
-      verifiedOverrideCode = '';
       return;
     }
 
@@ -139,47 +135,15 @@
       } else {
         adult = true;
         ageVerified = true;
-        verifiedOverrideCode = '';
       }
     } catch (err) {
       handleError('Age verification failed. Adult flag will not be set.', err, { category: 'validation', context: 'handleAdultToggle' });
       target.checked = false;
       adult = false;
       ageVerified = false;
-      verifiedOverrideCode = '';
     } finally {
       ageVerificationPending = false;
     }
-  }
-
-  /**
-   * Handles age verification override code submission.
-   * Validates the override code against the server.
-   * Sets adult and ageVerified on success.
-   * 
-   * @param none - Uses overrideCode state
-   * @returns Promise<void>
-   * 
-   * Usage: Called when user submits override code form
-   */
-  async function handleOverrideCodeSubmit(): Promise<void> {
-    const code = overrideCode.trim();
-    if (!code) return;
-
-    overrideVerifying = true;
-
-    const verified = await verifyAgeOverrideRequest(code);
-    if (verified) {
-      adult = true;
-      ageVerified = true;
-      verifiedOverrideCode = code;
-      showOverrideInput = false;
-      overrideCode = '';
-    } else {
-      alert('Invalid override code.');
-    }
-
-    overrideVerifying = false;
   }
 
   /**
@@ -223,7 +187,6 @@
         word2,
         displayName || undefined,
         undefined,
-        verifiedOverrideCode || undefined,
         sex || undefined,
         get(language)
       );
@@ -289,7 +252,7 @@
               name="sex"
               value="male"
               bind:group={sex}
-              disabled={submitting || overrideVerifying || ageVerificationPending}
+              disabled={submitting || ageVerificationPending}
             />
             <label class="form-check-label" for="sexMale">♂ Male</label>
           </div>
@@ -301,7 +264,7 @@
               name="sex"
               value="female"
               bind:group={sex}
-              disabled={submitting || overrideVerifying || ageVerificationPending}
+              disabled={submitting || ageVerificationPending}
             />
             <label class="form-check-label" for="sexFemale">♀ Female</label>
           </div>
@@ -315,7 +278,7 @@
           class="form-control"
           id="username"
           bind:value={formUsername}
-          disabled={submitting || overrideVerifying || ageVerificationPending}
+          disabled={submitting || ageVerificationPending}
           required
         />
       </div>
@@ -327,7 +290,7 @@
           class="form-control"
           id="password"
           bind:value={formPassword}
-          disabled={submitting || overrideVerifying || ageVerificationPending}
+          disabled={submitting || ageVerificationPending}
           required
           minlength="8"
         />
@@ -340,7 +303,7 @@
           class="form-control"
           id="confirmPassword"
           bind:value={formConfirmPassword}
-          disabled={submitting || overrideVerifying || ageVerificationPending}
+          disabled={submitting || ageVerificationPending}
           required
         />
       </div>
@@ -352,7 +315,7 @@
           id="word1"
           bind:value={word1}
           onchange={handleWord1Change}
-          disabled={submitting || overrideVerifying || ageVerificationPending}
+          disabled={submitting || ageVerificationPending}
           required
         >
           {#each safeWords1 as word}
@@ -368,7 +331,7 @@
           id="word2"
           bind:value={word2}
           onchange={handleWord2Change}
-          disabled={submitting || overrideVerifying || ageVerificationPending}
+          disabled={submitting || ageVerificationPending}
           required
         >
           {#each safeWords2 as word}
@@ -407,40 +370,6 @@
             </div>
           {/if}
         {/if}
-        {#if !ageVerified && !ageVerificationPending}
-          <div class="mt-2">
-            <button
-              type="button"
-              class="btn btn-sm btn-link p-0"
-              onclick={() => { showOverrideInput = !showOverrideInput; }}
-            >
-              {showOverrideInput ? 'Cancel' : 'Have an age verification code?'}
-            </button>
-          </div>
-          {#if showOverrideInput}
-            <div class="mt-2 d-flex gap-2">
-              <input
-                type="text"
-                class="form-control form-control-sm"
-                placeholder="Enter override code"
-                bind:value={overrideCode}
-                disabled={overrideVerifying}
-                onkeydown={(e) => { if (e.key === 'Enter') handleOverrideCodeSubmit(); }}
-              />
-              <button
-                type="button"
-                class="btn btn-sm btn-outline-secondary"
-                onclick={handleOverrideCodeSubmit}
-                disabled={!overrideCode.trim() || overrideVerifying}
-              >
-                {#if overrideVerifying}
-                  <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
-                {/if}
-                Verify
-              </button>
-            </div>
-          {/if}
-        {/if}
         {#if ageVerificationPending}
           <div class="form-text text-info">
             Verifying age with digital credential...
@@ -461,7 +390,7 @@
             class="form-control"
             id="displayName"
             bind:value={displayName}
-            disabled={submitting || overrideVerifying || ageVerificationPending}
+            disabled={submitting || ageVerificationPending}
             placeholder="Enter custom display name"
           />
           <div class="form-text">
@@ -474,7 +403,7 @@
         type="button"
         class="btn btn-primary w-100"
         onclick={handleCreateAccount}
-        disabled={submitting || overrideVerifying || ageVerificationPending}
+        disabled={submitting || ageVerificationPending}
       >
         {#if submitting}
           <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>

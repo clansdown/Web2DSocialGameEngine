@@ -29,7 +29,8 @@ mkdir -p "$DB_DIR"
 
 python3 "$ROOT/server/translation/sidecar.py" --port "$SIDECAR_PORT" --passthrough &
 SIDECAR_PID=$!
-( cd "$GAME_DIR" && "$SERVER_BIN" --port "$PORT" --db-dir "$DB_DIR" ) &
+( cd "$GAME_DIR" && RAVENEST_TEST_ADULT_ACCOUNTS=1 \
+    "$SERVER_BIN" --port "$PORT" --db-dir "$DB_DIR" --test-timeout-seconds 600 ) &
 SRV_PID=$!
 trap 'kill $SRV_PID $SIDECAR_PID 2>/dev/null; wait $SRV_PID $SIDECAR_PID 2>/dev/null; rm -rf "$DB_DIR"' EXIT
 

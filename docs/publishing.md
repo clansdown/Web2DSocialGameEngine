@@ -55,6 +55,12 @@ Browser
 ```
 
 There is **no path routing** between these hosts and no Origin Rule or Worker.
+**Avatar exception:** custom PFPs may be stored in the R2 bucket and resolved as
+public content-addressed capability URLs (`avatars/<character>/<sha256>.<ext>`).
+The server never sends those keys/URLs to minors; adult viewers of adult owners
+receive them. This is an accepted out-of-band sharing exception (see
+`docs/minor_content_visibility.md`).
+
 The client is built with absolute API and asset origins:
 
 - `VITE_API_BASE_URL` → `PUBLIC_API_ORIGIN`

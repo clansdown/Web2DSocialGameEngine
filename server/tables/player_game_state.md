@@ -16,6 +16,7 @@ CREATE TABLE player_game_state (
     entered_at INTEGER NOT NULL DEFAULT 0,
     last_updated INTEGER NOT NULL DEFAULT 0,
     honor_name TEXT,
+    safe_barony_name_id TEXT,
     FOREIGN KEY(character_id) REFERENCES characters(id)
 );
 ```
@@ -34,7 +35,8 @@ CREATE TABLE player_game_state (
 | base_unlocked | INTEGER | NOT NULL DEFAULT 0 | 1 once the player has founded their manor (from `freehold` onward) |
 | entered_at | INTEGER | NOT NULL DEFAULT 0 | Timestamp when the current phase/level was entered |
 | last_updated | INTEGER | NOT NULL DEFAULT 0 | Timestamp of last state change |
-| honor_name | TEXT | nullable | The aspiring barony's honor name chosen at baron-track start |
+| honor_name | TEXT | nullable | Adult custom honor name chosen at baron-track start. Minors always receive the safe label. |
+| safe_barony_name_id | TEXT | nullable (migration) | Mandatory safe barony-name catalog id; substituted for `{honor_name}` for minors |
 | barony_left_at | INTEGER | NOT NULL DEFAULT 0 (migration) | Unix timestamp the character last left a barony; drives the join cooldown (`progression.json` `barony.join_cooldown_days`). `0` = never left a barony |
 
 ## Game Phases

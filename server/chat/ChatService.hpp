@@ -40,11 +40,13 @@ public:
     json poll(int64_t character_id, int64_t cursor, const std::string& viewer_lang);
     json poll_wildlands(int64_t character_id, int64_t cursor, const std::string& viewer_lang);
     json send_message(int64_t character_id, const std::string& chat_id,
-                      const std::string& body, const json& gif,
+                      const std::string& safe_message_id, const std::string& body,
+                      const std::string& gif_id,
                       const std::string& reply_to_message_id,
                       const std::string& client_id, const std::string& sender_language);
     json edit_message(int64_t character_id, const std::string& message_id,
-                      const std::string& body);
+                      const std::string& safe_message_id, const std::string& body,
+                      const std::string& gif_id);
     json delete_message(int64_t character_id, const std::string& message_id);
     json mark_read(int64_t character_id, const std::string& chat_id, int64_t seq);
     json set_settings(int64_t character_id, const std::string& chat_id, const json& body);
@@ -58,8 +60,10 @@ public:
     json set_language_pref(int64_t character_id, const std::string& language, bool enabled);
 
     // ── Reactions + bookmarks ──────────────────────────────────────────────
-    json add_reaction(int64_t character_id, const std::string& message_id, const std::string& emoji);
-    json remove_reaction(int64_t character_id, const std::string& message_id, const std::string& emoji);
+    json add_reaction(int64_t character_id, const std::string& message_id,
+                      const std::string& reaction_id);
+    json remove_reaction(int64_t character_id, const std::string& message_id,
+                         const std::string& reaction_id);
     json add_bookmark(int64_t character_id, const std::string& message_id);
     json remove_bookmark(int64_t character_id, const std::string& message_id);
     json get_bookmarks(int64_t character_id);
@@ -120,7 +124,8 @@ private:
 
     void check_rate_limit(int64_t account_id);
     void dispatch_push(const std::string& chat_id, int64_t author, const std::string& message_id,
-                       const std::string& body, const std::string& source_language);
+                       const std::string& body, const std::string& source_language,
+                       const std::string& safe_message_id);
     // Shared translation path for viewing and push. Returns the display-language
     // body, or "" when none should be shown; stores new baseline translations.
     std::string translate_for_display(int64_t viewer_character_id,

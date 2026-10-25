@@ -16,7 +16,7 @@ Get fiefdom information including resources, buildings, and officials.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| fiefdom_id | integer | Yes | - | ID of the fiefdom to retrieve |
+| fiefdom_id | integer | Yes | - | ID of the fiefdom to retrieve (must belong to the authenticated account) |
 | include_buildings | boolean | No | false | Include buildings in response |
 | include_officials | boolean | No | false | Include officials in response |
 | include_heroes | boolean | No | false | Include heroes in response |
@@ -32,10 +32,8 @@ Get fiefdom information including resources, buildings, and officials.
   "data": {
     "id": 1,
     "owner_id": 10,
-    "name": "My Fiefdom",
     "x": 100,
     "y": 200,
-    "peasants": 50,
     "gold": 1000,
     "silver_pence": 456,
     "grain": 500,
@@ -61,10 +59,8 @@ Get fiefdom information including resources, buildings, and officials.
   "data": {
     "id": 1,
     "owner_id": 10,
-    "name": "My Fiefdom",
     "x": 100,
     "y": 200,
-    "peasants": 50,
     "gold": 1000,
     "silver_pence": 456,
     "grain": 500,
@@ -174,11 +170,9 @@ Get fiefdom information including resources, buildings, and officials.
 | Field | Type | Description |
 |-------|------|-------------|
 | id | integer | Fiefdom ID |
-| owner_id | integer | Owning character ID |
-| name | string | Fiefdom name |
+| owner_id | integer | Owning character ID (the request is owner-only) |
 | x | integer | World X coordinate |
 | y | integer | World Y coordinate |
-| peasants | integer | Population count |
 | gold | integer | Treasury currency (building costs, non-penny imports) |
 | silver_pence | integer | Silver-pence wallet (mini-game rewards + penny-market grain sales) |
 | grain | integer | Food resource amount |
@@ -300,7 +294,7 @@ Stock above a resource's reserve is auto-sold; set via `/api/setFiefdomReserve`.
 - **Database query**: Implemented via `FiefdomFetcher::fetchFiefdomById()`
 - **Data structures**: `FiefdomData`, `BuildingData`, `OfficialData` in `FiefdomData.hpp`
 - **Fetching logic**: `FiefdomFetcher.cpp` handles all database queries
-- **Resources**: Full resource tracking (peasants, gold, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron)
+- **Resources**: Full resource tracking (gold, grain, wood, steel, bronze, leather, mana, charcoal, iron, ironwork, fancy_ironwork, beams, boards)
 - **Buildings**: Generic building support with level and construction timestamps
 - **Officials**: All 8 official roles with full stat tracking (intelligence, charisma, wisdom, diligence)
 - **Optional includes**: Buildings, officials, heroes, and combatants can be optionally included via request parameters

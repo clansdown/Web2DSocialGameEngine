@@ -10,6 +10,22 @@ This is the browser-based game client that:
 - Integrates Bootstrap 5.3.8 for UI components with dark mode support
 - Uses OPFS (Origin Private File System) for local storage
 
+## Age-relative content
+
+The server is authoritative for safe/custom content. The client must render the
+fields it receives and must never filter raw custom content itself. In
+particular:
+
+- Safe messages are authored with `safe_message_id` IDs from
+  `getSafeContent`; free-text composer is adult-only.
+- Reactions/GIFs are server catalog IDs, not arbitrary emoji/JSON.
+- Group creation/invites and custom avatars are hidden/disabled for minors.
+- Barony create/honor selection uses the safe name/tag catalogs; custom text is
+  adult-only.
+- Combat names are server-projected safe names; voice is adult-only.
+
+See `docs/minor_content_visibility.md`.
+
 ## Project Structure
 
 ```

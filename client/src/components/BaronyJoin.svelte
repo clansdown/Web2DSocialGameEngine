@@ -21,6 +21,7 @@
   let loading = $state(true);
   let loadError = $state<string | null>(null);
   let joiningBaronyId = $state<number | null>(null);
+  let isMinor = $derived($currentCharacter?.is_adult !== true);
 
   async function loadBaronys(): Promise<void> {
     loading = true;
@@ -88,15 +89,23 @@
               {#if barony.description}
                 <p class="card-text text-muted">{barony.description}</p>
               {/if}
+              {#if barony.tags?.length}
+                <div class="mb-2">
+                  {#each barony.tags as tag (tag.id)}
+                    <span class="badge text-bg-secondary me-1">{tag.name}</span>
+                  {/each}
+                </div>
+              {/if}
               <p class="card-text">
                 <small class="text-muted">
                   Founded by {barony.owner_name} &middot; {barony.member_count} member{barony.member_count !== 1 ? 's' : ''}
+                  {#if barony.accepts_minors}&middot; Accepts minors{/if}
                 </small>
               </p>
               <button
                 class="btn btn-primary"
                 onclick={() => handleJoin(barony.id)}
-                disabled={joiningBaronyId === barony.id}
+                disabled={joiningBaronyId === barony.id || (isMinor && !barony.accepts_minors)}
               >
                 {#if joiningBaronyId === barony.id}
                   <span class="spinner-border spinner-border-sm me-1" role="status"></span>

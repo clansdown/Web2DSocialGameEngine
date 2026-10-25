@@ -11,18 +11,23 @@ CREATE TABLE messages (
     seq INTEGER NOT NULL,
     author_character_id INTEGER,
     body TEXT,
+    safe_message_id TEXT,
     source_language TEXT,
     source_language_confidence REAL,
     gif TEXT,
+    gif_id TEXT,
     reply_to_message_id TEXT,
     reply_author_character_id INTEGER,
     reply_excerpt TEXT,
+    reply_safe_excerpt TEXT,
     reply_source_language TEXT,
     system_id TEXT,
     system_args TEXT,
     created_at INTEGER NOT NULL,
     edited_at INTEGER,
     deleted_at INTEGER,
+    deletion_reason TEXT,
+    deleted_by_account_id INTEGER,
     version INTEGER NOT NULL DEFAULT 1,
     change_id INTEGER NOT NULL,
     UNIQUE (chat_id, seq)
@@ -35,8 +40,13 @@ CREATE TABLE messages (
 |---|---|
 | `seq` | Per-chat monotonic position. |
 | `author_character_id` | NULL for system messages. |
-| `source_language` / `_confidence` | Detected source language (baseline engine). |
-| `gif` | JSON of one server-provided GIF (`{provider,id,url,preview_url}`), else NULL. |
+| `body` | Adult custom text. NULL/empty for a safe message. Never sent to a minor. |
+| `safe_message_id` | Server-owned safe catalog id (`safe_messages.json`). A minor may only see/author messages with this set. |
+| `source_language` / `_confidence` | Detected custom-text source language (baseline engine). Empty for safe messages. |
+| `gif` | Legacy arbitrary GIF JSON. **Never read**; use `gif_id`. |
+| `gif_id` | Server-owned GIF catalog id (`safe_gifs.json`). Minor visibility requires `minor_safe`. |
+| `reply_excerpt` | Adult custom parent excerpt snapshot. |
+| `reply_safe_excerpt` | Safe parent excerpt snapshot; minors receive only this. |
 | `reply_*` | Snapshot of the replied-to message (excerpt + author + language). |
 | `system_id` / `system_args` | System event (`member_joined`, `member_left`, `owner_transferred`, `member_kicked`). |
 | `edited_at` | Last edit time; versions in `message_versions`. |

@@ -208,6 +208,10 @@ This ensures that verification failures do not prevent account creation - users 
 
 **Note:** The `digitalCredential` field is only processed when `adult=true`. If `adult=false` but `digitalCredential` is provided, an error is returned.
 
+**There is no age-override code.** `override_code` is ignored; adult status can
+only come from Digital Credentials or an admin/customer-service action
+(`/api/adminSetAdultStatus`).
+
 ## Implementation Status
 
 - Implemented

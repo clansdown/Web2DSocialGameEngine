@@ -29,8 +29,8 @@ mkdir -p "$DB_DIR"
 AVATAR_STORAGE="$(printf '%s' "${RAVENEST_AVATAR_STORAGE:-local}" | tr '[:upper:]' '[:lower:]')"
 (
     cd "$DB_DIR" &&
-    RAVENEST_AVATAR_STORAGE="$AVATAR_STORAGE" \
-        "$SERVER_BIN" --port "$PORT" --content "$GAME_DIR"
+    RAVENEST_AVATAR_STORAGE="$AVATAR_STORAGE" RAVENEST_TEST_ADULT_ACCOUNTS=1 \
+        "$SERVER_BIN" --port "$PORT" --content "$GAME_DIR" --test-timeout-seconds 600
 ) &
 SRV_PID=$!
 trap 'kill $SRV_PID 2>/dev/null; wait $SRV_PID 2>/dev/null; rm -rf "$DB_DIR"' EXIT

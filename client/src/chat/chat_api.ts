@@ -51,7 +51,13 @@ export function sendChatMessageRequest(
   character_id: number,
   chat_id: string,
   body: string,
-  options: { reply_to_message_id?: string; gif?: unknown; language?: string; client_id?: string } = {}
+  options: {
+    safe_message_id?: string;
+    gif_id?: string;
+    reply_to_message_id?: string;
+    language?: string;
+    client_id?: string;
+  } = {}
 ): Promise<{ id: string; seq: number; change_id: number }> {
   return authenticatedPost('sendChatMessage', { character_id, chat_id, body, ...options });
 }
@@ -59,9 +65,10 @@ export function sendChatMessageRequest(
 export function editChatMessageRequest(
   character_id: number,
   message_id: string,
-  body: string
+  body: string,
+  options: { safe_message_id?: string; gif_id?: string } = {}
 ): Promise<{ id: string; version: number; change_id: number }> {
-  return authenticatedPost('editChatMessage', { character_id, message_id, body });
+  return authenticatedPost('editChatMessage', { character_id, message_id, body, ...options });
 }
 
 export function deleteChatMessageRequest(
@@ -104,17 +111,17 @@ export function searchChatCharactersRequest(
 export function addChatReactionRequest(
   character_id: number,
   message_id: string,
-  emoji: string
+  reaction_id: string
 ): Promise<{ message_id: string; reactions: unknown[]; change_id: number }> {
-  return authenticatedPost('addChatReaction', { character_id, message_id, emoji });
+  return authenticatedPost('addChatReaction', { character_id, message_id, reaction_id });
 }
 
 export function removeChatReactionRequest(
   character_id: number,
   message_id: string,
-  emoji: string
+  reaction_id: string
 ): Promise<{ message_id: string; reactions: unknown[]; change_id: number }> {
-  return authenticatedPost('removeChatReaction', { character_id, message_id, emoji });
+  return authenticatedPost('removeChatReaction', { character_id, message_id, reaction_id });
 }
 
 export function addChatBookmarkRequest(

@@ -130,7 +130,6 @@ CREATE TABLE characters (
 CREATE TABLE fiefdoms (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
     x INTEGER NOT NULL,
     y INTEGER NOT NULL,
     FOREIGN KEY(owner_id) REFERENCES characters(id)
@@ -346,6 +345,11 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - See `api/refundPremiumItem.md` for `/api/refundPremiumItem` documentation
 - See `api/getAvatarPool.md` for `/api/getAvatarPool` documentation
 - See `api/getPortraitFrames.md` for `/api/getPortraitFrames` documentation
+- See `api/getSafeContent.md` for `/api/getSafeContent` documentation
+- See `api/setBaronyAcceptsMinors.md` for `/api/setBaronyAcceptsMinors` documentation
+- See `api/adminSetAdultStatus.md` for `/api/adminSetAdultStatus` documentation
+- See `api/adminGetDeletedMessages.md` for `/api/adminGetDeletedMessages` documentation
+- See `api/adminSetBaronyIdentity.md` for `/api/adminSetBaronyIdentity` documentation
 - See `api/setCharacterAvatar.md` for `/api/setCharacterAvatar` documentation
 - See `api/uploadCharacterAvatar.md` for `/api/uploadCharacterAvatar` documentation
 - See `api/removeCustomAvatar.md` for `/api/removeCustomAvatar` documentation
@@ -355,7 +359,7 @@ All endpoints accept POST requests with JSON bodies and respond with:
 
 - **/api/login**: Authenticate user and return all characters
 - **/api/getCharacter**: Retrieve character information
-- **/api/updateUserProfile**: Update user account settings (adult flag)
+- **/api/updateUserProfile**: Update non-age account settings; adult status is rejected here (CS/DC only via `adminSetAdultStatus`)
 - **/api/updateCharacterProfile**: Update character profile (display names)
 - **/api/Build**: Building construction/management (actions: `build`/`create`, `demolish`, `move`, `upgrade`, `upgrade_pond_type`; buildings may never overlap river cells)
 - **/api/getWorld**: Get world state (STUB - TODO: implement)
@@ -398,6 +402,11 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - **/api/refundPremiumItem**: Refund (revoke) a cosmetic — flags it revoked, clears the loadout, credits no Platinum (support action)
 - **/api/getAvatarPool**: Safe PFP pool for the requested `gender` (gender-split `images/avatars/safe/{male,female}/`, scanned + sorted at startup and **auto-rescanned on directory change** — no restart needed; returned in a per-user shuffled display order seeded from the username, canonical pool stays sorted) + viewer adult flag
 - **/api/getPortraitFrames**: Decorative portrait-frame geometry (`game/config/portrait_frames.json`): overlay image + pixel size + portrait destination rect per variant
+- **/api/getSafeContent**: Server-owned safe catalogs for the viewer (messages, barony names/tags, reactions, GIFs, ban reasons); minors receive only `minor_safe` reactions/GIFs
+- **/api/setBaronyAcceptsMinors**: Owner/admin toggle; rejects `false` while a minor is a member
+- **/api/adminSetAdultStatus**: Admin/CS adult-status change; `false` runs the demotion scrub + forensic message deletion
+- **/api/adminGetDeletedMessages**: Admin-only forensic message_deletions reader
+- **/api/adminSetBaronyIdentity**: Admin-only reassignment of a barony's safe name/tags (and optional custom text)
 - **/api/setCharacterAvatar**: Set the character's safe-pool PFP (validated against the character's own sex pool; always present; shown to minors and as the fallback; 24h cooldown, creation pick exempt; does not clear a custom upload)
 - **/api/uploadCharacterAvatar**: 18+-only custom PFP upload (format/size/dimension checks; surfaced by the hub Profile activity; moderation TODO)
 - **/api/removeCustomAvatar**: 18+-only removal of a custom PFP (reverts to the safe pick)
@@ -437,6 +446,30 @@ identity locks. Full reference: `server/docs/chat.md`. Config:
 
 Each endpoint has a doc in `api/`; the SQL tables are documented under
 `server/tables/`; the translation sidecar lives in `server/translation/`.
+
+### Minor Content Visibility
+
+Canonical policy: `docs/minor_content_visibility.md`. Viewer-relative projection
+lives in `server/Visibility.{hpp,cpp}` and `server/chat/ChatService.cpp`.
+
+- Minors receive only safe names, safe avatars, `safe_message_id` messages, safe
+  barony names/tags, and `minor_safe` reactions/GIFs. Custom content is never
+  sent to a minor.
+- Minors author only server-owned safe catalog ids. Custom names/avatars,
+  free-text messages, custom reactions/GIFs, group chats, and voice are
+  adult-only.
+- Hidden custom messages produce no unread count, preview, mention, bookmark, or
+  push for minors.
+- Adult status is account-level, set by Digital Credentials or
+  `adminSetAdultStatus`; there is no client age override.
+- `accepts_minors` gates barony joins. Minor founders/successors force it true.
+- On demotion, identity/titles are scrubbed, group memberships are removed, and
+  all messages authored by every character on the account are tombstoned with an
+  admin-only forensic copy (`message_deletions`).
+- Fiefdoms are unnamed. Dukedom naming stays pinned until dukedoms exist.
+- Safe catalogs: `game/config/safe_messages.json`, `safe_barony_names.json`,
+  `safe_barony_tags.json`, `safe_reactions.json`, `safe_gifs.json`,
+  `safe_ban_reasons.json`; served by `/api/getSafeContent`.
 
 ### Realtime Combat
 
@@ -947,6 +980,21 @@ Build the full game progression and content system with a working tower defense 
 ### Progress
 
 #### Done
+- **Minor content visibility (server-enforced)**: viewer-relative projection in
+  `server/Visibility.{hpp,cpp}` + `server/chat/ChatService.cpp`. Minors receive
+  only safe names/avatars/messages/barony names+tags/`minor_safe` reactions+GIFs;
+  minors author only safe catalog IDs. Hidden custom messages do not affect
+  unread/preview/mention/push. Group chats are adult-only; minors never use voice.
+  Barony `accepts_minors` + safe name/tags are mandatory; custom text is
+  adult-only. Fiefdoms are unnamed. Adult status is CS/DC only via
+  `adminSetAdultStatus` (public override removed). Demotion scrubs identity and
+  tombstones every message by every account character with admin-only forensic
+  copies in `message_deletions`. New catalogs `safe_messages.json`,
+  `safe_barony_names.json`, `safe_barony_tags.json`, `safe_reactions.json`,
+  `safe_gifs.json`, `safe_ban_reasons.json`; new endpoints `getSafeContent`,
+  `setBaronyAcceptsMinors`, `adminSetBaronyIdentity`, `adminSetAdultStatus`,
+  `adminGetDeletedMessages`. Canonical policy:
+  `docs/minor_content_visibility.md`. Smoke: `tools/minor_visibility_smoke.sh`.
 - **Multi-round system**: Each level in `mini_games.json` has a configurable `rounds` field (3-8 per level). Server tracks current_round in game_sessions. On win, if more rounds remain, server returns `next_round: true` with fresh `spawn_schedule` instead of ending the game. Client shows "Round N/M" indicator, clears enemies between rounds, and offers "Next Round" button or auto-advance after 2s delay.
 - Created `text/` directory with translation system
 - Created `game/config/` with tower defense configs (mobs, towers, units, projectiles, maps)

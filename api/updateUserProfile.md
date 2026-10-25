@@ -1,6 +1,9 @@
 # POST /api/updateUserProfile
 
-Update user account profile settings including adult status.
+Update non-age account settings. **Adult status cannot be changed here.** It is
+account-level and set only by Digital Credentials verification or an
+admin/customer-service action (`/api/adminSetAdultStatus`). Sending `adult`
+returns `adult_status_managed`.
 
 ## Request
 
@@ -10,66 +13,34 @@ Update user account profile settings including adult status.
     "username": "player_name",
     "token": "xxx"
   },
-  "adult": true
+  "language": "en"
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| auth | object | Yes | Authentication object (see below) |
-| adult | boolean | Yes | Change adult status |
-
-**Authentication object:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| username | string | Account username |
-| token | string | Authentication token (alternative to password) |
+| auth | object | Yes | Authentication object |
+| language | string | No | Interface/display language (max 12 safe characters) |
+| adult | boolean | No | **Rejected** with `adult_status_managed` |
 
 ## Response
-
-### Success (200 OK)
 
 ```json
 {
   "status": "ok",
   "data": {
-    "adult": true,
+    "adult": false,
+    "adult_status_managed": true,
+    "language": "en",
     "token": "hex_token_string"
   }
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| adult | boolean | Current adult status |
-| token | string | Updated authentication token |
-
-### Error (400 Bad Request)
+## Errors
 
 ```json
-{
-  "status": "ok",
-  "data": {},
-  "error": "authentication required"
-}
+{ "error": "authentication required" }
+{ "error": "adult_status_managed" }
+{ "error": "invalid_language" }
 ```
-
-```json
-{
-  "status": "ok",
-  "data": {},
-  "error": "adult field required"
-}
-```
-
-## Implementation Notes
-
-- Updates the `adult` flag on the user account
-- Adult flag controls whether custom display names can be set on characters
-- Minor accounts (adult=false) cannot have custom display names on their characters
-- Token refresh is included in response
-
-## Implementation Status
-
-- Implemented

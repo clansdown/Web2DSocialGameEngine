@@ -331,6 +331,16 @@ export class CombatNetClient {
   }
 
   /**
+   * Sends a team chat message using a server-owned safe catalog id. Required
+   * for minor accounts; custom text is rejected server-side.
+   *
+   * @param safe_message_id - Safe message catalog id
+   */
+  chat_safe(safe_message_id: string): void {
+    this.send('chat', { safe_message_id });
+  }
+
+  /**
    * Relays a WebRTC signaling message to a teammate.
    *
    * @param toPlayer - Target player id

@@ -55,6 +55,7 @@
 
   let my_player_id = $derived(welcome?.player_id ?? 0);
   let my_team = $derived(welcome?.team ?? 1);
+  let can_use_voice = $derived($currentCharacter?.is_adult === true);
 
   let teammates = $derived(
     (welcome?.players ?? [])
@@ -170,6 +171,7 @@
 
   /** Toggles voice chat (CombatVoice manages its own media). */
   function toggle_voice(): void {
+    if (!can_use_voice) return;
     voice_active = !voice_active;
   }
 
@@ -227,6 +229,7 @@
       {selected_count}
       on_toggle_chat={toggle_chat}
       on_toggle_voice={toggle_voice}
+      show_voice={can_use_voice}
       on_leave={leave_match}
       {chat_open}
       {voice_active}
@@ -264,7 +267,7 @@
             }}
           />
         {/if}
-        {#if voice_active}
+        {#if voice_active && can_use_voice}
           <CombatVoice
             net={net!}
             {teammates}

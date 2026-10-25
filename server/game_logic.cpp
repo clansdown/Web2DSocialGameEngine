@@ -102,7 +102,7 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
         
         std::vector<FiefdomData> fiefdoms;
         
-        auto read_fiefdom = [&](int id, int owner_id, std::string name, int x, int y,
+        auto read_fiefdom = [&](int id, int owner_id, int x, int y,
                                 double gold, double silver_pence, int grain, int wood, int steel,
                                 int bronze, int stone, int leather, int mana, int charcoal,
                                 int iron, int ironwork, int fancy_ironwork, int beams, int boards,
@@ -110,7 +110,6 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
             FiefdomData f;
             f.id = id;
             f.owner_id = owner_id;
-            f.name = name;
             f.x = x;
             f.y = y;
             f.gold = gold;
@@ -138,11 +137,11 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
         };
 
         if (!fiefdom_filter_id.empty()) {
-            db << "SELECT id, owner_id, name, x, y, gold, silver_pence, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, fancy_ironwork, beams, boards, wall_count, morale, import_settings, reserves FROM fiefdoms WHERE id = ?;"
+            db << "SELECT id, owner_id, x, y, gold, silver_pence, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, fancy_ironwork, beams, boards, wall_count, morale, import_settings, reserves FROM fiefdoms WHERE id = ?;"
                << std::stoi(fiefdom_filter_id)
                >> read_fiefdom;
         } else {
-            db << "SELECT id, owner_id, name, x, y, gold, silver_pence, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, fancy_ironwork, beams, boards, wall_count, morale, import_settings, reserves FROM fiefdoms;"
+            db << "SELECT id, owner_id, x, y, gold, silver_pence, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, fancy_ironwork, beams, boards, wall_count, morale, import_settings, reserves FROM fiefdoms;"
                >> read_fiefdom;
         }
         

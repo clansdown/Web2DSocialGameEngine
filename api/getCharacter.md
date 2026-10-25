@@ -1,12 +1,15 @@
 # POST /api/getCharacter
 
-Retrieve character information.
+Retrieve a viewer-relative character profile. Minors receive the safe display
+name and safe avatar for every character; adults receive custom content when it
+exists.
 
 ## Request
 
 ```json
 {
-  "character_id": 123
+  "character_id": 123,
+  "auth": { "username": "alice", "token": "..." }
 }
 ```
 
@@ -20,15 +23,11 @@ Retrieve character information.
   "data": {
     "id": 123,
     "display_name": "CloudDragon",
-    "safe_display_name": "CloudDragon",
+    "safe_display_name": "QuietOtter",
     "level": 1,
     "archetype": null,
     "sex": "male",
-    "avatar_safe_id": "male/3.png",
-    "avatar_custom_id": null,
-    "avatar_storage": "local",
-    "avatar_changed_at": 1750006500,
-    "avatar_url": "/images/avatars/safe/3.png"
+    "avatar_url": "/images/avatars/safe/male/3.png"
   }
 }
 ```
@@ -36,16 +35,12 @@ Retrieve character information.
 | Field | Type | Description |
 |-------|------|-------------|
 | id | integer | Character ID |
-| display_name | string | Character display name |
-| safe_display_name | string | Character safe display name |
+| display_name | string | Viewer-relative name (safe for minors) |
+| safe_display_name | string | Always-safe name |
 | level | integer | Character level |
 | archetype | string \| null | Starting path; null until chosen |
 | sex | string \| null | `"male"` / `"female"`; null until chosen |
-| avatar_safe_id | string \| null | Safe-pool PFP id; null until the creation picker is answered |
-| avatar_custom_id | string \| null | Content-addressed custom (18+) PFP key (`<id>/<sha256>.<ext>`); null when none |
-| avatar_storage | string | Backend holding a custom key: `local` or `r2` |
-| avatar_changed_at | integer | Unix ts of the last PFP change (24h cooldown) |
-| avatar_url | string | Server-resolved PFP URL for this (self) viewer; may be `""`. Local custom storage returns `/api/avatar/<id>` (needs session credentials); R2 custom storage returns the absolute public URL. Minors always receive the safe pick |
+| avatar_url | string | Viewer-relative PFP URL; may be `""` |
 
 ### Error (400 Bad Request)
 
@@ -55,12 +50,9 @@ Retrieve character information.
 }
 ```
 
-## Implementation Notes
+## Notes
 
-- Queries characters table by character_id
-- Returns full character information including display names and level
-
-## Implementation Status
-
-- Database query: Implemented
-- Full character stats: TODO
+- The server never returns `avatar_custom_id` or `avatar_storage` to another
+  player. Custom R2 keys are server-only.
+- A minor always receives the safe name and safe portrait.
+- Requesting a missing character returns `character not found`.

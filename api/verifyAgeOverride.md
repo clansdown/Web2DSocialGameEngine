@@ -1,40 +1,7 @@
-# POST /api/verifyAgeOverride
+# `POST /api/verifyAgeOverride` — removed
 
-Validates an age verification override code. Provided for tech support to verify users through alternate means.
+This endpoint has been removed. Adult status is account-level and may only be
+set by Digital Credentials verification or an admin/customer-service action
+(`/api/adminSetAdultStatus`).
 
-## Request
-
-```json
-{
-    "code": "a1b2c3d4"
-}
-```
-
-## Response (success — valid code)
-
-```json
-{
-    "status": "ok",
-    "data": {
-        "verified": true
-    }
-}
-```
-
-## Response (success — invalid code)
-
-```json
-{
-    "status": "ok",
-    "data": {
-        "verified": false
-    }
-}
-```
-
-## Notes
-
-- Public endpoint (no authentication required)
-- Currently uses a single hardcoded code `a1b2c3d4`
-- Does not modify any database state
-- The client uses `verified: true` to set the adult flag during account creation
+There is no client-callable age override code.

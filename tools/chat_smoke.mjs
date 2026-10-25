@@ -67,7 +67,7 @@ async function make_user(tag) {
   const username = `${tag}_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6)}`;
   const password = 'chat_pass_123';
   const acct = await post('createAccount', {
-    username, password, adult: false, word1: w1[0], word2: w2[0]
+    username, password, adult: true, word1: w1[0], word2: w2[0]
   });
   if (!acct.data && !acct.token) fail(`createAccount(${tag}): ${JSON.stringify(acct)}`);
   const login = await post('login', { auth: { username, password } });
@@ -131,9 +131,9 @@ expect(tomb && tomb.deleted === true, `tombstone missing: ${JSON.stringify(tomb)
 log('delete produced a tombstone');
 
 // ── 4. reaction + bookmark ──────────────────────────────────────────────────
-const react = data(await post('addChatReaction', { auth: b.auth, character_id: b.character_id, message_id: sent.id, emoji: '👍' }));
+const react = data(await post('addChatReaction', { auth: b.auth, character_id: b.character_id, message_id: sent.id, reaction_id: 'thumbs_up' }));
 expect(react.reactions?.some((r) => r.emoji === '👍' && r.character_ids.includes(b.character_id)), `reaction: ${JSON.stringify(react)}`);
-await post('removeChatReaction', { auth: b.auth, character_id: b.character_id, message_id: sent.id, emoji: '👍' });
+await post('removeChatReaction', { auth: b.auth, character_id: b.character_id, message_id: sent.id, reaction_id: 'thumbs_up' });
 log('reaction add/remove ok');
 
 await post('addChatBookmark', { auth: b.auth, character_id: b.character_id, message_id: sent.id });

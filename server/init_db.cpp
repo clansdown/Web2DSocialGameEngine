@@ -101,6 +101,66 @@ ensureIndex(db, "idx_fiefdom_walls_fiefdom", "fiefdom_walls", "fiefdom_id");
         }
     }
 
+    // Adult status is account-level and customer-service/digital-credential
+    // verified. The provenance columns are admin-only and audited in chat.db.
+    void migrate_adult_verification(sqlite::database& db) {
+        try {
+            db << "ALTER TABLE users ADD COLUMN adult_verified_at INTEGER NOT NULL DEFAULT 0;";
+        } catch (const std::exception&) {}
+        try {
+            db << "ALTER TABLE users ADD COLUMN adult_verified_by INTEGER;";
+        } catch (const std::exception&) {}
+        try {
+            db << "ALTER TABLE users ADD COLUMN adult_verification_method TEXT;";
+        } catch (const std::exception&) {}
+    }
+
+    // The barony keeps a mandatory safe name/tag selection and an optional
+    // adult-only custom name/description. `name` stores the custom value when
+    // present and the safe label otherwise, so the NOT NULL/UNIQUE schema stays
+    // intact; projections always choose the viewer-relative value.
+    void migrate_safe_barony_identity(sqlite::database& db) {
+        try {
+            db << "ALTER TABLE baronies ADD COLUMN safe_name_id TEXT NOT NULL DEFAULT '';";
+        } catch (const std::exception&) {}
+        try {
+            db << "ALTER TABLE baronies ADD COLUMN safe_tag_ids TEXT NOT NULL DEFAULT '[]';";
+        } catch (const std::exception&) {}
+        try {
+            db << "ALTER TABLE baronies ADD COLUMN accepts_minors INTEGER NOT NULL DEFAULT 0;";
+        } catch (const std::exception&) {}
+        try {
+            db << "ALTER TABLE player_game_state ADD COLUMN safe_barony_name_id TEXT;";
+        } catch (const std::exception&) {}
+    }
+
+    // Safe messages are server-owned catalog ids. Custom text remains in
+    // `body`; a safe message has `safe_message_id` and no custom text. GIFs are
+    // catalog ids too (the legacy `gif` column is never read).
+    void migrate_message_safety(sqlite::database& db) {
+        try {
+            db << "ALTER TABLE messages ADD COLUMN safe_message_id TEXT;";
+        } catch (const std::exception&) {}
+        try {
+            db << "ALTER TABLE messages ADD COLUMN gif_id TEXT;";
+        } catch (const std::exception&) {}
+        try {
+            db << "ALTER TABLE messages ADD COLUMN reply_safe_excerpt TEXT;";
+        } catch (const std::exception&) {}
+        try {
+            db << "ALTER TABLE messages ADD COLUMN deletion_reason TEXT;";
+        } catch (const std::exception&) {}
+        try {
+            db << "ALTER TABLE messages ADD COLUMN deleted_by_account_id INTEGER;";
+        } catch (const std::exception&) {}
+        try {
+            db << "ALTER TABLE message_versions ADD COLUMN safe_message_id TEXT;";
+        } catch (const std::exception&) {}
+        try {
+            db << "ALTER TABLE message_versions ADD COLUMN gif_id TEXT;";
+        } catch (const std::exception&) {}
+    }
+
     // Admin identity lock flags. A locked name/avatar can be reverted but not
     // freely changed by the player. See docs/chat_identity_lock.md.
     void migrate_identity_lock(sqlite::database& db) {
@@ -416,7 +476,10 @@ void migrate_baron_character_id(sqlite::database& db) {
             "username TEXT UNIQUE NOT NULL,"
             "password_hash TEXT NOT NULL,"
             "created_at INTEGER NOT NULL,"
-            "adult INTEGER NOT NULL DEFAULT 0"
+            "adult INTEGER NOT NULL DEFAULT 0,"
+            "adult_verified_at INTEGER NOT NULL DEFAULT 0,"
+            "adult_verified_by INTEGER,"
+            "adult_verification_method TEXT"
         );
 
         createTable(db, "characters",
@@ -435,7 +498,6 @@ void migrate_baron_character_id(sqlite::database& db) {
         createTable(db, "fiefdoms",
             "id INTEGER PRIMARY KEY AUTOINCREMENT,"
             "owner_id INTEGER NOT NULL,"
-            "name TEXT NOT NULL,"
             "x INTEGER NOT NULL,"
             "y INTEGER NOT NULL,"
             "gold INTEGER NOT NULL DEFAULT 0,"
@@ -618,6 +680,7 @@ void migrate_baron_character_id(sqlite::database& db) {
             "entered_at INTEGER NOT NULL DEFAULT 0,"
             "last_updated INTEGER NOT NULL DEFAULT 0,"
             "honor_name TEXT,"
+            "safe_barony_name_id TEXT,"
             "FOREIGN KEY(character_id) REFERENCES characters(id)"
         );
 
@@ -636,6 +699,9 @@ void migrate_baron_character_id(sqlite::database& db) {
         createTable(db, "baronies",
             "id INTEGER PRIMARY KEY AUTOINCREMENT,"
             "name TEXT NOT NULL UNIQUE,"
+            "safe_name_id TEXT NOT NULL DEFAULT '',"
+            "safe_tag_ids TEXT NOT NULL DEFAULT '[]',"
+            "accepts_minors INTEGER NOT NULL DEFAULT 0,"
             "owner_character_id INTEGER NOT NULL,"
             "description TEXT DEFAULT '',"
             "created_at INTEGER NOT NULL,"
@@ -839,18 +905,23 @@ void migrate_baron_character_id(sqlite::database& db) {
             "seq INTEGER NOT NULL,"
             "author_character_id INTEGER,"
             "body TEXT,"
+            "safe_message_id TEXT,"
             "source_language TEXT,"
             "source_language_confidence REAL,"
             "gif TEXT,"
+            "gif_id TEXT,"
             "reply_to_message_id TEXT,"
             "reply_author_character_id INTEGER,"
             "reply_excerpt TEXT,"
+            "reply_safe_excerpt TEXT,"
             "reply_source_language TEXT,"
             "system_id TEXT,"
             "system_args TEXT,"
             "created_at INTEGER NOT NULL,"
             "edited_at INTEGER,"
             "deleted_at INTEGER,"
+            "deletion_reason TEXT,"
+            "deleted_by_account_id INTEGER,"
             "version INTEGER NOT NULL DEFAULT 1,"
             "change_id INTEGER NOT NULL,"
             "UNIQUE (chat_id, seq)"
@@ -860,9 +931,32 @@ void migrate_baron_character_id(sqlite::database& db) {
             "message_id TEXT NOT NULL,"
             "version INTEGER NOT NULL,"
             "body TEXT,"
+            "safe_message_id TEXT,"
+            "gif_id TEXT,"
             "editor_character_id INTEGER,"
             "edited_at INTEGER,"
             "PRIMARY KEY (message_id, version)"
+        );
+
+        // Admin-only forensic copies of messages deleted during an account
+        // demotion. Normal readers never query this table.
+        createTable(db, "message_deletions",
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "message_id TEXT NOT NULL,"
+            "chat_id TEXT NOT NULL,"
+            "author_character_id INTEGER,"
+            "author_account_id INTEGER NOT NULL,"
+            "custom_body TEXT,"
+            "safe_message_id TEXT,"
+            "gif_id TEXT,"
+            "source_language TEXT,"
+            "reply_to_message_id TEXT,"
+            "reply_custom_excerpt TEXT,"
+            "reply_safe_excerpt TEXT,"
+            "created_at INTEGER NOT NULL,"
+            "deleted_at INTEGER NOT NULL,"
+            "deletion_reason TEXT NOT NULL,"
+            "deleted_by_account_id INTEGER NOT NULL"
         );
 
         createTable(db, "message_translations",
@@ -1041,6 +1135,12 @@ void migrate_drop_peasants(sqlite::database& db) {
     drop_column_if_exists(db, "fiefdoms", "peasants");
 }
 
+// Fiefdoms are unnamed. The legacy `fiefdoms.name` column is removed; no API
+// field or generated "Manor of <username>" remains.
+void migrate_drop_fiefdom_name(sqlite::database& db) {
+    drop_column_if_exists(db, "fiefdoms", "name");
+}
+
 void initializeGameDB(sqlite::database& db) {
     migrate_barony_tables(db);
     createGameDBTables(db);
@@ -1050,6 +1150,8 @@ void initializeGameDB(sqlite::database& db) {
     migrate_safe_avatar_gender(db);
     migrate_identity_lock(db);
     migrate_user_language(db);
+    migrate_adult_verification(db);
+    migrate_safe_barony_identity(db);
     migrate_manor_level(db);
     migrate_spawn_schedule(db);
     migrate_placements(db);
@@ -1075,12 +1177,14 @@ void initializeGameDB(sqlite::database& db) {
     migrate_building_tech_actions(db);
     migrate_fiefdom_morale_ts(db);
     migrate_drop_peasants(db);
+    migrate_drop_fiefdom_name(db);
     migrate_beams_boards(db);
     ensureGameDBIndexes_private(db);
 }
 
 void initializeChatDB(sqlite::database& db) {
     createChatDBTables(db);
+    migrate_message_safety(db);
     ensureChatDBIndexes_private(db);
 }
 

@@ -86,6 +86,12 @@ bool GameConfigCache::initialize(const std::string& config_dir) {
     add("progression.json");
     add("chat.json");
     add("chat_admins.json");
+    add("safe_messages.json");
+    add("safe_barony_names.json");
+    add("safe_barony_tags.json");
+    add("safe_reactions.json");
+    add("safe_gifs.json");
+    add("safe_ban_reasons.json");
     add("translation.json");
     add("push.json");
 
@@ -286,6 +292,12 @@ nlohmann::json& GameConfigCache::getCosmetics() { return getConfig("cosmetics.js
 nlohmann::json& GameConfigCache::getProgression() { return getConfig("progression.json"); }
 nlohmann::json& GameConfigCache::getChatConfig() { return getConfig("chat.json"); }
 nlohmann::json& GameConfigCache::getChatAdmins() { return getConfig("chat_admins.json"); }
+nlohmann::json& GameConfigCache::getSafeMessages() { return getConfig("safe_messages.json"); }
+nlohmann::json& GameConfigCache::getSafeBaronyNames() { return getConfig("safe_barony_names.json"); }
+nlohmann::json& GameConfigCache::getSafeBaronyTags() { return getConfig("safe_barony_tags.json"); }
+nlohmann::json& GameConfigCache::getSafeReactions() { return getConfig("safe_reactions.json"); }
+nlohmann::json& GameConfigCache::getSafeGifs() { return getConfig("safe_gifs.json"); }
+nlohmann::json& GameConfigCache::getSafeBanReasons() { return getConfig("safe_ban_reasons.json"); }
 nlohmann::json& GameConfigCache::getTranslationConfig() { return getConfig("translation.json"); }
 nlohmann::json& GameConfigCache::getPushConfig() { return getConfig("push.json"); }
 
@@ -327,6 +339,12 @@ nlohmann::json GameConfigCache::getAllConfigs() const {
     result["tower_defense_towers"] = get("tower_defense_towers.json");
     result["tower_defense_units"] = get("tower_defense_units.json");
     result["manor_ui"] = get("manor_ui.json");
+    result["safe_messages"] = get("safe_messages.json");
+    result["safe_barony_names"] = get("safe_barony_names.json");
+    result["safe_barony_tags"] = get("safe_barony_tags.json");
+    result["safe_reactions"] = get("safe_reactions.json");
+    result["safe_gifs"] = get("safe_gifs.json");
+    result["safe_ban_reasons"] = get("safe_ban_reasons.json");
     return result;
 }
 

@@ -1,7 +1,6 @@
 # `/api/addChatReaction`
 
-Adds an emoji reaction to a message. Any Unicode emoji is allowed (≤ 8 code
-points). Blocked interaction is rejected.
+Adds a server-catalog reaction to a message. Arbitrary emoji are not accepted.
 
 **Requires authentication.**
 
@@ -9,20 +8,23 @@ points). Blocked interaction is rejected.
 
 ```json
 { "auth": { "username": "alice", "token": "..." }, "character_id": 12,
-  "message_id": "m_..", "emoji": "👍" }
+  "message_id": "m_..", "reaction_id": "thumbs_up" }
 ```
 
 ## Success Response
 
 ```json
 { "status": "ok", "data": { "message_id": "m_..",
-  "reactions": [ { "emoji": "👍", "character_ids": [12] } ], "change_id": 10500 } }
+  "reactions": [ { "reaction_id": "thumbs_up", "emoji": "👍", "character_ids": [12] } ],
+  "change_id": 10500 } }
 ```
 
 ## Error Responses
 
 ```json
-{ "error": "invalid_emoji" }
+{ "error": "invalid_reaction" }
+{ "error": "reaction_not_minor_safe" }
+{ "error": "message_not_visible" }
 { "error": "message_not_found" }
 { "error": "not_a_member" }
 { "error": "blocked" }
@@ -30,4 +32,6 @@ points). Blocked interaction is rejected.
 
 ## Notes
 
+- The id comes from `/api/getSafeContent`; minors receive only `minor_safe`
+  reactions there, and the server re-checks the flag.
 - Bumps the parent message's `change_id`; no separate reaction cursor.

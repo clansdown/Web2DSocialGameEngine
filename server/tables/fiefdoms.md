@@ -8,7 +8,6 @@ Stores character territory holdings with their locations, resources, and defensi
 CREATE TABLE fiefdoms (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
     x INTEGER NOT NULL,
     y INTEGER NOT NULL,
     gold INTEGER NOT NULL DEFAULT 0,
@@ -42,7 +41,7 @@ CREATE TABLE fiefdoms (
 |-------|------|-------------|---------|
 | id | INTEGER | PRIMARY KEY AUTOINCREMENT | Unique fiefdom identifier |
 | owner_id | INTEGER | NOT NULL FK | Owning character (characters.id) |
-| name | TEXT | NOT NULL | Fiefdom name |
+| — | — | — | **Fiefdoms are unnamed**; the legacy `name` column is removed by `migrate_drop_fiefdom_name`. |
 | x | INTEGER | NOT NULL | X coordinate in world |
 | y | INTEGER | NOT NULL | Y coordinate in world |
 | gold | INTEGER | NOT NULL DEFAULT 0 | Treasury currency (building costs, non-penny imports) |
@@ -137,15 +136,14 @@ Fetching complete fiefdom data:
 ```cpp
 FiefdomData fiefdom;
 db << R"(
-    SELECT owner_id, name, x, y, gold, grain, wood, steel, bronze, stone, leather, mana, wall_count, morale
+    SELECT owner_id, x, y, gold, grain, wood, steel, bronze, stone, leather, mana, wall_count, morale
     FROM fiefdoms WHERE id = ?;
 )" << fiefdom_id
->> [&](int owner_id, std::string name, int x, int y,
+>> [&](int owner_id, int x, int y,
        int gold, int grain, int wood, int steel,
        int bronze, int stone, int leather, int mana, int wall_count, double morale) {
     fiefdom.id = fiefdom_id;
     fiefdom.owner_id = owner_id;
-    fiefdom.name = name;
     fiefdom.x = x;
     fiefdom.y = y;
     fiefdom.gold = gold;

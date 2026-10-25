@@ -10,8 +10,10 @@
   import { onMount, onDestroy } from 'svelte';
   import { currentCharacter, language } from '../lib/stores';
   import { loadTexts } from '../lib/text';
+  import * as auth from '../lib/auth';
   import { render_markdown } from '../chat/markdown';
   import { with_avatar_auth } from '../lib/avatars';
+  import { getSafeContentRequest, type safe_content_dto, type safe_catalog_entry } from '../lib/api';
   import * as api from '../chat/chat_api';
   import type {
     chat_summary,
@@ -46,7 +48,7 @@
     'ui_chat_settings', 'ui_chat_language_prefs', 'ui_chat_push_enable',
     'ui_chat_push_group_mentions', 'ui_chat_loading', 'ui_chat_error', 'ui_chat_chars_left',
     'ui_chat_too_long', 'ui_chat_too_many_lines', 'ui_chat_send_failed', 'ui_chat_no_messages',
-    'ui_chat_cancel', 'ui_chat_markdown_hint'
+    'ui_chat_cancel', 'ui_chat_markdown_hint', 'ui_chat_safe_message'
   ];
 
   let texts = $state<Record<string, string>>({});
@@ -77,6 +79,8 @@
   let cursor = $state(0);
   let wildlandsCursor = $state(0);
   let composerText = $state('');
+  let safeContent = $state<safe_content_dto | null>(null);
+  let safeMessageId = $state('');
   let replyTo = $state<chat_message | null>(null);
   let editing = $state<chat_message | null>(null);
   let searchQuery = $state('');
@@ -94,6 +98,9 @@
   let typingCooldown = 0;
 
   let character_id = $derived($currentCharacter?.id ?? 0);
+  let is_minor = $derived($currentCharacter?.is_adult !== true);
+  let safeMessages = $derived<safe_catalog_entry[]>(safeContent?.messages ?? []);
+  let reactionChoices = $derived<safe_catalog_entry[]>(safeContent?.reactions ?? []);
   let activeChat = $derived(chats.find((c) => c.id === active_chat_id) ?? null);
   let activeMembership = $derived(active_chat_id ? memberships[active_chat_id] : undefined);
   let activeMessages = $derived(active_chat_id ? (messages[active_chat_id] ?? []) : []);
@@ -226,6 +233,13 @@
         api.getFriendsRequest(cid),
         api.getChatLanguagePrefsRequest(cid)
       ]);
+      const creds = auth.getInMemoryCredentials();
+      const token = auth.getSessionToken();
+      if (creds && token) {
+        getSafeContentRequest({ username: creds.username, token })
+          .then((safe) => { safeContent = safe; })
+          .catch(() => { safeContent = null; });
+      }
       chats = list.chats;
       memberships = Object.fromEntries(list.memberships.map((m) => [m.chat_id, m]));
       lastMessages = list.last_messages || {};
@@ -347,20 +361,25 @@
   async function send(): Promise<void> {
     const cid = character_id;
     if (!cid || !active_chat_id) return;
-    if (!composerText.trim()) return;
+    if (is_minor && !safeMessageId) return;
+    if (!is_minor && !composerText.trim()) return;
     actionError = '';
     try {
       if (editing) {
-        await api.editChatMessageRequest(cid, editing.id, composerText);
+        await api.editChatMessageRequest(cid, editing.id, is_minor ? '' : composerText, {
+          safe_message_id: is_minor ? safeMessageId : undefined
+        });
         editing = null;
       } else {
-        await api.sendChatMessageRequest(cid, active_chat_id, composerText, {
+        await api.sendChatMessageRequest(cid, active_chat_id, is_minor ? '' : composerText, {
+          safe_message_id: is_minor ? safeMessageId : undefined,
           reply_to_message_id: replyTo?.id,
           language: $language
         });
         replyTo = null;
       }
       composerText = '';
+      safeMessageId = '';
       await poll_once();
       await load_messages(active_chat_id);
     } catch (e) {
@@ -384,13 +403,13 @@
     }
   }
 
-  async function toggle_reaction(message: chat_message, emoji: string): Promise<void> {
+  async function toggle_reaction(message: chat_message, reaction_id: string): Promise<void> {
     const mine = message.reactions?.some(
-      (r) => r.emoji === emoji && r.character_ids.includes(character_id)
+      (r) => r.reaction_id === reaction_id && r.character_ids.includes(character_id)
     );
     try {
-      if (mine) await api.removeChatReactionRequest(character_id, message.id, emoji);
-      else await api.addChatReactionRequest(character_id, message.id, emoji);
+      if (mine) await api.removeChatReactionRequest(character_id, message.id, reaction_id);
+      else await api.addChatReactionRequest(character_id, message.id, reaction_id);
       await poll_once();
     } catch (e) {
       actionError = e instanceof Error ? e.message : String(e);
@@ -421,7 +440,8 @@
   function start_edit(message: chat_message): void {
     editing = message;
     replyTo = null;
-    composerText = message.body;
+    safeMessageId = message.safe_message_id ?? '';
+    composerText = is_minor ? '' : message.body;
   }
 
   function on_composer_input(): void {
@@ -637,7 +657,7 @@
     return activeMembership?.role === 'owner';
   }
 
-  const REACTIONS = ['👍', '❤️', '😂', '🎉', '😮', '😢'];
+
 
   onMount(async () => {
     texts = await loadTexts(TEXT_IDS);
@@ -703,16 +723,18 @@
               {/each}
             </div>
           {/if}
-          <div class="input-group input-group-sm mb-2">
-            <input
-              class="form-control"
-              placeholder={t('ui_chat_group_name')}
-              bind:value={groupName}
-            />
-            <button class="btn btn-outline-secondary" onclick={create_group}>
-              {t('ui_chat_create_group')}
-            </button>
-          </div>
+          {#if !is_minor}
+            <div class="input-group input-group-sm mb-2">
+              <input
+                class="form-control"
+                placeholder={t('ui_chat_group_name')}
+                bind:value={groupName}
+              />
+              <button class="btn btn-outline-secondary" onclick={create_group}>
+                {t('ui_chat_create_group')}
+              </button>
+            </div>
+          {/if}
         </div>
 
         {#if wildlandsId}
@@ -881,10 +903,10 @@
                     {/if}
                     {#if message.reactions?.length}
                       <div class="chat-reactions mt-1">
-                        {#each message.reactions as reaction (reaction.emoji)}
+                        {#each message.reactions as reaction (reaction.reaction_id)}
                           <button
                             class="btn btn-sm btn-outline-secondary py-0 px-1 me-1"
-                            onclick={() => toggle_reaction(message, reaction.emoji)}
+                            onclick={() => toggle_reaction(message, reaction.reaction_id)}
                           >
                             {reaction.emoji} {reaction.character_ids.length}
                           </button>
@@ -906,9 +928,9 @@
                           {t('ui_chat_delete')}
                         </button>
                       {/if}
-                      {#each REACTIONS as emoji}
-                        <button class="btn btn-link btn-sm p-0 me-1" onclick={() => toggle_reaction(message, emoji)}>
-                          {emoji}
+                      {#each reactionChoices as reaction (reaction.id)}
+                        <button class="btn btn-link btn-sm p-0 me-1" onclick={() => toggle_reaction(message, reaction.id)}>
+                          {reaction.emoji}
                         </button>
                       {/each}
                     </div>
@@ -940,26 +962,41 @@
             {#if actionError}
               <div class="alert alert-warning py-1 px-2 small mb-1">{actionError}</div>
             {/if}
-            <textarea
-              class="form-control form-control-sm"
-              rows="2"
-              bind:value={composerText}
-              oninput={on_composer_input}
-              placeholder={t('ui_chat_markdown_hint')}
-            ></textarea>
-            <div class="d-flex align-items-center mt-1">
-              <small class="text-secondary flex-grow-1">
-                {t('ui_chat_chars_left', {
-                  count: String(Math.max(0, limit.max_characters - char_count(composerText)))
-                })}
-                {#if line_count(composerText) > limit.max_lines}
-                  · {t('ui_chat_too_many_lines')}
-                {/if}
-              </small>
-              <button class="btn btn-sm btn-primary" onclick={send} disabled={!composerText.trim()}>
-                {t('ui_chat_send')}
-              </button>
-            </div>
+            {#if is_minor}
+              <select class="form-select form-select-sm" bind:value={safeMessageId}>
+                <option value="">{t('ui_chat_safe_message')}</option>
+                {#each safeMessages as safe (safe.id)}
+                  <option value={safe.id}>{safe.body ?? safe.name ?? safe.id}</option>
+                {/each}
+              </select>
+              <div class="d-flex align-items-center mt-1">
+                <small class="text-secondary flex-grow-1"></small>
+                <button class="btn btn-sm btn-primary" onclick={send} disabled={!safeMessageId}>
+                  {t('ui_chat_send')}
+                </button>
+              </div>
+            {:else}
+              <textarea
+                class="form-control form-control-sm"
+                rows="2"
+                bind:value={composerText}
+                oninput={on_composer_input}
+                placeholder={t('ui_chat_markdown_hint')}
+              ></textarea>
+              <div class="d-flex align-items-center mt-1">
+                <small class="text-secondary flex-grow-1">
+                  {t('ui_chat_chars_left', {
+                    count: String(Math.max(0, limit.max_characters - char_count(composerText)))
+                  })}
+                  {#if line_count(composerText) > limit.max_lines}
+                    · {t('ui_chat_too_many_lines')}
+                  {/if}
+                </small>
+                <button class="btn btn-sm btn-primary" onclick={send} disabled={!composerText.trim()}>
+                  {t('ui_chat_send')}
+                </button>
+              </div>
+            {/if}
           </div>
         {:else}
           <div class="d-flex align-items-center justify-content-center h-100 text-secondary">

@@ -523,7 +523,10 @@ Push, and admin identity locks. Full reference: `server/docs/chat.md`.
 - **Push**: VAPID + RFC 8291 `aes128gcm` (`server/chat/PushSender.cpp`); the
   service worker lives at `client/public/sw.js`.
 - **Config**: `game/config/chat.json`, `chat_admins.json`, `translation.json`,
-  `push.json`.
+  `push.json`, `safe_messages.json`, `safe_reactions.json`, `safe_gifs.json`.
+- **Minor visibility**: minors see/author only server-owned safe content. Custom
+  messages are omitted entirely and never affect their unread/preview/push; see
+  `docs/minor_content_visibility.md`. Group chats are adult-only.
 
 Chat endpoints: `getChats`, `getChatMessages`, `pollChats`, `pollWildlands`,
 `sendChatMessage`, `editChatMessage`, `deleteChatMessage`, `markChatRead`,
@@ -547,7 +550,9 @@ Three independent SQLite databases for maximum concurrency:
 ### game.db
 - `users`: User accounts (id, username, password_hash, created_at, adult)
 - `characters`: Character entities (id, user_id, display_name, safe_display_name, level)
-- `fiefdoms`: Character territories (id, owner_id, name, x, y) + resource/state columns
+- `fiefdoms`: Character territories (id, owner_id, x, y) + resource/state columns.
+  Fiefdoms are **unnamed**; the legacy `name` column is internal-only and never
+  exposed.
 - `fiefdom_buildings`: Building instances (level, x/y, construction, `output_rates`, `pond_type`)
 - `fiefdom_river`: Per-fiefdom water-power river cells
 - `player_game_state`: Progression phase + `honor_name` + `barony_left_at` (tenure cooldown)

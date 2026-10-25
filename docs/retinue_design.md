@@ -252,7 +252,9 @@ analyzer tech-tree transparency (economic sim unaffected).
   the custom route is returned only when **both** the owner and the viewer are
   adults, else the safe pick. Every surface uses it — `getCharacter`, retinue
   knight portraits, and **chat** (`CharacterDirectory` / `search_characters`),
-  which previously hardcoded the custom route for everyone.
+  which previously hardcoded the custom route for everyone. The knight name is
+  projected through the same viewer context: a minor owner/viewer always sees
+  the character's `safe_display_name`, never the custom name.
 - The hub **Profile** activity (`client/src/components/ProfilePanel.svelte`) is
   the change/upload UI: the safe grid, the 18+ upload (the client center-crops to
   256x256 and encodes WebP when the canvas supports it, else JPEG), remove-custom,

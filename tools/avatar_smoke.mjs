@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
- * Avatar storage smoke test (local backend).
+ * Avatar smoke test — minor-safe path.
  *
- * Exercises createAccount(adult) → login avatar fields → upload → age-gated GET
- * → cooldown / invalid-format errors. The same flow works against R2; the
- * public URL assertion is selected by the AVATAR_EXPECT_STORAGE env var.
+ * Creates a minor account (the only self-service path now that the public age
+ * override is gone), verifies the safe-pool picker, the 24h cooldown, and that
+ * custom uploads/removals are adult-gated. Adult custom uploads are covered
+ * separately after a customer-service/admin adult-status change.
  *
  * Usage: node tools/avatar_smoke.mjs --port 3393
  */
@@ -14,7 +15,6 @@ const args = process.argv.slice(2);
 const portIdx = args.indexOf('--port');
 const port = portIdx >= 0 ? parseInt(args[portIdx + 1], 10) : 2290;
 const base = `http://127.0.0.1:${port}`;
-const expected_storage = process.env.AVATAR_EXPECT_STORAGE ?? 'local';
 const png_base64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
@@ -53,8 +53,7 @@ const password = 'avatar_pass_123';
 const account = await post('createAccount', {
   username,
   password,
-  adult: true,
-  override_code: 'a1b2c3d4',
+  adult: false,
   word1: w1[0],
   word2: w2[0]
 });
@@ -66,9 +65,30 @@ const character = login.data?.characters?.[0];
 if (!token || !character) fail(`login: ${JSON.stringify(login)}`);
 const character_id = character.id;
 const auth = { username, token };
-if (login.data.adult !== true) fail('account did not become adult');
-if (character.avatar_storage !== expected_storage) {
-  fail(`login avatar_storage=${character.avatar_storage}, expected ${expected_storage}`);
+if (login.data.adult !== false) fail('new self-service account should be minor');
+if (character.is_adult !== false) fail('character self projection should be minor');
+if ('avatar_custom_id' in character || 'avatar_storage' in character) {
+  fail('login must not expose custom avatar keys/storage');
+}
+
+const pool = data(await post('getAvatarPool', { auth, gender: character.sex ?? 'male' }));
+const safe = pool.safe?.[0];
+if (!safe?.id) fail(`getAvatarPool: ${JSON.stringify(pool)}`);
+
+const set = await post('setCharacterAvatar', { auth, character_id, safe_id: safe.id });
+if (set.error) fail(`setCharacterAvatar: ${JSON.stringify(set)}`);
+
+const profile = data(await post('getCharacter', { auth, character_id }));
+if (profile.avatar_url !== data(set).avatar_url) {
+  fail(`getCharacter avatar_url=${profile.avatar_url} != ${data(set).avatar_url}`);
+}
+if ('avatar_custom_id' in profile || 'avatar_storage' in profile) {
+  fail('getCharacter must not expose custom avatar keys/storage');
+}
+
+const cooldown = await post('setCharacterAvatar', { auth, character_id, safe_id: safe.id });
+if (!cooldown.error || !cooldown.error.includes('once every 24 hours')) {
+  fail(`second safe pick should be cooldown-limited: ${JSON.stringify(cooldown)}`);
 }
 
 const upload = await post('uploadCharacterAvatar', {
@@ -77,77 +97,14 @@ const upload = await post('uploadCharacterAvatar', {
   format: 'png',
   image_base64: png_base64
 });
-const uploaded = data(upload);
-if (upload.error || !uploaded.avatar_custom_id) {
-  fail(`upload: ${JSON.stringify(upload)}`);
-}
-if (!/^\d+\/[0-9a-f]{64}\.png$/.test(uploaded.avatar_custom_id)) {
-  fail(`avatar_custom_id is not content-addressed: ${uploaded.avatar_custom_id}`);
-}
-if (uploaded.avatar_storage !== expected_storage) {
-  fail(`upload avatar_storage=${uploaded.avatar_storage}, expected ${expected_storage}`);
-}
-if (expected_storage === 'local') {
-  if (uploaded.avatar_url !== `/api/avatar/${character_id}`) {
-    fail(`local avatar_url=${uploaded.avatar_url}`);
-  }
-} else if (!/^https?:\/\/.+\/avatars\//.test(uploaded.avatar_url)) {
-  fail(`r2 avatar_url is not a public asset URL: ${uploaded.avatar_url}`);
-}
-
-const fetched = await fetch(
-  `${base}/api/avatar/${character_id}?username=${encodeURIComponent(username)}` +
-    `&token=${encodeURIComponent(token)}`
-);
-if (fetched.status !== 200) fail(`avatar GET status ${fetched.status}`);
-if (expected_storage === 'local') {
-  if (!String(fetched.headers.get('content-type')).startsWith('image/png')) {
-    fail(`avatar content-type ${fetched.headers.get('content-type')}`);
-  }
-  const bytes = new Uint8Array(await fetched.arrayBuffer());
-  if (bytes.length < 8 || bytes[0] !== 0x89 || bytes[1] !== 0x50) {
-    fail('avatar GET did not return the uploaded PNG');
-  }
-}
-
-const unauth = await fetch(`${base}/api/avatar/${character_id}`);
-if (unauth.status !== 404) fail(`unauthenticated avatar GET status ${unauth.status}`);
-
-const profile = data(await post('getCharacter', { auth, character_id }));
-if (profile.avatar_storage !== expected_storage) {
-  fail(`getCharacter avatar_storage=${profile.avatar_storage}`);
-}
-if (profile.avatar_custom_id !== uploaded.avatar_custom_id) {
-  fail('getCharacter did not return the uploaded key');
-}
-
-const cooldown = await post('uploadCharacterAvatar', {
-  auth,
-  character_id,
-  format: 'png',
-  image_base64: png_base64
-});
-if (!cooldown.error || !cooldown.error.includes('once every 24 hours')) {
-  fail(`second upload should be cooldown-limited: ${JSON.stringify(cooldown)}`);
+if (upload.error !== 'adult_required') {
+  fail(`minor upload should be adult_required: ${JSON.stringify(upload)}`);
 }
 
 const remove = await post('removeCustomAvatar', { auth, character_id });
-if (!remove.error || !remove.error.includes('once every 24 hours')) {
-  fail(`remove should be cooldown-limited: ${JSON.stringify(remove)}`);
+if (remove.error !== 'adult_required') {
+  fail(`minor remove should be adult_required: ${JSON.stringify(remove)}`);
 }
 
-const invalid = await post('uploadCharacterAvatar', {
-  auth,
-  character_id,
-  format: 'gif',
-  image_base64: png_base64
-});
-if (!invalid.error || !invalid.error.includes('Unsupported image format')) {
-  fail(`invalid format should be rejected: ${JSON.stringify(invalid)}`);
-}
-
-console.log(
-  `avatar_smoke PASSED (character=${character_id} storage=${expected_storage} ` +
-    `key=${uploaded.avatar_custom_id})`
-);
+console.log(`avatar_smoke PASSED (minor character=${character_id} safe=${safe.id})`);
 process.exit(0);

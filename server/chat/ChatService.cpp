@@ -11,6 +11,7 @@
 #include "AvatarUrl.hpp"
 #include "Database.hpp"
 #include "GameConfigCache.hpp"
+#include "Visibility.hpp"
 #include "chat/ChatDB.hpp"
 #include "chat/MadladTranslationEngine.hpp"
 #include "chat/Presence.hpp"
@@ -61,11 +62,13 @@ int cfg_int(const json& j, const char* key, int fallback) {
 // Resolves character display names / portrait URLs from game.db on demand.
 // Chat.db deliberately stores no names (two independent databases).
 struct CharacterDirectory {
-    // The viewer's adult flag drives the safe/custom portrait layering: custom
-    // uploads are only shown to adult viewers of adult owners.
-    explicit CharacterDirectory(bool viewer_is_adult) : viewer_adult(viewer_is_adult) {}
+    // The viewer's adult flag drives every safe/custom choice: minors get safe
+    // names and safe portraits for all players.
+    explicit CharacterDirectory(bool viewer_is_adult, int64_t viewer_character_id)
+        : viewer_adult(viewer_is_adult), viewer_character(viewer_character_id) {}
 
     bool viewer_adult = false;
+    int64_t viewer_character = 0;
     std::map<int64_t, json> cache;
 
     const json& get(int64_t id) {
@@ -73,15 +76,17 @@ struct CharacterDirectory {
         if (it != cache.end()) return it->second;
         json entry = {{"display_name", ""}, {"portrait_url", ""}};
         if (id > 0) {
-            auto& gdb = Database::getInstance().gameDB();
-            bool found = false;
-            gdb << "SELECT display_name FROM characters WHERE id = ?;" << id
-                >> [&](std::string name) {
-                       entry["display_name"] = name;
-                       found = true;
-                   };
-            if (found) {
-                entry["portrait_url"] = resolve_avatar_url(id, viewer_adult);
+            auto identity = visibility::load_character_identity(id);
+            if (identity) {
+                visibility::viewer_context viewer;
+                viewer.character_id = viewer_character;
+                viewer.is_adult = viewer_adult;
+                json projected = visibility::project_character_identity(viewer, *identity);
+                entry["display_name"] = projected.value("display_name", "");
+                entry["portrait_url"] = projected.value("avatar_url", "");
+                entry["level"] = projected.value("level", 1);
+                entry["archetype"] = projected.value("archetype", json(nullptr));
+                entry["sex"] = projected.value("sex", json(nullptr));
             }
         }
         it = cache.emplace(id, std::move(entry)).first;
@@ -196,12 +201,15 @@ struct MessageRow {
     int64_t seq = 0;
     int64_t author = 0;
     std::string body;
+    std::string safe_message_id;
     std::string source_language;
     double source_language_confidence = 0.0;
     std::string gif;
+    std::string gif_id;
     std::string reply_to;
     int64_t reply_author = 0;
     std::string reply_excerpt;
+    std::string reply_safe_excerpt;
     std::string reply_source_language;
     std::string system_id;
     std::string system_args;
@@ -213,21 +221,25 @@ struct MessageRow {
 };
 
 const char* k_message_columns =
-    "m.id, m.chat_id, m.seq, m.author_character_id, m.body, m.source_language, "
-    "m.source_language_confidence, m.gif, m.reply_to_message_id, m.reply_author_character_id, "
-    "m.reply_excerpt, m.reply_source_language, m.system_id, m.system_args, m.created_at, "
-    "m.edited_at, m.deleted_at, m.version, m.change_id";
+    "m.id, m.chat_id, m.seq, m.author_character_id, m.body, m.safe_message_id, "
+    "m.source_language, m.source_language_confidence, m.gif, m.gif_id, "
+    "m.reply_to_message_id, m.reply_author_character_id, m.reply_excerpt, "
+    "m.reply_safe_excerpt, m.reply_source_language, m.system_id, m.system_args, "
+    "m.created_at, m.edited_at, m.deleted_at, m.version, m.change_id";
 
 auto make_message_reader(std::vector<MessageRow>& out) {
     return [&out](std::string id, std::string chat_id, int64_t seq,
                   std::optional<int64_t> author,
                   std::optional<std::string> body,
+                  std::optional<std::string> safe_message_id,
                   std::optional<std::string> source_language,
                   std::optional<double> source_language_confidence,
                   std::optional<std::string> gif,
+                  std::optional<std::string> gif_id,
                   std::optional<std::string> reply_to,
                   std::optional<int64_t> reply_author,
                   std::optional<std::string> reply_excerpt,
+                  std::optional<std::string> reply_safe_excerpt,
                   std::optional<std::string> reply_source_language,
                   std::optional<std::string> system_id,
                   std::optional<std::string> system_args,
@@ -242,12 +254,15 @@ auto make_message_reader(std::vector<MessageRow>& out) {
         r.seq = seq;
         r.author = author.value_or(0);
         r.body = body.value_or("");
+        r.safe_message_id = safe_message_id.value_or("");
         r.source_language = source_language.value_or("");
         r.source_language_confidence = source_language_confidence.value_or(0.0);
         r.gif = gif.value_or("");
+        r.gif_id = gif_id.value_or("");
         r.reply_to = reply_to.value_or("");
         r.reply_author = reply_author.value_or(0);
         r.reply_excerpt = reply_excerpt.value_or("");
+        r.reply_safe_excerpt = reply_safe_excerpt.value_or("");
         r.reply_source_language = reply_source_language.value_or("");
         r.system_id = system_id.value_or("");
         r.system_args = system_args.value_or("");
@@ -260,15 +275,26 @@ auto make_message_reader(std::vector<MessageRow>& out) {
     };
 }
 
-json reactions_for(const std::string& message_id) {
-    std::map<std::string, std::vector<int64_t>> by_emoji;
+json reactions_for(const std::string& message_id, GameConfigCache* config,
+                   bool viewer_is_adult) {
+    std::map<std::string, std::vector<int64_t>> by_reaction;
     ChatDB::instance().db()
-        << "SELECT emoji, character_id FROM message_reactions WHERE message_id = ? ORDER BY created_at ASC;"
+        << "SELECT emoji, character_id FROM message_reactions WHERE message_id = ? "
+           "ORDER BY created_at ASC;"
         << message_id
-        >> [&](std::string emoji, int64_t cid) { by_emoji[emoji].push_back(cid); };
+        >> [&](std::string reaction_id, int64_t cid) {
+               by_reaction[reaction_id].push_back(cid);
+           };
     json arr = json::array();
-    for (auto& [emoji, ids] : by_emoji) {
-        arr.push_back({{"emoji", emoji}, {"character_ids", ids}});
+    for (auto& [reaction_id, ids] : by_reaction) {
+        if (!config) continue;
+        auto entry = visibility::find_safe_entry(*config, visibility::safe_catalog_kind::reaction,
+                                                 reaction_id);
+        if (!entry) continue;
+        if (!viewer_is_adult && !entry->value("minor_safe", false)) continue;
+        arr.push_back({{"reaction_id", reaction_id},
+                       {"emoji", entry->value("emoji", std::string())},
+                       {"character_ids", ids}});
     }
     return arr;
 }
@@ -294,16 +320,44 @@ json translation_for(const std::string& message_id, const std::string& viewer_la
 }
 
 json message_to_json(const MessageRow& r, CharacterDirectory& dir,
-                     const std::string& viewer_lang) {
+                     const std::string& viewer_lang, GameConfigCache* config,
+                     bool viewer_is_adult) {
+    // A minor may only receive server-owned safe messages. Custom messages are
+    // completely invisible (no placeholder, no unread, no preview).
+    const bool is_safe_message = !r.safe_message_id.empty();
+    const bool is_system_message = !r.system_id.empty();
+    if (!viewer_is_adult && !is_safe_message && !is_system_message) {
+        return json(nullptr);
+    }
+
     json m;
     m["id"] = r.id;
     m["chat_id"] = r.chat_id;
     m["seq"] = r.seq;
     m["author_character_id"] = r.author;
-    m["body"] = r.body;
-    m["source_language"] = r.source_language;
-    m["source_language_confidence"] = r.source_language_confidence;
-    m["gif"] = r.gif.empty() ? json(nullptr) : json::parse(r.gif, nullptr, false);
+    if (is_safe_message && config) {
+        m["body"] = visibility::safe_message_body(*config, r.safe_message_id);
+        m["safe_message_id"] = r.safe_message_id;
+    } else {
+        m["body"] = r.body;
+        m["safe_message_id"] = nullptr;
+    }
+    m["source_language"] = is_safe_message ? "" : r.source_language;
+    m["source_language_confidence"] = is_safe_message ? 0.0 : r.source_language_confidence;
+
+    json gif = nullptr;
+    if (!r.gif_id.empty() && config) {
+        auto entry = visibility::find_safe_entry(*config, visibility::safe_catalog_kind::gif,
+                                                 r.gif_id);
+        if (entry && (viewer_is_adult || entry->value("minor_safe", false))) {
+            const std::string asset_url = entry->value("asset_url", std::string());
+            gif = {{"id", r.gif_id},
+                   {"url", asset_url},
+                   {"preview_url", entry->value("preview_url", asset_url)},
+                   {"minor_safe", entry->value("minor_safe", false)}};
+        }
+    }
+    m["gif"] = gif;
     m["created_at"] = r.created_at;
     m["edited_at"] = r.edited_at;
     m["deleted"] = r.deleted_at != 0;
@@ -313,10 +367,17 @@ json message_to_json(const MessageRow& r, CharacterDirectory& dir,
     m["system_args"] = r.system_args.empty() ? json::object()
                                              : json::parse(r.system_args, nullptr, false);
     if (!r.reply_to.empty()) {
-        m["reply"] = {{"message_id", r.reply_to},
-                      {"author_character_id", r.reply_author},
-                      {"excerpt", r.reply_excerpt},
-                      {"source_language", r.reply_source_language}};
+        const std::string excerpt =
+            viewer_is_adult ? (!r.reply_excerpt.empty() ? r.reply_excerpt : r.reply_safe_excerpt)
+                            : r.reply_safe_excerpt;
+        if (!viewer_is_adult && excerpt.empty()) {
+            m["reply"] = nullptr;
+        } else {
+            m["reply"] = {{"message_id", r.reply_to},
+                          {"author_character_id", r.reply_author},
+                          {"excerpt", excerpt},
+                          {"source_language", viewer_is_adult ? r.reply_source_language : ""}};
+        }
     } else {
         m["reply"] = nullptr;
     }
@@ -325,8 +386,10 @@ json message_to_json(const MessageRow& r, CharacterDirectory& dir,
     } else {
         m["author"] = nullptr;
     }
-    m["reactions"] = reactions_for(r.id);
-    m["translation"] = translation_for(r.id, viewer_lang);
+    m["reactions"] = reactions_for(r.id, config, viewer_is_adult);
+    m["translation"] = (viewer_is_adult && !is_safe_message)
+                           ? translation_for(r.id, viewer_lang)
+                           : json(nullptr);
     return m;
 }
 
@@ -368,6 +431,45 @@ json chat_row(const std::string& id, const std::string& type,
             {"last_seq", last_seq},
             {"source_kind", source_kind.value_or("")},
             {"source_id", source_id.value_or(0)}};
+}
+
+// Barony chat titles come from the barony's viewer-relative identity, never
+// from the denormalized chats.name column.
+std::string resolve_chat_name(GameConfigCache* config, bool viewer_is_adult,
+                              const std::string& type, const std::string& stored_name,
+                              int64_t source_id) {
+    if (type == "barony" && source_id > 0 && config) {
+        visibility::barony_identity barony;
+        barony.id = source_id;
+        Database::getInstance().gameDB()
+            << "SELECT COALESCE(safe_name_id, ''), COALESCE(safe_tag_ids, '[]'), "
+               "COALESCE(name, ''), COALESCE(description, ''), accepts_minors "
+               "FROM baronies WHERE id = ?;"
+            << source_id
+            >> [&](std::string safe_name_id, std::string safe_tag_ids, std::string custom_name,
+                   std::string description, int accepts_minors) {
+                   barony.safe_name_id = std::move(safe_name_id);
+                   try {
+                       json tags = json::parse(safe_tag_ids);
+                       if (tags.is_array()) {
+                           for (const auto& tag : tags) {
+                               if (tag.is_string()) barony.safe_tag_ids.push_back(tag.get<std::string>());
+                           }
+                       }
+                   } catch (...) {
+                   }
+                   barony.custom_name = std::move(custom_name);
+                   barony.custom_description = std::move(description);
+                   barony.accepts_minors = accepts_minors != 0;
+               };
+        visibility::viewer_context viewer;
+        viewer.is_adult = viewer_is_adult;
+        std::string name = visibility::barony_display_name(*config, viewer, barony);
+        if (!name.empty()) return name;
+    }
+    if (type == "dukedom" && !viewer_is_adult) return "Dukedom";
+    if (type == "barony" && !viewer_is_adult) return "";
+    return stored_name;
 }
 
 void add_member(const std::string& chat_id, int64_t character_id, const std::string& role,
@@ -555,6 +657,7 @@ bool ChatService::is_admin(int64_t account_id) {
 bool ChatService::can_view_chat(int64_t character_id, const std::string& chat_id) {
     ChatMeta meta;
     if (!load_chat_meta(chat_id, meta)) return false;
+    if (meta.type == "group" && !visibility::character_is_adult(character_id)) return false;
     if (meta.type == "wildlands") return true;
     return ChatDB::instance().is_member(chat_id, character_id);
 }
@@ -602,18 +705,19 @@ std::string ChatService::ensure_direct_chat(int64_t a, int64_t b) {
 
 json ChatService::get_chats(int64_t character_id) {
     auto& db = ChatDB::instance().db();
-    CharacterDirectory dir(account_is_adult(character_id));
+    CharacterDirectory dir(visibility::character_is_adult(character_id), character_id);
 
     json chats = json::array();
     json memberships = json::array();
     std::vector<std::string> my_chat_ids;
 
+    const std::string group_filter = dir.viewer_adult ? " " : " AND c.type != 'group' ";
     db << "SELECT c.id, c.type, COALESCE(c.name, ''), COALESCE(c.owner_character_id, 0), "
           "COALESCE(c.direct_key, ''), c.members_can_invite, c.created_at, c.name_changed_at, "
           "c.archived_at, c.last_seq, c.source_kind, c.source_id, cm.role, cm.sticky, cm.muted, "
           "cm.notify_level, cm.last_read_seq, cm.unread_count, cm.joined_at, cm.left_at, cm.change_id "
           "FROM chats c JOIN chat_members cm ON cm.chat_id = c.id "
-          "WHERE cm.character_id = ? AND cm.left_at IS NULL AND c.type != 'wildlands' "
+          "WHERE cm.character_id = ? AND cm.left_at IS NULL AND c.type != 'wildlands'" + group_filter +
           "ORDER BY cm.sticky DESC, c.created_at DESC;"
        << character_id
        >> [&](std::string id, std::string type, std::string name, int64_t owner,
@@ -625,7 +729,9 @@ json ChatService::get_chats(int64_t character_id) {
               int64_t unread_count, int64_t joined_at, std::optional<int64_t> left_at,
               int64_t change_id) {
               my_chat_ids.push_back(id);
-              chats.push_back(chat_row(id, type, name.empty() ? std::nullopt : std::optional<std::string>(name),
+              const std::string visible_name = resolve_chat_name(
+                  config_, dir.viewer_adult, type, name, source_id.value_or(0));
+              chats.push_back(chat_row(id, type, visible_name.empty() ? std::nullopt : std::optional<std::string>(visible_name),
                                        owner > 0 ? std::optional<int64_t>(owner) : std::nullopt,
                                        direct_key.empty() ? std::nullopt : std::optional<std::string>(direct_key),
                                        members_can_invite, created_at, name_changed_at, archived_at,
@@ -639,11 +745,16 @@ json ChatService::get_chats(int64_t character_id) {
     json last_messages = json::object();
     for (const auto& chat_id : my_chat_ids) {
         std::vector<MessageRow> rows;
+        const std::string safe_filter = dir.viewer_adult
+            ? ""
+            : " AND (m.safe_message_id IS NOT NULL OR m.system_id IS NOT NULL) ";
         db << std::string("SELECT ") + k_message_columns +
-                  " FROM messages m WHERE m.chat_id = ? ORDER BY m.seq DESC LIMIT 1;"
+                  " FROM messages m WHERE m.chat_id = ?" + safe_filter +
+                  " ORDER BY m.seq DESC LIMIT 1;"
            << chat_id >> make_message_reader(rows);
         if (!rows.empty()) {
-            last_messages[chat_id] = message_to_json(rows.front(), dir, "");
+            json last = message_to_json(rows.front(), dir, "", config_, dir.viewer_adult);
+            if (!last.is_null()) last_messages[chat_id] = std::move(last);
         }
     }
 
@@ -678,24 +789,30 @@ json ChatService::get_messages(int64_t character_id, const std::string& chat_id,
     if (limit <= 0 || limit > 200) limit = 50;
 
     auto& db = ChatDB::instance().db();
-    CharacterDirectory dir(account_is_adult(character_id));
+    CharacterDirectory dir(visibility::character_is_adult(character_id), character_id);
     std::vector<MessageRow> rows;
+    const std::string safe_filter = dir.viewer_adult
+        ? ""
+        : " AND (m.safe_message_id IS NOT NULL OR m.system_id IS NOT NULL) ";
 
     if (after_seq > 0) {
         db << std::string("SELECT ") + k_message_columns +
-                  " FROM messages m WHERE m.chat_id = ? AND m.seq > ? ORDER BY m.seq ASC LIMIT ?;"
+                  " FROM messages m WHERE m.chat_id = ? AND m.seq > ?" + safe_filter +
+                  " ORDER BY m.seq ASC LIMIT ?;"
            << chat_id << after_seq << limit >> make_message_reader(rows);
     } else {
         int64_t upper = before_seq > 0 ? before_seq : (std::numeric_limits<int64_t>::max)();
         db << std::string("SELECT ") + k_message_columns +
-                  " FROM messages m WHERE m.chat_id = ? AND m.seq < ? ORDER BY m.seq DESC LIMIT ?;"
+                  " FROM messages m WHERE m.chat_id = ? AND m.seq < ?" + safe_filter +
+                  " ORDER BY m.seq DESC LIMIT ?;"
            << chat_id << upper << limit >> make_message_reader(rows);
         std::reverse(rows.begin(), rows.end());
     }
 
     json messages = json::array();
     for (const auto& r : rows) {
-        messages.push_back(message_to_json(r, dir, viewer_lang));
+        json message = message_to_json(r, dir, viewer_lang, config_, dir.viewer_adult);
+        if (!message.is_null()) messages.push_back(std::move(message));
     }
 
     json result;
@@ -708,7 +825,7 @@ json ChatService::get_messages(int64_t character_id, const std::string& chat_id,
 
 json ChatService::poll(int64_t character_id, int64_t cursor, const std::string& viewer_lang) {
     auto& db = ChatDB::instance().db();
-    CharacterDirectory dir(account_is_adult(character_id));
+    CharacterDirectory dir(visibility::character_is_adult(character_id), character_id);
     const int cap = 200;
 
     json result;
@@ -726,10 +843,11 @@ json ChatService::poll(int64_t character_id, int64_t cursor, const std::string& 
     std::set<int64_t> character_ids;
 
     // Chats I belong to that changed.
+    const std::string group_filter = dir.viewer_adult ? " " : " AND c.type != 'group' ";
     db << "SELECT c.id, c.type, COALESCE(c.name, ''), COALESCE(c.owner_character_id, 0), "
           "COALESCE(c.direct_key, ''), c.members_can_invite, c.created_at, c.name_changed_at, "
           "c.archived_at, c.last_seq, c.source_kind, c.source_id "
-          "FROM chats c WHERE c.change_id > ? AND c.type != 'wildlands' "
+          "FROM chats c WHERE c.change_id > ? AND c.type != 'wildlands'" + group_filter +
           "AND EXISTS (SELECT 1 FROM chat_members cm WHERE cm.chat_id = c.id AND cm.character_id = ? AND cm.left_at IS NULL) "
           "ORDER BY c.change_id ASC LIMIT ?;"
        << cursor << character_id << cap
@@ -738,8 +856,10 @@ json ChatService::poll(int64_t character_id, int64_t cursor, const std::string& 
               std::optional<int64_t> name_changed_at, std::optional<int64_t> archived_at,
               int64_t last_seq, std::optional<std::string> source_kind,
               std::optional<int64_t> source_id) {
+              const std::string visible_name = resolve_chat_name(
+                  config_, dir.viewer_adult, type, name, source_id.value_or(0));
               result["chats"].push_back(chat_row(
-                  id, type, name.empty() ? std::nullopt : std::optional<std::string>(name),
+                  id, type, visible_name.empty() ? std::nullopt : std::optional<std::string>(visible_name),
                   owner > 0 ? std::optional<int64_t>(owner) : std::nullopt,
                   direct_key.empty() ? std::nullopt : std::optional<std::string>(direct_key),
                   members_can_invite, created_at, name_changed_at, archived_at, last_seq,
@@ -747,10 +867,14 @@ json ChatService::poll(int64_t character_id, int64_t cursor, const std::string& 
               if (owner > 0) character_ids.insert(owner);
           };
 
-    // My membership rows.
+    // My membership rows. Minors never see group membership rows.
+    const std::string membership_group_filter = dir.viewer_adult
+        ? " "
+        : " AND chat_id NOT IN (SELECT id FROM chats WHERE type = 'group') ";
     db << "SELECT chat_id, role, sticky, muted, notify_level, last_read_seq, unread_count, "
           "joined_at, left_at, change_id FROM chat_members "
-          "WHERE character_id = ? AND change_id > ? ORDER BY change_id ASC LIMIT ?;"
+          "WHERE character_id = ? AND change_id > ?" + membership_group_filter +
+          "ORDER BY change_id ASC LIMIT ?;"
        << character_id << cursor << cap
        >> [&](std::string chat_id, std::string role, int64_t sticky, int64_t muted,
               std::string notify_level, int64_t last_read_seq, int64_t unread_count,
@@ -762,9 +886,12 @@ json ChatService::poll(int64_t character_id, int64_t cursor, const std::string& 
           };
 
     // Other members' rows for chats I'm in.
+    const std::string member_group_filter = dir.viewer_adult
+        ? " "
+        : " AND cm.chat_id NOT IN (SELECT id FROM chats WHERE type = 'group') ";
     db << "SELECT cm.chat_id, cm.character_id, cm.role, cm.sticky, cm.muted, cm.notify_level, "
           "cm.last_read_seq, cm.unread_count, cm.joined_at, cm.left_at, cm.change_id "
-          "FROM chat_members cm WHERE cm.change_id > ? "
+          "FROM chat_members cm WHERE cm.change_id > ?" + member_group_filter +
           "AND cm.chat_id IN (SELECT chat_id FROM chat_members WHERE character_id = ? AND left_at IS NULL) "
           "AND cm.character_id != ? ORDER BY cm.change_id ASC LIMIT ?;"
        << cursor << character_id << character_id << cap
@@ -780,8 +907,11 @@ json ChatService::poll(int64_t character_id, int64_t cursor, const std::string& 
 
     // Messages in my chats.
     std::vector<MessageRow> rows;
+    const std::string safe_filter = dir.viewer_adult
+        ? " "
+        : " AND (m.safe_message_id IS NOT NULL OR m.system_id IS NOT NULL) ";
     db << std::string("SELECT ") + k_message_columns +
-              " FROM messages m WHERE m.change_id > ? AND m.chat_id != ? "
+              " FROM messages m WHERE m.change_id > ? AND m.chat_id != ?" + safe_filter +
               "AND EXISTS (SELECT 1 FROM chat_members cm WHERE cm.chat_id = m.chat_id "
               "AND cm.character_id = ? AND cm.left_at IS NULL) "
               "ORDER BY m.change_id ASC LIMIT ?;"
@@ -790,14 +920,17 @@ json ChatService::poll(int64_t character_id, int64_t cursor, const std::string& 
 
     int64_t max_change = cursor;
     for (const auto& r : rows) {
+        if (r.change_id > max_change) max_change = r.change_id;
+        json message = message_to_json(r, dir, viewer_lang, config_, dir.viewer_adult);
+        if (message.is_null()) continue;
         if (r.author > 0) character_ids.insert(r.author);
         if (r.reply_author > 0) character_ids.insert(r.reply_author);
-        if (r.change_id > max_change) max_change = r.change_id;
-        result["messages"].push_back(message_to_json(r, dir, viewer_lang));
+        result["messages"].push_back(std::move(message));
     }
 
     // Translations produced for my language since the cursor, in chats I'm in.
-    if (!viewer_lang.empty()) {
+    // Minors never receive custom translations (safe messages use server text).
+    if (!viewer_lang.empty() && dir.viewer_adult) {
         db << "SELECT t.message_id, t.body, t.engine, t.detected_source_language, t.confidence, t.change_id "
               "FROM message_translations t JOIN messages m ON m.id = t.message_id "
               "WHERE t.change_id > ? AND t.target_language = ? "
@@ -843,10 +976,13 @@ json ChatService::poll(int64_t character_id, int64_t cursor, const std::string& 
               if (change_id > max_change) max_change = change_id;
           };
 
-    // Group invites addressed to me.
+    // Group invites addressed to me. Minors never receive group invites.
+    const std::string invite_filter = dir.viewer_adult
+        ? ""
+        : " AND chat_id NOT IN (SELECT id FROM chats WHERE type = 'group') ";
     db << "SELECT chat_id, invited_by_character_id, created_at, expires_at, change_id "
-          "FROM chat_invites WHERE invited_character_id = ? AND change_id > ? "
-          "ORDER BY change_id ASC LIMIT ?;"
+          "FROM chat_invites WHERE invited_character_id = ? AND change_id > ?" + invite_filter +
+          " ORDER BY change_id ASC LIMIT ?;"
        << character_id << cursor << cap
        >> [&](std::string chat_id, int64_t invited_by, int64_t created_at, int64_t expires_at,
               int64_t change_id) {
@@ -859,12 +995,25 @@ json ChatService::poll(int64_t character_id, int64_t cursor, const std::string& 
               if (change_id > max_change) max_change = change_id;
           };
 
-    // Bans affecting me.
+    // Bans affecting me. Group bans are hidden from minors.
+    const std::string ban_group_filter = dir.viewer_adult
+        ? " "
+        : " AND chat_id NOT IN (SELECT id FROM chats WHERE type = 'group') ";
     db << "SELECT chat_id, banned_by_character_id, COALESCE(reason, ''), created_at, change_id "
-          "FROM chat_bans WHERE character_id = ? AND change_id > ? ORDER BY change_id ASC LIMIT ?;"
+          "FROM chat_bans WHERE character_id = ? AND change_id > ?" + ban_group_filter +
+          "ORDER BY change_id ASC LIMIT ?;"
        << character_id << cursor << cap
        >> [&](std::string chat_id, std::optional<int64_t> banned_by, std::string reason,
               int64_t created_at, int64_t change_id) {
+              if (!dir.viewer_adult) {
+                  // Ban reasons are custom moderator text; minors receive a
+                  // generic server-owned safe reason.
+                  reason = config_
+                      ? visibility::safe_label(*config_,
+                                               visibility::safe_catalog_kind::ban_reason,
+                                               "moderator_action")
+                      : std::string();
+              }
               result["bans"].push_back({{"chat_id", chat_id},
                                         {"banned_by_character_id", banned_by.value_or(0)},
                                         {"reason", reason},
@@ -888,7 +1037,7 @@ json ChatService::poll_wildlands(int64_t character_id, int64_t cursor,
                                  const std::string& viewer_lang) {
     (void)character_id;
     auto& db = ChatDB::instance().db();
-    CharacterDirectory dir(account_is_adult(character_id));
+    CharacterDirectory dir(visibility::character_is_adult(character_id), character_id);
     const int cap = 200;
     std::string wid = wildlands_chat_id();
 
@@ -900,20 +1049,25 @@ json ChatService::poll_wildlands(int64_t character_id, int64_t cursor,
     result["characters"] = json::object();
 
     std::vector<MessageRow> rows;
+    const std::string safe_filter = dir.viewer_adult
+        ? ""
+        : " AND (m.safe_message_id IS NOT NULL OR m.system_id IS NOT NULL) ";
     db << std::string("SELECT ") + k_message_columns +
-              " FROM messages m WHERE m.change_id > ? AND m.chat_id = ? "
-              "ORDER BY m.change_id ASC LIMIT ?;"
+              " FROM messages m WHERE m.change_id > ? AND m.chat_id = ?" + safe_filter +
+              " ORDER BY m.change_id ASC LIMIT ?;"
        << cursor << wid << cap >> make_message_reader(rows);
 
     std::set<int64_t> character_ids;
     int64_t max_change = cursor;
     for (const auto& r : rows) {
+        if (r.change_id > max_change) max_change = r.change_id;
+        json message = message_to_json(r, dir, viewer_lang, config_, dir.viewer_adult);
+        if (message.is_null()) continue;
         if (r.author > 0) character_ids.insert(r.author);
         if (r.reply_author > 0) character_ids.insert(r.reply_author);
-        if (r.change_id > max_change) max_change = r.change_id;
-        result["messages"].push_back(message_to_json(r, dir, viewer_lang));
+        result["messages"].push_back(std::move(message));
     }
-    if (!viewer_lang.empty()) {
+    if (!viewer_lang.empty() && dir.viewer_adult) {
         db << "SELECT t.message_id, t.body, t.engine, t.detected_source_language, t.confidence, t.change_id "
               "FROM message_translations t JOIN messages m ON m.id = t.message_id "
               "WHERE t.change_id > ? AND t.target_language = ? AND m.chat_id = ? "
@@ -945,9 +1099,10 @@ namespace {
 // Bump unread counters for a new message. Fast path: when the author has no
 // block/mute relationships at all, a single bulk UPDATE (excluding self and
 // chat-muted members) is provably correct. Otherwise check each recipient.
-void apply_unread(const std::string& chat_id, int64_t author, int64_t change_id) {
+void apply_unread(const std::string& chat_id, int64_t author, int64_t change_id,
+                  bool message_is_safe) {
     auto& db = ChatDB::instance().db();
-    if (relation_count(author) == 0) {
+    if (message_is_safe && relation_count(author) == 0) {
         db << "UPDATE chat_members SET unread_count = unread_count + 1, change_id = ? "
               "WHERE chat_id = ? AND character_id != ? AND left_at IS NULL AND muted = 0;"
            << change_id << chat_id << author;
@@ -958,6 +1113,9 @@ void apply_unread(const std::string& chat_id, int64_t author, int64_t change_id)
           "AND left_at IS NULL AND muted = 0;"
        << chat_id << author >> [&](int64_t cid) { members.push_back(cid); };
     for (int64_t cid : members) {
+        // A custom message is invisible to minors, so it must never create an
+        // unread badge for them.
+        if (!message_is_safe && !visibility::character_is_adult(cid)) continue;
         if (is_blocked_either(cid, author)) continue;
         if (is_person_muted(cid, author)) continue;
         db << "UPDATE chat_members SET unread_count = unread_count + 1, change_id = ? "
@@ -980,12 +1138,14 @@ void log_moderation(int64_t actor, const std::string& action, const std::string&
 }  // namespace
 
 json ChatService::send_message(int64_t character_id, const std::string& chat_id,
-                               const std::string& body, const json& gif,
+                               const std::string& safe_message_id, const std::string& body,
+                               const std::string& gif_id,
                                const std::string& reply_to_message_id,
                                const std::string& client_id,
                                const std::string& sender_language) {
     (void)client_id;
     auto& db = ChatDB::instance().db();
+    const bool author_is_adult = visibility::character_is_adult(character_id);
 
     ChatMeta meta;
     if (!load_chat_meta(chat_id, meta)) throw chat_error("chat_not_found");
@@ -993,13 +1153,49 @@ json ChatService::send_message(int64_t character_id, const std::string& chat_id,
     if (!wildlands && !ChatDB::instance().is_member(chat_id, character_id)) {
         throw chat_error("not_a_member");
     }
+    if (meta.type == "group" && !author_is_adult) throw chat_error("group_adults_only");
     bool banned = false;
     db << "SELECT 1 FROM chat_bans WHERE chat_id = ? AND character_id = ? LIMIT 1;"
        << chat_id << character_id >> [&](int) { banned = true; };
     if (banned) throw chat_error("banned_from_chat");
 
-    bool has_gif = gif.is_object() && !gif.empty();
-    if (body.empty() && !has_gif) throw chat_error("empty_message");
+    const bool has_safe_message = !safe_message_id.empty();
+    if (has_safe_message) {
+        auto entry = config_
+            ? visibility::find_safe_entry(*config_, visibility::safe_catalog_kind::message,
+                                          safe_message_id)
+            : std::nullopt;
+        if (!entry) throw chat_error("invalid_safe_message");
+        if (entry->contains("contexts") && (*entry)["contexts"].is_array()) {
+            bool context_ok = false;
+            for (const auto& context : (*entry)["contexts"]) {
+                if (context.is_string() && context.get<std::string>() == meta.type) {
+                    context_ok = true;
+                    break;
+                }
+            }
+            if (!context_ok) throw chat_error("invalid_safe_message_context");
+        }
+        if (!author_is_adult && !body.empty()) throw chat_error("minor_custom_content_forbidden");
+    } else if (!author_is_adult) {
+        // Minors may only author server-owned safe content.
+        throw chat_error("minor_custom_content_forbidden");
+    }
+
+    if (!gif_id.empty()) {
+        if (!config_ || !visibility::is_valid_safe_id(
+                            *config_, visibility::safe_catalog_kind::gif, gif_id)) {
+            throw chat_error("invalid_gif");
+        }
+        if (!author_is_adult && !visibility::is_minor_safe(
+                                    *config_, visibility::safe_catalog_kind::gif, gif_id)) {
+            throw chat_error("gif_not_minor_safe");
+        }
+    }
+    if (has_safe_message && gif_id.empty() && body.empty()) {
+        // Safe text is valid on its own; this branch only documents intent.
+    }
+    if (!has_safe_message && body.empty() && gif_id.empty()) throw chat_error("empty_message");
 
     bool friends = false;
     if (meta.type == "direct") {
@@ -1011,88 +1207,117 @@ json ChatService::send_message(int64_t character_id, const std::string& chat_id,
             friends = are_friends(character_id, other);
         }
     }
-    check_body_limits(chat_cfg(config_), limit_key_for_chat(meta.type, friends), body);
+    if (!has_safe_message) {
+        check_body_limits(chat_cfg(config_), limit_key_for_chat(meta.type, friends), body);
+    }
     check_rate_limit(account_for_character(character_id));
 
-    // Detect the source language (baseline engine). Low-confidence / unavailable
-    // detection falls back to the sender's configured language.
+    // Detect the source language for custom text only. Safe messages are
+    // server-owned strings and never enter the translation pipeline.
     std::string source_language;
     double source_confidence = 0.0;
-    if (baseline_engine_ && baseline_engine_->available() && !body.empty()) {
+    if (!has_safe_message && baseline_engine_ && baseline_engine_->available() && !body.empty()) {
         auto detected = baseline_engine_->detect(body);
         if (detected) {
             source_language = detected->first;
             source_confidence = detected->second;
         }
     }
-    if (source_language.empty()) source_language = sender_language;
+    if (!has_safe_message && source_language.empty()) source_language = sender_language;
 
     int64_t reply_author = 0;
     std::string reply_excerpt;
+    std::string reply_safe_excerpt;
     std::string reply_src;
     if (!reply_to_message_id.empty()) {
-        db << "SELECT COALESCE(author_character_id, 0), COALESCE(body, ''), COALESCE(source_language, '') "
+        std::string parent_safe_id;
+        db << "SELECT COALESCE(author_character_id, 0), COALESCE(body, ''), "
+              "COALESCE(safe_message_id, ''), COALESCE(source_language, '') "
               "FROM messages WHERE id = ? AND chat_id = ?;"
            << reply_to_message_id << chat_id
-           >> [&](int64_t a, std::string b, std::string s) {
+           >> [&](int64_t a, std::string b, std::string safe_id, std::string s) {
                   reply_author = a;
                   reply_excerpt = b;
+                  parent_safe_id = safe_id;
                   reply_src = s;
               };
+        if (!author_is_adult && parent_safe_id.empty()) {
+            throw chat_error("message_not_visible");
+        }
+        if (!parent_safe_id.empty() && config_) {
+            reply_safe_excerpt = visibility::safe_message_body(*config_, parent_safe_id);
+        }
         if (utf8_length(reply_excerpt) > 120) {
             reply_excerpt = reply_excerpt.substr(0, 120);
+        }
+        if (utf8_length(reply_safe_excerpt) > 120) {
+            reply_safe_excerpt = reply_safe_excerpt.substr(0, 120);
         }
     }
 
     int64_t change_id = ChatDB::instance().allocate_change_id();
     int64_t seq = ChatDB::instance().allocate_seq(chat_id, change_id);
     std::string id = generate_id("m_");
-    db << "INSERT INTO messages (id, chat_id, seq, author_character_id, body, source_language, "
-          "source_language_confidence, gif, reply_to_message_id, reply_author_character_id, "
-          "reply_excerpt, reply_source_language, system_id, system_args, created_at, edited_at, "
-          "deleted_at, version, change_id) "
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, 1, ?);"
-       << id << chat_id << seq << character_id << body
+    db << "INSERT INTO messages (id, chat_id, seq, author_character_id, body, safe_message_id, "
+          "source_language, source_language_confidence, gif, gif_id, reply_to_message_id, "
+          "reply_author_character_id, reply_excerpt, reply_safe_excerpt, reply_source_language, "
+          "system_id, system_args, created_at, edited_at, deleted_at, version, change_id) "
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, 1, ?);"
+       << id << chat_id << seq << character_id
+       << (has_safe_message ? std::optional<std::string>() :
+                              (body.empty() ? std::optional<std::string>()
+                                            : std::optional<std::string>(body)))
+       << (has_safe_message ? std::optional<std::string>(safe_message_id)
+                            : std::optional<std::string>())
        << (source_language.empty() ? std::optional<std::string>()
                                     : std::optional<std::string>(source_language))
        << (source_language.empty() ? std::optional<double>() : std::optional<double>(source_confidence))
-       << (has_gif ? std::optional<std::string>(gif.dump())
-                   : std::optional<std::string>())
+       << (gif_id.empty() ? std::optional<std::string>() : std::optional<std::string>(gif_id))
        << (reply_to_message_id.empty() ? std::optional<std::string>()
                                         : std::optional<std::string>(reply_to_message_id))
        << (reply_author > 0 ? std::optional<int64_t>(reply_author) : std::optional<int64_t>())
        << (reply_excerpt.empty() ? std::optional<std::string>()
                                   : std::optional<std::string>(reply_excerpt))
+       << (reply_safe_excerpt.empty() ? std::optional<std::string>()
+                                      : std::optional<std::string>(reply_safe_excerpt))
        << (reply_src.empty() ? std::optional<std::string>()
                               : std::optional<std::string>(reply_src))
        << now_seconds() << change_id;
 
-    apply_unread(chat_id, character_id, change_id);
-    dispatch_push(chat_id, character_id, id, body, source_language);
+    const std::string push_body = has_safe_message && config_
+        ? visibility::safe_message_body(*config_, safe_message_id)
+        : body;
+    apply_unread(chat_id, character_id, change_id, has_safe_message);
+    dispatch_push(chat_id, character_id, id, push_body, source_language, safe_message_id);
 
     MessageRow r;
     r.id = id;
     r.chat_id = chat_id;
     r.seq = seq;
     r.author = character_id;
-    r.body = body;
+    r.body = has_safe_message ? "" : body;
+    r.safe_message_id = safe_message_id;
     r.source_language = source_language;
     r.source_language_confidence = source_confidence;
-    r.gif = has_gif ? gif.dump() : "";
+    r.gif_id = gif_id;
     r.reply_to = reply_to_message_id;
     r.reply_author = reply_author;
     r.reply_excerpt = reply_excerpt;
+    r.reply_safe_excerpt = reply_safe_excerpt;
     r.reply_source_language = reply_src;
     r.created_at = now_seconds();
     r.version = 1;
     r.change_id = change_id;
-    CharacterDirectory dir(account_is_adult(character_id));
-    return message_to_json(r, dir, "");
+    CharacterDirectory dir(author_is_adult, character_id);
+    json result = message_to_json(r, dir, "", config_, dir.viewer_adult);
+    return result.is_null() ? json::object() : result;
 }
 
 json ChatService::edit_message(int64_t character_id, const std::string& message_id,
-                               const std::string& body) {
+                               const std::string& safe_message_id, const std::string& body,
+                               const std::string& gif_id) {
     auto& db = ChatDB::instance().db();
+    const bool author_is_adult = visibility::character_is_adult(character_id);
     std::string chat_id;
     int64_t author = 0;
     int64_t version = 0;
@@ -1108,10 +1333,42 @@ json ChatService::edit_message(int64_t character_id, const std::string& message_
     db << "SELECT 1 FROM chat_bans WHERE chat_id = ? AND character_id = ? LIMIT 1;"
        << chat_id << character_id >> [&](int) { banned = true; };
     if (banned) throw chat_error("banned_from_chat");
-    if (body.empty()) throw chat_error("empty_message");
 
     ChatMeta meta;
     load_chat_meta(chat_id, meta);
+    if (meta.type == "group" && !author_is_adult) throw chat_error("group_adults_only");
+    const bool has_safe_message = !safe_message_id.empty();
+    if (has_safe_message) {
+        auto entry = config_
+            ? visibility::find_safe_entry(*config_, visibility::safe_catalog_kind::message,
+                                          safe_message_id)
+            : std::nullopt;
+        if (!entry) throw chat_error("invalid_safe_message");
+        if (entry->contains("contexts") && (*entry)["contexts"].is_array()) {
+            bool context_ok = false;
+            for (const auto& context : (*entry)["contexts"]) {
+                if (context.is_string() && context.get<std::string>() == meta.type) {
+                    context_ok = true;
+                    break;
+                }
+            }
+            if (!context_ok) throw chat_error("invalid_safe_message_context");
+        }
+        if (!author_is_adult && !body.empty()) throw chat_error("minor_custom_content_forbidden");
+    } else if (!author_is_adult) {
+        throw chat_error("minor_custom_content_forbidden");
+    }
+    if (!gif_id.empty()) {
+        if (!config_ || !visibility::is_valid_safe_id(
+                            *config_, visibility::safe_catalog_kind::gif, gif_id)) {
+            throw chat_error("invalid_gif");
+        }
+        if (!author_is_adult && !visibility::is_minor_safe(
+                                    *config_, visibility::safe_catalog_kind::gif, gif_id)) {
+            throw chat_error("gif_not_minor_safe");
+        }
+    }
+    if (!has_safe_message && body.empty() && gif_id.empty()) throw chat_error("empty_message");
     bool friends = false;
     if (meta.type == "direct") {
         int64_t other = 0;
@@ -1119,15 +1376,31 @@ json ChatService::edit_message(int64_t character_id, const std::string& message_
            << chat_id << character_id >> [&](int64_t v) { other = v; };
         if (other > 0) friends = are_friends(character_id, other);
     }
-    check_body_limits(chat_cfg(config_), limit_key_for_chat(meta.type, friends), body);
+    if (!has_safe_message) {
+        check_body_limits(chat_cfg(config_), limit_key_for_chat(meta.type, friends), body);
+    }
 
     int64_t new_version = version + 1;
-    db << "INSERT OR REPLACE INTO message_versions (message_id, version, body, editor_character_id, edited_at) "
-          "VALUES (?, ?, ?, ?, ?);"
-       << message_id << new_version << body << character_id << now_seconds();
+    db << "INSERT OR REPLACE INTO message_versions (message_id, version, body, safe_message_id, "
+          "gif_id, editor_character_id, edited_at) VALUES (?, ?, ?, ?, ?, ?, ?);"
+       << message_id << new_version
+       << (has_safe_message ? std::optional<std::string>()
+                            : (body.empty() ? std::optional<std::string>()
+                                            : std::optional<std::string>(body)))
+       << (has_safe_message ? std::optional<std::string>(safe_message_id)
+                            : std::optional<std::string>())
+       << (gif_id.empty() ? std::optional<std::string>() : std::optional<std::string>(gif_id))
+       << character_id << now_seconds();
     int64_t change_id = ChatDB::instance().allocate_change_id();
-    db << "UPDATE messages SET body = ?, version = ?, edited_at = ?, change_id = ? WHERE id = ?;"
-       << body << new_version << now_seconds() << change_id << message_id;
+    db << "UPDATE messages SET body = ?, safe_message_id = ?, gif_id = ?, version = ?, "
+          "edited_at = ?, change_id = ? WHERE id = ?;"
+       << (has_safe_message ? std::optional<std::string>()
+                            : (body.empty() ? std::optional<std::string>()
+                                            : std::optional<std::string>(body)))
+       << (has_safe_message ? std::optional<std::string>(safe_message_id)
+                            : std::optional<std::string>())
+       << (gif_id.empty() ? std::optional<std::string>() : std::optional<std::string>(gif_id))
+       << new_version << now_seconds() << change_id << message_id;
     // Edits invalidate stored translations.
     db << "DELETE FROM message_translations WHERE message_id = ?;" << message_id;
 
@@ -1224,7 +1497,7 @@ json ChatService::open_direct_chat(int64_t character_id, int64_t target_characte
                                               static_cast<int>(target_character_id)),
                               false, 0, std::nullopt, std::nullopt, meta.last_seq, std::nullopt,
                               std::nullopt);
-    CharacterDirectory dir(account_is_adult(character_id));
+    CharacterDirectory dir(visibility::character_is_adult(character_id), character_id);
     result["target"] = dir.get(target_character_id);
     return result;
 }
@@ -1232,18 +1505,32 @@ json ChatService::open_direct_chat(int64_t character_id, int64_t target_characte
 json ChatService::search_characters(int64_t character_id, const std::string& query) {
     json out = json::array();
     if (query.empty()) return out;
-    std::string like = "%" + query + "%";
-    Database::getInstance().gameDB()
-        << "SELECT id, display_name FROM characters WHERE display_name LIKE ? AND id != ? LIMIT 20;"
-        << like << character_id
-        >> [&](int64_t id, std::string name) {
-               json e = {{"character_id", id},
-                         {"display_name", name},
-                         {"portrait_url", resolve_avatar_url(id, account_is_adult(character_id))},
-                         {"is_friend", are_friends(character_id, id)},
-                         {"is_blocked", is_blocked_either(character_id, id)}};
-               out.push_back(e);
-           };
+    const bool viewer_is_adult = visibility::character_is_adult(character_id);
+    const std::string like = "%" + query + "%";
+    std::vector<int64_t> ids;
+    auto& gdb = Database::getInstance().gameDB();
+    if (viewer_is_adult) {
+        gdb << "SELECT id FROM characters WHERE (display_name LIKE ? OR safe_display_name LIKE ?) "
+               "AND id != ? LIMIT 20;"
+            << like << like << character_id >> [&](int64_t id) { ids.push_back(id); };
+    } else {
+        gdb << "SELECT id FROM characters WHERE safe_display_name LIKE ? AND id != ? LIMIT 20;"
+            << like << character_id >> [&](int64_t id) { ids.push_back(id); };
+    }
+    visibility::viewer_context viewer;
+    viewer.character_id = character_id;
+    viewer.is_adult = viewer_is_adult;
+    for (int64_t id : ids) {
+        auto identity = visibility::load_character_identity(id);
+        if (!identity) continue;
+        json projected = visibility::project_character_identity(viewer, *identity);
+        json e = {{"character_id", id},
+                  {"display_name", projected.value("display_name", "")},
+                  {"portrait_url", projected.value("avatar_url", "")},
+                  {"is_friend", are_friends(character_id, id)},
+                  {"is_blocked", is_blocked_either(character_id, id)}};
+        out.push_back(std::move(e));
+    }
     return out;
 }
 
@@ -1300,21 +1587,25 @@ json ChatService::request_translations(int64_t character_id,
         result["translations"] = translations;
         return result;
     }
+    const bool viewer_is_adult = visibility::character_is_adult(character_id);
 
     for (const auto& message_id : message_ids) {
         std::string chat_id;
         std::string text;
         std::string source_language;
+        std::string safe_message_id;
         bool found = false;
-        db << "SELECT chat_id, COALESCE(body, ''), COALESCE(source_language, '') "
-              "FROM messages WHERE id = ?;"
-           << message_id >> [&](std::string c, std::string b, std::string s) {
+        db << "SELECT chat_id, COALESCE(body, ''), COALESCE(source_language, ''), "
+              "COALESCE(safe_message_id, '') FROM messages WHERE id = ?;"
+           << message_id >> [&](std::string c, std::string b, std::string s, std::string safe_id) {
                   chat_id = c;
                   text = b;
                   source_language = s;
+                  safe_message_id = safe_id;
                   found = true;
               };
         if (!found || text.empty()) continue;
+        if (!viewer_is_adult || !safe_message_id.empty()) continue;
         if (!can_view_chat(character_id, chat_id)) continue;
         if (source_language == display_language) continue;
         if (!language_enabled(character_id, source_language)) continue;
@@ -1364,35 +1655,54 @@ json ChatService::set_language_pref(int64_t character_id, const std::string& lan
 // ── Reactions + bookmarks ───────────────────────────────────────────────────
 
 json ChatService::add_reaction(int64_t character_id, const std::string& message_id,
-                               const std::string& emoji) {
-    if (emoji.empty() || utf8_length(emoji) > 8) throw chat_error("invalid_emoji");
+                               const std::string& reaction_id) {
+    if (!config_ || !visibility::is_valid_safe_id(
+                        *config_, visibility::safe_catalog_kind::reaction, reaction_id)) {
+        throw chat_error("invalid_reaction");
+    }
+    if (!visibility::character_is_adult(character_id) &&
+        !visibility::is_minor_safe(*config_, visibility::safe_catalog_kind::reaction,
+                                   reaction_id)) {
+        throw chat_error("reaction_not_minor_safe");
+    }
     auto& db = ChatDB::instance().db();
     std::string chat_id;
+    std::string safe_message_id;
     int64_t author = 0;
-    db << "SELECT chat_id, COALESCE(author_character_id, 0) FROM messages WHERE id = ?;"
-       << message_id >> [&](std::string c, int64_t a) {
+    db << "SELECT chat_id, COALESCE(author_character_id, 0), COALESCE(safe_message_id, '') "
+          "FROM messages WHERE id = ?;"
+       << message_id >> [&](std::string c, int64_t a, std::string safe_id) {
               chat_id = c;
               author = a;
+              safe_message_id = safe_id;
           };
     if (chat_id.empty()) throw chat_error("message_not_found");
     if (!can_view_chat(character_id, chat_id)) throw chat_error("not_a_member");
+    if (!visibility::character_is_adult(character_id) && safe_message_id.empty()) {
+        throw chat_error("message_not_visible");
+    }
     if (author > 0 && author != character_id && is_blocked_either(character_id, author)) {
         throw chat_error("blocked");
     }
     db << "INSERT OR IGNORE INTO message_reactions (message_id, character_id, emoji, created_at) "
           "VALUES (?, ?, ?, ?);"
-       << message_id << character_id << emoji << now_seconds();
+       << message_id << character_id << reaction_id << now_seconds();
     int64_t change_id = ChatDB::instance().allocate_change_id();
     db << "UPDATE messages SET change_id = ? WHERE id = ?;" << change_id << message_id;
     json result;
     result["message_id"] = message_id;
-    result["reactions"] = reactions_for(message_id);
+    result["reactions"] = reactions_for(
+        message_id, config_, visibility::character_is_adult(character_id));
     result["change_id"] = change_id;
     return result;
 }
 
 json ChatService::remove_reaction(int64_t character_id, const std::string& message_id,
-                                  const std::string& emoji) {
+                                  const std::string& reaction_id) {
+    if (!config_ || !visibility::is_valid_safe_id(
+                        *config_, visibility::safe_catalog_kind::reaction, reaction_id)) {
+        throw chat_error("invalid_reaction");
+    }
     auto& db = ChatDB::instance().db();
     std::string chat_id;
     db << "SELECT chat_id FROM messages WHERE id = ?;" << message_id
@@ -1400,21 +1710,31 @@ json ChatService::remove_reaction(int64_t character_id, const std::string& messa
     if (chat_id.empty()) throw chat_error("message_not_found");
     if (!can_view_chat(character_id, chat_id)) throw chat_error("not_a_member");
     db << "DELETE FROM message_reactions WHERE message_id = ? AND character_id = ? AND emoji = ?;"
-       << message_id << character_id << emoji;
+       << message_id << character_id << reaction_id;
     int64_t change_id = ChatDB::instance().allocate_change_id();
     db << "UPDATE messages SET change_id = ? WHERE id = ?;" << change_id << message_id;
     json result;
     result["message_id"] = message_id;
-    result["reactions"] = reactions_for(message_id);
+    result["reactions"] = reactions_for(
+        message_id, config_, visibility::character_is_adult(character_id));
     result["change_id"] = change_id;
     return result;
 }
 
 json ChatService::add_bookmark(int64_t character_id, const std::string& message_id) {
     auto& db = ChatDB::instance().db();
-    bool exists = false;
-    db << "SELECT 1 FROM messages WHERE id = ? LIMIT 1;" << message_id >> [&](int) { exists = true; };
-    if (!exists) throw chat_error("message_not_found");
+    std::string chat_id;
+    std::string safe_message_id;
+    db << "SELECT chat_id, COALESCE(safe_message_id, '') FROM messages WHERE id = ?;"
+       << message_id >> [&](std::string c, std::string safe_id) {
+              chat_id = c;
+              safe_message_id = safe_id;
+          };
+    if (chat_id.empty()) throw chat_error("message_not_found");
+    if (!can_view_chat(character_id, chat_id)) throw chat_error("not_a_member");
+    if (!visibility::character_is_adult(character_id) && safe_message_id.empty()) {
+        throw chat_error("message_not_visible");
+    }
     db << "INSERT OR IGNORE INTO bookmarks (character_id, message_id, created_at) VALUES (?, ?, ?);"
        << character_id << message_id << now_seconds();
     json result;
@@ -1435,14 +1755,22 @@ json ChatService::remove_bookmark(int64_t character_id, const std::string& messa
 
 json ChatService::get_bookmarks(int64_t character_id) {
     auto& db = ChatDB::instance().db();
-    CharacterDirectory dir(account_is_adult(character_id));
+    CharacterDirectory dir(visibility::character_is_adult(character_id), character_id);
     json out = json::array();
     std::vector<MessageRow> rows;
+    const std::string safe_filter = dir.viewer_adult
+        ? ""
+        : " AND (m.safe_message_id IS NOT NULL OR m.system_id IS NOT NULL) "
+          "AND m.chat_id NOT IN (SELECT id FROM chats WHERE type = 'group') ";
     db << std::string("SELECT ") + k_message_columns +
               " FROM bookmarks b JOIN messages m ON m.id = b.message_id "
-              "WHERE b.character_id = ? ORDER BY b.created_at DESC LIMIT 200;"
+              "WHERE b.character_id = ?" + safe_filter +
+              " ORDER BY b.created_at DESC LIMIT 200;"
        << character_id >> make_message_reader(rows);
-    for (const auto& r : rows) out.push_back(message_to_json(r, dir, ""));
+    for (const auto& r : rows) {
+        json message = message_to_json(r, dir, "", config_, dir.viewer_adult);
+        if (!message.is_null()) out.push_back(std::move(message));
+    }
     json result;
     result["messages"] = out;
     return result;
@@ -1602,7 +1930,7 @@ json ChatService::unmute_character(int64_t character_id, int64_t target_characte
 
 json ChatService::get_friends(int64_t character_id) {
     auto& db = ChatDB::instance().db();
-    CharacterDirectory dir(account_is_adult(character_id));
+    CharacterDirectory dir(visibility::character_is_adult(character_id), character_id);
     std::vector<int64_t> ids;
     json friends = json::array();
     db << "SELECT friend_character_id, created_at FROM friends WHERE character_id = ? ORDER BY created_at DESC;"
@@ -1734,7 +2062,8 @@ json ChatService::set_push_preferences(int64_t character_id, const json& body) {
 // yet stored server-side. See server/docs/chat.md.
 void ChatService::dispatch_push(const std::string& chat_id, int64_t author,
                                 const std::string& message_id, const std::string& body,
-                                const std::string& source_language) {
+                                const std::string& source_language,
+                                const std::string& safe_message_id) {
     if (!PushSender::instance().configured()) return;
     ChatMeta meta;
     if (!load_chat_meta(chat_id, meta)) return;
@@ -1755,6 +2084,9 @@ void ChatService::dispatch_push(const std::string& chat_id, int64_t author,
         if (recipient.notify_level == "none") continue;
         if (is_blocked_either(author, recipient.character_id)) continue;
         if (is_person_muted(recipient.character_id, author)) continue;
+        const bool recipient_is_adult = visibility::character_is_adult(recipient.character_id);
+        // Custom content is invisible to minors and must never notify them.
+        if (safe_message_id.empty() && !recipient_is_adult) continue;
 
         int push_enabled = 1;
         int dm_from_friends = 1;
@@ -1774,7 +2106,9 @@ void ChatService::dispatch_push(const std::string& chat_id, int64_t author,
             if (dm_from_friends && are_friends(author, recipient.character_id)) eligible = true;
             if (recipient.notify_level == "all") eligible = true;
         } else if (group_mentions) {
-            if (body_mentions(body, recipient.character_id) || recipient.notify_level == "all") {
+            if ((!safe_message_id.empty() && recipient.notify_level == "all") ||
+                (!body.empty() && body_mentions(body, recipient.character_id)) ||
+                recipient.notify_level == "all") {
                 eligible = true;
             }
         }
@@ -1796,10 +2130,15 @@ void ChatService::dispatch_push(const std::string& chat_id, int64_t author,
         // message when viewing it: display language, respecting their per-source
         // language prefs, using stored-or-library translations only (never LLM).
         std::string display_language = display_language_for_character(recipient.character_id);
-        std::string push_body = body.substr(0, 200);
-        std::string translated = translate_for_display(recipient.character_id, message_id, body,
-                                                       source_language, display_language);
-        if (!translated.empty()) push_body = translated.substr(0, 200);
+        std::string push_body = safe_message_id.empty()
+            ? body.substr(0, 200)
+            : (config_ ? visibility::safe_message_body(*config_, safe_message_id).substr(0, 200)
+                       : std::string());
+        if (safe_message_id.empty()) {
+            std::string translated = translate_for_display(recipient.character_id, message_id, body,
+                                                           source_language, display_language);
+            if (!translated.empty()) push_body = translated.substr(0, 200);
+        }
 
         push_message message;
         message.title = "Ravenest";
@@ -1826,6 +2165,7 @@ void ChatService::dispatch_push(const std::string& chat_id, int64_t author,
 // ── Groups ──────────────────────────────────────────────────────────────────
 
 json ChatService::create_group(int64_t character_id, const std::string& name) {
+    if (!visibility::can_create_group(character_id)) throw chat_error("group_adults_only");
     if (name.empty() || utf8_length(name) > 64) throw chat_error("invalid_group_name");
     auto& db = ChatDB::instance().db();
     json cfg = chat_cfg(config_);
@@ -1851,6 +2191,7 @@ json ChatService::create_group(int64_t character_id, const std::string& name) {
 
 json ChatService::invite_to_group(int64_t character_id, const std::string& chat_id,
                                   int64_t target_character_id) {
+    if (!visibility::character_is_adult(character_id)) throw chat_error("group_adults_only");
     ChatMeta meta;
     if (!load_chat_meta(chat_id, meta) || meta.type != "group") throw chat_error("not_a_group");
     auto& db = ChatDB::instance().db();
@@ -1864,6 +2205,7 @@ json ChatService::invite_to_group(int64_t character_id, const std::string& chat_
     }
     if (target_character_id == character_id) throw chat_error("already_member");
     if (!character_exists(target_character_id)) throw chat_error("character_not_found");
+    if (!visibility::character_is_adult(target_character_id)) throw chat_error("group_adults_only");
     if (is_blocked_either(character_id, target_character_id)) throw chat_error("blocked");
     if (ChatDB::instance().is_member(chat_id, target_character_id)) throw chat_error("already_member");
     bool banned = false;
@@ -1889,7 +2231,10 @@ json ChatService::invite_to_group(int64_t character_id, const std::string& chat_
 }
 
 json ChatService::accept_group_invite(int64_t character_id, const std::string& chat_id) {
+    if (!visibility::can_join_group(character_id)) throw chat_error("group_adults_only");
     auto& db = ChatDB::instance().db();
+    ChatMeta meta;
+    if (!load_chat_meta(chat_id, meta) || meta.type != "group") throw chat_error("not_a_group");
     bool invited = false;
     int64_t expires = 0;
     db << "SELECT expires_at FROM chat_invites WHERE chat_id = ? AND invited_character_id = ?;"

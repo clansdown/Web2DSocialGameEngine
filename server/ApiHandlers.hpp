@@ -169,6 +169,34 @@ ApiResponse handleStartBaronTrack(GameConfigCache& config_cache, const nlohmann:
                                   const ClientInfo& client,
                                   const std::optional<std::string>& new_token);
 
+ApiResponse handleSetBaronyAcceptsMinors(GameConfigCache& config_cache,
+                                         const nlohmann::json& body,
+                                         const std::optional<std::string>& username,
+                                         const ClientInfo& client,
+                                         const std::optional<std::string>& new_token);
+
+ApiResponse handleGetSafeContent(GameConfigCache& config_cache, const nlohmann::json& body,
+                                 const std::optional<std::string>& username,
+                                 const ClientInfo& client,
+                                 const std::optional<std::string>& new_token);
+
+ApiResponse handleAdminSetBaronyIdentity(GameConfigCache& config_cache,
+                                         const nlohmann::json& body,
+                                         const std::optional<std::string>& username,
+                                         const ClientInfo& client,
+                                         const std::optional<std::string>& new_token);
+
+ApiResponse handleAdminSetAdultStatus(GameConfigCache& config_cache, const nlohmann::json& body,
+                                      const std::optional<std::string>& username,
+                                      const ClientInfo& client,
+                                      const std::optional<std::string>& new_token);
+
+ApiResponse handleAdminGetDeletedMessages(GameConfigCache& config_cache,
+                                          const nlohmann::json& body,
+                                          const std::optional<std::string>& username,
+                                          const ClientInfo& client,
+                                          const std::optional<std::string>& new_token);
+
 ApiResponse handleFoundFreehold(GameConfigCache& config_cache, const nlohmann::json& body,
                                 const std::optional<std::string>& username,
                                 const ClientInfo& client,
@@ -248,11 +276,6 @@ ApiResponse handleGetUITextures(GameConfigCache& config_cache, const nlohmann::j
                                  const std::optional<std::string>& username,
                                  const ClientInfo& client,
                                  const std::optional<std::string>& new_token);
-
-ApiResponse handleVerifyAgeOverride(GameConfigCache& config_cache, const nlohmann::json& body,
-                                     const std::optional<std::string>& username,
-                                     const ClientInfo& client,
-                                     const std::optional<std::string>& new_token);
 
 ApiResponse handleAcknowledgeLandPatent(GameConfigCache& config_cache, const nlohmann::json& body,
                                          const std::optional<std::string>& username,
@@ -438,6 +461,7 @@ inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfi
     add("setFiefdomReserve",      [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSetFiefdomReserve(c, b, u, cl, t); });
     add("setBuildingOutputRate",  [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSetBuildingOutputRate(c, b, u, cl, t); });
     add("getBaronies",            [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetBaronies(c, b, u, cl, t); });
+    add("setBaronyAcceptsMinors", [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSetBaronyAcceptsMinors(c, b, u, cl, t); });
     add("getBaronyMembers",       [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetBaronyMembers(c, b, u, cl, t); });
     add("joinBarony",             [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleJoinBarony(c, b, u, cl, t); });
     add("createBarony",           [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleCreateBarony(c, b, u, cl, t); });
@@ -450,6 +474,10 @@ inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfi
     add("setCharacterSex",        [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSetCharacterSex(c, b, u, cl, t); });
     add("getAvatarPool",          [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetAvatarPool(c, b, u, cl, t); });
     add("getPortraitFrames",      [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetPortraitFrames(c, b, u, cl, t); });
+    add("getSafeContent",         [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetSafeContent(c, b, u, cl, t); });
+    add("adminSetAdultStatus",    [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleAdminSetAdultStatus(c, b, u, cl, t); });
+    add("adminGetDeletedMessages",[&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleAdminGetDeletedMessages(c, b, u, cl, t); });
+    add("adminSetBaronyIdentity", [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleAdminSetBaronyIdentity(c, b, u, cl, t); });
     add("setCharacterAvatar",     [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSetCharacterAvatar(c, b, u, cl, t); });
     add("tdRound",                [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleTDRound(c, b, u, cl, t); });
     add("weedingStart",           [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleWeedingStart(c, b, u, cl, t); });

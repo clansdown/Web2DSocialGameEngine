@@ -77,7 +77,7 @@
   let cooldown_timer: ReturnType<typeof setInterval> | null = null;
 
   let character = $derived($currentCharacter);
-  let has_custom = $derived(!!character?.avatar_custom_id);
+  let has_custom = $derived(!!character?.has_custom_avatar);
   let cooldown_remaining = $derived(
     avatar_cooldown_remaining(character?.avatar_changed_at, now_seconds)
   );
@@ -143,8 +143,9 @@
     currentCharacter.set({
       ...c,
       avatar_safe_id: update.avatar_safe_id ?? c.avatar_safe_id,
-      avatar_custom_id: cleared_custom ? null : (update.avatar_custom_id ?? c.avatar_custom_id),
-      avatar_storage: update.avatar_storage ?? c.avatar_storage,
+      has_custom_avatar: cleared_custom
+        ? false
+        : (update.has_custom_avatar ?? (update.avatar_custom_id ? true : c.has_custom_avatar)),
       avatar_changed_at: update.avatar_changed_at ?? c.avatar_changed_at,
       avatar_url: update.avatar_url ?? c.avatar_url
     });

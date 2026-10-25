@@ -71,6 +71,7 @@
 #include "avatars/CloudflarePurge.hpp"
 #include "CosmeticsDB.hpp"
 #include "chat/ChatService.hpp"
+#include "Visibility.hpp"
 #include <sqlite_modern_cpp/errors.h>
 
 using json = nlohmann::json;
@@ -193,15 +194,15 @@ static int ensure_fiefdom_for_character(sqlite::database& db, GameConfigCache& c
        >> [&](int id) { existing = id; };
     if (existing) return existing;
 
+    (void)username;  // Fiefdoms are unnamed; this parameter is retained for the API.
     static std::atomic<int> fiefdom_counter(0);
     int counter = fiefdom_counter++;
-    std::string fiefdom_name = "Manor of " + username;
     int fx = (counter % 100) * 10;
     int fy = (counter / 100) * 10;
 
-    db << "INSERT INTO fiefdoms (owner_id, name, x, y, gold, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, wall_count, morale, last_update_time, manor_level) "
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0.0, ?, 0);"
-       << character_id << fiefdom_name << fx << fy
+    db << "INSERT INTO fiefdoms (owner_id, x, y, gold, grain, wood, steel, bronze, stone, leather, mana, charcoal, iron, ironwork, wall_count, morale, last_update_time, manor_level) "
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0.0, ?, 0);"
+       << character_id << fx << fy
        << starting_resource_value(config_cache, "gold")
        << starting_resource_value(config_cache, "grain")
        << starting_resource_value(config_cache, "wood")
@@ -343,7 +344,6 @@ std::string g_text_dir = "";  // derived from g_content_dir unless --text-dir ov
 const std::unordered_set<std::string> PUBLIC_ENDPOINTS = {
     "createAccount",
     "getTexts",
-    "verifyAgeOverride",
     "getUITextures"
 };
 
@@ -558,39 +558,21 @@ ApiResponse handleLogin(GameConfigCache& config_cache, const json& body,
         return response;
     }
 
+    visibility::viewer_context viewer;
+    viewer.account_id = user_id;
+    viewer.is_adult = adult;
+
     std::vector<json> characters_list;
-    db << "SELECT id, display_name, safe_display_name, level, archetype, sex, "
-          "avatar_safe_id, avatar_custom_id, COALESCE(avatar_storage, 'local'), "
-          "avatar_changed_at FROM characters WHERE user_id = ?;"
-       << user_id
-       >> [&](int id, std::string display_name, std::string safe_display_name, int level,
-              std::unique_ptr<std::string> archetype, std::unique_ptr<std::string> sex,
-              std::unique_ptr<std::string> avatar_safe_id,
-              std::unique_ptr<std::string> avatar_custom_id, std::string avatar_storage,
-              int64_t avatar_changed_at) {
-             json character;
-             character["id"] = id;
-             character["display_name"] = display_name;
-             character["safe_display_name"] = safe_display_name;
-             character["level"] = level;
-             if (archetype) {
-                 character["archetype"] = *archetype;
-             } else {
-                 character["archetype"] = nullptr;
-             }
-             if (sex) {
-                 character["sex"] = *sex;
-             } else {
-                 character["sex"] = nullptr;
-             }
-             character["avatar_safe_id"] = avatar_safe_id ? json(*avatar_safe_id) : json(nullptr);
-             character["avatar_custom_id"] =
-                 avatar_custom_id ? json(*avatar_custom_id) : json(nullptr);
-             character["avatar_storage"] = avatar_storage;
-             character["avatar_changed_at"] = avatar_changed_at;
-             character["avatar_url"] = resolve_avatar_url(id, adult);
-             characters_list.push_back(character);
-         };
+    std::vector<int64_t> character_ids;
+    db << "SELECT id FROM characters WHERE user_id = ? ORDER BY id;" << user_id
+       >> [&](int64_t id) { character_ids.push_back(id); };
+    for (int64_t id : character_ids) {
+        auto identity = visibility::load_character_identity(id);
+        if (!identity) continue;
+        viewer.character_id = id;
+        characters_list.push_back(
+            visibility::project_character_identity_for_self(viewer, *identity));
+    }
 
     response.data["user_id"] = user_id;
     response.data["username"] = *username;
@@ -660,56 +642,14 @@ ApiResponse handleGetCharacter(GameConfigCache& config_cache, const json& body,
         return response;
     }
 
-    auto& db = Database::getInstance().gameDB();
-
-    std::string display_name;
-    std::string safe_display_name;
-    int level;
-    std::unique_ptr<std::string> archetype;
-    std::unique_ptr<std::string> sex;
-    std::unique_ptr<std::string> avatar_safe_id;
-    std::unique_ptr<std::string> avatar_custom_id;
-    std::string avatar_storage = "local";
-    int64_t avatar_changed_at = 0;
-
-    db << "SELECT display_name, safe_display_name, level, archetype, sex, "
-          "avatar_safe_id, avatar_custom_id, COALESCE(avatar_storage, 'local'), "
-          "avatar_changed_at FROM characters WHERE id = ?;"
-       << character_id
-       >> [&](std::string dn, std::string sdn, int l, std::unique_ptr<std::string> a,
-              std::unique_ptr<std::string> s, std::unique_ptr<std::string> av_safe,
-              std::unique_ptr<std::string> av_custom, std::string storage,
-              int64_t changed) {
-             display_name = dn;
-             safe_display_name = sdn;
-             level = l;
-             archetype = std::move(a);
-             sex = std::move(s);
-             avatar_safe_id = std::move(av_safe);
-             avatar_custom_id = std::move(av_custom);
-             avatar_storage = std::move(storage);
-             avatar_changed_at = changed;
-         };
-
-    response.data["id"] = character_id;
-    response.data["display_name"] = display_name;
-    response.data["safe_display_name"] = safe_display_name;
-    response.data["level"] = level;
-    if (archetype) {
-        response.data["archetype"] = *archetype;
-    } else {
-        response.data["archetype"] = nullptr;
+    auto identity = visibility::load_character_identity(character_id);
+    if (!identity) {
+        response.error = "character not found";
+        return response;
     }
-    if (sex) {
-        response.data["sex"] = *sex;
-    } else {
-        response.data["sex"] = nullptr;
-    }
-    response.data["avatar_safe_id"] = avatar_safe_id ? json(*avatar_safe_id) : json(nullptr);
-    response.data["avatar_custom_id"] = avatar_custom_id ? json(*avatar_custom_id) : json(nullptr);
-    response.data["avatar_storage"] = avatar_storage;
-    response.data["avatar_changed_at"] = avatar_changed_at;
-    response.data["avatar_url"] = resolve_avatar_url(character_id, user_is_adult(username));
+    const visibility::viewer_context viewer =
+        username ? visibility::load_viewer_context(*username) : visibility::viewer_context{};
+    response.data = visibility::project_character_identity(viewer, *identity);
 
     if (new_token) {
         response.data["token"] = *new_token;
@@ -737,6 +677,37 @@ ApiResponse handleBuild(GameConfigCache& config_cache, const json& body,
 
     int character_id = body.value("character_id", 0);
     int fiefdom_id = body.value("fiefdom_id", 0);
+
+    {
+        auto& db = Database::getInstance().gameDB();
+        if (character_id > 0) {
+            std::string ownership_error;
+            if (!character_owned_by(db, username, character_id, ownership_error)) {
+                response.error = ownership_error;
+                return response;
+            }
+            if (fiefdom_id == 0) {
+                db << "SELECT id FROM fiefdoms WHERE owner_id = ? LIMIT 1;" << character_id
+                   >> [&](int id) { fiefdom_id = id; };
+            }
+        }
+        if (fiefdom_id > 0) {
+            int owner_character_id = 0;
+            db << "SELECT owner_id FROM fiefdoms WHERE id = ?;" << fiefdom_id
+               >> [&](int id) { owner_character_id = id; };
+            std::string ownership_error;
+            if (owner_character_id == 0 ||
+                !character_owned_by(db, username, owner_character_id, ownership_error)) {
+                response.error = "Fiefdom does not belong to this user";
+                return response;
+            }
+            character_id = owner_character_id;
+        }
+        if (character_id == 0 && fiefdom_id == 0) {
+            response.error = "character_id or fiefdom_id required";
+            return response;
+        }
+    }
 
     ctx.requesting_character_id = character_id;
     ctx.requesting_fiefdom_id = fiefdom_id;
@@ -796,6 +767,27 @@ ApiResponse handleGetFiefdom(GameConfigCache& config_cache, const json& body,
     if (fiefdom_id == 0) {
         response.error = "fiefdom_id or character_id required";
         return response;
+    }
+
+    {
+        auto& owner_db = Database::getInstance().gameDB();
+        int owner_id = 0;
+        owner_db << "SELECT owner_id FROM fiefdoms WHERE id = ?;" << fiefdom_id
+                 >> [&](int id) { owner_id = id; };
+        int user_id = 0;
+        owner_db << "SELECT id FROM users WHERE username = ?;" << *username
+                 >> [&](int id) { user_id = id; };
+        if (owner_id == 0 || user_id == 0) {
+            response.error = "fiefdom not found";
+            return response;
+        }
+        int owner_user_id = 0;
+        owner_db << "SELECT user_id FROM characters WHERE id = ?;" << owner_id
+                 >> [&](int id) { owner_user_id = id; };
+        if (owner_user_id != user_id) {
+            response.error = "Fiefdom does not belong to this user";
+            return response;
+        }
     }
 
     bool include_buildings = body.value("include_buildings", false);
@@ -1042,9 +1034,17 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
     }
 
     bool has_digital_credential = body.contains("digitalCredential");
-    std::string override_code = body.value("override_code", "");
+    // Test-harness-only escape hatch. It is enabled only when the server is in
+    // bounded test mode AND the environment explicitly opts in. It is never
+    // available on a normal server start, so no client can self-assert adulthood
+    // in production.
+    const char* test_adult_env = std::getenv("RAVENEST_TEST_ADULT_ACCOUNTS");
+    const bool test_adult_allowed =
+        (g_test_num_requests > 0 || g_test_timeout_seconds > 0) &&
+        test_adult_env != nullptr && std::string(test_adult_env) == "1";
+    const bool test_adult = adult_request && !has_digital_credential && test_adult_allowed;
 
-    if (adult_request && !has_digital_credential && override_code != "a1b2c3d4") {
+    if (adult_request && !has_digital_credential && !test_adult) {
         std::cout << "[DEBUG] handleCreateAccount: digital_cred_required" << std::endl;
         response.error = "digital_cred_required";
         return response;
@@ -1125,12 +1125,9 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
         std::cout << "[DEBUG] handleCreateAccount: digital credential adult=" << adult << std::endl;
     }
 
-    if (adult_request && override_code == "a1b2c3d4") {
-        std::cout << "[INFO] Account " << new_username << " verified via override code" << std::endl;
+    if (test_adult) {
         adult = true;
-        if (!displayName.empty()) {
-            display_name = displayName;
-        }
+        if (!displayName.empty()) display_name = displayName;
     }
 
     std::cout << "[DEBUG] handleCreateAccount: adult=" << adult << " display_name=" << display_name << std::endl;
@@ -1160,11 +1157,20 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
 
         // Step 1: insert user
         {
-            std::string sql = "INSERT INTO users (username, password_hash, created_at, adult, language) VALUES (?, ?, ?, ?, ?)";
+            std::string sql = "INSERT INTO users (username, password_hash, created_at, adult, "
+                              "adult_verified_at, adult_verification_method, language) "
+                              "VALUES (?, ?, ?, ?, ?, ?, ?)";
             std::cout << "[DEBUG] handleCreateAccount: Step 1 - INSERT user" << std::endl;
             log_sql("handleCreateAccount", sql);
             try {
-                db << sql << new_username << password_hash << now << (adult ? 1 : 0) << language;
+                db << sql << new_username << password_hash << now << (adult ? 1 : 0)
+                   << (adult ? now : 0)
+                   << (adult
+                           ? (test_adult
+                                  ? std::optional<std::string>("test_only")
+                                  : std::optional<std::string>("digital_credential"))
+                           : std::optional<std::string>())
+                   << language;
                 std::cout << "[DEBUG] handleCreateAccount: Step 1 done" << std::endl;
             } catch (const std::exception& e) {
                 std::cerr << "[DEBUG] handleCreateAccount: Step 1 exception type=" << typeid(e).name() << " what=" << e.what() << std::endl;
@@ -1228,14 +1234,18 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
         std::string token = AuthManager::getInstance().authenticateWithPassword(
             new_username, password, ip);
 
+        visibility::viewer_context viewer;
+        viewer.account_id = user_id;
+        viewer.character_id = character_id;
+        viewer.is_adult = adult;
         json character;
-        character["id"] = character_id;
-        character["display_name"] = display_name;
-        character["safe_display_name"] = safe_display_name;
-        character["level"] = 1;
-        character["archetype"] = nullptr;
-        character["sex"] = body.value("sex", "");
-        character["avatar_safe_id"] = nullptr;
+        if (auto identity = visibility::load_character_identity(character_id)) {
+            character = visibility::project_character_identity_for_self(viewer, *identity);
+        } else {
+            character["id"] = character_id;
+            character["display_name"] = display_name;
+            character["level"] = 1;
+        }
 
         response.data["user_id"] = user_id;
         response.data["username"] = new_username;
@@ -1261,28 +1271,49 @@ ApiResponse handleUpdateUserProfile(GameConfigCache& config_cache, const json& b
         return response;
     }
 
-    if (!body.contains("adult")) {
-        response.error = "adult field required";
+    if (body.contains("adult")) {
+        // Adult status is customer-service/digital-credential verified and may
+        // never be self-assigned by the client.
+        response.error = "adult_status_managed";
         return response;
     }
 
-    bool adult = body["adult"];
     auto& db = Database::getInstance().gameDB();
 
     int user_id = 0;
-    db << "SELECT id FROM users WHERE username = ?;"
+    bool adult = false;
+    db << "SELECT id, adult FROM users WHERE username = ?;"
        << *username
-       >> [&](int id) { user_id = id; };
+       >> [&](int id, bool value) {
+              user_id = id;
+              adult = value;
+          };
 
     if (user_id == 0) {
         response.error = "user not found";
         return response;
     }
 
-    db << "UPDATE users SET adult = ? WHERE id = ?;"
-       << (adult ? 1 : 0) << user_id;
+    if (body.contains("language") && body["language"].is_string()) {
+        std::string language = body["language"].get<std::string>();
+        if (language.empty() || language.size() > 12) {
+            response.error = "invalid_language";
+            return response;
+        }
+        for (char c : language) {
+            const bool allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                                 (c >= '0' && c <= '9') || c == '-' || c == '_';
+            if (!allowed) {
+                response.error = "invalid_language";
+                return response;
+            }
+        }
+        db << "UPDATE users SET language = ? WHERE id = ?;" << language << user_id;
+        response.data["language"] = language;
+    }
 
     response.data["adult"] = adult;
+    response.data["adult_status_managed"] = true;
 
     if (new_token) {
         response.data["token"] = *new_token;
@@ -1323,10 +1354,15 @@ ApiResponse handleUpdateCharacterProfile(GameConfigCache& config_cache, const js
         return response;
     }
 
-    bool adult = false;
-    db << "SELECT adult FROM users WHERE id = ?;"
-       << character_user_id
-       >> [&](bool a) { adult = a; };
+    int authenticated_user_id = 0;
+    db << "SELECT id FROM users WHERE username = ?;" << *username
+       >> [&](int id) { authenticated_user_id = id; };
+    if (authenticated_user_id == 0 || authenticated_user_id != character_user_id) {
+        response.error = "Character does not belong to this user";
+        return response;
+    }
+
+    const bool adult = visibility::character_is_adult(character_id);
 
     if (!display_name.empty() && !adult) {
         response.error = "display_name can only be set if account is adult";
@@ -1367,20 +1403,14 @@ ApiResponse handleUpdateCharacterProfile(GameConfigCache& config_cache, const js
            << display_name << character_id;
     }
 
-    std::string current_display_name, current_safe_display_name;
-    int level;
-    db << "SELECT display_name, safe_display_name, level FROM characters WHERE id = ?;"
-       << character_id
-       >> [&](std::string dn, std::string sdn, int l) {
-            current_display_name = dn;
-            current_safe_display_name = sdn;
-            level = l;
-        };
-
-    response.data["id"] = character_id;
-    response.data["display_name"] = current_display_name;
-    response.data["safe_display_name"] = current_safe_display_name;
-    response.data["level"] = level;
+    auto identity = visibility::load_character_identity(character_id);
+    if (!identity) {
+        response.error = "character not found";
+        return response;
+    }
+    visibility::viewer_context viewer = visibility::load_viewer_context(*username);
+    viewer.character_id = character_id;
+    response.data = visibility::project_character_identity_for_self(viewer, *identity);
 
     if (new_token) {
         response.data["token"] = *new_token;
@@ -1501,6 +1531,11 @@ ApiResponse handleGetPlayerState(GameConfigCache& config_cache, const json& body
 
     try {
         auto& db = Database::getInstance().gameDB();
+        std::string ownership_error;
+        if (!character_owned_by(db, username, character_id, ownership_error)) {
+            response.error = ownership_error;
+            return response;
+        }
         auto state = player_state_db::get_player_game_state(db, character_id);
 
         // Phase transition recovery: all levels done but game phase stuck
@@ -1577,20 +1612,40 @@ ApiResponse handleGetPlayerState(GameConfigCache& config_cache, const json& body
             response.data["land_patent_earned"] = true;
         }
 
-        // Barony membership summary (name + role + headcount).
+        // Barony membership summary (viewer-relative name + role + headcount).
         if (member_barony_id != 0) {
-            std::string barony_name;
-            db << "SELECT name FROM baronies WHERE id = ?;"
-               << member_barony_id >> [&](std::string n) { barony_name = n; };
+            visibility::barony_identity barony;
+            barony.id = member_barony_id;
+            db << "SELECT COALESCE(safe_name_id, ''), COALESCE(safe_tag_ids, '[]'), "
+                  "COALESCE(name, ''), COALESCE(description, ''), accepts_minors "
+                  "FROM baronies WHERE id = ?;"
+               << member_barony_id
+               >> [&](std::string safe_name_id, std::string safe_tag_ids,
+                      std::string custom_name, std::string description, int accepts_minors) {
+                      barony.safe_name_id = std::move(safe_name_id);
+                      try {
+                          json tags = json::parse(safe_tag_ids);
+                          if (tags.is_array()) {
+                              for (const auto& tag : tags) {
+                                  if (tag.is_string()) {
+                                      barony.safe_tag_ids.push_back(tag.get<std::string>());
+                                  }
+                              }
+                          }
+                      } catch (...) {
+                      }
+                      barony.custom_name = std::move(custom_name);
+                      barony.custom_description = std::move(description);
+                      barony.accepts_minors = accepts_minors != 0;
+                  };
             int member_count = 0;
             db << "SELECT COUNT(*) FROM barony_members WHERE barony_id = ?;"
                << member_barony_id >> [&](int c) { member_count = c; };
-            response.data["barony"] = {
-                {"id", member_barony_id},
-                {"name", barony_name},
-                {"role", member_role},
-                {"member_count", member_count}
-            };
+            barony.member_count = member_count;
+            visibility::viewer_context viewer = visibility::load_viewer_context(*username);
+            json projected = visibility::project_barony(config_cache, viewer, barony);
+            projected["role"] = member_role;
+            response.data["barony"] = std::move(projected);
         }
 
         // Letters: the hub shows the overlay for the oldest unread letter and a
@@ -2084,6 +2139,14 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
     }
 
     int character_id = body["character_id"].get<int>();
+    {
+        auto& db = Database::getInstance().gameDB();
+        std::string ownership_error;
+        if (!character_owned_by(db, username, character_id, ownership_error)) {
+            response.error = ownership_error;
+            return response;
+        }
+    }
     // If session_id provided, this is a round completion report
     if (body.contains("session_id") && body["session_id"].is_number_integer()) {
         int session_id = body["session_id"].get<int>();
@@ -2766,6 +2829,11 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
 
     try {
         auto& db = Database::getInstance().gameDB();
+        std::string ownership_error;
+        if (!character_owned_by(db, username, character_id, ownership_error)) {
+            response.error = ownership_error;
+            return response;
+        }
         auto state = player_state_db::get_player_game_state(db, character_id);
 
         // Check not already in another mini-game
@@ -3239,6 +3307,11 @@ ApiResponse handleWeedingTurn(GameConfigCache& config_cache, const json& body,
 
     try {
         auto& db = Database::getInstance().gameDB();
+        std::string ownership_error;
+        if (!character_owned_by(db, username, character_id, ownership_error)) {
+            response.error = ownership_error;
+            return response;
+        }
 
         // Get session
         auto session_opt = player_state_db::get_weeding_session(db, session_id);
@@ -3467,6 +3540,15 @@ ApiResponse handleStartMiniGame(GameConfigCache& config_cache, const json& body,
     int character_id = body["character_id"].get<int>();
     std::string mini_game = body["mini_game"].get<std::string>();
 
+    {
+        auto& db = Database::getInstance().gameDB();
+        std::string ownership_error;
+        if (!character_owned_by(db, username, character_id, ownership_error)) {
+            response.error = ownership_error;
+            return response;
+        }
+    }
+
     MiniGameHandler* handler = g_mini_games->get(mini_game);
 
     if (!handler) {
@@ -3579,6 +3661,15 @@ ApiResponse handleEndMiniGame(GameConfigCache& config_cache, const json& body,
     std::string mini_game = body["mini_game"].get<std::string>();
     bool won = body["won"].get<bool>();
     int score = body.value("score", 0);
+
+    {
+        auto& db = Database::getInstance().gameDB();
+        std::string ownership_error;
+        if (!character_owned_by(db, username, character_id, ownership_error)) {
+            response.error = ownership_error;
+            return response;
+        }
+    }
 
         int level_id = 0;
         if (body.contains("level_id") && body["level_id"].is_number_integer()) {
@@ -4024,30 +4115,40 @@ ApiResponse handleGetCharacterTexts(GameConfigCache& config_cache, const json& b
         return response;
     }
 
-    std::string display_name;
-    std::unique_ptr<std::string> sex_ptr;
-    db << "SELECT display_name, sex FROM characters WHERE id = ?;"
-       << character_id
-       >> [&](std::string dn, std::unique_ptr<std::string> s) {
-              display_name = dn;
-              sex_ptr = std::move(s);
-          };
-
-    std::optional<std::string> sex;
-    if (sex_ptr && !sex_ptr->empty()) {
-        sex = *sex_ptr;
+    auto identity = visibility::load_character_identity(character_id);
+    if (!identity) {
+        response.error = "Character not found";
+        return response;
     }
+    const visibility::viewer_context viewer = visibility::load_viewer_context(*username);
+    json projected_identity = visibility::project_character_identity(viewer, *identity);
+    const std::string display_name =
+        projected_identity.value("display_name", identity->safe_display_name);
+    std::optional<std::string> sex;
+    if (!identity->sex.empty()) sex = identity->sex;
 
-    // Honor name chosen when the character started their own baron track —
-    // substituted server-side so the client never sends it.
+    // Honor name chosen when the character started their own baron track. A
+    // minor always receives the safe barony name.
     std::optional<std::string> honor_name;
-    db << "SELECT honor_name FROM player_game_state WHERE character_id = ?;"
+    std::string safe_barony_name_id;
+    std::string custom_honor_name;
+    db << "SELECT COALESCE(safe_barony_name_id, ''), COALESCE(honor_name, '') "
+          "FROM player_game_state WHERE character_id = ?;"
        << character_id
-       >> [&](std::unique_ptr<std::string> hn) {
-              if (hn && !hn->empty()) {
-                  honor_name = *hn;
-              }
+       >> [&](std::string safe_id, std::string custom_name) {
+              safe_barony_name_id = std::move(safe_id);
+              custom_honor_name = std::move(custom_name);
           };
+    const std::string safe_honor =
+        visibility::safe_label(config_cache, visibility::safe_catalog_kind::barony_name,
+                               safe_barony_name_id);
+    if (!viewer.is_adult) {
+        if (!safe_honor.empty()) honor_name = safe_honor;
+    } else if (!custom_honor_name.empty()) {
+        honor_name = custom_honor_name;
+    } else if (!safe_honor.empty()) {
+        honor_name = safe_honor;
+    }
 
     json texts = json::object();
 
@@ -4086,24 +4187,238 @@ ApiResponse handleGetCharacterTexts(GameConfigCache& config_cache, const json& b
     return response;
 }
 
-ApiResponse handleVerifyAgeOverride(GameConfigCache& config_cache, const json& body,
-                                     const std::optional<std::string>& username,
-                                     const ClientInfo& client,
-                                     const std::optional<std::string>& new_token)
+ApiResponse handleGetSafeContent(GameConfigCache& config_cache, const json& body,
+                                 const std::optional<std::string>& username,
+                                 const ClientInfo& client,
+                                 const std::optional<std::string>& new_token)
 {
+    (void)body;
+    (void)client;
     ApiResponse response;
-
-    std::string code = body.value("code", "");
-
-    bool verified = (code == "a1b2c3d4");
-    if (verified) {
-        std::cout << "[INFO] Age override code accepted" << std::endl;
-    } else {
-        log_error("handleVerifyAgeOverride", "Invalid override code attempted: " + code);
+    if (!username) {
+        response.needs_auth = true;
+        return response;
     }
+    const bool adult = visibility::load_viewer_context(*username).is_adult;
+    auto filter_catalog = [&](visibility::safe_catalog_kind kind) {
+        json out = json::array();
+        for (const auto& entry : visibility::safe_catalog(config_cache, kind)) {
+            if (!adult && (kind == visibility::safe_catalog_kind::reaction ||
+                           kind == visibility::safe_catalog_kind::gif) &&
+                !entry.value("minor_safe", false)) {
+                continue;
+            }
+            out.push_back(entry);
+        }
+        return out;
+    };
+    response.data["is_adult"] = adult;
+    response.data["messages"] = filter_catalog(visibility::safe_catalog_kind::message);
+    response.data["barony_names"] = filter_catalog(visibility::safe_catalog_kind::barony_name);
+    response.data["barony_tags"] = filter_catalog(visibility::safe_catalog_kind::barony_tag);
+    response.data["reactions"] = filter_catalog(visibility::safe_catalog_kind::reaction);
+    response.data["gifs"] = filter_catalog(visibility::safe_catalog_kind::gif);
+    response.data["ban_reasons"] = filter_catalog(visibility::safe_catalog_kind::ban_reason);
+    if (new_token) response.data["token"] = *new_token;
+    return response;
+}
 
-    response.data["verified"] = verified;
+ApiResponse handleAdminSetAdultStatus(GameConfigCache& config_cache, const json& body,
+                                      const std::optional<std::string>& username,
+                                      const ClientInfo& client,
+                                      const std::optional<std::string>& new_token)
+{
+    (void)client;
+    ApiResponse response;
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+    const visibility::viewer_context admin = visibility::load_viewer_context(*username);
+    if (!chat::ChatService::instance().is_admin(admin.account_id)) {
+        response.error = "not_admin";
+        return response;
+    }
+    auto& db = Database::getInstance().gameDB();
+    int64_t account_id = body.value("account_id", static_cast<int64_t>(0));
+    if (account_id == 0 && body.contains("target_username") &&
+        body["target_username"].is_string()) {
+        const std::string target = body["target_username"].get<std::string>();
+        db << "SELECT id FROM users WHERE username = ?;" << target
+           >> [&](int64_t id) { account_id = id; };
+    }
+    if (account_id == 0) {
+        response.error = "account_id or target_username required";
+        return response;
+    }
+    if (!body.contains("adult") || !body["adult"].is_boolean()) {
+        response.error = "adult boolean required";
+        return response;
+    }
+    const bool adult = body["adult"].get<bool>();
+    const std::string method = body.value("method", std::string("customer_service"));
+    const std::string reason = body.value("reason", std::string());
+    visibility::admin_set_account_adult_status(config_cache, account_id, adult, admin.account_id,
+                                                method, reason);
+    response.data["account_id"] = account_id;
+    response.data["adult"] = adult;
+    response.data["method"] = method;
+    if (new_token) response.data["token"] = *new_token;
+    return response;
+}
 
+ApiResponse handleAdminGetDeletedMessages(GameConfigCache& config_cache, const json& body,
+                                          const std::optional<std::string>& username,
+                                          const ClientInfo& client,
+                                          const std::optional<std::string>& new_token)
+{
+    (void)client;
+    ApiResponse response;
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+    const visibility::viewer_context admin = visibility::load_viewer_context(*username);
+    if (!chat::ChatService::instance().is_admin(admin.account_id)) {
+        response.error = "not_admin";
+        return response;
+    }
+    const int64_t limit = body.value("limit", static_cast<int64_t>(100));
+    response.data["messages"] =
+        visibility::list_deleted_messages(config_cache, admin, limit);
+    if (new_token) response.data["token"] = *new_token;
+    return response;
+}
+
+ApiResponse handleSetBaronyAcceptsMinors(GameConfigCache& config_cache, const json& body,
+                                         const std::optional<std::string>& username,
+                                         const ClientInfo& client,
+                                         const std::optional<std::string>& new_token)
+{
+    (void)config_cache;
+    (void)client;
+    ApiResponse response;
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+    if (!body.contains("barony_id") || !body["barony_id"].is_number_integer()) {
+        response.error = "barony_id required";
+        return response;
+    }
+    if (!body.contains("accepts_minors") || !body["accepts_minors"].is_boolean()) {
+        response.error = "accepts_minors boolean required";
+        return response;
+    }
+    const int64_t barony_id = body["barony_id"].get<int64_t>();
+    const bool accepts = body["accepts_minors"].get<bool>();
+    const visibility::viewer_context viewer = visibility::load_viewer_context(*username);
+    auto& db = Database::getInstance().gameDB();
+    int64_t owner_character_id = 0;
+    db << "SELECT owner_character_id FROM baronies WHERE id = ? AND defunct_at = 0;"
+       << barony_id >> [&](int64_t id) { owner_character_id = id; };
+    if (owner_character_id == 0) {
+        response.error = "barony not found";
+        return response;
+    }
+    bool authorised = chat::ChatService::instance().is_admin(viewer.account_id);
+    if (!authorised) {
+        int64_t owned_by_viewer = 0;
+        db << "SELECT id FROM characters WHERE id = ? AND user_id = ?;"
+           << owner_character_id << viewer.account_id
+           >> [&](int64_t id) { owned_by_viewer = id; };
+        authorised = owned_by_viewer != 0;
+    }
+    if (!authorised) {
+        response.error = "not_barony_owner";
+        return response;
+    }
+    if (!accepts) {
+        int minor_members = 0;
+        std::vector<int64_t> members;
+        db << "SELECT character_id FROM barony_members WHERE barony_id = ?;" << barony_id
+           >> [&](int64_t id) { members.push_back(id); };
+        for (int64_t member : members) {
+            if (!visibility::character_is_adult(member)) minor_members++;
+        }
+        if (minor_members > 0) {
+            response.error = "barony_has_minor_members";
+            return response;
+        }
+    }
+    db << "UPDATE baronies SET accepts_minors = ? WHERE id = ?;"
+       << (accepts ? 1 : 0) << barony_id;
+    response.data["barony_id"] = barony_id;
+    response.data["accepts_minors"] = accepts;
+    if (new_token) response.data["token"] = *new_token;
+    return response;
+}
+
+
+ApiResponse handleAdminSetBaronyIdentity(GameConfigCache& config_cache, const json& body,
+                                         const std::optional<std::string>& username,
+                                         const ClientInfo& client,
+                                         const std::optional<std::string>& new_token)
+{
+    (void)client;
+    ApiResponse response;
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
+    const visibility::viewer_context admin = visibility::load_viewer_context(*username);
+    if (!chat::ChatService::instance().is_admin(admin.account_id)) {
+        response.error = "not_admin";
+        return response;
+    }
+    const int64_t barony_id = body.value("barony_id", static_cast<int64_t>(0));
+    const std::string safe_name_id = body.value("safe_name_id", std::string());
+    if (barony_id <= 0 || safe_name_id.empty() ||
+        !visibility::is_valid_safe_id(config_cache, visibility::safe_catalog_kind::barony_name,
+                                      safe_name_id)) {
+        response.error = "barony_id and valid safe_name_id required";
+        return response;
+    }
+    std::vector<std::string> tags;
+    if (body.contains("safe_tag_ids") && body["safe_tag_ids"].is_array()) {
+        for (const auto& tag : body["safe_tag_ids"]) {
+            if (!tag.is_string()) continue;
+            const std::string id = tag.get<std::string>();
+            if (!visibility::is_valid_safe_id(config_cache,
+                                              visibility::safe_catalog_kind::barony_tag, id)) {
+                response.error = "invalid_safe_barony_tag";
+                return response;
+            }
+            tags.push_back(id);
+        }
+    }
+    const std::string safe_label =
+        visibility::safe_label(config_cache, visibility::safe_catalog_kind::barony_name,
+                               safe_name_id);
+    const std::string custom_name = body.value("name", std::string());
+    const std::string name = custom_name.empty() ? safe_label : custom_name;
+    if (name.empty()) {
+        response.error = "name required";
+        return response;
+    }
+    const std::string description = body.value("description", std::string());
+    auto& db = Database::getInstance().gameDB();
+    int exists = 0;
+    db << "SELECT COUNT(*) FROM baronies WHERE id = ?;" << barony_id
+       >> [&](int count) { exists = count; };
+    if (exists == 0) {
+        response.error = "barony not found";
+        return response;
+    }
+    json tag_json = tags;
+    db << "UPDATE baronies SET safe_name_id = ?, safe_tag_ids = ?, name = ?, description = ? "
+          "WHERE id = ?;"
+       << safe_name_id << tag_json.dump() << name << description << barony_id;
+    response.data["barony_id"] = barony_id;
+    response.data["safe_name_id"] = safe_name_id;
+    response.data["safe_tag_ids"] = tags;
+    response.data["name"] = name;
+    if (new_token) response.data["token"] = *new_token;
     return response;
 }
 
@@ -4195,6 +4510,10 @@ ApiResponse handleSetFiefdomImport(GameConfigCache& config_cache, const json& bo
                                     const std::optional<std::string>& new_token)
 {
     ApiResponse response;
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
 
     if (!body.contains("fiefdom_id") || !body.contains("resource") || !body.contains("auto_import")) {
         response.error = "fiefdom_id, resource, and auto_import required";
@@ -4207,6 +4526,16 @@ ApiResponse handleSetFiefdomImport(GameConfigCache& config_cache, const json& bo
 
     try {
         auto& db = Database::getInstance().gameDB();
+
+        int owner_character = 0;
+        db << "SELECT owner_id FROM fiefdoms WHERE id = ?;" << fiefdom_id
+           >> [&](int id) { owner_character = id; };
+        std::string ownership_error;
+        if (owner_character == 0 ||
+            !character_owned_by(db, username, owner_character, ownership_error)) {
+            response.error = "Fiefdom does not belong to this user";
+            return response;
+        }
 
         // Read current import_settings
         std::string import_str;
@@ -4240,6 +4569,10 @@ ApiResponse handleSetFiefdomReserve(GameConfigCache& config_cache, const json& b
                                     const std::optional<std::string>& new_token)
 {
     ApiResponse response;
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
 
     if (!body.contains("fiefdom_id") || !body.contains("resource") || !body.contains("reserve")) {
         response.error = "fiefdom_id, resource, and reserve required";
@@ -4253,6 +4586,16 @@ ApiResponse handleSetFiefdomReserve(GameConfigCache& config_cache, const json& b
 
     try {
         auto& db = Database::getInstance().gameDB();
+
+        int owner_character = 0;
+        db << "SELECT owner_id FROM fiefdoms WHERE id = ?;" << fiefdom_id
+           >> [&](int id) { owner_character = id; };
+        std::string ownership_error;
+        if (owner_character == 0 ||
+            !character_owned_by(db, username, owner_character, ownership_error)) {
+            response.error = "Fiefdom does not belong to this user";
+            return response;
+        }
 
         std::string reserves_str;
         db << "SELECT reserves FROM fiefdoms WHERE id = ?;" << fiefdom_id
@@ -5019,6 +5362,10 @@ ApiResponse handleAcknowledgeLandPatent(GameConfigCache& config_cache, const jso
                                          const std::optional<std::string>& new_token)
 {
     ApiResponse response;
+    if (!username) {
+        response.needs_auth = true;
+        return response;
+    }
 
     if (!body.contains("character_id") || !body["character_id"].is_number_integer()) {
         response.error = "character_id required";
@@ -5029,6 +5376,11 @@ ApiResponse handleAcknowledgeLandPatent(GameConfigCache& config_cache, const jso
 
     try {
         auto& db = Database::getInstance().gameDB();
+        std::string ownership_error;
+        if (!character_owned_by(db, username, character_id, ownership_error)) {
+            response.error = ownership_error;
+            return response;
+        }
         player_state_db::acknowledge_land_patent(db, character_id);
     } catch (const std::exception& e) {
         log_error("handleAcknowledgeLandPatent", e.what());
@@ -5054,35 +5406,61 @@ ApiResponse handleGetBaronies(GameConfigCache& config_cache, const json& body,
     try {
         auto& db = Database::getInstance().gameDB();
         json baronies_list = json::array();
+        const visibility::viewer_context viewer = visibility::load_viewer_context(*username);
 
-        db << "SELECT d.id, d.name, d.description, d.owner_character_id, d.created_at, "
-              "COUNT(dm.id) as member_count, c.display_name as owner_name, "
-              "d.baron_character_id, bc.display_name as baron_name "
-              "FROM baronies d "
-              "LEFT JOIN barony_members dm ON dm.barony_id = d.id "
-              "LEFT JOIN characters c ON c.id = d.owner_character_id "
-              "LEFT JOIN characters bc ON bc.id = d.baron_character_id "
-              "WHERE d.defunct_at = 0 "
-              "GROUP BY d.id "
-              "ORDER BY d.name;"
-           >> [&](int id, std::string name, std::string description, int owner_id, int64_t created_at, int member_count, std::string owner_name, std::optional<int> baron_id, std::optional<std::string> baron_name) {
-                json entry;
-                entry["id"] = id;
-                entry["name"] = name;
-                entry["description"] = description;
+        db << "SELECT d.id, COALESCE(d.safe_name_id, ''), COALESCE(d.safe_tag_ids, '[]'), "
+              "COALESCE(d.name, ''), COALESCE(d.description, ''), d.accepts_minors, "
+              "d.owner_character_id, d.created_at, "
+              "(SELECT COUNT(*) FROM barony_members dm WHERE dm.barony_id = d.id), "
+              "d.baron_character_id "
+              "FROM baronies d WHERE d.defunct_at = 0 ORDER BY d.name;"
+           >> [&](int id, std::string safe_name_id, std::string safe_tag_ids,
+                  std::string custom_name, std::string description, int accepts_minors,
+                  int owner_id, int64_t created_at, int member_count,
+                  std::optional<int> baron_id) {
+                visibility::barony_identity barony;
+                barony.id = id;
+                barony.safe_name_id = std::move(safe_name_id);
+                try {
+                    json tags = json::parse(safe_tag_ids);
+                    if (tags.is_array()) {
+                        for (const auto& tag : tags) {
+                            if (tag.is_string()) {
+                                barony.safe_tag_ids.push_back(tag.get<std::string>());
+                            }
+                        }
+                    }
+                } catch (...) {
+                }
+                barony.custom_name = std::move(custom_name);
+                barony.custom_description = std::move(description);
+                barony.accepts_minors = accepts_minors != 0;
+                barony.member_count = member_count;
+                json entry = visibility::project_barony(config_cache, viewer, barony);
                 entry["owner_character_id"] = owner_id;
-                entry["owner_name"] = owner_name;
-                entry["member_count"] = member_count;
                 entry["created_at"] = created_at;
+                if (auto owner = visibility::load_character_identity(owner_id)) {
+                    json projected_owner =
+                        visibility::project_character_identity(viewer, *owner);
+                    entry["owner_name"] = projected_owner.value("display_name", "");
+                    entry["owner_avatar_url"] = projected_owner.value("avatar_url", "");
+                }
                 if (baron_id) {
                     entry["baron_character_id"] = *baron_id;
+                    if (auto baron = visibility::load_character_identity(*baron_id)) {
+                        json projected_baron =
+                            visibility::project_character_identity(viewer, *baron);
+                        entry["baron_name"] = projected_baron.value("display_name", "");
+                        entry["baron_avatar_url"] = projected_baron.value("avatar_url", "");
+                    }
                 }
-                if (baron_name) {
-                    entry["baron_name"] = *baron_name;
-                }
-                baronies_list.push_back(entry);
+                baronies_list.push_back(std::move(entry));
             };
 
+        std::sort(baronies_list.begin(), baronies_list.end(),
+                  [](const json& a, const json& b) {
+                      return a.value("name", std::string()) < b.value("name", std::string());
+                  });
         response.data["baronies"] = baronies_list;
 
         if (new_token) {
@@ -5130,17 +5508,30 @@ ApiResponse handleGetBaronyMembers(GameConfigCache& config_cache, const json& bo
         }
 
         json members_arr = json::array();
-        db << "SELECT bm.character_id, c.display_name, bm.role FROM barony_members bm "
-              "JOIN characters c ON c.id = bm.character_id WHERE bm.barony_id = ? "
-              "ORDER BY bm.joined_at ASC;"
+        const visibility::viewer_context viewer = visibility::load_viewer_context(*username);
+        struct member_row {
+            int64_t character_id = 0;
+            std::string role;
+        };
+        std::vector<member_row> members;
+        db << "SELECT character_id, role FROM barony_members WHERE barony_id = ? "
+              "ORDER BY joined_at ASC;"
            << barony_id
-           >> [&](int cid, std::string display_name, std::string role) {
-                  members_arr.push_back({
-                      {"character_id", cid},
-                      {"display_name", display_name},
-                      {"role", role}
-                  });
+           >> [&](int64_t cid, std::string role) {
+                  members.push_back({cid, std::move(role)});
               };
+        for (const auto& member : members) {
+            json entry;
+            entry["character_id"] = member.character_id;
+            entry["role"] = member.role;
+            if (auto identity = visibility::load_character_identity(member.character_id)) {
+                json projected = visibility::project_character_identity(viewer, *identity);
+                entry["display_name"] = projected.value("display_name", "");
+                entry["avatar_url"] = projected.value("avatar_url", "");
+                entry["level"] = projected.value("level", 1);
+            }
+            members_arr.push_back(std::move(entry));
+        }
         response.data["members"] = members_arr;
         if (new_token) response.data["token"] = *new_token;
     } catch (const std::exception& e) {
@@ -5230,9 +5621,20 @@ ApiResponse handleJoinBarony(GameConfigCache& config_cache, const json& body,
 
         // Verify barony exists and is not defunct
         int barony_exists = 0;
-        db << "SELECT COUNT(*) FROM baronies WHERE id = ? AND defunct_at = 0;" << barony_id >> [&](int count) { barony_exists = count; };
+        bool accepts_minors = false;
+        db << "SELECT COUNT(*), COALESCE(MAX(accepts_minors), 0) FROM baronies "
+              "WHERE id = ? AND defunct_at = 0;"
+           << barony_id
+           >> [&](int count, int accepts) {
+                  barony_exists = count;
+                  accepts_minors = accepts != 0;
+              };
         if (!barony_exists) {
             response.error = "Barony not found";
+            return response;
+        }
+        if (!visibility::character_is_adult(character_id) && !accepts_minors) {
+            response.error = "barony_does_not_accept_minors";
             return response;
         }
 
@@ -5314,14 +5716,44 @@ ApiResponse handleCreateBarony(GameConfigCache& config_cache, const json& body,
         return response;
     }
 
-    std::string name = body.value("name", "");
-    if (name.empty()) {
-        response.error = "name required";
+    const std::string safe_name_id = body.value("safe_name_id", "");
+    if (safe_name_id.empty() ||
+        !visibility::is_valid_safe_id(config_cache, visibility::safe_catalog_kind::barony_name,
+                                      safe_name_id)) {
+        response.error = "safe_name_id required";
         return response;
     }
-
-    std::string description = body.value("description", "");
+    std::vector<std::string> safe_tag_ids;
+    if (body.contains("safe_tag_ids") && body["safe_tag_ids"].is_array()) {
+        for (const auto& tag : body["safe_tag_ids"]) {
+            if (!tag.is_string()) continue;
+            const std::string tag_id = tag.get<std::string>();
+            if (!visibility::is_valid_safe_id(config_cache,
+                                              visibility::safe_catalog_kind::barony_tag, tag_id)) {
+                response.error = "invalid_safe_barony_tag";
+                return response;
+            }
+            safe_tag_ids.push_back(tag_id);
+        }
+    }
     int character_id = body["character_id"].get<int>();
+    const bool adult = visibility::character_is_adult(character_id);
+    std::string name = body.value("name", "");
+    if (!adult && !name.empty()) {
+        response.error = "custom_name_adults_only";
+        return response;
+    }
+    if (name.empty()) {
+        name = visibility::safe_label(config_cache, visibility::safe_catalog_kind::barony_name,
+                                      safe_name_id);
+    }
+    if (name.empty()) {
+        response.error = "safe_name_id required";
+        return response;
+    }
+    std::string description = body.value("description", "");
+    if (!adult) description.clear();
+    const bool accepts_minors = !adult || body.value("accepts_minors", false);
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 
     try {
@@ -5337,11 +5769,14 @@ ApiResponse handleCreateBarony(GameConfigCache& config_cache, const json& body,
             return response;
         }
 
-        // Check for duplicate barony name (case-insensitive, matching the
-        // capture-time uniqueness rule in handleStartBaronTrack)
+        // Check for duplicate barony name (case-insensitive) and duplicate safe
+        // name (the safe pick is reserved among active baronies).
         int name_taken = 0;
         db << "SELECT COUNT(*) FROM baronies WHERE LOWER(name) = LOWER(?);" << name >> [&](int count) { name_taken = count; };
-        if (name_taken > 0) {
+        int safe_name_taken = 0;
+        db << "SELECT COUNT(*) FROM baronies WHERE safe_name_id = ? AND defunct_at = 0;"
+           << safe_name_id >> [&](int count) { safe_name_taken = count; };
+        if (name_taken > 0 || safe_name_taken > 0) {
             response.error = "A barony with that name already exists";
             return response;
         }
@@ -5367,10 +5802,13 @@ ApiResponse handleCreateBarony(GameConfigCache& config_cache, const json& body,
         // Ensure a fiefdom exists (a freehold-entered player already has one).
         int fiefdom_id = ensure_fiefdom_for_character(db, config_cache, character_id, *username, now);
 
-        // Create barony
-        db << "INSERT INTO baronies (name, owner_character_id, description, created_at) "
-              "VALUES (?, ?, ?, ?);"
-           << name << character_id << description << now;
+        // Create barony. The safe name/tags are mandatory; custom text is
+        // adult-only. A minor founder always accepts minors.
+        json tag_json = safe_tag_ids;
+        db << "INSERT INTO baronies (name, safe_name_id, safe_tag_ids, accepts_minors, "
+              "owner_character_id, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?);"
+           << name << safe_name_id << tag_json.dump() << (accepts_minors ? 1 : 0)
+           << character_id << description << now;
 
         int barony_id = db.last_insert_rowid();
 
@@ -5385,14 +5823,18 @@ ApiResponse handleCreateBarony(GameConfigCache& config_cache, const json& body,
         // Unlock base
         player_state_db::unlock_base(db, character_id, now);
 
-        // Keep the captured honor name in sync if the player edited it at creation
-        db << "UPDATE player_game_state SET honor_name = ? WHERE character_id = ?;"
-           << name << character_id;
+        // Keep the captured honor name in sync if the player edited it at creation.
+        db << "UPDATE player_game_state SET honor_name = ?, safe_barony_name_id = ? "
+              "WHERE character_id = ?;"
+           << name << safe_name_id << character_id;
 
         response.data["barony_id"] = barony_id;
         response.data["fiefdom_id"] = fiefdom_id;
         response.data["game_phase"] = "sandbox";
         response.data["base_unlocked"] = true;
+        response.data["name"] = name;
+        response.data["safe_name_id"] = safe_name_id;
+        response.data["accepts_minors"] = accepts_minors;
 
         if (new_token) {
             response.data["token"] = *new_token;
@@ -5424,13 +5866,30 @@ ApiResponse handleStartBaronTrack(GameConfigCache& config_cache, const json& bod
 
     int character_id = body["character_id"].get<int>();
 
-    // The aspiring barony's honor name is captured up front: required, trimmed,
-    // length-capped, and must not collide (case-insensitively) with an existing barony.
+    // The aspiring barony's honor name is captured up front. A minor selects a
+    // server-owned safe name; an adult may add a custom honor name.
+    const std::string safe_name_id = body.value("safe_barony_name_id", "");
+    if (safe_name_id.empty() ||
+        !visibility::is_valid_safe_id(config_cache, visibility::safe_catalog_kind::barony_name,
+                                      safe_name_id)) {
+        response.error = "safe_barony_name_id required";
+        return response;
+    }
+    const bool adult = visibility::character_is_adult(character_id);
     std::string honor_name = body.value("honor_name", "");
     honor_name.erase(0, honor_name.find_first_not_of(" \t\r\n"));
     honor_name.erase(honor_name.find_last_not_of(" \t\r\n") + 1);
+    if (!adult && !honor_name.empty()) {
+        response.error = "custom_honor_name_adults_only";
+        return response;
+    }
     if (honor_name.empty()) {
-        response.error = "honor_name required";
+        honor_name = visibility::safe_label(config_cache,
+                                            visibility::safe_catalog_kind::barony_name,
+                                            safe_name_id);
+    }
+    if (honor_name.empty()) {
+        response.error = "safe_barony_name_id required";
         return response;
     }
     if (honor_name.length() > 64) {
@@ -5468,16 +5927,22 @@ ApiResponse handleStartBaronTrack(GameConfigCache& config_cache, const json& bod
         int name_taken = 0;
         db << "SELECT COUNT(*) FROM baronies WHERE LOWER(name) = LOWER(?);"
            << honor_name >> [&](int count) { name_taken = count; };
-        if (name_taken > 0) {
+        int safe_name_taken = 0;
+        db << "SELECT COUNT(*) FROM baronies WHERE safe_name_id = ? AND defunct_at = 0;"
+           << safe_name_id >> [&](int count) { safe_name_taken = count; };
+        if (name_taken > 0 || safe_name_taken > 0) {
             response.error = "A barony with that name already exists";
             return response;
         }
 
-        // Switch to baron_track phase and persist the chosen honor name
+        // Switch to baron_track phase and persist the chosen honor name/safe pick.
         player_state_db::start_baron_track(db, character_id, now, honor_name);
+        db << "UPDATE player_game_state SET safe_barony_name_id = ? WHERE character_id = ?;"
+           << safe_name_id << character_id;
 
         response.data["game_phase"] = "baron_track";
         response.data["honor_name"] = honor_name;
+        response.data["safe_barony_name_id"] = safe_name_id;
 
         if (new_token) {
             response.data["token"] = *new_token;
@@ -5618,6 +6083,24 @@ ApiResponse handleLeaveBarony(GameConfigCache& config_cache, const json& body,
                << successor << successor << barony_id;
             db << "UPDATE barony_members SET role = 'baron' WHERE barony_id = ? AND character_id = ?;"
                << barony_id << successor;
+            // A minor successor forces the barony into minor-accepting mode and
+            // removes custom barony text (safe identity remains).
+            if (!visibility::character_is_adult(successor)) {
+                std::string safe_name_id, current_name;
+                db << "SELECT COALESCE(safe_name_id, ''), COALESCE(name, '') FROM baronies "
+                      "WHERE id = ?;"
+                   << barony_id >> [&](std::string safe_id, std::string name) {
+                          safe_name_id = std::move(safe_id);
+                          current_name = std::move(name);
+                      };
+                const std::string safe_name =
+                    visibility::safe_label(config_cache,
+                                           visibility::safe_catalog_kind::barony_name,
+                                           safe_name_id);
+                db << "UPDATE baronies SET name = ?, description = '', accepts_minors = 1 "
+                      "WHERE id = ?;"
+                   << (safe_name.empty() ? current_name : safe_name) << barony_id;
+            }
         } else if (is_founder && member_count <= 1) {
             // Last member left: the barony becomes defunct (tombstoned).
             db << "UPDATE baronies SET defunct_at = ? WHERE id = ?;" << now << barony_id;
@@ -5668,11 +6151,28 @@ ApiResponse handleApplyForMesneLord(GameConfigCache& config_cache, const json& b
     }
     int character_id = body["character_id"].get<int>();
 
+    const std::string safe_name_id = body.value("safe_barony_name_id", "");
+    if (safe_name_id.empty() ||
+        !visibility::is_valid_safe_id(config_cache, visibility::safe_catalog_kind::barony_name,
+                                      safe_name_id)) {
+        response.error = "safe_barony_name_id required";
+        return response;
+    }
+    const bool adult = visibility::character_is_adult(character_id);
     std::string honor_name = body.value("name", "");
     honor_name.erase(0, honor_name.find_first_not_of(" \t\r\n"));
     honor_name.erase(honor_name.find_last_not_of(" \t\r\n") + 1);
+    if (!adult && !honor_name.empty()) {
+        response.error = "custom_name_adults_only";
+        return response;
+    }
     if (honor_name.empty()) {
-        response.error = "name required";
+        honor_name = visibility::safe_label(config_cache,
+                                            visibility::safe_catalog_kind::barony_name,
+                                            safe_name_id);
+    }
+    if (honor_name.empty()) {
+        response.error = "safe_barony_name_id required";
         return response;
     }
     if (honor_name.length() > 64) {
@@ -5716,16 +6216,19 @@ ApiResponse handleApplyForMesneLord(GameConfigCache& config_cache, const json& b
         int name_taken = 0;
         db << "SELECT COUNT(*) FROM baronies WHERE LOWER(name) = LOWER(?);"
            << honor_name >> [&](int c) { name_taken = c; };
-        if (name_taken > 0) {
+        int safe_name_taken = 0;
+        db << "SELECT COUNT(*) FROM baronies WHERE safe_name_id = ? AND defunct_at = 0;"
+           << safe_name_id >> [&](int c) { safe_name_taken = c; };
+        if (name_taken > 0 || safe_name_taken > 0) {
             response.error = "A barony with that name already exists";
             return response;
         }
 
         int fiefdom_id = ensure_fiefdom_for_character(db, config_cache, character_id, *username, now);
 
-        db << "INSERT INTO baronies (name, owner_character_id, description, created_at) "
-              "VALUES (?, ?, '', ?);"
-           << honor_name << character_id << now;
+        db << "INSERT INTO baronies (name, safe_name_id, safe_tag_ids, accepts_minors, "
+              "owner_character_id, description, created_at) VALUES (?, ?, '[]', ?, ?, '', ?);"
+           << honor_name << safe_name_id << (adult ? 0 : 1) << character_id << now;
         int barony_id = static_cast<int>(db.last_insert_rowid());
 
         db << "INSERT INTO barony_members (barony_id, character_id, fiefdom_id, joined_at, role) "
@@ -5734,8 +6237,9 @@ ApiResponse handleApplyForMesneLord(GameConfigCache& config_cache, const json& b
 
         chat::ChatService::instance().sync_barony_chat(barony_id);
         player_state_db::unlock_base(db, character_id, now);
-        db << "UPDATE player_game_state SET honor_name = ? WHERE character_id = ?;"
-           << honor_name << character_id;
+        db << "UPDATE player_game_state SET honor_name = ?, safe_barony_name_id = ? "
+              "WHERE character_id = ?;"
+           << honor_name << safe_name_id << character_id;
 
         response.data["barony_id"] = barony_id;
         response.data["fiefdom_id"] = fiefdom_id;
@@ -5944,7 +6448,9 @@ bool verify_character_ownership(const json& body,
     db << "SELECT id FROM users WHERE username = ?;" << *username >> [&](int id) { user_id = id; };
     if (owner_id == 0 || owner_id != user_id) return false;
 
-    db << "SELECT display_name FROM characters WHERE id = ?;"
+    // Combat and retinue names are safe names for every viewer. Custom display
+    // names never reach the shared match/retinue wire.
+    db << "SELECT safe_display_name FROM characters WHERE id = ?;"
        << character_id >> [&](std::string dn) { display_name = dn; };
     return true;
 }
@@ -7014,11 +7520,20 @@ ApiResponse handleGetRetinue(GameConfigCache& config_cache, const json& body,
     // The knight is the character itself, so its portrait resolves from the
     // owner's PFP (age-gated for the viewer); soldiers use their headshot.
     const bool viewer_adult = user_is_adult(username);
+    visibility::viewer_context viewer = visibility::load_viewer_context(*username);
+    viewer.character_id = character_id;
+    std::string knight_display_name = display_name;
+    if (auto identity = visibility::load_character_identity(character_id)) {
+        knight_display_name =
+            visibility::project_character_identity(viewer, *identity).value("display_name",
+                                                                             display_name);
+    }
     nlohmann::json members = nlohmann::json::array();
     for (const auto& m : roster) {
         nlohmann::json j = m.to_json();
         j["fieldable"] = (m.health + 1e-9 >= rec.min_deploy_hp);
         if (m.is_knight) {
+            j["display_name"] = knight_display_name;
             j["portrait_url"] = resolve_avatar_url(character_id, viewer_adult);
         } else if (!m.headshot_id.empty()) {
             j["portrait_url"] = AvatarPool::headshot_url(m.headshot_id);
@@ -8040,8 +8555,6 @@ void handleApiRequest(GameConfigCache& config_cache, auto* res, auto* req,
                     response = handleCreateAccount(config_cache, body, std::nullopt, client, std::nullopt);
                 } else if (endpoint == "getTexts") {
                     response = handleGetTexts(config_cache, body, std::nullopt, client, std::nullopt);
-                } else if (endpoint == "verifyAgeOverride") {
-                    response = handleVerifyAgeOverride(config_cache, body, std::nullopt, client, std::nullopt);
                 } else if (endpoint == "getUITextures") {
                     response = handleGetUITextures(config_cache, body, std::nullopt, client, std::nullopt);
                 }
@@ -8664,7 +9177,9 @@ int main(int argc, char* argv[]) {
         }
         json retinue = json::array();
         for (const auto& m : fielded) {
-            retinue.push_back({{"member_id", m.member_id}, {"display_name", m.display_name},
+            const std::string member_name =
+                m.is_knight ? match->player_display_name(character_id) : m.display_name;
+            retinue.push_back({{"member_id", m.member_id}, {"display_name", member_name},
                                {"unit_class", m.unit_class}, {"level", m.level},
                                {"is_knight", m.is_knight}, {"health", m.health},
                                {"fieldable", m.fieldable}, {"cosmetic", unit_appearance}});
@@ -8689,8 +9204,9 @@ int main(int argc, char* argv[]) {
 
     // Post-auth messages: chat/voice are relayed on the loop thread; game
     // commands go through the match's command queue.
-    auto handle_ws_message = [&app, &send_ws_error](auto* ws, ws_combat_user_data* ud,
-                                                    std::string_view message) {
+    auto handle_ws_message = [&app, &send_ws_error, &mini_games](auto* ws,
+                                                                 ws_combat_user_data* ud,
+                                                                 std::string_view message) {
         combat::combat_message msg;
         try {
             msg = g_combat_manager.codec()->deserialize_message(message);
@@ -8706,10 +9222,41 @@ int main(int argc, char* argv[]) {
         }
 
         if (msg.type == "chat") {
+            GameConfigCache& config_cache = mini_games.config_cache();
+            const bool sender_is_adult = visibility::character_is_adult(ud->character_id);
+            const std::string safe_message_id =
+                msg.json_payload.value("safe_message_id", std::string());
             std::string text = msg.json_payload.value("text", "");
-            if (text.empty() || text.size() > 500) {
-                send_ws_error(ws, ud->match_id, "invalid chat message");
-                return;
+            if (!safe_message_id.empty()) {
+                auto entry = visibility::find_safe_entry(
+                    config_cache, visibility::safe_catalog_kind::message, safe_message_id);
+                if (!entry) {
+                    send_ws_error(ws, ud->match_id, "invalid safe message");
+                    return;
+                }
+                if (entry->contains("contexts") && (*entry)["contexts"].is_array()) {
+                    bool context_ok = false;
+                    for (const auto& context : (*entry)["contexts"]) {
+                        if (context.is_string() && context.get<std::string>() == "combat") {
+                            context_ok = true;
+                            break;
+                        }
+                    }
+                    if (!context_ok) {
+                        send_ws_error(ws, ud->match_id, "invalid safe message context");
+                        return;
+                    }
+                }
+                text = visibility::safe_message_body(config_cache, safe_message_id);
+            } else {
+                if (!sender_is_adult) {
+                    send_ws_error(ws, ud->match_id, "minor_custom_content_forbidden");
+                    return;
+                }
+                if (text.empty() || text.size() > 500) {
+                    send_ws_error(ws, ud->match_id, "invalid chat message");
+                    return;
+                }
             }
             combat::combat_message out;
             out.type = "chat";
@@ -8718,9 +9265,25 @@ int main(int argc, char* argv[]) {
             out.json_payload["from_name"] = match->player_display_name(ud->character_id);
             out.json_payload["team"] = match->player_team(ud->character_id);
             out.json_payload["text"] = text;
+            out.json_payload["safe_message_id"] =
+                safe_message_id.empty() ? json(nullptr) : json(safe_message_id);
             out.json_payload["timestamp"] = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-            app.publish("match:" + ud->match_id + ":team:" + std::to_string(out.json_payload["team"].get<int>()),
-                        g_combat_manager.codec()->serialize_message(out), uWS::OpCode::TEXT);
+            if (!safe_message_id.empty()) {
+                app.publish("match:" + ud->match_id + ":team:" +
+                                std::to_string(out.json_payload["team"].get<int>()),
+                            g_combat_manager.codec()->serialize_message(out),
+                            uWS::OpCode::TEXT);
+            } else {
+                // Custom combat chat only reaches adult recipients.
+                const std::string wire = g_combat_manager.codec()->serialize_message(out);
+                for (const auto& player : match->players_snapshot()) {
+                    if (player.team != out.json_payload["team"].get<int>()) continue;
+                    if (!visibility::character_is_adult(player.player_id)) continue;
+                    app.publish("match:" + ud->match_id + ":player:" +
+                                    std::to_string(player.player_id),
+                                wire, uWS::OpCode::TEXT);
+                }
+            }
             return;
         }
         if (msg.type == "voice") {
@@ -8728,6 +9291,11 @@ int main(int argc, char* argv[]) {
             const std::string signal_type = msg.json_payload.value("signal_type", "");
             if (to_player <= 0 || to_player == ud->character_id || signal_type.empty()) {
                 send_ws_error(ws, ud->match_id, "invalid voice message");
+                return;
+            }
+            if (!visibility::can_use_voice(ud->character_id) ||
+                !visibility::can_use_voice(to_player)) {
+                send_ws_error(ws, ud->match_id, "voice_adults_only");
                 return;
             }
             if (match->player_team(to_player) != match->player_team(ud->character_id)) {

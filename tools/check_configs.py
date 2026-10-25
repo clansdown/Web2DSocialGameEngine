@@ -5886,6 +5886,61 @@ class ConfigValidator:
 
         self.validated_files.append(file)
 
+    def validate_safe_catalog(self, file: Path, content: str, root_key: str,
+                              text_fields: tuple[str, ...] = (),
+                              require_minor_safe: bool = False,
+                              require_contexts: bool = False) -> None:
+        """Validate one server-owned safe content catalog.
+
+        Safe catalogs are the only content a minor may see or author. They must
+        therefore be complete, uniquely identified, and explicitly marked
+        minor-safe where the catalog can contain adult-only entries.
+        """
+        data = self._validate_json(content, file)
+        if data is None:
+            return
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected an object", Severity.ERROR)
+            return
+        entries = data.get(root_key)
+        if not isinstance(entries, list) or not entries:
+            self._add_issue(file, 1, None, f"'{root_key}' must be a non-empty array", Severity.ERROR)
+            return
+        seen: set[str] = set()
+        valid_contexts = {"direct", "group", "barony", "dukedom", "wildlands", "combat"}
+        for i, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                self._add_issue(file, 1, None, f"{root_key}[{i}] must be an object", Severity.ERROR)
+                continue
+            entry_id = entry.get("id")
+            if not isinstance(entry_id, str) or not entry_id:
+                self._add_issue(file, 1, None, f"{root_key}[{i}].id must be a non-empty string", Severity.ERROR)
+            elif entry_id in seen:
+                self._add_issue(file, 1, None, f"Duplicate {root_key} id: {entry_id}", Severity.ERROR)
+            else:
+                seen.add(entry_id)
+            if text_fields and not any(isinstance(entry.get(field), str) and entry.get(field)
+                                       for field in text_fields):
+                self._add_issue(file, 1, None,
+                                f"{root_key}[{i}] needs one non-empty text field "
+                                f"({', '.join(text_fields)})", Severity.ERROR)
+            if require_minor_safe and not isinstance(entry.get("minor_safe"), bool):
+                self._add_issue(file, 1, None,
+                                f"{root_key}[{i}].minor_safe must be a boolean", Severity.ERROR)
+            if require_contexts:
+                contexts = entry.get("contexts")
+                if not isinstance(contexts, list) or not contexts:
+                    self._add_issue(file, 1, None,
+                                    f"{root_key}[{i}].contexts must be a non-empty array",
+                                    Severity.ERROR)
+                else:
+                    for context in contexts:
+                        if context not in valid_contexts:
+                            self._add_issue(file, 1, None,
+                                            f"{root_key}[{i}].contexts contains invalid "
+                                            f"chat type: {context}", Severity.ERROR)
+        self.validated_files.append(file)
+
     def validate_chat_admins(self, file: Path, content: str) -> None:
         """Validate chat_admins.json (account-id allowlist)."""
         data = self._validate_json(content, file)
@@ -6486,6 +6541,32 @@ class ConfigValidator:
                     self._add_issue(chat_admins_file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
             else:
                 self._add_issue(chat_admins_file, 1, None, "Config file not found", Severity.WARN)
+
+            # Server-owned safe content catalogs (minor visibility/authoring).
+            safe_catalogs: list[tuple[str, str, tuple[str, ...], bool, bool]] = [
+                ("safe_messages.json", "messages", ("body", "label"), False, True),
+                ("safe_barony_names.json", "names", ("name",), False, False),
+                ("safe_barony_tags.json", "tags", ("name",), False, False),
+                ("safe_reactions.json", "reactions", ("emoji",), True, False),
+                ("safe_gifs.json", "gifs", ("asset_url",), True, False),
+                ("safe_ban_reasons.json", "ban_reasons", ("label",), False, False),
+            ]
+            for filename, root_key, text_fields, require_minor_safe, require_contexts in safe_catalogs:
+                catalog_file: Path = game_config_dir / filename
+                if not catalog_file.exists():
+                    self._add_issue(catalog_file, 1, None, "Config file not found", Severity.ERROR)
+                    continue
+                try:
+                    self.validate_safe_catalog(
+                        catalog_file,
+                        catalog_file.read_text(encoding="utf-8"),
+                        root_key,
+                        text_fields,
+                        require_minor_safe,
+                        require_contexts,
+                    )
+                except Exception as e:
+                    self._add_issue(catalog_file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
 
             translation_file: Path = game_config_dir / "translation.json"
             if translation_file.exists():

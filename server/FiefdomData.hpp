@@ -232,7 +232,6 @@ struct PlayerGameStateData {
 struct FiefdomData {
     int id;
     int owner_id;
-    std::string name;
     int x;
     int y;
     double gold;
@@ -266,7 +265,6 @@ struct FiefdomData {
         nlohmann::json json;
         json["id"] = id;
         json["owner_id"] = owner_id;
-        json["name"] = name;
         json["x"] = x;
         json["y"] = y;
         json["gold"] = gold;

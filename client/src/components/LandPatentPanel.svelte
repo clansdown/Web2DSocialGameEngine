@@ -16,7 +16,7 @@
    */
 
   import { currentCharacter } from '../lib/stores';
-  import { startBaronTrackRequest, foundFreeholdRequest } from '../lib/api';
+  import { startBaronTrackRequest, foundFreeholdRequest, getSafeContentRequest, type safe_content_dto } from '../lib/api';
   import { loadTexts as fetchTexts } from '../lib/text';
   import * as auth from '../lib/auth';
   import { handleError } from '../lib/errors';
@@ -35,7 +35,10 @@
   let textsLoaded = $state(false);
   let showHonorDialog = $state(false);
   let honorName = $state('');
+  let safeNameId = $state('');
+  let safeContent = $state<safe_content_dto | null>(null);
   let honorError = $state<string | null>(null);
+  let isAdult = $derived($currentCharacter?.is_adult === true);
   let startingTrack = $state(false);
   let founding = $state(false);
 
@@ -53,6 +56,7 @@
     'ui_patent_honor_duplicate',
     'ui_patent_honor_begin',
     'ui_cancel',
+    'ui_barony_create_safe_name',
   ];
 
   /**
@@ -64,9 +68,18 @@
       texts = await fetchTexts(TEXT_IDS);
     } catch {
       texts = {};
-    } finally {
-      textsLoaded = true;
     }
+    try {
+      const token = auth.getSessionToken();
+      const username = auth.getInMemoryCredentials()?.username;
+      if (token && username) {
+        safeContent = await getSafeContentRequest({ username, token });
+        safeNameId = safeContent.barony_names[0]?.id ?? '';
+      }
+    } catch {
+      safeContent = null;
+    }
+    textsLoaded = true;
   }
 
   /**
@@ -76,6 +89,7 @@
   function openHonorDialog(): void {
     honorName = '';
     honorError = null;
+    safeNameId = safeContent?.barony_names[0]?.id ?? '';
     showHonorDialog = true;
   }
 
@@ -95,7 +109,7 @@
    */
   async function confirmStartBaronTrack(): Promise<void> {
     const trimmed = honorName.trim();
-    if (!$currentCharacter || startingTrack || !trimmed) return;
+    if (!$currentCharacter || startingTrack || !safeNameId || (isAdult && !trimmed)) return;
     startingTrack = true;
     honorError = null;
     try {
@@ -105,7 +119,7 @@
         handleError('Not authenticated', new Error('No session'));
         return;
       }
-      await startBaronTrackRequest($currentCharacter.id, trimmed, { username, token });
+      await startBaronTrackRequest($currentCharacter.id, safeNameId, isAdult ? trimmed : '', { username, token });
       showHonorDialog = false;
       onBaronTrackStarted();
     } catch (e) {
@@ -211,18 +225,31 @@
     </p>
 
     <div class="mb-3">
-      <label for="honor-name" class="form-label">
-        {texts['ui_patent_honor_label'] || 'Name of your Honor'}
+      <label for="honor-safe-name" class="form-label">
+        {texts['ui_barony_create_safe_name'] || 'Safe name'}
       </label>
-      <input
-        id="honor-name"
-        type="text"
-        class="form-control"
-        bind:value={honorName}
-        placeholder={texts['ui_patent_honor_placeholder'] || 'e.g. Stormhold'}
-        maxlength={64}
-      />
+      <select id="honor-safe-name" class="form-select" bind:value={safeNameId}>
+        {#each safeContent?.barony_names ?? [] as entry (entry.id)}
+          <option value={entry.id}>{entry.name ?? entry.id}</option>
+        {/each}
+      </select>
     </div>
+
+    {#if isAdult}
+      <div class="mb-3">
+        <label for="honor-name" class="form-label">
+          {texts['ui_patent_honor_label'] || 'Name of your Honor'}
+        </label>
+        <input
+          id="honor-name"
+          type="text"
+          class="form-control"
+          bind:value={honorName}
+          placeholder={texts['ui_patent_honor_placeholder'] || 'e.g. Stormhold'}
+          maxlength={64}
+        />
+      </div>
+    {/if}
 
     {#if honorError}
       <div class="alert alert-danger py-2">{honorError}</div>
@@ -239,7 +266,7 @@
       <button
         class="btn btn-primary"
         onclick={confirmStartBaronTrack}
-        disabled={startingTrack || !honorName.trim()}
+        disabled={startingTrack || !safeNameId || (isAdult && !honorName.trim())}
       >
         {#if startingTrack}
           <span class="spinner-border spinner-border-sm me-1" role="status"></span>

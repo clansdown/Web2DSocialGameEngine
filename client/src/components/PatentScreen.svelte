@@ -8,7 +8,7 @@
    */
 
   import { currentCharacter } from '../lib/stores';
-  import { startBaronTrackRequest } from '../lib/api';
+  import { startBaronTrackRequest, getSafeContentRequest } from '../lib/api';
   import { loadTexts as fetchTexts } from '../lib/text';
   import * as auth from '../lib/auth';
   import { handleError } from '../lib/errors';
@@ -53,8 +53,10 @@
         return;
       }
       // PatentScreen is not wired into the app; LandPatentPanel is the live
-      // component. Pass an empty honor name placeholder so the call compiles.
-      await startBaronTrackRequest($currentCharacter.id, '', { username, token });
+      // component. Pick the first server-owned safe name as a placeholder.
+      const safe = await getSafeContentRequest({ username, token });
+      const safe_name_id = safe.barony_names[0]?.id ?? '';
+      await startBaronTrackRequest($currentCharacter.id, safe_name_id, '', { username, token });
       onStartBaronTrack();
     } catch (e) {
       handleError('Failed to start baron track', e);

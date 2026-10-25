@@ -40,6 +40,7 @@ export interface chat_membership {
 }
 
 export interface chat_reaction {
+  reaction_id: string;
   emoji: string;
   character_ids: number[];
 }
@@ -66,9 +67,11 @@ export interface chat_message {
   author_character_id: number;
   author: chat_character | null;
   body: string;
+  /** Server-owned safe text id, or null for custom text. */
+  safe_message_id: string | null;
   source_language: string;
   source_language_confidence: number;
-  gif: unknown;
+  gif: { id: string; url: string; preview_url: string; minor_safe: boolean } | null;
   created_at: number;
   edited_at: number;
   deleted: boolean;

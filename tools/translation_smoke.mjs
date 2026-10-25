@@ -49,7 +49,7 @@ async function make_user(tag, language) {
   const username = `${tag}_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6)}`;
   const password = 'trans_pass_123';
   const body = {
-    username, password, adult: false, word1: w1[0], word2: w2[0]
+    username, password, adult: true, word1: w1[0], word2: w2[0]
   };
   if (language) body.language = language;
   const acct = await post('createAccount', body);

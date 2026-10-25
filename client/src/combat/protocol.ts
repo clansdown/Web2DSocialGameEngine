@@ -167,6 +167,7 @@ export interface combat_chat_payload {
   from_name: string;
   team: number;
   text: string;
+  safe_message_id?: string | null;
   timestamp: number;
 }
 

@@ -41,6 +41,28 @@ Cross-cutting primitives:
 - **Wildlands** — one global chat, open to everyone; never materialized and
   never part of `pollChats` (its own `pollWildlands`, no badge, no push).
 
+## Minor visibility and safe content
+
+Chat follows `docs/minor_content_visibility.md`:
+
+- A minor sees only messages with `safe_message_id` (plus server system
+  messages). Custom messages are omitted entirely — no placeholder, unread
+  count, preview, mention, bookmark, or push.
+- A minor authors only a `safe_message_id` and, optionally, a `minor_safe`
+  GIF id. `body` from a minor is rejected with
+  `minor_custom_content_forbidden`.
+- `getChats`/`pollChats` resolve names/avatars and last-message previews through
+  the viewer context. Group chats are adult-only: minors neither see them nor
+  receive their invites.
+- Reactions and GIFs are server catalog ids. The legacy `message_reactions.emoji`
+  column stores the reaction id; arbitrary emoji are rejected.
+- Barony chat titles come from the barony's safe/custom identity, never from
+  the raw `chats.name` column.
+- Hidden custom messages do not create an unread badge because
+  `apply_unread`/`dispatch_push` use the same visibility decision.
+- `requestTranslations` ignores safe messages (server text) and custom messages
+  for a minor viewer.
+
 ## Endpoints
 
 All POST JSON under `/api/*`, `{status:"ok", data:{...}}` / `{error:"..."}`.

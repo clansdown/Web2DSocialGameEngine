@@ -11,6 +11,7 @@ and enters the same `sandbox` state as the baron-track founders.
 ```json
 {
     "character_id": 1,
+    "safe_barony_name_id": "stormhold",
     "name": "Stormhold",
     "auth": {
         "username": "player",
@@ -37,6 +38,8 @@ and enters the same `sandbox` state as the baron-track founders.
 
 ```json
 { "error": "character_id required" }
+{ "error": "safe_barony_name_id required" }
+{ "error": "custom_name_adults_only" }
 { "error": "name required" }
 { "error": "name must be 64 characters or fewer" }
 { "error": "You are not eligible to become a mesne lord" }

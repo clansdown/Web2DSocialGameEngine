@@ -7,6 +7,11 @@ Configuration files:
 
 All config files use lenient JSON parsing (allows comments, trailing commas) via nlohmann/json with `ignore_comments=true`.
 
+**Minor-safe wire:** player and unit names in combat are safe names for every
+viewer. Minor combat chat is safe-message IDs only; adult custom chat is
+published only to adult teammates. Voice signaling is adult-to-adult only.
+See `docs/minor_content_visibility.md` and `docs/combat_protocol.md`.
+
 ## TypeScript Type Definitions
 
 ```typescript

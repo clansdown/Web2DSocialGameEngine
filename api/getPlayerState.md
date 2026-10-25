@@ -105,7 +105,7 @@ clears it. The `honor` activity (shown in `freehold_qualified`) opens the
 | `has_letters` | boolean | True once the character has received at least one letter (hub Letters button) |
 | `unread_letter` | object or absent | Present when an unread letter exists: `{ id, letter_key }` of the **oldest** unread letter (one-time overlay) |
 | `barony_join_cooldown_until` | int | Unix timestamp the barony join cooldown expires; `0` when the character has never left a barony (or the cooldown is disabled) |
-| `barony` | object or absent | Present while a barony member: `{ id, name, role, member_count }` |
+| `barony` | object or absent | Present while a barony member: `{ id, name, description, safe_name_id, safe_tag_ids, tags, accepts_minors, role, member_count }`. A minor receives the safe name/tags and an empty description. |
 | `progress` | array | Array of MiniGameProgress objects for all mini-games |
 
 ### `available_activities` by phase
@@ -121,7 +121,10 @@ of the phase's base set:
   characters who already founded a freehold.
 - `letters` is exposed once the character has received at least one letter.
 - `honor` is exposed in `freehold_qualified` (opens `/api/applyForMesneLord`).
-- `barony` is exposed while the character is a member of a barony.
+- `barony` is exposed while the character is a member of a barony. It is a
+  viewer-relative projection; custom barony text is hidden from minors.
+- The endpoint is owner-only (`character_id` must belong to the authenticated
+  account).
 
 | Phase | Base activities |
 |-------|-----------------|

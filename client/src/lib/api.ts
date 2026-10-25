@@ -21,14 +21,17 @@ export interface Character {
   sex: string | null;
   /** Safe-pool PFP id; null until the creation picker is answered. */
   avatar_safe_id?: string | null;
-  /** Custom (18+) PFP storage key; null when none. */
-  avatar_custom_id?: string | null;
-  /** Backend holding the custom key: `local` or `r2`. */
-  avatar_storage?: 'local' | 'r2';
+  /** True when an adult custom PFP exists; the key itself is never sent. */
+  has_custom_avatar?: boolean;
   /** Unix ts of the last avatar change (24h cooldown). */
   avatar_changed_at?: number;
   /** Server-resolved display URL for this character's PFP (may be ""). */
   avatar_url?: string;
+  /** Viewer/account age state for this character (self projection only). */
+  is_adult?: boolean;
+  can_set_custom_display_name?: boolean;
+  can_upload_custom_avatar?: boolean;
+  can_use_voice?: boolean;
 }
 
 export interface AuthResponse {
@@ -249,7 +252,6 @@ export async function createAccountRequest(
   word2: string,
   displayName?: string,
   digitalCredential?: { protocol: string; data: unknown },
-  overrideCode?: string,
   sex?: string,
   language?: string
 ): Promise<AuthResponse> {
@@ -265,9 +267,6 @@ export async function createAccountRequest(
   }
   if (digitalCredential) {
     body.digitalCredential = digitalCredential;
-  }
-  if (overrideCode) {
-    body.override_code = overrideCode;
   }
   if (sex) {
     body.sex = sex;
@@ -305,30 +304,6 @@ export async function getCharacterRequest(
     throw new Error(res.error);
   }
   return res.data as Character;
-}
-
-/**
- * Updates user profile settings on the server.
- * Currently supports updating the adult verification flag.
- * 
- * @param adult - New adult flag value
- * @param auth - Authentication object with username and token
- * @returns Promise<ProfileResponse> - Updated profile data and new token
- * 
- * Usage: Called when user updates their profile settings
- */
-export async function updateUserProfileRequest(
-  adult: boolean,
-  auth: { username: string; token: string }
-): Promise<ProfileResponse> {
-  const res = await apiPost<ProfileResponse>('updateUserProfile', {
-    adult
-  }, { username: auth.username, token: auth.token });
-
-  if (res.error) {
-    throw new Error(res.error);
-  }
-  return res.data as ProfileResponse;
 }
 
 /**
@@ -737,39 +712,24 @@ export async function setCharacterSexRequest(
   return res.data as Character;
 }
 
-/**
- * Validates an age verification override code with the server.
- * Public endpoint — no authentication required.
- * Used for tech support / testing when Digital Credentials API is unavailable.
- * 
- * @param code - The override code string
- * @returns Promise<boolean> - true if code is valid
- * 
- * Usage: Called from CreateAccountPage when user enters override code
- */
-export async function verifyAgeOverrideRequest(code: string): Promise<boolean> {
-  const res = await apiPost<{ verified: boolean }>('verifyAgeOverride', {
-    code
-  });
-
-  if (res.error) {
-    return false;
-  }
-  return (res.data as { verified: boolean }).verified === true;
-}
-
 // ── Barony API types ──────────────────────────────────────────────
 
 export interface BaronyInfo {
   id: number;
   name: string;
   description: string;
+  safe_name_id: string;
+  safe_tag_ids: string[];
+  tags: { id: string; name: string }[];
+  accepts_minors: boolean;
   owner_character_id: number;
   owner_name: string;
+  owner_avatar_url?: string;
   member_count: number;
   created_at: number;
   baron_character_id?: number;
   baron_name?: string;
+  baron_avatar_url?: string;
 }
 
 export interface JoinBaronyResponse {
@@ -957,14 +917,20 @@ export async function joinBaronyRequest(
  */
 export async function createBaronyRequest(
   characterId: number,
+  safe_name_id: string,
+  safe_tag_ids: string[],
   name: string,
   description: string,
+  accepts_minors: boolean,
   auth: { username: string; token: string }
 ): Promise<CreateBaronyResponse> {
   const res = await apiPost<CreateBaronyResponse>('createBarony', {
     character_id: characterId,
+    safe_name_id,
+    safe_tag_ids,
     name,
-    description
+    description,
+    accepts_minors
   }, { username: auth.username, token: auth.token });
 
   if (res.error) {
@@ -1278,11 +1244,13 @@ export async function setBuildingOutputRateRequest(
  */
 export async function startBaronTrackRequest(
   characterId: number,
+  safeBaronyNameId: string,
   honorName: string,
   auth: { username: string; token: string }
 ): Promise<StartBaronTrackResponse> {
   const res = await apiPost<StartBaronTrackResponse>('startBaronTrack', {
     character_id: characterId,
+    safe_barony_name_id: safeBaronyNameId,
     honor_name: honorName
   }, { username: auth.username, token: auth.token });
 
@@ -1381,11 +1349,13 @@ export interface ApplyForMesneLordResponse {
  */
 export async function applyForMesneLordRequest(
   characterId: number,
+  safeBaronyNameId: string,
   name: string,
   auth: { username: string; token: string }
 ): Promise<ApplyForMesneLordResponse> {
   const res = await apiPost<ApplyForMesneLordResponse>('applyForMesneLord', {
     character_id: characterId,
+    safe_barony_name_id: safeBaronyNameId,
     name
   }, { username: auth.username, token: auth.token });
 
@@ -1891,10 +1861,52 @@ export interface avatar_pool_dto {
 /** Partial character update returned by the avatar endpoints. */
 export interface avatar_update_dto {
   avatar_safe_id?: string | null;
+  has_custom_avatar?: boolean;
   avatar_custom_id?: string | null;
   avatar_storage?: 'local' | 'r2';
   avatar_changed_at?: number;
   avatar_url?: string;
+}
+
+/** One server-owned safe catalog entry (message, name, tag, reaction, GIF). */
+export interface safe_catalog_entry {
+  id: string;
+  body?: string;
+  name?: string;
+  label?: string;
+  emoji?: string;
+  asset_url?: string;
+  preview_url?: string;
+  minor_safe?: boolean;
+  contexts?: string[];
+  sort?: number;
+}
+
+/** Response from getSafeContent. */
+export interface safe_content_dto {
+  is_adult: boolean;
+  messages: safe_catalog_entry[];
+  barony_names: safe_catalog_entry[];
+  barony_tags: safe_catalog_entry[];
+  reactions: safe_catalog_entry[];
+  gifs: safe_catalog_entry[];
+  ban_reasons: safe_catalog_entry[];
+}
+
+/**
+ * Fetches the server-owned safe content catalogs for the current viewer.
+ * Minors receive only entries flagged minor-safe.
+ *
+ * @param auth - Authentication object with username and token
+ * @returns Promise<safe_content_dto> - filtered catalogs
+ */
+export async function getSafeContentRequest(
+  auth: { username: string; token: string }
+): Promise<safe_content_dto> {
+  const res = await apiPost<safe_content_dto>('getSafeContent', {},
+    { username: auth.username, token: auth.token });
+  if (res.error) throw new Error(res.error);
+  return res.data as safe_content_dto;
 }
 
 /** The rectangle (in frame-image pixels) a portrait image is mapped into. */

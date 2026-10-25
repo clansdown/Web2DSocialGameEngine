@@ -1,6 +1,6 @@
 # `/api/getChats`
 
-Returns the character's chat list, settings, unread counts, last-message
+Returns the character's viewer-relative chat list, settings, unread counts, last-message
 previews, the wildlands chat id, the social block/mute sets, the per-chat
 limits, and the **current max `change_id`** (the polling baseline for a fresh
 device).
@@ -43,3 +43,6 @@ device).
 
 - Wildlands is excluded from `chats`; the client uses `wildlands_chat_id`.
 - History is fetched separately with `/api/getChatMessages`.
+- `last_messages`, `characters`, and unread counts are viewer-relative. A minor
+  receives safe names/portraits and only safe-message previews; hidden custom
+  messages produce no preview or unread increment, and group chats are omitted.

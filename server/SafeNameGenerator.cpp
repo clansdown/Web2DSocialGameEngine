@@ -59,20 +59,23 @@ std::optional<std::string> SafeNameGenerator::generateSafeDisplayName(
     if (!isValidWord(word1, 1) || !isValidWord(word2, 2)) {
         return std::nullopt;
     }
+    (void)username;
 
     std::string baseName = word1 + word2;
     std::string candidate = baseName;
 
     auto& db = Database::getInstance().gameDB();
-    int count = 0;
 
-    db << "SELECT COUNT(*) FROM characters WHERE safe_display_name LIKE ? || '%';"
-       << baseName
-       >> [&](int c) { count = c; };
-
-    if (count > 0) {
-        candidate = baseName + std::to_string(count);
+    // Safe display names are globally unique (case-insensitive). The old
+    // prefix-count scheme could collide (e.g. base "A" and an existing "A1");
+    // probe explicitly and append an increasing suffix.
+    int suffix = 1;
+    while (true) {
+        bool taken = false;
+        db << "SELECT 1 FROM characters WHERE LOWER(safe_display_name) = LOWER(?) LIMIT 1;"
+           << candidate
+           >> [&](int) { taken = true; };
+        if (!taken) return candidate;
+        candidate = baseName + std::to_string(suffix++);
     }
-
-    return candidate;
 }

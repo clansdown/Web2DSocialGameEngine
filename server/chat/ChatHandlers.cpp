@@ -90,14 +90,18 @@ CHAT_HANDLER(handlePollWildlands,
 CHAT_HANDLER(handleSendChatMessage,
              chat::ChatService::instance().send_message(
                  actor.character_id, body.value("chat_id", std::string()),
-                 body.value("body", std::string()), body.value("gif", json(nullptr)),
+                 body.value("safe_message_id", std::string()),
+                 body.value("body", std::string()),
+                 body.value("gif_id", std::string()),
                  body.value("reply_to_message_id", std::string()),
                  body.value("client_id", std::string()),
                  body.value("language", std::string())))
 CHAT_HANDLER(handleEditChatMessage,
              chat::ChatService::instance().edit_message(
                  actor.character_id, body.value("message_id", std::string()),
-                 body.value("body", std::string())))
+                 body.value("safe_message_id", std::string()),
+                 body.value("body", std::string()),
+                 body.value("gif_id", std::string())))
 CHAT_HANDLER(handleDeleteChatMessage,
              chat::ChatService::instance().delete_message(
                  actor.character_id, body.value("message_id", std::string())))
@@ -172,11 +176,13 @@ ApiResponse handleSetChatTyping(GameConfigCache& config_cache, const nlohmann::j
 CHAT_HANDLER(handleAddChatReaction,
              chat::ChatService::instance().add_reaction(
                  actor.character_id, body.value("message_id", std::string()),
-                 body.value("emoji", std::string())))
+                 body.value("reaction_id",
+                            body.value("emoji", std::string()))))
 CHAT_HANDLER(handleRemoveChatReaction,
              chat::ChatService::instance().remove_reaction(
                  actor.character_id, body.value("message_id", std::string()),
-                 body.value("emoji", std::string())))
+                 body.value("reaction_id",
+                            body.value("emoji", std::string()))))
 CHAT_HANDLER(handleAddChatBookmark,
              chat::ChatService::instance().add_bookmark(
                  actor.character_id, body.value("message_id", std::string())))

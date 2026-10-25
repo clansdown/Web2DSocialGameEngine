@@ -6,7 +6,7 @@
    * name) and enters the shared sandbox state.
    */
   import { currentCharacter } from '../lib/stores';
-  import { applyForMesneLordRequest } from '../lib/api';
+  import { applyForMesneLordRequest, getSafeContentRequest, type safe_content_dto } from '../lib/api';
   import { loadTexts } from '../lib/text';
   import * as auth from '../lib/auth';
   import { handleError } from '../lib/errors';
@@ -21,16 +21,29 @@
 
   let texts = $state<Record<string, string>>({});
   let honorName = $state('');
+  let safeNameId = $state('');
+  let safeContent = $state<safe_content_dto | null>(null);
   let error = $state<string | null>(null);
   let submitting = $state(false);
+  let isAdult = $derived($currentCharacter?.is_adult === true);
 
   const TEXT_IDS: string[] = [
     'ui_honor_title', 'ui_honor_body', 'ui_honor_name_label', 'ui_honor_name_placeholder',
-    'ui_honor_apply', 'ui_honor_duplicate', 'ui_back_button'
+    'ui_honor_apply', 'ui_honor_duplicate', 'ui_back_button', 'ui_barony_create_safe_name'
   ];
 
   $effect(() => {
     loadTexts(TEXT_IDS).then(t => { texts = t; }).catch(() => {});
+    const creds = auth.getInMemoryCredentials();
+    const token = auth.getSessionToken();
+    if (creds && token) {
+      getSafeContentRequest({ username: creds.username, token })
+        .then((safe) => {
+          safeContent = safe;
+          safeNameId = safe.barony_names[0]?.id ?? '';
+        })
+        .catch(() => {});
+    }
   });
 
   /**
@@ -39,7 +52,7 @@
    */
   async function apply(): Promise<void> {
     const trimmed = honorName.trim();
-    if (!$currentCharacter || submitting || !trimmed) return;
+    if (!$currentCharacter || submitting || !safeNameId || (isAdult && !trimmed)) return;
     submitting = true;
     error = null;
     try {
@@ -49,7 +62,7 @@
         handleError('Not authenticated', new Error('No session'));
         return;
       }
-      await applyForMesneLordRequest($currentCharacter.id, trimmed, { username: creds.username, token });
+      await applyForMesneLordRequest($currentCharacter.id, safeNameId, isAdult ? trimmed : '', { username: creds.username, token });
       onApplied();
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Failed to apply';
@@ -78,18 +91,31 @@
       <GameText text={texts['ui_honor_body'] || ''} />
 
       <div class="mb-3 mt-3">
-        <label for="honor-name" class="form-label">
-          {texts['ui_honor_name_label'] || 'Name of your Honor'}
+        <label for="honor-safe-name" class="form-label">
+          {texts['ui_barony_create_safe_name'] || 'Safe name'}
         </label>
-        <input
-          id="honor-name"
-          type="text"
-          class="form-control"
-          bind:value={honorName}
-          placeholder={texts['ui_honor_name_placeholder'] || 'e.g. Stormhold'}
-          maxlength={64}
-        />
+        <select id="honor-safe-name" class="form-select" bind:value={safeNameId}>
+          {#each safeContent?.barony_names ?? [] as entry (entry.id)}
+            <option value={entry.id}>{entry.name ?? entry.id}</option>
+          {/each}
+        </select>
       </div>
+
+      {#if isAdult}
+        <div class="mb-3">
+          <label for="honor-name" class="form-label">
+            {texts['ui_honor_name_label'] || 'Name of your Honor'}
+          </label>
+          <input
+            id="honor-name"
+            type="text"
+            class="form-control"
+            bind:value={honorName}
+            placeholder={texts['ui_honor_name_placeholder'] || 'e.g. Stormhold'}
+            maxlength={64}
+          />
+        </div>
+      {/if}
 
       {#if error}
         <div class="alert alert-danger py-2">{error}</div>
@@ -99,7 +125,7 @@
         <button
           class="btn btn-primary"
           onclick={apply}
-          disabled={submitting || !honorName.trim()}
+          disabled={submitting || !safeNameId || (isAdult && !honorName.trim())}
         >
           {#if submitting}
             <span class="spinner-border spinner-border-sm me-1" role="status"></span>

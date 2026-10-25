@@ -31,7 +31,7 @@ CREATE TABLE chat_members (
 | `muted` | Chat-mute: suppresses all notifications, including mentions. |
 | `notify_level` | `all` / `mentions` / `none` (push eligibility). |
 | `last_read_seq` | Read cursor for the chat. |
-| `unread_count` | Count of eligible unread messages. |
+| `unread_count` | Count of eligible unread messages. Custom messages do not increment this for a minor viewer. |
 | `change_id` | Global update cursor. |
 
 ## Notes

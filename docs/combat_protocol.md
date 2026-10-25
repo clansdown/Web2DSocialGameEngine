@@ -45,8 +45,8 @@ Every message is a JSON object:
 | `ready` | `{}` | Signals lobby readiness; **roster select + deploy ready** flow per rts_design.md §4 |
 | `roster` | `{unit_ids[]}` | Roster select in the lobby: which fieldable members to field (knight always fielded, D19). Allowed until `ready` |
 | `command` | `{cmd, ...}` | Game decision. Command vocabulary (rts_design.md §9): `move` (`unit_ids`, `target_x`, `target_y`), `attack_move` (`unit_ids`, `target_x`, `target_y`), `patrol` (`unit_ids`, `target_x`, `target_y`), `attack` (`unit_ids`, `target_unit_id` or `ground_x`/`ground_y` for a Lob on AoE units), `stop`, `hold`, `stance` (`aggressive\|defensive\|hold`), `formation` (`formation_id`, `rotation`), `construct` (`unit_ids`, `structure_type`, `x`, `y`), `deploy` (deploy-phase placement: `unit_ids`, `x`, `y`, `facing`), plus legacy `ability` (`ability_id`) reserved |
-| `chat` | `{text}` | Team chat (≤ 500 chars); relayed to the sender's team topic |
-| `voice` | `{to_player, signal_type, data}` | WebRTC signaling relay (offer/answer/ice) to a teammate |
+| `chat` | `{text}` or `{safe_message_id}` | Team chat. Adults may send custom text (≤ 500 chars); minors must use a safe catalog id. Custom chat is relayed only to adult teammates. |
+| `voice` | `{to_player, signal_type, data}` | WebRTC signaling relay (offer/answer/ice) to a teammate. Adults only; minors are never signaled. |
 | `request_state` | `{}` | Requests a full `match_state` snapshot (gap recovery) |
 | `leave` | `{}` | Forfeits the match and closes the socket |
 
@@ -58,8 +58,8 @@ Every message is a JSON object:
 | `match_state` | state payload, `full: true` | Full snapshot: initial join, reconnect, `request_state`, and every 25 ticks (2.5 s) as a sync guard |
 | `match_update` | state payload, `full: false` | Partial update: dirty entity rows (units + structures) + removals + events |
 | `match_ended` | `{winner, reason, xp_by_member[], level_ups[], casualties[], rewards_stub{}, seed, state_hash}` | Battle over. `winner`: **1 = players win, 0 = players lose, -1 = draw** (rts_design.md §13.3). Each casualty: `{member_id, owner, end_hp}` (`end_hp` is the member's HP% when they fell — the wound severity under `wounded` rulesets). `xp_by_member` maps member_id → XP granted; `level_ups` is `[{member_id, level_ups}]`; `rewards_stub` carries morale flags + empty gold/equipment/cosmetics slots. `seed` + `state_hash` support the determinism replay check (D27; see `tools/replay_combat.sh`) |
-| `chat` | `{from, from_name, team, text, timestamp}` | Team chat delivery |
-| `voice` | `{from, from_name, signal_type, data}` | WebRTC signaling delivery |
+| `chat` | `{from, from_name, team, text, safe_message_id, timestamp}` | Team chat delivery. `safe_message_id` is null for adult custom chat; minors never receive custom chat. |
+| `voice` | `{from, from_name, signal_type, data}` | WebRTC signaling delivery (adult-to-adult only) |
 | `error` | `{error}` | Protocol/validation error; socket may be closed |
 
 ### State payload (match_state / match_update)
@@ -152,7 +152,8 @@ uWS pub/sub topics per match:
 | `match:<id>:team:<n>` | one team | team chat |
 | `match:<id>:player:<n>` | one player | voice signaling (targeted) |
 
-The simulation thread only publishes to `match:<id>`; chat and voice are
+Player/unit names on the wire are **safe names** for every viewer. The
+simulation thread only publishes to `match:<id>`; chat and voice are
 relayed on the loop thread without touching the simulation.
 
 ## Server Architecture Notes
