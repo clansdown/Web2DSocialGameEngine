@@ -194,7 +194,8 @@ A new fiefdom starts with the per-resource balances in `economy.json.starting_re
 currently 5 gold and 0 of everything else).
 
 The per-update `economy_report` in `/api/getFiefdom` exposes the resulting produced/consumed/imported/
-exported amounts, `net_gold` (production minus imports), and advisor recommendations.
+exported amounts, `net_gold` (production minus imports), and per-building `building_status`
+(outputs, rates, input satisfaction). The Reeve's advice surface is `/api/getReeveReport`.
 
 ### Cost Arrays (construction costs)
 
@@ -231,7 +232,7 @@ Current assignment (see `server/tables/fiefdoms.md` → Arable Land):
 | 15 | `villein` |
 | 30 | `freeholder`, `yeoman` |
 | 7  | The 18-grain self-contained craft households: `woodcutter`, `coppicer`, `timber_hauler`, `wood_hewer`, `hewing_shop`, `master_hewer`, `sawyer`, `saw_yard`, `saw_mill`, `blacksmith`, `advanced_smithy`, `water_smithy`, `collier`, `lined_hearth`, `masonry_beehive_kiln` |
-| 0  | `home_base`, `miller`, `windmill`, `baker`, `mill`, `bloomery`/`advanced_bloomery`/`hydraulic_bloomery`, `chapel`/`church`/`parish_church`, `road`, `mill_pond`, `head_race`, `tail_race` |
+| 0  | `home_base`, `miller`, `windmill`, `baker`, `mill`, `bloomery`/`advanced_bloomery`/`hydraulic_bloomery`, `chapel`/`church`/`parish_church`, `road`, `well`, `mill_pond`, `head_race`, `tail_race` |
 
 ### Forest Land (`forest_acres`)
 
@@ -252,7 +253,7 @@ Every building type carries a `class` string grouping it **definitively**
 
 | `class` | Building types |
 |---------|----------------|
-| `infrastructure` | `home_base`, `road`, `mill_pond`, `head_race`, `tail_race` |
+| `infrastructure` | `home_base`, `road`, `well`, `mill_pond`, `head_race`, `tail_race` |
 | `woodcutter` | `woodcutter`, `coppicer`, `timber_hauler` |
 | `woodhewer` | `wood_hewer`, `hewing_shop`, `master_hewer` |
 | `sawyer` | `sawyer`, `saw_yard`, `saw_mill` |
@@ -358,7 +359,13 @@ buildings to nearby buildings.
 |-------|------|---------|-------------|
 | `road_tiles` | object | none | Map of tile key → image path (e.g. `straight`, `corner`, `three_way`, `four_way`) for client-side auto-tiling |
 | `road_tiles_canonical` | object | none | Map of tile key → array of connected sides (`"n"`/`"e"`/`"s"`/`"w"`) for the base (unrotated) art; the client rotates the base image via `setOrientation` to match each road's neighbors |
-| `road_morale` | `{ boost, distance }` | none | Marks the building as a **morale source**. `boost` = morale points radiated; `distance` = max road-tile path length. E.g. chapel `{ boost: 10, distance: 6 }`, miller `{ boost: 5, distance: 4 }` |
+| `road_morale` | `{ boost, distance }` | none | Marks the building as a **morale source**. `boost` = morale points radiated (a positive number, or a level-indexed array indexed by `level - 1`); `distance` = max road-tile path length. E.g. chapel `{ boost: 10, distance: 6 }`, miller `{ boost: 5, distance: 4 }`, well `{ boost: [1.0, 1.05, 1.10, 1.15, 1.20], distance: 10 }` |
+
+A scalar `boost` is flat across levels (legacy sources such as the chapel).
+A level-indexed array scales the source's morale with its level: index
+`level - 1`, and the array length should equal `max_level`. For example the
+well radiates 1.0 points (+2.0%) at level 1 and 1.2 points (+2.4%) at level 5
+with the default `morale_production_multiplier: 0.02`.
 
 **How the network works (server):**
 

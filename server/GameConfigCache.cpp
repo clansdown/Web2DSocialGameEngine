@@ -98,6 +98,9 @@ bool GameConfigCache::initialize(const std::string& config_dir) {
     // code, so it is deliberately NOT added to getAllConfigs() (which backs
     // getGameInfo). Only the server reads the raw JSON.
     add("registration.json");
+    // Server-only Reeve tuning (weights/thresholds/placement policy). The
+    // client receives only the structured report, never this config.
+    add("reeve.json");
 
     for (auto& [name, entry] : configs_) {
         struct stat st;
@@ -305,6 +308,7 @@ nlohmann::json& GameConfigCache::getSafeBanReasons() { return getConfig("safe_ba
 nlohmann::json& GameConfigCache::getTranslationConfig() { return getConfig("translation.json"); }
 nlohmann::json& GameConfigCache::getPushConfig() { return getConfig("push.json"); }
 nlohmann::json& GameConfigCache::getRegistrationConfig() { return getConfig("registration.json"); }
+nlohmann::json& GameConfigCache::getReeveConfig() { return getConfig("reeve.json"); }
 
 std::optional<nlohmann::json> GameConfigCache::getTowerDefenseSpawnSchedule(const std::string& filename) {
     nlohmann::json& data = getConfig("tower_defense/spawn_schedules/" + filename);

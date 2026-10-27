@@ -104,7 +104,7 @@ struct TimeUpdateResult {
     std::vector<FailedUpgrade> failed_upgrades;
     int fiefdoms_updated;
     /// Per-fiefdom economy ledger (produced, consumed, imported, exported,
-    /// net_gold, recommendations) keyed by fiefdom_id. Populated for each
+    /// net_gold, building_status) keyed by fiefdom_id. Populated for each
     /// fiefdom processed during the update.
     std::unordered_map<int, nlohmann::json> economy_reports;
 };
@@ -112,7 +112,8 @@ struct TimeUpdateResult {
 TimeUpdateResult updateStateSince(
     GameConfigCache& config_cache,
     Timestamp last_update_time,
-    const std::string& fiefdom_filter_id = ""
+    const std::string& fiefdom_filter_id = "",
+    bool dry_run = false
 );
 
 /// A single produced output of a building and its own input requirements.
@@ -129,18 +130,6 @@ struct OutputPlan {
 struct BuildingPlan {
     std::vector<OutputPlan> outputs;
 };
-
-/// Builds economic recommendation strings from the per-fiefdom ledger and
-/// building configs. Returns a JSON array of human-readable suggestions.
-nlohmann::json build_economy_recommendations(
-    GameConfigCache& config_cache,
-    const nlohmann::json& produced,
-    const nlohmann::json& consumed,
-    const nlohmann::json& imported,
-    const nlohmann::json& exported,
-    const std::map<int, BuildingPlan>& plans,
-    const nlohmann::json& building_types
-);
 
 /// Helper: index into a level-indexed JSON array with linear extrapolation.
 /// arr can be a number (returns as-is) or an array. level is 0-indexed.

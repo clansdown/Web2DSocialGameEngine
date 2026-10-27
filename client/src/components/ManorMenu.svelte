@@ -1,10 +1,13 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { currentCharacter } from '../lib/stores';
-  import { getFiefdomRequest, buildRequest, getBuildingConfigsRequest, setFiefdomImportRequest, setFiefdomReserveRequest, setBuildingOutputRateRequest, upgradeBuildingRequest, convertBuildingRequest, demolishBuildingRequest, upgradePondTypeRequest } from '../lib/api';
-  import type { FiefdomResponse, FiefdomBuilding, BuildingTypeConfig, EconomyReport } from '../lib/api';
+  import { getFiefdomRequest, buildRequest, getBuildingConfigsRequest, setFiefdomImportRequest, setFiefdomReserveRequest, setBuildingOutputRateRequest, upgradeBuildingRequest, convertBuildingRequest, demolishBuildingRequest, upgradePondTypeRequest, getReeveReportRequest } from '../lib/api';
+  import type { FiefdomResponse, FiefdomBuilding, BuildingTypeConfig, EconomyReport, ReeveReport, ReeveTarget, ReeveAction } from '../lib/api';
   import { asset_url } from '../lib/public_urls';
   import RetinuePanel from './RetinuePanel.svelte';
+  import ReevePanel from './ReevePanel.svelte';
+  import { execute_reeve_action } from '../lib/reeve_actions';
+  import { reeve_error_text_id } from '../lib/reeve_text';
   import { loadTexts } from '../lib/text';
   import { getSessionToken, getInMemoryCredentials } from '../lib/auth';
   import { getConfigBoolean, setConfig as setConfigKV, getConfigNumber } from '../lib/storage';
@@ -93,7 +96,18 @@
   let showEconomy = $state(false);
   let showProduction = $state(false);
   let showRetinue = $state(false);
+  let showReeve = $state(false);
   let retinueBtn: Button | null = null;
+  let reeveBtn: Button | null = null;
+  let reeveReport = $state<ReeveReport | null>(null);
+  let reeveLoading = $state(false);
+  let reeveError = $state('');
+  let reeveActionError = $state('');
+  let reeveActionBusy = $state(false);
+  let roadLinkPreview = $state<Array<{ x: number; y: number }> | null>(null);
+  let roadLinkOverlays: GameObject[] = [];
+  let ghostPreload: { mouse_x: number; mouse_y: number; gx: number; gy: number } | null = null;
+  let reevePlacementServer: { typeId: string; x: number; y: number; gx: number; gy: number } | null = null;
   let economyReport = $state<EconomyReport | null>(null);
   let selectedBuildingId = $state<number | null>(null);
   let buildingCardBusy = $state(false);
@@ -106,6 +120,43 @@
     beams: 'Beams', boards: 'Boards'
   };
   let reserveInputs = $state<Record<string, number>>({});
+
+  /**
+   * Resolves a resource's display name from the text system, falling back to
+   * the legacy English map only if a translation is not loaded yet.
+   *
+   * @param resource - Fiefdom resource key
+   * @returns Display label
+   */
+  function resourceLabel(resource: string): string {
+    return manorTexts['ui_resource_' + resource] ?? RESOURCE_DISPLAY[resource] ?? resource;
+  }
+
+  /**
+   * Resolves a building type's display name from the text system.
+   *
+   * @param typeId - Building type id
+   * @param fallback - Config display name fallback
+   * @returns Display label
+   */
+  function buildingLabel(typeId: string, fallback: string): string {
+    return manorTexts['ui_building_' + typeId] ?? fallback;
+  }
+
+  /**
+   * Formats a manor text id with simple token substitution.
+   *
+   * @param textId - Text-system id
+   * @param tokens - Token values to substitute
+   * @returns Localized text (empty when the id is not loaded)
+   */
+  function formatManorText(textId: string, tokens: Record<string, string | number> = {}): string {
+    let text = manorTexts[textId] ?? '';
+    for (const [key, value] of Object.entries(tokens)) {
+      text = text.split(`{${key}}`).join(String(value));
+    }
+    return text;
+  }
 
   function createOverlayClass(color: string, id: string): ItemClass {
     const c = document.createElement('canvas');
@@ -537,17 +588,20 @@
   }
 
   function checkVal(gx: number, gy: number, typeId: string): { valid: boolean; reason: string } {
-    if (!fiefdomData) return { valid: false, reason: 'No fiefdom data' };
+    if (!fiefdomData) return { valid: false, reason: formatManorText('ui_manor_no_fiefdom') };
     const cfg = getCfg(typeId);
-    if (!cfg) return { valid: false, reason: 'Unknown building type' };
+    if (!cfg) return { valid: false, reason: formatManorText('ui_manor_unknown_building') };
     if (fiefdomData.manor_level < cfg.min_manor_level) {
-      return { valid: false, reason: `Need manor level ${cfg.min_manor_level}` };
+      return {
+        valid: false,
+        reason: formatManorText('ui_manor_need_manor_level', { level: cfg.min_manor_level })
+      };
     }
     const maxCount = cfg.max_per_fiefdom as number | undefined;
     if (maxCount != null) {
       const count = (fiefdomData.buildings ?? []).filter(b => b.name === typeId).length;
       if (count >= maxCount) {
-        return { valid: false, reason: 'Already built (max reached)' };
+        return { valid: false, reason: formatManorText('ui_manor_max_reached') };
       }
     }
     const prereq = ((cfg.prerequisites as Array<Record<string, number>> | undefined)?.[0]) ?? {};
@@ -555,7 +609,13 @@
       if (key === 'manor_level') continue;
       const have = satisfiedLevel(key);
       if (have < reqLevel) {
-        return { valid: false, reason: `Need ${key} level ${reqLevel}` };
+        return {
+          valid: false,
+          reason: formatManorText('ui_manor_need_building', {
+            building: buildingLabel(key, key),
+            level: reqLevel
+          })
+        };
       }
     }
     const ghostRect = getRect(gx, gy, cfg.width, cfg.height);
@@ -563,27 +623,44 @@
       const existing = getCfg(b.name);
       if (!existing) continue;
       if (overlap(ghostRect, getRect(b.x, b.y, existing.width, existing.height))) {
-        return { valid: false, reason: `Overlaps ${existing.display_name}` };
+        return {
+          valid: false,
+          reason: formatManorText('ui_manor_overlap', {
+            building: buildingLabel(b.name, existing.display_name)
+          })
+        };
       }
     }
     for (const [rx, ry] of fiefdomData.river_cells ?? []) {
       if (overlap(ghostRect, getRect(rx, ry, 1, 1))) {
-        return { valid: false, reason: 'On the river' };
+        return { valid: false, reason: formatManorText('ui_manor_on_river') };
       }
     }
     for (const [res, amt] of Object.entries(cfg.costs)) {
       const current = (fiefdomData as unknown as Record<string, number>)[res] || 0;
       if (current < amt) {
-        return { valid: false, reason: `Not enough ${res} (need ${amt})` };
+        return {
+          valid: false,
+          reason: formatManorText('ui_manor_not_enough_resource', {
+            resource: resourceLabel(res),
+            amount: amt
+          })
+        };
       }
     }
     const acres = cfg.arable_acres ?? 0;
     if (acres > 0 && (fiefdomData.arable_land?.available ?? 0) + 0.0001 < acres) {
-      return { valid: false, reason: `Not enough arable land (need ${acres} acres)` };
+      return {
+        valid: false,
+        reason: formatManorText('ui_manor_not_enough_arable', { acres })
+      };
     }
     const forest = cfg.forest_acres ?? 0;
     if (forest > 0 && (fiefdomData.forest_land?.available ?? 0) + 0.0001 < forest) {
-      return { valid: false, reason: `Not enough forest land (need ${forest} acres)` };
+      return {
+        valid: false,
+        reason: formatManorText('ui_manor_not_enough_forest', { acres: forest })
+      };
     }
     return { valid: true, reason: '' };
   }
@@ -937,6 +1014,8 @@
 
     placementMode = true;
     placementType = typeId;
+    ghostPreload = null;
+    reevePlacementServer = null;
 
     const cfg = getCfg(typeId);
     if (!cfg) return;
@@ -995,10 +1074,108 @@
   function exitPlacement() {
     placementMode = false;
     placementType = null;
+    ghostPreload = null;
+    reevePlacementServer = null;
     if (ghostBuilding) { ghostBuilding.destroy(); ghostBuilding = null; }
     if (ghostOverlayValid) { ghostOverlayValid.destroy(); ghostOverlayValid = null; }
     if (ghostOverlayInvalid) { ghostOverlayInvalid.destroy(); ghostOverlayInvalid = null; }
     if (ghostTooltip) { ghostTooltip.destroy(); ghostTooltip = null; }
+  }
+
+  /**
+   * Moves the placement ghost to a grid cell and refreshes its validity
+   * overlay/tooltip. Extracted from the per-frame mouse tracking so the Reeve
+   * can preload a suggested site.
+   *
+   * @param gx - Grid x of the ghost centre
+   * @param gy - Grid y of the ghost centre
+   * @param typeId - Building type being placed
+   */
+  function applyGhostPosition(gx: number, gy: number, typeId: string): void {
+    const cfg = getCfg(typeId);
+    if (!cfg) return;
+    const pos = g2b(gx, gy, cfg.width, cfg.height);
+    if (ghostBuilding) {
+      ghostBuilding.x = pos.x;
+      ghostBuilding.y = pos.y;
+    }
+    ghostPos = { gx, gy };
+    if (ghostOverlayValid) { ghostOverlayValid.x = pos.x; ghostOverlayValid.y = pos.y; }
+    if (ghostOverlayInvalid) { ghostOverlayInvalid.x = pos.x; ghostOverlayInvalid.y = pos.y; }
+
+    const result = checkVal(gx, gy, typeId);
+    ghostValid = result.valid;
+    if (!result.valid) {
+      if (ghostOverlayValid) ghostOverlayValid.visible = false;
+      if (ghostOverlayInvalid) ghostOverlayInvalid.visible = true;
+      if (ghostTooltip) {
+        ghostTooltip.x = pos.x;
+        ghostTooltip.y = pos.y - cfg.height * CELL_TO_BOARD_UNITS / 2 - 30;
+        ghostTooltip.text = result.reason;
+        ghostTooltip.opacity = 1;
+      }
+    } else {
+      if (ghostOverlayValid) ghostOverlayValid.visible = true;
+      if (ghostOverlayInvalid) ghostOverlayInvalid.visible = false;
+      if (ghostTooltip) ghostTooltip.opacity = 0;
+    }
+  }
+
+  /**
+   * Starts placement with the ghost preloaded at the Reeve's suggested site.
+   * The ghost stays there until the player moves the mouse, then behaves like
+   * normal manual placement (drag/click to place, Esc to cancel).
+   *
+   * @param typeId - Building type to place
+   * @param gx - Suggested grid x
+   * @param gy - Suggested grid y
+   */
+  function startPlacementAt(typeId: string, gx: number, gy: number): void {
+    const cfg = getCfg(typeId);
+    if (!cfg) return;
+    const center_gx = gx + Math.floor((cfg.width - 1) / 2);
+    const center_gy = gy + Math.floor((cfg.height - 1) / 2);
+    enterPlacement(typeId);
+    if (!placementMode) return;
+    applyGhostPosition(center_gx, center_gy, typeId);
+    const mouse = getMousePosition();
+    ghostPreload = { mouse_x: mouse.x, mouse_y: mouse.y, gx: center_gx, gy: center_gy };
+    // The server treats (x, y) as the footprint's top-left, while the client
+    // ghost is centred on a cell. Remember the server site so the preloaded
+    // ghost builds exactly where the Reeve intended (3x3 producers are the
+    // common case; 1x1 roads are identical in both systems).
+    reevePlacementServer = { typeId, x: gx, y: gy, gx: center_gx, gy: center_gy };
+  }
+
+  /**
+   * Shows the Reeve's road-link path as green overlays. The player confirms or
+   * cancels from the Reeve panel; the path itself is one logical action.
+   *
+   * @param cells - Ordered road cells suggested by the Reeve
+   */
+  function startRoadLinkPreview(cells: Array<{ x: number; y: number }>): void {
+    exitPlacement();
+    cancelRoadLinkPreview();
+    const overlayClass = validOverlayClass
+      ?? createOverlayClass('rgba(0, 200, 0, 0.3)', 'v_overlay');
+    validOverlayClass = overlayClass;
+    for (const cell of cells) {
+      const pos = g2b(cell.x, cell.y, 1, 1);
+      const obj = overlayClass.spawn(pos.x, pos.y);
+      obj.width = CELL_TO_BOARD_UNITS;
+      obj.height = CELL_TO_BOARD_UNITS;
+      obj.opacity = 0.5;
+      obj.zIndex = 50;
+      roadLinkOverlays.push(obj);
+    }
+    roadLinkPreview = cells.map((cell) => ({ x: cell.x, y: cell.y }));
+  }
+
+  /** Removes the Reeve's road-link preview overlays. */
+  function cancelRoadLinkPreview(): void {
+    for (const obj of roadLinkOverlays) obj.destroy();
+    roadLinkOverlays = [];
+    roadLinkPreview = null;
   }
 
   async function placeBuilding(gx: number, gy: number, typeId: string) {
@@ -1006,17 +1183,27 @@
     const token = getSessionToken();
     const creds = getInMemoryCredentials();
     if (!token || !creds || !$currentCharacter) return;
+    let server_x = gx;
+    let server_y = gy;
+    if (reevePlacementServer &&
+        reevePlacementServer.typeId === typeId &&
+        reevePlacementServer.gx === gx &&
+        reevePlacementServer.gy === gy) {
+      server_x = reevePlacementServer.x;
+      server_y = reevePlacementServer.y;
+    }
     try {
       await buildRequest({
         fiefdom_id: fiefdomData.id,
         building_type: typeId,
-        x: gx, y: gy,
+        x: server_x, y: server_y,
         character_id: $currentCharacter.id
       }, { username: creds.username, token });
       await loadFiefdomData();
       clearBuildings();
       renderBuildings();
       exitPlacement();
+      if (showReeve) await loadReeveReport();
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : 'Failed to place building';
     }
@@ -1054,6 +1241,11 @@
    * @param id - The fiefdom_buildings row id
    */
   function openBuildingCard(id: number): void {
+    if (showReeve) {
+      showReeve = false;
+      cancelRoadLinkPreview();
+      updateToggleButtonStates();
+    }
     selectedBuildingId = id;
     buildingCardError = '';
   }
@@ -1201,6 +1393,21 @@
     return `${g}g ${s}s ${d}d`;
   }
 
+  /**
+   * Formats a road-morale points total as a production percentage.
+   *
+   * Uses the server-supplied economy multiplier so fractional bonuses (e.g.
+   * 2.1%) display accurately instead of being rounded to a whole percent.
+   *
+   * @param points - Morale points received by a building
+   * @returns String like "2" or "2.1" (the caller appends "%")
+   */
+  function formatMoralePercent(points: number): string {
+    const multiplier = fiefdomData?.morale_production_multiplier ?? 0.02;
+    const percent = Math.round(points * multiplier * 100 * 10) / 10;
+    return Number.isInteger(percent) ? percent.toFixed(0) : percent.toFixed(1);
+  }
+
   function constructionSignature(): string {
     return (fiefdomData?.buildings ?? [])
       .map(b => `${b.id}:${b.level}:${b.construction_start_ts}`).join('|');
@@ -1234,12 +1441,16 @@
     if (economyBtn) economyBtn.setBackgroundColor(showEconomy ? MANOR_BTN_ACTIVE_COLOR : MANOR_BTN_COLOR);
     if (productionBtn) productionBtn.setBackgroundColor(showProduction ? MANOR_BTN_ACTIVE_COLOR : MANOR_BTN_COLOR);
     if (retinueBtn) retinueBtn.setBackgroundColor(showRetinue ? MANOR_BTN_ACTIVE_COLOR : MANOR_BTN_COLOR);
+    if (reeveBtn) reeveBtn.setBackgroundColor(showReeve ? MANOR_BTN_ACTIVE_COLOR : MANOR_BTN_COLOR);
   }
 
   async function toggleEconomy() {
     showEconomy = !showEconomy;
     if (showEconomy) {
       showProduction = false;
+      showRetinue = false;
+      showReeve = false;
+      cancelRoadLinkPreview();
       await loadFiefdomData();
     }
     updateToggleButtonStates();
@@ -1249,6 +1460,9 @@
     showProduction = !showProduction;
     if (showProduction) {
       showEconomy = false;
+      showRetinue = false;
+      showReeve = false;
+      cancelRoadLinkPreview();
       await loadFiefdomData();
     }
     updateToggleButtonStates();
@@ -1259,8 +1473,146 @@
     if (showRetinue) {
       showEconomy = false;
       showProduction = false;
+      showReeve = false;
+      cancelRoadLinkPreview();
     }
     updateToggleButtonStates();
+  }
+
+  /**
+   * Loads the Reeve's structured report. Report/action failures are shown as
+   * text ids, never as raw server English.
+   */
+  async function loadReeveReport(): Promise<void> {
+    const token = getSessionToken();
+    const creds = getInMemoryCredentials();
+    if (!token || !creds || !$currentCharacter) return;
+    reeveLoading = true;
+    reeveError = '';
+    try {
+      const report = await getReeveReportRequest({
+        fiefdom_id: fiefdomData?.id ?? 0,
+        character_id: $currentCharacter.id
+      }, { username: creds.username, token });
+      reeveReport = report;
+    } catch (e) {
+      reeveError = 'reeve_error_load_failed';
+      console.log('[ManorMenu] Reeve report failed:', e);
+    } finally {
+      reeveLoading = false;
+    }
+  }
+
+  /** Toggles the Reeve panel and closes the other manor panels. */
+  async function toggleReeve(): Promise<void> {
+    showReeve = !showReeve;
+    if (showReeve) {
+      exitPlacement();
+      showEconomy = false;
+      showProduction = false;
+      showRetinue = false;
+      closeBuildingCard();
+      reeveActionError = '';
+      await loadReeveReport();
+    } else {
+      cancelRoadLinkPreview();
+    }
+    updateToggleButtonStates();
+  }
+
+  /**
+   * Follows a report detail/section target: opens the relevant card or panel.
+   *
+   * @param target - Structured Reeve target
+   */
+  async function handleReeveJump(target: ReeveTarget): Promise<void> {
+    cancelRoadLinkPreview();
+    if (target.kind === 'building_card') {
+      showReeve = false;
+      updateToggleButtonStates();
+      openBuildingCard(target.building_id);
+      return;
+    }
+    if (target.kind === 'production_panel') {
+      showReeve = false;
+      showProduction = true;
+      showEconomy = false;
+      showRetinue = false;
+      await loadFiefdomData();
+      updateToggleButtonStates();
+      return;
+    }
+    if (target.kind === 'economy_panel' || target.kind === 'resource') {
+      showReeve = false;
+      showEconomy = true;
+      showProduction = false;
+      showRetinue = false;
+      await loadFiefdomData();
+      updateToggleButtonStates();
+      return;
+    }
+    if (target.kind === 'build_palette') {
+      showReeve = false;
+      if (buildCol) buildCol.visible = true;
+      updateToggleButtonStates();
+    }
+  }
+
+  /**
+   * Takes the Reeve's recommended action through the standard endpoints, then
+   * refreshes the manor and the report.
+   *
+   * @param action - Structured action to execute
+   */
+  async function handleReeveAccept(action: ReeveAction): Promise<void> {
+    if (!fiefdomData || !$currentCharacter) return;
+    const token = getSessionToken();
+    const creds = getInMemoryCredentials();
+    if (!token || !creds) return;
+    reeveActionBusy = true;
+    reeveActionError = '';
+    try {
+      const result = await execute_reeve_action(
+        action, fiefdomData.id, $currentCharacter.id,
+        { username: creds.username, token });
+      if (!result.ok) {
+        reeveActionError = reeve_error_text_id(result.error_code);
+        return;
+      }
+      await loadFiefdomData();
+      clearBuildings();
+      renderBuildings();
+      if (showReeve) await loadReeveReport();
+    } catch (e) {
+      reeveActionError = 'reeve_error_unknown';
+      console.log('[ManorMenu] Reeve action failed:', e);
+    } finally {
+      reeveActionBusy = false;
+    }
+  }
+
+  /**
+   * Preloads the Reeve's suggested building ghost or road-link path.
+   *
+   * @param action - Build or build_road_link action
+   */
+  function handleReeveManualPlace(action: ReeveAction): void {
+    reeveActionError = '';
+    if (action.kind === 'build') {
+      startPlacementAt(action.building_type, action.x, action.y);
+      return;
+    }
+    if (action.kind === 'build_road_link') {
+      startRoadLinkPreview(action.cells);
+    }
+  }
+
+  /** Confirms the currently previewed road link. */
+  async function confirmRoadLink(): Promise<void> {
+    if (!roadLinkPreview) return;
+    const cells = roadLinkPreview.map((cell) => ({ x: cell.x, y: cell.y }));
+    await handleReeveAccept({ kind: 'build_road_link', cells });
+    if (!reeveActionError) cancelRoadLinkPreview();
   }
 
   /**
@@ -1377,6 +1729,14 @@
     retinueBtn.zIndex = 100;
     retinueBtn.onClick(0, () => toggleRetinue());
     actionCol.addChild(retinueBtn);
+
+    const rvb = new ButtonClass('manor_reeve');
+    reeveBtn = rvb.spawn(0, 0, manorTexts['ui_manor_reeve'], null, toggleStyle);
+    reeveBtn.hud = true;
+    reeveBtn.visible = true;
+    reeveBtn.zIndex = 100;
+    reeveBtn.onClick(0, () => toggleReeve());
+    actionCol.addChild(reeveBtn);
 
     const bb = new ButtonClass('manor_build');
     buildBtn = bb.spawn(0, 0, manorTexts['ui_manor_build_btn'], null, toggleStyle);
@@ -1528,10 +1888,31 @@
     const textIds = [
       'manor_main_btn', 'ui_manor_build_btn',
       'ui_manor_economy', 'ui_manor_production', 'ui_manor_retinue',
+      'ui_manor_reeve',
       'ui_manor_stockpiles', 'ui_manor_treasury', 'ui_manor_arable',
       'ui_manor_forest',
       'ui_manor_stage', 'ui_manor_upgrade', 'ui_manor_convert',
       'ui_manor_pond_type', 'ui_manor_demolish', 'ui_manor_demolish_confirm',
+      'ui_manor_level', 'ui_manor_close', 'ui_manor_free',
+      'ui_manor_outputs', 'ui_manor_inputs', 'ui_manor_input_satisfaction',
+      'ui_manor_no_outputs', 'ui_manor_water_unpowered', 'ui_manor_rate',
+      'ui_manor_net_gold', 'ui_manor_net_silver', 'ui_manor_produced',
+      'ui_manor_consumed', 'ui_manor_imported', 'ui_manor_exported',
+      'ui_manor_no_economy', 'ui_manor_auto_import', 'ui_manor_auto_import_hint',
+      'ui_manor_reserves', 'ui_manor_reserves_hint', 'ui_manor_reserves_hint2',
+      'ui_manor_set', 'ui_manor_production_title', 'ui_manor_road_morale',
+      'ui_manor_no_outputs_adjustable', 'reeve_open_hint',
+      'ui_manor_no_fiefdom', 'ui_manor_unknown_building',
+      'ui_manor_need_manor_level', 'ui_manor_max_reached',
+      'ui_manor_need_building', 'ui_manor_overlap', 'ui_manor_on_river',
+      'ui_manor_not_enough_resource', 'ui_manor_not_enough_arable',
+      'ui_manor_not_enough_forest',
+      'ui_resource_gold', 'ui_resource_silver_pence', 'ui_resource_grain',
+      'ui_resource_wood', 'ui_resource_steel', 'ui_resource_bronze',
+      'ui_resource_leather', 'ui_resource_mana', 'ui_resource_charcoal',
+      'ui_resource_iron', 'ui_resource_ironwork', 'ui_resource_fancy_ironwork',
+      'ui_resource_beams', 'ui_resource_boards', 'ui_resource_stone',
+      'ui_building_home_base',
       ...candidateIds.map(id => 'ui_building_' + id)
     ];
     manorTexts = await loadTexts(textIds);
@@ -1548,40 +1929,26 @@
     apply_viewport();
     setCameraPosition(CX, CY);
     window.addEventListener('resize', apply_viewport);
-    onKeyDown('Escape', () => exitPlacement());
+    onKeyDown('Escape', () => {
+      exitPlacement();
+      cancelRoadLinkPreview();
+    });
 
     everyTick(() => {
       if (ghostBuilding && placementType) {
-        const cfg = getCfg(placementType);
-        if (!cfg) return;
-
         const mouse = getMousePosition();
-        const snapped = b2g(mouse.x, mouse.y);
-        const pos = g2b(snapped.gx, snapped.gy, cfg.width, cfg.height);
-
-        ghostBuilding.x = pos.x;
-        ghostBuilding.y = pos.y;
-        ghostPos = snapped;
-
-        if (ghostOverlayValid) { ghostOverlayValid.x = pos.x; ghostOverlayValid.y = pos.y; }
-        if (ghostOverlayInvalid) { ghostOverlayInvalid.x = pos.x; ghostOverlayInvalid.y = pos.y; }
-
-        const result = checkVal(snapped.gx, snapped.gy, placementType);
-        ghostValid = result.valid;
-
-        if (!result.valid) {
-          if (ghostOverlayValid) ghostOverlayValid.visible = false;
-          if (ghostOverlayInvalid) ghostOverlayInvalid.visible = true;
-          if (ghostTooltip) {
-            ghostTooltip.x = pos.x;
-            ghostTooltip.y = pos.y - cfg.height * CELL_TO_BOARD_UNITS / 2 - 30;
-            ghostTooltip.text = result.reason;
-            ghostTooltip.opacity = 1;
+        if (ghostPreload) {
+          const dx = mouse.x - ghostPreload.mouse_x;
+          const dy = mouse.y - ghostPreload.mouse_y;
+          if (Math.hypot(dx, dy) < 2) {
+            applyGhostPosition(ghostPreload.gx, ghostPreload.gy, placementType);
+          } else {
+            ghostPreload = null;
           }
-        } else {
-          if (ghostOverlayValid) ghostOverlayValid.visible = true;
-          if (ghostOverlayInvalid) ghostOverlayInvalid.visible = false;
-          if (ghostTooltip) ghostTooltip.opacity = 0;
+        }
+        if (!ghostPreload) {
+          const snapped = b2g(mouse.x, mouse.y);
+          applyGhostPosition(snapped.gx, snapped.gy, placementType);
         }
       }
 
@@ -1613,6 +1980,7 @@
 
   onDestroy(() => {
     window.removeEventListener('resize', apply_viewport);
+    cancelRoadLinkPreview();
     destroyEngine();
   });
 </script>
@@ -1662,89 +2030,109 @@
         </div>
       </div>
     {/if}
+    {#if showReeve}
+      <div class="card position-absolute end-0 m-3" style="width: 460px; max-height: 80vh; overflow-y: auto; top: {panelTop}px; z-index: 160;">
+        <div class="card-body">
+          <ReevePanel
+            report={reeveReport}
+            loading={reeveLoading}
+            error={reeveError}
+            action_error={reeveActionError}
+            action_busy={reeveActionBusy}
+            road_link_preview={roadLinkPreview !== null}
+            on_close={() => {
+              showReeve = false;
+              cancelRoadLinkPreview();
+              updateToggleButtonStates();
+            }}
+            on_refresh={loadReeveReport}
+            on_jump={handleReeveJump}
+            on_accept={handleReeveAccept}
+            on_manual_place={handleReeveManualPlace}
+            on_confirm_road_link={confirmRoadLink}
+            on_cancel_road_link={cancelRoadLinkPreview}
+          />
+        </div>
+      </div>
+    {/if}
     {#if showEconomy}
       <div class="card position-absolute end-0 m-3" style="width: 420px; max-height: 80vh; overflow-y: auto; top: {panelTop}px;">
           <div class="card-body">
-            <h6 class="card-title">Manor Economy</h6>
+            <h6 class="card-title">{manorTexts['ui_manor_economy']}</h6>
 
           <div class="mb-3">
             <div class="fw-semibold">{manorTexts['ui_manor_stockpiles']}</div>
-            <div class="small">{manorTexts['ui_manor_treasury']}: {formatGold(fiefdomData?.gold ?? 0)}, {fiefdomData?.silver_pence ?? 0} silver pence</div>
+            <div class="small">{manorTexts['ui_manor_treasury']}: {formatGold(fiefdomData?.gold ?? 0)}, {fiefdomData?.silver_pence ?? 0} {resourceLabel('silver_pence')}</div>
             <div class="small">{manorTexts['ui_manor_arable']}: {Math.floor(fiefdomData?.arable_land?.used ?? 0)} / {Math.floor(fiefdomData?.arable_land?.total ?? 0)}</div>
             <div class="small">{manorTexts['ui_manor_forest']}: {Math.floor(fiefdomData?.forest_land?.used ?? 0)} / {Math.floor(fiefdomData?.forest_land?.total ?? 0)}</div>
             <div class="d-flex flex-wrap gap-1">
               {#each IMPORT_RESOURCES as res}
                 {@const amount = ((fiefdomData ?? {}) as unknown as Record<string, number>)[res] ?? 0}
-                <span class="badge text-bg-secondary">{RESOURCE_DISPLAY[res] ?? res}: {amount}</span>
+                <span class="badge text-bg-secondary">{resourceLabel(res)}: {amount}</span>
               {/each}
             </div>
           </div>
 
           {#if economyReport}
             <div class="mb-3">
-              <div class="fw-semibold">Net gold this period: {economyReport.net_gold.toFixed(2)}</div>
+              <div class="fw-semibold">{manorTexts['ui_manor_net_gold']}: {economyReport.net_gold.toFixed(2)}</div>
               {#if economyReport.net_silver != null}
-                <div class="fw-semibold">Net silver this period: {economyReport.net_silver}d</div>
+                <div class="fw-semibold">{manorTexts['ui_manor_net_silver']}: {economyReport.net_silver}d</div>
               {/if}
               {#if Object.keys(economyReport.produced).length > 0}
                 <div class="small text-muted">
-                  Produced: {Object.entries(economyReport.produced).map(([r, a]) => `${r} ${a.toFixed(1)}`).join(', ')}
+                  {manorTexts['ui_manor_produced']}: {Object.entries(economyReport.produced).map(([r, a]) => `${resourceLabel(r)} ${a.toFixed(1)}`).join(', ')}
                 </div>
               {/if}
               {#if Object.keys(economyReport.consumed).length > 0}
                 <div class="small text-muted">
-                  Consumed: {Object.entries(economyReport.consumed).map(([r, a]) => `${r} ${a.toFixed(1)}`).join(', ')}
+                  {manorTexts['ui_manor_consumed']}: {Object.entries(economyReport.consumed).map(([r, a]) => `${resourceLabel(r)} ${a.toFixed(1)}`).join(', ')}
                 </div>
               {/if}
               {#if Object.keys(economyReport.imported).length > 0}
                 <div class="small text-muted">
-                  Imported: {Object.entries(economyReport.imported).map(([r, a]) => `${r} ${a.toFixed(1)}`).join(', ')}
+                  {manorTexts['ui_manor_imported']}: {Object.entries(economyReport.imported).map(([r, a]) => `${resourceLabel(r)} ${a.toFixed(1)}`).join(', ')}
                 </div>
               {/if}
               {#if Object.keys(economyReport.exported).length > 0}
                 <div class="small text-muted">
-                  Exported: {Object.entries(economyReport.exported).map(([r, v]) => v.pence != null ? `${r} ${v.amount.toFixed(1)} (${v.pence}d)` : `${r} ${v.amount.toFixed(1)} (${v.gold.toFixed(1)}g)`).join(', ')}
+                  {manorTexts['ui_manor_exported']}: {Object.entries(economyReport.exported).map(([r, v]) => v.pence != null ? `${resourceLabel(r)} ${v.amount.toFixed(1)} (${v.pence}d)` : `${resourceLabel(r)} ${v.amount.toFixed(1)} (${v.gold.toFixed(1)}g)`).join(', ')}
                 </div>
               {/if}
             </div>
 
-            {#if economyReport.recommendations && economyReport.recommendations.length > 0}
-              <div class="mb-3">
-                <div class="fw-semibold mb-1">Advice</div>
-                {#each economyReport.recommendations as rec}
-                  <div class="small mb-1">
-                    <span class="text-warning">&#9654;</span> {rec}
-                  </div>
-                {/each}
-              </div>
-            {/if}
+            <div class="mb-3">
+              <button class="btn btn-sm btn-outline-light" onclick={toggleReeve}>
+                {manorTexts['reeve_open_hint']}
+              </button>
+            </div>
           {:else}
-            <p class="small text-muted">No economy data yet — check back after resources produce.</p>
+            <p class="small text-muted">{manorTexts['ui_manor_no_economy']}</p>
           {/if}
 
           <hr />
-          <div class="fw-semibold mb-2">Auto-import (full-buy)</div>
+          <div class="fw-semibold mb-2">{manorTexts['ui_manor_auto_import']}</div>
           <div class="d-flex flex-wrap gap-2">
             {#each IMPORT_RESOURCES as resource}
               <button
                 class="btn btn-sm {fiefdomData?.import_settings?.[resource] ? 'btn-primary' : 'btn-outline-secondary'}"
                 onclick={() => toggleImport(resource)}
               >
-                {RESOURCE_DISPLAY[resource] ?? resource}
+                {resourceLabel(resource)}
               </button>
             {/each}
           </div>
           <div class="small text-muted mt-2">
-            Full-buy: shortfalls are imported automatically — gold for most resources, silver pence for grain.
+            {manorTexts['ui_manor_auto_import_hint']}
           </div>
 
           <hr />
-          <div class="fw-semibold mb-2">Reserves (sell excess above)</div>
-          <div class="small text-muted mb-2">Excess stock is sold at each resource's export price (default 50% of import, ironwork 25%) — grain for silver pence, other resources for gold.</div>
+          <div class="fw-semibold mb-2">{manorTexts['ui_manor_reserves']}</div>
+          <div class="small text-muted mb-2">{manorTexts['ui_manor_reserves_hint']}</div>
           <div class="d-flex flex-wrap gap-2 align-items-center">
             {#each IMPORT_RESOURCES as resource}
               <div class="d-flex align-items-center gap-1">
-                <span class="small">{RESOURCE_DISPLAY[resource] ?? resource}:</span>
+                <span class="small">{resourceLabel(resource)}:</span>
                 <input
                   type="number"
                   min="0"
@@ -1757,13 +2145,13 @@
                   class="btn btn-sm btn-outline-light"
                   onclick={() => setReserve(resource)}
                 >
-                  Set
+                  {manorTexts['ui_manor_set']}
                 </button>
               </div>
             {/each}
           </div>
           <div class="small text-muted mt-2">
-            Excess above each reserve is auto-sold for gold; amounts at or below are kept.
+            {manorTexts['ui_manor_reserves_hint2']}
           </div>
         </div>
       </div>
@@ -1772,21 +2160,21 @@
     {#if showProduction}
       <div class="card position-absolute end-0 m-3" style="width: 420px; max-height: 80vh; overflow-y: auto; top: {panelTop}px;">
         <div class="card-body">
-          <h6 class="card-title">Production Rates</h6>
+          <h6 class="card-title">{manorTexts['ui_manor_production_title']}</h6>
           {#each fiefdomData?.buildings ?? [] as building}
             {@const cfg = buildingConfigs[building.name]}
             {@const outputs = (cfg?.outputs ?? []).filter(o => building.level >= (o.min_level ?? 1))}
             {#if outputs.length > 0}
               <div class="mb-3">
-                <div class="fw-semibold small">{cfg?.display_name ?? building.name} (L{building.level})</div>
+                <div class="fw-semibold small">{buildingLabel(building.name, cfg?.display_name ?? building.name)} (L{building.level})</div>
                 {#if (fiefdomData?.road_morale?.[building.id] ?? 0) > 0}
                   <div class="small text-success">
-                    Road morale: +{Math.round((fiefdomData?.road_morale?.[building.id] ?? 0) * 2)}% production
+                    {(manorTexts['ui_manor_road_morale'] ?? '').replace('{percent}', formatMoralePercent(fiefdomData?.road_morale?.[building.id] ?? 0))}
                   </div>
                 {/if}
                 {#each outputs as output}
                   <div class="d-flex align-items-center gap-2 mb-1">
-                    <span class="small flex-shrink-0" style="width: 110px;">{RESOURCE_DISPLAY[output.resource] ?? output.resource}</span>
+                    <span class="small flex-shrink-0" style="width: 110px;">{resourceLabel(output.resource)}</span>
                     <input
                       type="range"
                       class="form-range flex-grow-1"
@@ -1806,7 +2194,7 @@
             const cfg = buildingConfigs[b.name];
             return (cfg?.outputs ?? []).some(o => b.level >= (o.min_level ?? 1));
           })}
-            <p class="small text-muted">No adjustable outputs on your manor yet.</p>
+            <p class="small text-muted">{manorTexts['ui_manor_no_outputs_adjustable']}</p>
           {/if}
         </div>
       </div>
@@ -1818,19 +2206,53 @@
       {@const sSucc = sb ? stageSuccessor(sb.name) : undefined}
       {@const sSuccCfg = sSucc ? getCfg(sSucc) : undefined}
       {@const sMax = (sCfg?.max_level as number | undefined) ?? 5}
+      {@const sStatus = sb
+        ? fiefdomData?.economy_report?.building_status?.find(s => s.building_id === sb.id)
+        : undefined}
       {#if sb && sCfg}
         <div class="card position-absolute end-0 m-3" style="width: 380px; top: {panelTop}px; z-index: 150;">
           <div class="card-body">
             <div class="d-flex justify-content-between align-items-start gap-2">
               <div>
-                <h6 class="card-title mb-1">{sCfg.display_name}</h6>
+                <h6 class="card-title mb-1">{buildingLabel(sb.name, sCfg.display_name)}</h6>
                 <div class="small text-muted">
                   {manorTexts['ui_manor_stage']}: {stageChain(sb.name).length}/{fullChainLength(sb.name)}
-                  &middot; Level {sb.level}/{sMax}
+                  &middot; {manorTexts['ui_manor_level']} {sb.level}/{sMax}
                 </div>
               </div>
-              <button class="btn-close" onclick={closeBuildingCard} aria-label="Close"></button>
+              <button class="btn-close" onclick={closeBuildingCard} aria-label={manorTexts['ui_manor_close']}></button>
             </div>
+
+            {#if sStatus}
+              <div class="mt-2">
+                <div class="fw-semibold small">{manorTexts['ui_manor_outputs']}</div>
+                {#if sStatus.outputs.length > 0}
+                  {#each sStatus.outputs as out}
+                    <div class="small">
+                      <span class="badge text-bg-secondary">{resourceLabel(out.resource)}</span>
+                      {out.amount.toFixed(1)}/day
+                      {#if out.rate < 0.999}
+                        ({Math.round(out.rate * 100)}%)
+                      {/if}
+                      {#if out.input_satisfaction < 0.999}
+                        <span class="text-warning">{Math.round(out.input_satisfaction * 100)}%</span>
+                      {/if}
+                    </div>
+                    {#if out.inputs.length > 0}
+                      <div class="small text-muted">
+                        {manorTexts['ui_manor_inputs']}:
+                        {out.inputs.map(i => `${resourceLabel(i.resource)} ${i.supplied.toFixed(1)}/${i.required.toFixed(1)}`).join(', ')}
+                      </div>
+                    {/if}
+                  {/each}
+                {:else}
+                  <div class="small text-muted">{manorTexts['ui_manor_no_outputs']}</div>
+                {/if}
+                {#if !sStatus.water_powered}
+                  <div class="small text-warning">{manorTexts['ui_manor_water_unpowered']}</div>
+                {/if}
+              </div>
+            {/if}
 
             {#if buildingCardError}
               <div class="alert alert-danger py-1 px-2 small mt-2 mb-2">{buildingCardError}</div>
@@ -1845,7 +2267,7 @@
 
               {#if sSucc && sSuccCfg}
                 <button class="btn btn-warning btn-sm" disabled={buildingCardBusy} onclick={convertSelected}>
-                  {manorTexts['ui_manor_convert']}: {sSuccCfg.display_name} ({formatCost(convertCost(sb)) || 'free'})
+                  {manorTexts['ui_manor_convert']}: {buildingLabel(sSucc, sSuccCfg.display_name)} ({formatCost(convertCost(sb)) || manorTexts['ui_manor_free']})
                 </button>
               {/if}
 

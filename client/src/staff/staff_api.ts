@@ -29,6 +29,28 @@ export interface staff_context_dto {
   invitations_enabled?: boolean;
 }
 
+export interface staff_monthly_pass_event_dto {
+  id: number;
+  character_id: number;
+  event: 'grant' | 'revoke' | 'restore';
+  source: 'staff_grant' | 'staff_revoke' | 'staff_undo' | 'purchase' | 'promo';
+  months: number;
+  permanent: boolean;
+  expires_at: number;
+  reason: string;
+  staff_account_id: number;
+  product_id: string;
+  reference_id: string;
+  created_at: number;
+}
+
+export interface staff_monthly_pass_dto {
+  active: boolean;
+  permanent: boolean;
+  expires_at: number;
+  events?: staff_monthly_pass_event_dto[];
+}
+
 export interface staff_character_dto {
   id: number;
   account_id: number;
@@ -43,6 +65,7 @@ export interface staff_character_dto {
   avatar_safe_id?: string;
   avatar_custom_id?: string;
   avatar_storage?: string;
+  monthly_pass?: staff_monthly_pass_dto;
 }
 
 export interface staff_account_dto {
@@ -197,6 +220,25 @@ export async function staffSetSupportLockRequest(
   reason: string
 ): Promise<{ action_id: string }> {
   return authenticatedPost('staffSetSupportLock', { account_id, locked, reason });
+}
+
+export async function staffGrantMonthlyPassRequest(
+  character_id: number,
+  options: { months?: number; permanent?: boolean; reason: string }
+): Promise<{ action_id: string }> {
+  return authenticatedPost('staffGrantMonthlyPass', {
+    character_id,
+    months: options.months ?? 0,
+    permanent: options.permanent ?? false,
+    reason: options.reason
+  });
+}
+
+export async function staffRevokeMonthlyPassRequest(
+  character_id: number,
+  reason: string
+): Promise<{ action_id: string }> {
+  return authenticatedPost('staffRevokeMonthlyPass', { character_id, reason });
 }
 
 export async function staffGetIdentityHistoryRequest(

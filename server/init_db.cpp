@@ -44,6 +44,7 @@ ensureIndex(db, "idx_fiefdom_walls_fiefdom", "fiefdom_walls", "fiefdom_id");
     ensureIndex(db, "idx_retinue_members_character", "retinue_members", "character_id");
     ensureIndex(db, "idx_character_cosmetics_character", "character_cosmetics", "character_id");
     ensureIndex(db, "idx_platinum_transactions_character", "platinum_transactions", "character_id");
+    ensureIndex(db, "idx_character_monthly_pass_log_character", "character_monthly_pass_log", "character_id, created_at DESC");
     ensureIndex(db, "idx_fiefdom_armory_fiefdom", "fiefdom_armory", "fiefdom_id");
     ensureIndex(db, "idx_fiefdom_armory_member", "fiefdom_armory", "member_id");
     ensureIndex(db, "idx_character_identity_history_character", "character_identity_history", "character_id");
@@ -679,6 +680,34 @@ void migrate_baron_character_id(sqlite::database& db) {
             "FOREIGN KEY(character_id) REFERENCES characters(id)"
         );
 
+        // Per-character monthly-pass entitlement and its append-only history.
+        // The current row drives access checks; the log records every grant,
+        // revoke, and undo transition with its provenance (staff, purchase, or
+        // promo). Log rows are never updated or deleted.
+        createTable(db, "character_monthly_pass",
+            "character_id INTEGER PRIMARY KEY,"
+            "expires_at INTEGER NOT NULL DEFAULT 0,"
+            "permanent INTEGER NOT NULL DEFAULT 0,"
+            "updated_at INTEGER NOT NULL,"
+            "FOREIGN KEY(character_id) REFERENCES characters(id)"
+        );
+
+        createTable(db, "character_monthly_pass_log",
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "character_id INTEGER NOT NULL,"
+            "event TEXT NOT NULL,"
+            "source TEXT NOT NULL,"
+            "months INTEGER NOT NULL DEFAULT 0,"
+            "permanent INTEGER NOT NULL DEFAULT 0,"
+            "expires_at INTEGER NOT NULL DEFAULT 0,"
+            "reason TEXT NOT NULL DEFAULT '',"
+            "staff_account_id INTEGER NOT NULL DEFAULT 0,"
+            "product_id TEXT NOT NULL DEFAULT '',"
+            "reference_id TEXT NOT NULL DEFAULT '',"
+            "created_at INTEGER NOT NULL,"
+            "FOREIGN KEY(character_id) REFERENCES characters(id)"
+        );
+
         createTable(db, "fiefdom_armory",
             "id INTEGER PRIMARY KEY AUTOINCREMENT,"
             "fiefdom_id INTEGER NOT NULL,"
@@ -1309,7 +1338,8 @@ void migrate_baron_character_id(sqlite::database& db) {
         // later without a schema change.
         const std::string capabilities[] = {
             "account.view", "account.set_adult_status", "account.set_social_restriction",
-            "account.set_support_lock", "identity.view_history", "identity.set_name_lock",
+            "account.set_support_lock", "character.manage_monthly_pass",
+            "identity.view_history", "identity.set_name_lock",
             "identity.set_avatar_lock", "identity.revert_name", "identity.revert_avatar",
             "identity.remove_custom_avatar", "avatar.ban_hash", "barony.view",
             "barony.set_safe_identity", "barony.set_accepts_minors", "barony.reassign_owner",

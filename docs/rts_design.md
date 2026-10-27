@@ -771,7 +771,9 @@ TURN relay for voice; passive member XP/leveling systems outside combat.
 
 **Cosmetics & monetization deferrals:** adventure *access* purchase (adventures are
 undefined — they combine story + mini-games + adventure battles); the mini-game monthly
-pass; individual map purchases; merging character-bound cosmetics across characters;
+pass (its per-character entitlement storage and staff grant/revoke tooling exist, but
+purchase fulfilment and pass content do not); individual map purchases; merging
+character-bound cosmetics across characters;
 spectator/replay cosmetics; cosmetics on environment-owned (enemy) units (never);
 randomized / loot-box monetization (never).
 

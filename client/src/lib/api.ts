@@ -10,6 +10,7 @@ export interface ApiResponse<T = unknown> {
   needs_auth?: boolean;
   auth_failed?: boolean;
   error?: string;
+  error_code?: string;
 }
 
 export interface Character {
@@ -833,6 +834,8 @@ export interface FiefdomResponse {
   economy_report?: EconomyReport;
   /** Per-building road-morale points (building_id → points), only when include_buildings. */
   road_morale?: Record<string, number>;
+  /** Points-to-percent conversion from economy.json (0.02 = +2% per point). */
+  morale_production_multiplier?: number;
   /** River cells (grid [x,y] pairs) for this fiefdom. */
   river_cells?: Array<[number, number]>;
   /** Per-building water-powered state (building_id → powered), only when include_buildings. */
@@ -862,6 +865,30 @@ export interface EconomyExport {
   pence?: number;
 }
 
+export interface BuildingInputStatus {
+  resource: string;
+  required: number;
+  supplied: number;
+  satisfaction: number;
+}
+
+export interface BuildingOutputStatus {
+  resource: string;
+  rate: number;
+  amount: number;
+  input_satisfaction: number;
+  inputs: BuildingInputStatus[];
+}
+
+/** Per-building production/input status from the economy tick. */
+export interface BuildingStatus {
+  building_id: number;
+  type: string;
+  level: number;
+  water_powered: boolean;
+  outputs: BuildingOutputStatus[];
+}
+
 /**
  * Per-fiefdom economy ledger returned by getFiefdom after a time update.
  * Produced/consumed/imported map resource names to amounts; exported maps
@@ -872,11 +899,80 @@ export interface EconomyReport {
   elapsed_seconds: number;
   produced: Record<string, number>;
   consumed: Record<string, number>;
+  demand?: Record<string, number>;
   imported: Record<string, number>;
   exported: Record<string, EconomyExport>;
   net_gold: number;
   net_silver?: number;
-  recommendations: string[];
+  retinue?: {
+    funded: number;
+    unfunded: number;
+    unfunded_members?: string[];
+    gold_spent?: number;
+    pence_spent?: number;
+  };
+  building_status?: BuildingStatus[];
+}
+
+// ── Reeve advisor types ───────────────────────────────────────────
+
+export type ReeveSeverity = 'ok' | 'watch' | 'problem' | 'critical';
+
+export type ReeveArg = number | { text_id: string };
+
+export interface ReeveText {
+  text_id: string;
+  args?: Record<string, ReeveArg>;
+}
+
+export type ReeveTarget =
+  | { kind: 'building_card'; building_id: number }
+  | { kind: 'economy_panel' }
+  | { kind: 'production_panel' }
+  | { kind: 'resource'; resource: string }
+  | { kind: 'build_palette'; building_type: string };
+
+export type ReeveAction =
+  | { kind: 'build'; building_type: string; x: number; y: number }
+  | { kind: 'upgrade'; building_id: number }
+  | { kind: 'convert'; building_id: number }
+  | { kind: 'build_road_link'; cells: Array<{ x: number; y: number }> }
+  | { kind: 'set_reserve'; resource: string; value: number }
+  | { kind: 'set_import'; resource: string; enabled: boolean }
+  | { kind: 'set_output_rate'; building_id: number; output: string; rate: number };
+
+export interface ReeveDetail {
+  text: ReeveText;
+  severity: ReeveSeverity;
+  target: ReeveTarget;
+}
+
+export interface ReeveSection {
+  id: string;
+  title: ReeveText;
+  status: ReeveText;
+  severity: ReeveSeverity;
+  details: ReeveDetail[];
+  target: ReeveTarget;
+}
+
+export interface ReeveRecommendation {
+  kind: 'action' | 'hold' | 'none';
+  id: string;
+  category: string;
+  severity: ReeveSeverity;
+  text: ReeveText;
+  why?: ReeveText;
+  action?: ReeveAction;
+  target: ReeveTarget;
+  reason_text_id?: string;
+}
+
+export interface ReeveReport {
+  advisor: { style_tag: string };
+  headline: ReeveText;
+  sections: ReeveSection[];
+  recommendation: ReeveRecommendation;
 }
 
 export interface BuildResponse {
@@ -1005,6 +1101,38 @@ export async function getFiefdomRequest(
     throw new Error(res.error);
   }
   return res.data as FiefdomResponse;
+}
+
+/**
+ * Fetches the Reeve's structured advisor report for a fiefdom. The server
+ * returns only text ids, numbers, and references to other text ids; the client
+ * resolves everything through the translation system.
+ *
+ * @param params - fiefdom_id (direct) or character_id (lookup by owner)
+ * @param auth - Authentication object with username and token
+ * @returns Promise<ReeveReport> - Overview sections + one recommendation
+ *
+ * Usage: Called when the manor's Reeve panel opens or refreshes
+ */
+export async function getReeveReportRequest(
+  params: { fiefdom_id?: number; character_id?: number },
+  auth: { username: string; token: string }
+): Promise<ReeveReport> {
+  const res = await apiPost<ReeveReport>('getReeveReport', {
+    fiefdom_id: params.fiefdom_id || 0,
+    character_id: params.character_id || 0
+  }, { username: auth.username, token: auth.token });
+
+  if (res.error) {
+    throw new Error(res.error);
+  }
+  if (res.needs_auth || res.auth_failed) {
+    throw new Error('Authentication required');
+  }
+  if (!res.data || !(res.data as ReeveReport).advisor) {
+    throw new Error('Malformed Reeve report');
+  }
+  return res.data as ReeveReport;
 }
 
 /**

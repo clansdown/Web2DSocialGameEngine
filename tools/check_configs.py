@@ -1743,10 +1743,43 @@ class ConfigValidator:
                     Severity.ERROR
                 )
             else:
-                if "boost" not in rm or not isinstance(rm["boost"], (int, float)) or rm["boost"] <= 0:
+                boost: Any = rm.get("boost")
+                if isinstance(boost, list):
+                    if not boost:
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.road_morale.boost must be a non-empty array",
+                            Severity.ERROR
+                        )
+                    elif any(
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or value <= 0
+                        for value in boost
+                    ):
+                        self._add_issue(
+                            file, 1, None,
+                            f"Building '{building_id}'.road_morale.boost array values must be positive numbers",
+                            Severity.ERROR
+                        )
+                    else:
+                        declared_max_level: Any = data.get("max_level")
+                        if isinstance(declared_max_level, int) and len(boost) != declared_max_level:
+                            self._add_issue(
+                                file, 1, None,
+                                f"Building '{building_id}'.road_morale.boost array length "
+                                f"({len(boost)}) must equal max_level ({declared_max_level})",
+                                Severity.ERROR
+                            )
+                elif (
+                    isinstance(boost, bool)
+                    or not isinstance(boost, (int, float))
+                    or boost <= 0
+                ):
                     self._add_issue(
                         file, 1, None,
-                        f"Building '{building_id}'.road_morale.boost must be a positive number",
+                        f"Building '{building_id}'.road_morale.boost must be a positive number "
+                        f"or a non-empty array of positive numbers",
                         Severity.ERROR
                     )
                 if "distance" not in rm or not isinstance(rm["distance"], int) or rm["distance"] < 1:
@@ -4841,6 +4874,145 @@ class ConfigValidator:
 
         self.validated_files.append(file)
 
+    def validate_reeve(self, file: Path) -> None:
+        """Validate reeve.json (advisor thresholds, styles, producer chains)."""
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+
+        data: object = self._validate_json(content, file)
+        if data is None:
+            return
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected object with reeve config", Severity.ERROR)
+            return
+
+        hard_limits: object = data.get("hard_limits")
+        hard_road_cap: int = 24
+        if hard_limits is None:
+            self._add_issue(file, 1, None, "'hard_limits' is required", Severity.ERROR)
+        elif not isinstance(hard_limits, dict):
+            self._add_issue(file, 1, None, "'hard_limits' must be an object", Severity.ERROR)
+        elif isinstance(hard_limits, dict):
+            cap: object = hard_limits.get("max_road_link")
+            if cap is not None:
+                if not isinstance(cap, int) or isinstance(cap, bool) or cap < 1:
+                    self._add_issue(file, 1, None, "'hard_limits.max_road_link' must be a positive integer", Severity.ERROR)
+                else:
+                    hard_road_cap = cap
+            scan: object = hard_limits.get("max_site_scan_radius")
+            if scan is not None and (not isinstance(scan, int) or isinstance(scan, bool) or scan < 1):
+                self._add_issue(file, 1, None, "'hard_limits.max_site_scan_radius' must be a positive integer", Severity.ERROR)
+
+        styles: object = data.get("styles")
+        if not isinstance(styles, dict) or not styles:
+            self._add_issue(file, 1, None, "'styles' must be a non-empty object", Severity.ERROR)
+            return
+
+        default_style: object = data.get("default_style")
+        if not isinstance(default_style, str) or not default_style:
+            self._add_issue(file, 1, None, "'default_style' must be a non-empty string", Severity.ERROR)
+        elif default_style not in styles:
+            self._add_issue(file, 1, None, f"'default_style' ({default_style}) is not defined in 'styles'", Severity.ERROR)
+
+        categories: tuple[str, ...] = ("safety", "continuity", "constraint", "growth", "polish")
+        action_kinds: tuple[str, ...] = (
+            "build", "upgrade", "convert", "build_road_link",
+            "set_reserve", "set_import", "set_output_rate",
+        )
+        for tag, style in styles.items():
+            if not isinstance(style, dict):
+                self._add_issue(file, 1, None, f"'styles.{tag}' must be an object", Severity.ERROR)
+                continue
+            style_tag: object = style.get("tag")
+            if style_tag is not None and (not isinstance(style_tag, str) or not style_tag):
+                self._add_issue(file, 1, None, f"'styles.{tag}.tag' must be a non-empty string", Severity.ERROR)
+            for text_field in ("name_text_id", "description_text_id"):
+                value: object = style.get(text_field)
+                if value is not None and not isinstance(value, str):
+                    self._add_issue(file, 1, None, f"'styles.{tag}.{text_field}' must be a string", Severity.ERROR)
+
+            category_weights: object = style.get("category_weights")
+            if not isinstance(category_weights, dict):
+                self._add_issue(file, 1, None, f"'styles.{tag}.category_weights' must be an object", Severity.ERROR)
+            else:
+                for category in categories:
+                    weight: object = category_weights.get(category)
+                    if not isinstance(weight, (int, float)) or isinstance(weight, bool) or weight < 0:
+                        self._add_issue(file, 1, None, f"'styles.{tag}.category_weights.{category}' must be a non-negative number", Severity.ERROR)
+
+            action_weights: object = style.get("action_weights")
+            if not isinstance(action_weights, dict):
+                self._add_issue(file, 1, None, f"'styles.{tag}.action_weights' must be an object", Severity.ERROR)
+            else:
+                for action in action_kinds:
+                    weight: object = action_weights.get(action)
+                    if not isinstance(weight, (int, float)) or isinstance(weight, bool) or weight < 0:
+                        self._add_issue(file, 1, None, f"'styles.{tag}.action_weights.{action}' must be a non-negative number", Severity.ERROR)
+
+            road_first: object = style.get("road_first_weight")
+            if not isinstance(road_first, (int, float)) or isinstance(road_first, bool) or road_first <= 0:
+                self._add_issue(file, 1, None, f"'styles.{tag}.road_first_weight' must be a positive number", Severity.ERROR)
+
+            spacing: object = style.get("corridor_spacing")
+            if not isinstance(spacing, int) or isinstance(spacing, bool) or spacing < 1:
+                self._add_issue(file, 1, None, f"'styles.{tag}.corridor_spacing' must be a positive integer", Severity.ERROR)
+
+            max_link: object = style.get("max_road_link")
+            if not isinstance(max_link, int) or isinstance(max_link, bool) or max_link < 0:
+                self._add_issue(file, 1, None, f"'styles.{tag}.max_road_link' must be a non-negative integer", Severity.ERROR)
+            elif max_link > hard_road_cap:
+                self._add_issue(file, 1, None, f"'styles.{tag}.max_road_link' ({max_link}) exceeds hard_limits.max_road_link ({hard_road_cap})", Severity.ERROR)
+
+        producer_chains: object = data.get("producer_chains")
+        if not isinstance(producer_chains, dict) or not producer_chains:
+            self._add_issue(file, 1, None, "'producer_chains' must be a non-empty object", Severity.ERROR)
+        else:
+            for resource, chain in producer_chains.items():
+                if resource not in VALID_STARTING_RESOURCES:
+                    self._add_issue(file, 1, None, f"'producer_chains.{resource}' is not a valid fiefdom resource", Severity.ERROR)
+                if not isinstance(chain, list) or not chain:
+                    self._add_issue(file, 1, None, f"'producer_chains.{resource}' must be a non-empty array", Severity.ERROR)
+                    continue
+                for building_id in chain:
+                    if not isinstance(building_id, str):
+                        self._add_issue(file, 1, None, f"'producer_chains.{resource}' entries must be building id strings", Severity.ERROR)
+                    elif building_id not in self.validated_building_ids:
+                        self._add_issue(file, 1, None, f"'producer_chains.{resource}' references unknown building '{building_id}'", Severity.ERROR)
+
+        tracked: object = data.get("tracked_resources")
+        if not isinstance(tracked, list) or not tracked:
+            self._add_issue(file, 1, None, "'tracked_resources' must be a non-empty array", Severity.ERROR)
+        else:
+            for resource in tracked:
+                if not isinstance(resource, str) or resource not in VALID_STARTING_RESOURCES:
+                    self._add_issue(file, 1, None, f"'tracked_resources' contains invalid resource {resource!r}", Severity.ERROR)
+
+        breadth: object = data.get("breadth_target")
+        if not isinstance(breadth, int) or isinstance(breadth, bool) or breadth < 1:
+            self._add_issue(file, 1, None, "'breadth_target' must be a positive integer", Severity.ERROR)
+
+        thresholds: object = data.get("thresholds")
+        if not isinstance(thresholds, dict):
+            self._add_issue(file, 1, None, "'thresholds' must be an object", Severity.ERROR)
+        else:
+            numeric_thresholds: tuple[str, ...] = (
+                "stores_watch_days", "stores_critical_days", "input_satisfaction_watch",
+                "land_usage_watch", "morale_watch", "morale_problem",
+                "import_heavy_units", "surplus_export_units",
+            )
+            for field in numeric_thresholds:
+                value: object = thresholds.get(field)
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    self._add_issue(file, 1, None, f"'thresholds.{field}' must be a number", Severity.ERROR)
+            unfunded: object = thresholds.get("retinue_unfunded_watch")
+            if not isinstance(unfunded, int) or isinstance(unfunded, bool) or unfunded < 0:
+                self._add_issue(file, 1, None, "'thresholds.retinue_unfunded_watch' must be a non-negative integer", Severity.ERROR)
+
+        self.validated_files.append(file)
+
     def validate_retinue(self, file: Path) -> None:
         """Validate retinue.json — capacity curve, market, recovery, morale."""
         try:
@@ -6529,6 +6701,15 @@ class ConfigValidator:
             economy_file: Path = game_config_dir / "economy.json"
             if economy_file.exists():
                 self.validate_economy(economy_file)
+
+            # Validate reeve.json (advisor thresholds/styles/producer chains).
+            # Must run after fiefdom_building_types.json so producer chains can
+            # be cross-checked against the real building ids.
+            reeve_file: Path = game_config_dir / "reeve.json"
+            if reeve_file.exists():
+                self.validate_reeve(reeve_file)
+            else:
+                self._add_issue(reeve_file, 1, None, "Config file not found", Severity.ERROR)
 
             # Validate retinue.json (capacity curve, market, recovery, morale)
             retinue_file: Path = game_config_dir / "retinue.json"

@@ -106,6 +106,187 @@ let account = data(await post('staffGetAccount', {
 }));
 if (!account.social_restricted) fail('social restriction did not apply');
 
+function account_character(account_row, character_id) {
+  return (account_row.characters ?? []).find((entry) => entry.id === character_id);
+}
+
+const pass_denied = await post('staffGrantMonthlyPass', {
+  auth: player.auth,
+  character_id: player.character_id,
+  months: 1,
+  reason: 'not staff'
+});
+if (pass_denied.error !== 'not_staff') {
+  fail(`non-staff monthly pass grant should be denied: ${JSON.stringify(pass_denied)}`);
+}
+
+const pass_bad_months = await post('staffGrantMonthlyPass', {
+  auth: staff_account.auth,
+  character_id: player.character_id,
+  months: 0,
+  reason: 'smoke invalid months'
+});
+if (pass_bad_months.error !== 'months_out_of_range') {
+  fail(`0-month grant should be rejected: ${JSON.stringify(pass_bad_months)}`);
+}
+
+const now = Math.floor(Date.now() / 1000);
+const day = 86400;
+const pass_grant_2 = data(await post('staffGrantMonthlyPass', {
+  auth: staff_account.auth,
+  character_id: player.character_id,
+  months: 2,
+  reason: 'smoke grant 2'
+}));
+if (!pass_grant_2.action_id) fail(`grant 2 months: ${JSON.stringify(pass_grant_2)}`);
+
+account = data(await post('staffGetAccount', {
+  auth: staff_account.auth,
+  account_id: player_row.account_id
+}));
+let pass = account_character(account, player.character_id)?.monthly_pass;
+if (!pass?.active || pass.permanent) fail(`2-month pass did not activate: ${JSON.stringify(pass)}`);
+const two_month_expiry = pass.expires_at;
+if (Math.abs(two_month_expiry - (now + 62 * day)) > 10) {
+  fail(`2-month expiry expected ~${now + 62 * day}, got ${two_month_expiry}`);
+}
+
+const pass_grant_1 = data(await post('staffGrantMonthlyPass', {
+  auth: staff_account.auth,
+  character_id: player.character_id,
+  months: 1,
+  reason: 'smoke grant 1'
+}));
+if (!pass_grant_1.action_id) fail(`grant 1 month: ${JSON.stringify(pass_grant_1)}`);
+
+account = data(await post('staffGetAccount', {
+  auth: staff_account.auth,
+  account_id: player_row.account_id
+}));
+pass = account_character(account, player.character_id)?.monthly_pass;
+if (Math.abs(pass.expires_at - (two_month_expiry + 31 * day)) > 10) {
+  fail(`1-month grant did not stack: ${JSON.stringify(pass)}`);
+}
+const three_month_expiry = pass.expires_at;
+
+const pass_permanent = data(await post('staffGrantMonthlyPass', {
+  auth: staff_account.auth,
+  character_id: player.character_id,
+  permanent: true,
+  reason: 'smoke permanent'
+}));
+if (!pass_permanent.action_id) fail(`make permanent: ${JSON.stringify(pass_permanent)}`);
+
+account = data(await post('staffGetAccount', {
+  auth: staff_account.auth,
+  account_id: player_row.account_id
+}));
+pass = account_character(account, player.character_id)?.monthly_pass;
+if (!pass?.active || !pass.permanent) fail(`permanent pass did not apply: ${JSON.stringify(pass)}`);
+
+const pass_revoke = data(await post('staffRevokeMonthlyPass', {
+  auth: staff_account.auth,
+  character_id: player.character_id,
+  reason: 'smoke revoke'
+}));
+if (!pass_revoke.action_id) fail(`revoke pass: ${JSON.stringify(pass_revoke)}`);
+
+account = data(await post('staffGetAccount', {
+  auth: staff_account.auth,
+  account_id: player_row.account_id
+}));
+pass = account_character(account, player.character_id)?.monthly_pass;
+if (pass.active) fail(`revoke did not clear the pass: ${JSON.stringify(pass)}`);
+
+const pass_revoke_inactive = await post('staffRevokeMonthlyPass', {
+  auth: staff_account.auth,
+  character_id: player.character_id,
+  reason: 'smoke inactive revoke'
+});
+if (pass_revoke_inactive.error !== 'pass_not_active') {
+  fail(`inactive revoke should be rejected: ${JSON.stringify(pass_revoke_inactive)}`);
+}
+
+const pass_restore_permanent = data(await post('staffUndo', {
+  auth: staff_account.auth,
+  action_id: pass_revoke.action_id,
+  reason: 'smoke undo revoke'
+}));
+if (!pass_restore_permanent.action_id) fail(`undo revoke: ${JSON.stringify(pass_restore_permanent)}`);
+
+account = data(await post('staffGetAccount', {
+  auth: staff_account.auth,
+  account_id: player_row.account_id
+}));
+pass = account_character(account, player.character_id)?.monthly_pass;
+if (!pass?.permanent) fail(`undo revoke did not restore permanent: ${JSON.stringify(pass)}`);
+
+const pass_restore_three = data(await post('staffUndo', {
+  auth: staff_account.auth,
+  action_id: pass_permanent.action_id,
+  reason: 'smoke undo permanent'
+}));
+if (!pass_restore_three.action_id) fail(`undo permanent: ${JSON.stringify(pass_restore_three)}`);
+
+account = data(await post('staffGetAccount', {
+  auth: staff_account.auth,
+  account_id: player_row.account_id
+}));
+pass = account_character(account, player.character_id)?.monthly_pass;
+if (pass.permanent || Math.abs(pass.expires_at - three_month_expiry) > 10) {
+  fail(`undo permanent did not restore 3-month expiry: ${JSON.stringify(pass)}`);
+}
+
+const pass_restore_two = data(await post('staffUndo', {
+  auth: staff_account.auth,
+  action_id: pass_grant_1.action_id,
+  reason: 'smoke undo extra month'
+}));
+if (!pass_restore_two.action_id) fail(`undo extra month: ${JSON.stringify(pass_restore_two)}`);
+
+account = data(await post('staffGetAccount', {
+  auth: staff_account.auth,
+  account_id: player_row.account_id
+}));
+pass = account_character(account, player.character_id)?.monthly_pass;
+if (Math.abs(pass.expires_at - two_month_expiry) > 10) {
+  fail(`undo extra month did not restore 2-month expiry: ${JSON.stringify(pass)}`);
+}
+
+const pass_restore_none = data(await post('staffUndo', {
+  auth: staff_account.auth,
+  action_id: pass_grant_2.action_id,
+  reason: 'smoke undo original'
+}));
+if (!pass_restore_none.action_id) fail(`undo original grant: ${JSON.stringify(pass_restore_none)}`);
+
+account = data(await post('staffGetAccount', {
+  auth: staff_account.auth,
+  account_id: player_row.account_id
+}));
+pass = account_character(account, player.character_id)?.monthly_pass;
+if (pass.active) fail(`undo original grant left a pass: ${JSON.stringify(pass)}`);
+const pass_events = pass.events ?? [];
+if (pass_events.length !== 8) {
+  fail(`expected 8 append-only monthly-pass events, got ${pass_events.length}: ${JSON.stringify(pass_events)}`);
+}
+if (pass_events[0].event !== 'revoke' || pass_events[0].source !== 'staff_undo') {
+  fail(`newest event should be undo revoke: ${JSON.stringify(pass_events[0])}`);
+}
+if (!pass_events.some((entry) => entry.event === 'grant' && entry.source === 'staff_grant' && entry.months === 2)) {
+  fail('2-month staff grant missing from the log');
+}
+if (!pass_events.some((entry) => entry.event === 'grant' && entry.source === 'staff_grant' && entry.permanent)) {
+  fail('permanent staff grant missing from the log');
+}
+if (!pass_events.some((entry) => entry.event === 'revoke' && entry.source === 'staff_revoke')) {
+  fail('staff revoke missing from the log');
+}
+if (!pass_events.some((entry) => entry.event === 'restore' && entry.source === 'staff_undo')) {
+  fail('undo restore missing from the log');
+}
+console.log(`monthly pass grant/stack/permanent/revoke/undo + ${pass_events.length} log events verified`);
+
 const lock = data(await post('staffSetSupportLock', {
   auth: staff_account.auth,
   account_id: player_row.account_id,

@@ -18,7 +18,9 @@ are authoritative; the UI only hides tools.
 
 - **Accounts** — search by username or character name; view characters,
   adult/social/support state; lock/revert name or portrait; remove a custom
-  portrait; view identity history; ban/unban exact avatar SHA-256 hashes.
+  portrait; view identity history; ban/unban exact avatar SHA-256 hashes; grant
+  or revoke a per-character monthly pass (arbitrary 31-day months or permanent)
+  and inspect its append-only grant/revoke/restore history.
 - **Baronies** — search, edit safe name/tags and optional custom adult text,
   toggle `accepts_minors` (rejected while a minor is a member).
 - **Support** — queue, ticket detail, player-visible replies, internal notes,

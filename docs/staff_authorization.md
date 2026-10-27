@@ -36,6 +36,7 @@ Capabilities:
 
 - `account.view`, `account.set_adult_status`, `account.set_social_restriction`,
   `account.set_support_lock`
+- `character.manage_monthly_pass` (per-character grant, permanent flag, revoke)
 - `identity.view_history`, `identity.set_name_lock`,
   `identity.set_avatar_lock`, `identity.revert_name`, `identity.revert_avatar`,
   `identity.remove_custom_avatar`
@@ -73,6 +74,16 @@ client is cosmetic only.
 - `users.support_locked` blocks creating/replying to support tickets; the player
   can still read tickets and notifications, and staff can send a final message.
 - The two flags are independent.
+
+## Monthly pass
+
+`character.manage_monthly_pass` lets staff grant a per-character monthly pass
+without a purchase. Grants and revokes go through the shared staff action
+journal and are undoable. The pass stores either an expiry (`31 days` per
+granted month) or a permanent flag. Every grant, revoke, and undo restore is
+also appended to `character_monthly_pass_log`; the log is never rewritten.
+This is staff tooling only for now: purchases, player-facing status, and
+monthly-pass content are deferred.
 
 ## CLI
 

@@ -69,6 +69,11 @@ ApiResponse handleGetFiefdom(GameConfigCache& config_cache, const nlohmann::json
                              const ClientInfo& client,
                              const std::optional<std::string>& new_token);
 
+ApiResponse handleGetReeveReport(GameConfigCache& config_cache, const nlohmann::json& body,
+                                 const std::optional<std::string>& username,
+                                 const ClientInfo& client,
+                                 const std::optional<std::string>& new_token);
+
 ApiResponse handleSally(GameConfigCache& config_cache, const nlohmann::json& body,
                         const std::optional<std::string>& username,
                         const ClientInfo& client,
@@ -451,6 +456,7 @@ inline std::unordered_map<std::string, ApiHandler> getEndpointHandlers(GameConfi
     add("Build",                  [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleBuild(c, b, u, cl, t); });
     add("getWorld",               [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetWorld(c, b, u, cl, t); });
     add("getFiefdom",             [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetFiefdom(c, b, u, cl, t); });
+    add("getReeveReport",         [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleGetReeveReport(c, b, u, cl, t); });
     add("sally",                  [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleSally(c, b, u, cl, t); });
     add("campaign",               [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleCampaign(c, b, u, cl, t); });
     add("hunt",                   [&](GameConfigCache& c, Json b, Username u, Client cl, Token t) { return handleHunt(c, b, u, cl, t); });

@@ -734,6 +734,7 @@ ApiResponse handleBuild(GameConfigCache& config_cache, const json& body,
         response.data = result.result;
     } else {
         response.error = result.error_message + " (" + result.error_code + ")";
+        response.error_code = result.error_code;
     }
 
     if (new_token) {
@@ -861,6 +862,10 @@ ApiResponse handleGetFiefdom(GameConfigCache& config_cache, const json& body,
             }
         }
         response.data["road_morale"] = road_morale;
+        // Conversion used by the economy tick: percent = points * multiplier *
+        // 100. Sent so the client can display fractional bonuses (e.g. 2.1%).
+        response.data["morale_production_multiplier"] =
+            config_cache.getEconomyConfig().value("morale_production_multiplier", 0.02);
 
         // Derived household morale (computed, never stored): funded/unfunded
         // retinue + chapel buildings + recent battle results -> capped percent.

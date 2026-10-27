@@ -7,6 +7,7 @@
 #include <set>
 
 #include "Database.hpp"
+#include "MonthlyPass.hpp"
 #include "Visibility.hpp"
 #include "chat/ChatDB.hpp"
 #include "staff/StaffAuth.hpp"
@@ -38,6 +39,34 @@ json read_account_state(int64_t account_id, bool& found) {
                        {"restriction_updated_at", restriction_updated_at}};
           };
     return state;
+}
+
+bool character_exists(int64_t character_id) {
+    auto& db = Database::getInstance().gameDB();
+    bool found = false;
+    db << "SELECT 1 FROM characters WHERE id = ? LIMIT 1;" << character_id
+       >> [&](int) { found = true; };
+    return found;
+}
+
+json read_monthly_pass_state(int64_t character_id) {
+    auto& db = Database::getInstance().gameDB();
+    const monthly_pass::status current =
+        monthly_pass::get_status(db, character_id, now_seconds());
+    return {
+        {"character_id", character_id},
+        {"active", current.active},
+        {"permanent", current.permanent},
+        {"expires_at", current.expires_at},
+    };
+}
+
+monthly_pass::status monthly_pass_status_from_json(const json& state) {
+    monthly_pass::status value;
+    value.active = state.value("active", false);
+    value.permanent = state.value("permanent", false);
+    value.expires_at = state.value("expires_at", static_cast<int64_t>(0));
+    return value;
 }
 
 json read_identity_state(int64_t character_id, bool& found) {
@@ -272,6 +301,10 @@ std::string capability_for_action(const std::string& action_type) {
     if (action_type == "staff.set_adult_status") return "account.set_adult_status";
     if (action_type == "staff.set_social_restriction") return "account.set_social_restriction";
     if (action_type == "staff.set_support_lock") return "account.set_support_lock";
+    if (action_type == "staff.grant_monthly_pass" ||
+        action_type == "staff.revoke_monthly_pass") {
+        return "character.manage_monthly_pass";
+    }
     if (action_type == "staff.set_name_lock" || action_type == "staff.lock_identity") {
         return "identity.set_name_lock";
     }
@@ -453,6 +486,11 @@ staff_action_result StaffActionEngine::execute(const staff_context& context,
         bool found = false;
         entry.before_state = read_account_state(std::stoll(request.target_id), found);
         if (!found) return fail("account_not_found");
+    } else if (request.action_type == "staff.grant_monthly_pass" ||
+               request.action_type == "staff.revoke_monthly_pass") {
+        const int64_t character_id = std::stoll(request.target_id);
+        if (!character_exists(character_id)) return fail("character_not_found");
+        entry.before_state = read_monthly_pass_state(character_id);
     } else if (request.action_type.rfind("staff.set_name_lock", 0) == 0 ||
                request.action_type.rfind("staff.set_avatar_lock", 0) == 0 ||
                request.action_type == "staff.lock_identity" ||
@@ -571,6 +609,46 @@ staff_action_result StaffActionEngine::execute(const staff_context& context,
                 << (locked ? 1 : 0) << now_seconds() << account_id;
         bool found = false;
         after_state = read_account_state(account_id, found);
+        entry.undo.reversible = true;
+    } else if (request.action_type == "staff.grant_monthly_pass") {
+        const int64_t character_id = std::stoll(request.target_id);
+        const bool permanent = request.parameters.value("permanent", false);
+        const int months = request.parameters.value("months", 0);
+        const int64_t now = now_seconds();
+
+        monthly_pass::grant_origin origin;
+        origin.source = "staff_grant";
+        origin.reason = request.reason;
+        origin.staff_account_id = context.account_id;
+        origin.reference_id = action_id;
+
+        if (entry.before_state.value("permanent", false)) {
+            apply_error = "already_permanent";
+        } else if (permanent) {
+            monthly_pass::grant_permanent(game_db, character_id, origin, now);
+        } else if (months < 1 || months > monthly_pass::k_max_months) {
+            apply_error = "invalid_month_count";
+        } else {
+            monthly_pass::grant_months(game_db, character_id, months, origin, now);
+        }
+
+        if (apply_error.empty()) {
+            after_state = read_monthly_pass_state(character_id);
+        }
+        entry.undo.reversible = true;
+    } else if (request.action_type == "staff.revoke_monthly_pass") {
+        const int64_t character_id = std::stoll(request.target_id);
+        if (!entry.before_state.value("active", false)) {
+            apply_error = "pass_not_active";
+        } else {
+            monthly_pass::grant_origin origin;
+            origin.source = "staff_revoke";
+            origin.reason = request.reason;
+            origin.staff_account_id = context.account_id;
+            origin.reference_id = action_id;
+            monthly_pass::revoke(game_db, character_id, origin, now_seconds());
+            after_state = read_monthly_pass_state(character_id);
+        }
         entry.undo.reversible = true;
     } else if (request.action_type == "staff.lock_identity") {
         const int64_t character_id = std::stoll(request.target_id);
@@ -947,6 +1025,22 @@ staff_preflight_result StaffActionEngine::preflight_undo(const std::string& acti
             result.reason = "account_restriction_changed";
             return result;
         }
+    } else if (type == "staff.grant_monthly_pass" ||
+               type == "staff.revoke_monthly_pass") {
+        const int64_t character_id = std::stoll(entry->target_id);
+        if (!character_exists(character_id)) {
+            result.status = staff_preflight_status::target_missing;
+            result.reason = "character_not_found";
+            return result;
+        }
+        const json current = read_monthly_pass_state(character_id);
+        if (current.value("permanent", false) != after.value("permanent", false) ||
+            current.value("expires_at", static_cast<int64_t>(0)) !=
+                after.value("expires_at", static_cast<int64_t>(0))) {
+            result.status = staff_preflight_status::target_changed;
+            result.reason = "monthly_pass_changed";
+            return result;
+        }
     } else if (type.rfind("staff.set_name_lock", 0) == 0 ||
                type.rfind("staff.set_avatar_lock", 0) == 0 || type == "staff.lock_identity" ||
                type == "staff.revert_name" || type == "staff.revert_avatar" ||
@@ -1199,6 +1293,17 @@ staff_action_result StaffActionEngine::undo(const staff_context& context,
                     << (before.value("support_locked", false) ? 1 : 0) << now_seconds()
                     << std::stoll(original->target_id);
             after = before;
+        } else if (type == "staff.grant_monthly_pass" ||
+                   type == "staff.revoke_monthly_pass") {
+            monthly_pass::grant_origin origin;
+            origin.source = "staff_undo";
+            origin.reason = reason;
+            origin.staff_account_id = context.account_id;
+            origin.reference_id = undo_id;
+            monthly_pass::restore(game_db, std::stoll(original->target_id),
+                                  monthly_pass_status_from_json(before), origin,
+                                  now_seconds());
+            after = before;
         } else if (type == "staff.set_name_lock" || type == "staff.set_avatar_lock" ||
                    type == "staff.lock_identity" || type == "staff.revert_name" ||
                    type == "staff.revert_avatar" || type == "staff.remove_custom_avatar") {
@@ -1438,7 +1543,12 @@ staff_action_result StaffActionEngine::undo(const staff_context& context,
        << after.dump() << now_seconds() << now_seconds() << undo_id;
 
     // Reversal notification names the original action and links to support.
-    if (original->target_type == "character") {
+    // Monthly-pass staff tooling is deliberately silent toward the player for
+    // now; its append-only log and the staff journal are the audit surface.
+    if (original->action_type == "staff.grant_monthly_pass" ||
+        original->action_type == "staff.revoke_monthly_pass") {
+        // no player-facing notification
+    } else if (original->target_type == "character") {
         notify_character(std::stoll(original->target_id), "moderation_reversal",
                          "ui_notification_reversal",
                          {{"character_name", character_safe_name(std::stoll(original->target_id))},

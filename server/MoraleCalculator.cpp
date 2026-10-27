@@ -1,5 +1,6 @@
 #include "MoraleCalculator.hpp"
 #include "GameConfigCache.hpp"
+#include "game_logic.hpp"
 #include <algorithm>
 #include <cmath>
 #include <queue>
@@ -80,8 +81,14 @@ std::unordered_map<int, double> computeRoadMoralePoints(
         auto config = getBuildingConfigJson(building_types, source.name);
         if (!config.contains("road_morale") || !config["road_morale"].is_object()) continue;
 
-        double boost = config["road_morale"].value("boost", 0.0);
-        int distance = config["road_morale"].value("distance", 0);
+        // `boost` is either a flat scalar (legacy sources) or a level-indexed
+        // array (index level-1). getDoubleForLevel handles both.
+        const auto& road_morale = config["road_morale"];
+        const auto boost_it = road_morale.find("boost");
+        double boost = boost_it == road_morale.end()
+                           ? 0.0
+                           : GameLogic::getDoubleForLevel(*boost_it, source.level - 1, 0.0);
+        int distance = road_morale.value("distance", 0);
         if (boost <= 0.0 || distance <= 0) continue;
 
         int sw = config.value("width", 1);

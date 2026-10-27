@@ -93,17 +93,42 @@ Get fiefdom information including resources, buildings, and officials.
       "elapsed_seconds": 3600,
       "produced": { "steel": 40.0, "charcoal": 90.0 },
       "consumed": { "iron": 20.0, "charcoal": 20.0, "grain": 20.0 },
+      "demand": { "iron": 20.0, "charcoal": 20.0, "grain": 20.0 },
       "imported": { "iron": 20.0 },
       "exported": {
         "grain": { "amount": 150.0, "pence": 900 }
       },
       "net_gold": 12.5,
       "net_silver": 900,
-      "recommendations": [
-        "You imported 20 iron this period. A bloomery would produce iron locally.",
-        "A blacksmith only ran at 80% capacity — check its input supply."
+      "building_status": [
+        {
+          "building_id": 3,
+          "type": "blacksmith",
+          "level": 2,
+          "water_powered": true,
+          "outputs": [
+            {
+              "resource": "ironwork",
+              "rate": 1.0,
+              "amount": 100.0,
+              "input_satisfaction": 0.8,
+              "inputs": [
+                {
+                  "resource": "charcoal",
+                  "required": 100.0,
+                  "supplied": 80.0,
+                  "satisfaction": 0.8
+                }
+              ]
+            }
+          ]
+        }
       ]
     },
+    "road_morale": {
+      "7": 1.05
+    },
+    "morale_production_multiplier": 0.02,
     "buildings": [
       {
         "id": 1,
@@ -195,7 +220,7 @@ Get fiefdom information including resources, buildings, and officials.
 | arable_land | object | Arable-land totals: `{ total, used, available }` in acres. Total scales with manor_level via `economy.json` `arable_land_by_level` (400 at level 1 → 1000 at level 10); used is the sum of each completed building's `arable_acres`. A building may only be placed when `available ≥` its acres. |
 | forest_land | object | Forest-land totals: `{ total, used, available }` in acres. Total scales with manor_level via `economy.json` `forest_land_by_level` (200 at level 1 → 600 at level 10); used is the sum of the wood producers' `forest_acres` (woodcutter 80 / coppicer 60 / timber_hauler 70). A wood producer may only be placed when `available ≥` its acres. |
 | reserves | object | Effective per-resource reserves (overrides merged with defaults) |
-| economy_report | object | Per-update economy ledger (produced/consumed/imported/exported, net_gold, recommendations) |
+| economy_report | object | Per-update economy ledger (produced/consumed/imported/exported, net_gold, building_status) |
 | buildings | array | Building instances (when include_buildings=true) |
 | officials | array | Official instances (when include_officials=true) |
 | heroes | array | Hero instances (when include_heroes=true) |
@@ -203,6 +228,8 @@ Get fiefdom information including resources, buildings, and officials.
 | river_cells | array | River grid cells as [x, y] pairs (seeded lazily from manor_river.json templates; see server/tables/fiefdom_river.md) |
 | water_power | object | Map of water-powered building id → powered bool (when include_buildings=true) |
 | water_power_detail | object | `powered_by` (building id → pond id) and `pond_load` (pond id → powered-building count) |
+| road_morale | object | Map of building id → road-morale points (only buildings with points > 0, when include_buildings=true). Sources radiate along orthogonally connected road tiles; a building touching an in-range road tile receives the points. |
+| morale_production_multiplier | number | Points-to-percent conversion from `economy.json` (`0.02` = +2% per point; when include_buildings=true). The Production panel uses it to display fractional bonuses such as 2.1%. |
 
 ### Building Object
 
@@ -252,12 +279,13 @@ Get fiefdom information including resources, buildings, and officials.
 |-------|------|-------------|
 | elapsed_seconds | integer | Seconds covered by this update |
 | produced | object | Resource → gross amount produced this period (before input gating) |
-| consumed | object | Resource → amount consumed (building inputs + daily costs + population costs + combatant upkeep) |
+| consumed | object | Resource → amount actually consumed (building inputs + daily costs + population costs + combatant upkeep) |
+| demand | object | Resource → amount requested this period (before stock/import gating); unmet demand is included, so the Reeve can see shortages |
 | imported | object | Resource → amount bought via auto-import this period |
 | exported | object | Resource → `{ amount, gold }` (gold market) or `{ amount, pence }` (penny market, e.g. grain) sold above the reserve this period |
 | net_gold | number | Gold produced + export gold − import spend − gold consumed (purse net) |
 | net_silver | number | Pence exports − pence imports (penny-market net; absent when no penny trade) |
-| recommendations | array | Server-side economic advice strings |
+| building_status | array | Per-building output/input status for the building card and the Reeve (see below) |
 
 Buildings with an `inputs` config consume those resources per day; output is scaled by the
 min input-satisfaction ratio across all inputs (1.0 when no inputs). Shortfalls are auto-imported
@@ -267,6 +295,25 @@ consume `upkeep` resources per day. After production/consumption/imports, any re
 reserve is auto-sold at its export price — explicit `export_prices[resource]`, else
 `export_sell_multipliers[resource]` × import price, else `export_sell_multiplier` (0.5) × import
 price (grain sells for 6 pence each, into `silver_pence`); amounts at or below reserve are kept.
+
+### building_status Array
+
+Each completed building (`level > 0`) appears once:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| building_id | integer | `fiefdom_buildings` row id |
+| type | string | Building type id |
+| level | integer | Current level |
+| water_powered | boolean | Water-powered state (always true for non-water buildings) |
+| outputs | array | Active/configured outputs (empty for non-producers) |
+
+Each output has `resource`, `rate` (0..1), `amount` (per day),
+`input_satisfaction` (0..1), and `inputs` (`resource`, `required`, `supplied`,
+`satisfaction`, all per day). Buildings with no active plan still include their
+configured outputs at `rate: 0` (or unpowered water buildings at
+`input_satisfaction: 0`) so the building card can explain why nothing is
+running.
 
 ### reserves Object
 
@@ -300,4 +347,4 @@ Stock above a resource's reserve is auto-sold; set via `/api/setFiefdomReserve`.
 - **Optional includes**: Buildings, officials, heroes, and combatants can be optionally included via request parameters
 - **Performance**: Database queries skipped when optional data is not requested
 - **Production updates**: Automatically applied before returning data. Pending resource production and construction completions are calculated based on `last_update_time` and applied to ensure client receives the latest state. Uses 1-second minimum guard to prevent excessive CPU/disk I/O from rapid requests.
-- **Economy report**: Each update returns an `economy_report` ledger with production, consumption, imports, exports, net gold, and advisor recommendations.
+- **Economy report**: Each update returns an `economy_report` ledger with production, consumption, imports, exports, net gold, and per-building input/output status. The Reeve advice surface is `/api/getReeveReport`.

@@ -37,6 +37,21 @@ Request `{ enabled }`; requires `chat.moderate_any`. Response
   Setting `adult=false` runs the demotion scrub and is not undoable.
 - `/api/staffSetSocialRestriction` — `{ account_id, restricted, reason }`.
 - `/api/staffSetSupportLock` — `{ account_id, locked, reason }`.
+- `/api/staffGrantMonthlyPass` — `{ character_id, months?, permanent?, reason }`.
+  Requires `character.manage_monthly_pass`. Grant `months` (1–1200, each 31
+  days, stacked on the remaining expiry) or `permanent: true`; the two are
+  mutually exclusive. Journaled as `staff.grant_monthly_pass`.
+- `/api/staffRevokeMonthlyPass` — `{ character_id, reason }`. Requires
+  `character.manage_monthly_pass`. Removes an active pass; journaled as
+  `staff.revoke_monthly_pass`.
+
+`staffGetAccount` includes a per-character `monthly_pass` object
+(`active`, `permanent`, `expires_at`) plus the latest 20 append-only events
+(`event`, `source`, `months`, `permanent`, `expires_at`, `reason`,
+`staff_account_id`, `product_id`, `reference_id`, `created_at`).
+
+Pass errors: `character_not_found`, `months_out_of_range`,
+`months_and_permanent_exclusive`, `already_permanent`, `pass_not_active`.
 
 ## Identity / avatars
 

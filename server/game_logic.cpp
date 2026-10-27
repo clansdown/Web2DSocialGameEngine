@@ -84,7 +84,7 @@ const std::string& ActionRegistry::getDescription(const std::string& action_type
     return it->second.description;
 }
 
-TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_update_time, const std::string& fiefdom_filter_id) {
+TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_update_time, const std::string& fiefdom_filter_id, bool dry_run) {
     TimeUpdateResult result;
     result.new_timestamp = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     result.time_hours_elapsed = static_cast<double>(result.new_timestamp - last_update_time) / 3600.0;
@@ -173,6 +173,7 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
             auto modifier_map = computeBuildingModifiers(fiefdom.buildings, building_types, water_powered_ok);
 
             for (auto& building : fiefdom.buildings) {
+                if (dry_run) continue;
                 if (building.construction_start_ts > 0) {
                     auto config_opt = Validation::getBuildingConfig(config_cache, building.name);
                     if (config_opt) {
@@ -269,6 +270,7 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
             }
 
             for (auto& wall : fiefdom.walls) {
+                if (dry_run) continue;
                 if (wall.construction_start_ts > 0) {
                     auto config_opt = Validation::getWallConfigByGeneration(config_cache, wall.generation);
                     if (config_opt) {
@@ -302,6 +304,7 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
             {
                 const double days = result.time_hours_elapsed / 24.0;
                 for (const auto& building : fiefdom.buildings) {
+                    if (dry_run) continue;
                     if (building.level < 1) continue;
 
                     double tech_xp = 0;
@@ -624,6 +627,7 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                 // Ledger
                 json ledger_produced = json::object();
                 json ledger_consumed = json::object();
+                json ledger_demand = json::object();
                 json ledger_imported = json::object();
                 json ledger_exported = json::object();
                 double import_spend = 0;
@@ -639,7 +643,9 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                 // Records consumed/imported amounts and morale damage for unmet
                 // need. Returns the amount actually supplied (stock + imports).
                 auto supply_need = [&](const std::string& res, double need) -> double {
-                    if (res == "gold" || need <= 0.001) return 0.0;
+                    if (need <= 0.001) return 0.0;
+                    ledger_demand[res] = ledger_demand.value(res, 0.0) + need;
+                    if (res == "gold") return 0.0;
                     double* cur = get_cur(res);
                     if (!cur) {
                         if (need > 0.001) morale_damage += need * unmet_penalty;
@@ -1170,6 +1176,7 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                 report["elapsed_seconds"] = result.new_timestamp - last_update_time;
                 report["produced"] = ledger_produced;
                 report["consumed"] = ledger_consumed;
+                report["demand"] = ledger_demand;
                 report["imported"] = ledger_imported;
                 report["exported"] = ledger_exported;
                 double gold_produced = ledger_produced.value("gold", 0.0);
@@ -1180,9 +1187,105 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                 report["net_gold"] = gold_produced + export_gold - import_spend - gold_consumed - retinue_gold_spent;
                 report["net_silver"] = export_gain_pence - import_spend_pence - retinue_pence_spent;
                 report["retinue"] = retinue_report;
-                report["recommendations"] = build_economy_recommendations(
-                    config_cache, ledger_produced, ledger_consumed, ledger_imported,
-                    ledger_exported, plans, building_types);
+
+                // Per-building status for the Reeve report and the building
+                // card. Amounts are converted from this tick to per-day.
+                json building_status = json::array();
+                for (const auto& building : fiefdom.buildings) {
+                    if (building.level <= 0) continue;
+                    json entry = json::object();
+                    entry["building_id"] = building.id;
+                    entry["type"] = building.name;
+                    entry["level"] = building.level;
+
+                    bool water_powered_type = false;
+                    json bld_cfg;
+                    for (const auto& type_obj : building_types) {
+                        if (type_obj.contains(building.name)) {
+                            bld_cfg = type_obj[building.name];
+                            water_powered_type = bld_cfg.value("water_powered", false);
+                            break;
+                        }
+                    }
+                    entry["water_powered"] = water_powered_type
+                        ? (water_powered_ok.count(building.id) > 0)
+                        : true;
+
+                    json outputs = json::array();
+                    auto plan_it = plans.find(building.id);
+                    if (plan_it != plans.end()) {
+                        for (const auto& op : plan_it->second.outputs) {
+                            json out = json::object();
+                            out["resource"] = op.resource;
+                            out["rate"] = op.rate;
+                            out["amount"] = days_elapsed > 0.0 ? op.amount / days_elapsed : 0.0;
+                            double satisfaction = 1.0;
+                            json inputs = json::array();
+                            for (const auto& [res, req] : op.inputs) {
+                                double supplied = op.supplied.count(res)
+                                    ? op.supplied.at(res)
+                                    : 0.0;
+                                double ratio = req > 0.0
+                                    ? std::min(1.0, supplied / req)
+                                    : 1.0;
+                                satisfaction = std::min(satisfaction, ratio);
+                                json input = json::object();
+                                input["resource"] = res;
+                                input["required"] = days_elapsed > 0.0 ? req / days_elapsed : 0.0;
+                                input["supplied"] = days_elapsed > 0.0 ? supplied / days_elapsed : 0.0;
+                                input["satisfaction"] = ratio;
+                                inputs.push_back(std::move(input));
+                            }
+                            out["input_satisfaction"] = satisfaction;
+                            out["inputs"] = std::move(inputs);
+                            outputs.push_back(std::move(out));
+                        }
+                    } else if (bld_cfg.is_object() && bld_cfg.contains("outputs") &&
+                               bld_cfg["outputs"].is_array()) {
+                        // Include configured outputs even when switched off or
+                        // unpowered, so the building card can explain why
+                        // nothing is running.
+                        for (const auto& out_cfg : bld_cfg["outputs"]) {
+                            if (!out_cfg.is_object()) continue;
+                            std::string res = out_cfg.value("resource", "");
+                            if (res.empty()) continue;
+                            int min_level = out_cfg.value("min_level", 1);
+                            if (building.level < min_level) continue;
+                            double rate = 1.0;
+                            if (building.output_rates.is_object() &&
+                                building.output_rates.contains(res) &&
+                                building.output_rates[res].is_number()) {
+                                rate = building.output_rates[res].get<double>();
+                            }
+                            double amount = 0.0;
+                            const bool powered = entry["water_powered"].get<bool>();
+                            if (out_cfg.contains("amount") && rate > 0.0 && powered) {
+                                const auto& amount_spec = out_cfg["amount"];
+                                if (amount_spec.is_number()) {
+                                    amount = amount_spec.get<double>() * rate;
+                                } else if (amount_spec.is_array() && !amount_spec.empty()) {
+                                    int idx = std::max(0, building.level - 1);
+                                    int max_idx = static_cast<int>(amount_spec.size()) - 1;
+                                    if (idx > max_idx) idx = max_idx;
+                                    if (amount_spec[idx].is_number()) {
+                                        amount = amount_spec[idx].get<double>() * rate;
+                                    }
+                                }
+                            }
+                            json out = json::object();
+                            out["resource"] = res;
+                            out["rate"] = rate;
+                            out["amount"] = amount;
+                            out["input_satisfaction"] = powered ? 1.0 : 0.0;
+                            out["inputs"] = json::array();
+                            outputs.push_back(std::move(out));
+                        }
+                    }
+                    entry["outputs"] = std::move(outputs);
+                    building_status.push_back(std::move(entry));
+                }
+                report["building_status"] = std::move(building_status);
+
                 result.economy_reports[fiefdom.id] = report;
             }
 
@@ -1192,7 +1295,14 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
             result.fiefdoms_updated++;
         }
         
-        db << "COMMIT;";
+        if (dry_run) {
+            // Reeve projection: run the full economy engine inside a
+            // transaction, return its ledger, then discard every write so the
+            // advice snapshot never advances the real fiefdom.
+            db << "ROLLBACK;";
+        } else {
+            db << "COMMIT;";
+        }
         result.production_updates_applied = result.productions.size();
         
     } catch (const std::exception& e) {
@@ -1201,101 +1311,6 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
     }
     
     return result;
-}
-
-// ---------------------------------------------------------------------------
-// Advisor: generate economic recommendations from the per-fiefdom ledger
-// ---------------------------------------------------------------------------
-
-/// Builds a list of recommendation strings from the economy ledger and building
-/// configs. Called once per fiefdom per economy tick.
-nlohmann::json build_economy_recommendations(
-    GameConfigCache& config_cache,
-    const nlohmann::json& produced,
-    const nlohmann::json& consumed,
-    const nlohmann::json& imported,
-    const nlohmann::json& exported,
-    const std::map<int, BuildingPlan>& plans,
-    const nlohmann::json& building_types)
-{
-    nlohmann::json recs = nlohmann::json::array();
-    auto& db = Database::getInstance().gameDB();
-
-    (void)produced;
-    (void)consumed;
-
-    // 1. Heavy imports: suggest a producer building when one exists
-    for (auto it = imported.begin(); it != imported.end(); ++it) {
-        const std::string& res = it.key();
-        double amount = it.value().get<double>();
-        if (amount < 1.0) continue;
-
-        // Find a building type that produces this resource
-        std::string producer_name;
-        std::string producer_id;
-        for (const auto& type_obj : building_types) {
-            for (auto b_it = type_obj.begin(); b_it != type_obj.end(); ++b_it) {
-                const std::string& b_id = b_it.key();
-                const json& cfg = b_it.value();
-                if (cfg.is_object() && cfg.contains(res) && cfg[res].is_object() && cfg[res].contains("amount")) {
-                    producer_id = b_id;
-                    producer_name = cfg.value("display_name", b_id);
-                    break;
-                }
-            }
-            if (!producer_name.empty()) break;
-        }
-
-        if (!producer_name.empty()) {
-            recs.push_back("You imported " + std::to_string(static_cast<int>(std::ceil(amount))) + " " + res +
-                           " this period. A " + producer_name + " would produce " + res + " locally.");
-        } else {
-            recs.push_back("You imported " + std::to_string(static_cast<int>(std::ceil(amount))) + " " + res +
-                           " this period.");
-        }
-    }
-
-    // 2. Reduced production due to unmet inputs
-    for (const auto& [bld_id, plan] : plans) {
-        double worst_ratio = 1.0;
-        for (const auto& op : plan.outputs) {
-            if (op.inputs.empty()) continue;
-            double ratio = 1.0;
-            for (const auto& [res, req] : op.inputs) {
-                double supplied = op.supplied.count(res) ? op.supplied.at(res) : 0.0;
-                double r = (req > 0) ? std::min(1.0, supplied / req) : 1.0;
-                ratio = std::min(ratio, r);
-            }
-            worst_ratio = std::min(worst_ratio, ratio);
-        }
-        if (worst_ratio < 0.999) {
-            int pct = static_cast<int>(std::round(worst_ratio * 100.0));
-            std::string name;
-            db << "SELECT name FROM fiefdom_buildings WHERE id = ?;" << bld_id
-               >> [&](std::string n) { name = n; };
-            recs.push_back("A " + name + " only ran at " + std::to_string(pct) +
-                           "% capacity — check its input supply.");
-        }
-    }
-
-    // 3. Exported surplus (any resource sold above reserve)
-    for (auto it = exported.begin(); it != exported.end(); ++it) {
-        const std::string& res = it.key();
-        if (!it.value().is_object()) continue;
-        double amount = it.value().value("amount", 0.0);
-        if (amount < 1.0) continue;
-        if (it.value().contains("pence")) {
-            int64_t pence = it.value().value("pence", 0);
-            recs.push_back("Your manor exported " + std::to_string(static_cast<int>(std::ceil(amount))) +
-                           " " + res + " for " + std::to_string(pence) + " pence.");
-        } else {
-            double gold = it.value().value("gold", 0.0);
-            recs.push_back("Your manor exported " + std::to_string(static_cast<int>(std::ceil(amount))) +
-                           " " + res + " for " + std::to_string(static_cast<int>(std::ceil(gold))) + " gold.");
-        }
-    }
-
-    return recs;
 }
 
 // ---------------------------------------------------------------------------

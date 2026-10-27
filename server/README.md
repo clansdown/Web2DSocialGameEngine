@@ -386,8 +386,17 @@ config linter makes it impossible for a cosmetic to carry a gameplay key.
 
 Storage: `platinum_ledger`, `platinum_transactions`, `character_cosmetics`,
 `character_loadout` (see `server/tables/`). Catalog: `game/config/cosmetics.json`.
-Adventure *access* purchase and the monthly-pass fulfilment are **deferred**
-(`rts_design.md` §18).
+Adventure *access* purchase and monthly-pass *purchase fulfilment* are
+**deferred** (`rts_design.md` §18).
+
+**Staff monthly-pass tooling (current):** staff with
+`character.manage_monthly_pass` can grant a per-character pass for an arbitrary
+number of 31-day months or make it permanent, and can revoke it
+(`staffGrantMonthlyPass` / `staffRevokeMonthlyPass`). Current state is
+`character_monthly_pass`; every grant, revoke, and undo restore appends to the
+immutable `character_monthly_pass_log` with its source and reason. This is
+staff-only for now — players do not yet see the status, and no pass content is
+gated on it.
 
 ## Progression & Tenure
 
@@ -503,10 +512,28 @@ production/consumption for the elapsed time whenever fiefdom state is read.
 - **Economy gating**: production scales by input satisfaction and per-output
   rates (0..1 stored in `output_rates`); road-morale points multiply a
   building's outputs by `1 + points × economy.json.morale_production_multiplier`.
-  Production/input `amount`s are level-indexed arrays (+5%/level, +20%/stage)
-  and accept numbers, money objects `{gold, shillings, pence}`, or arrays of
-  either (money objects normalize to gold); `daily_cost` and the 18-grain
-  household outputs stay flat.
+  A source's `road_morale.boost` may be a flat scalar or a level-indexed array
+  (index `level - 1`), so the `well` (2.0% at L1 → 2.4% at L5) scales with
+  upgrades while legacy sources stay flat. Production/input `amount`s are
+  level-indexed arrays (+5%/level, +20%/stage) and accept numbers, money
+  objects `{gold, shillings, pence}`, or arrays of either (money objects
+  normalize to gold); `daily_cost` and the 18-grain household outputs stay
+  flat.
+
+- **Reeve advisor**: `/api/getReeveReport` returns a structured overview
+  (text ids only) plus exactly one recommendation or an informational hold.
+  It is deterministic and stateless: the handler runs the lazy economy tick to
+  bring the fiefdom up to date, then projects one full day through the economy
+  engine in a rolled-back transaction, and builds the report from the resulting
+  snapshot. The recommendation is style-weighted
+  (`game/config/reeve.json`, one shipped `steady` style), constrained by a
+  hard safety/continuity band, and checked against the real action validators
+  before it is emitted. The economy report now carries `building_status`
+  (per-building output/input satisfaction) for both the Reeve and the building
+  card. Placement prefers road-connected sites, reserves periodic road
+  corridors, and treats a dangling road end as the anchor for the next
+  building. Full design: `server/docs/reeve.md`; endpoint:
+  `api/getReeveReport.md`.
 
 ## Chat
 

@@ -21,6 +21,7 @@
     staffGetIdentityHistoryRequest,
     staffGetJournalEntryRequest,
     staffGetSupportTicketRequest,
+    staffGrantMonthlyPassRequest,
     staffListAvatarHashBansRequest,
     staffListJournalRequest,
     staffListStaffRequest,
@@ -29,6 +30,7 @@
     staffPreflightUndoRequest,
     staffRemoveCustomAvatarRequest,
     staffReplySupportTicketRequest,
+    staffRevokeMonthlyPassRequest,
     staffSearchAccountsRequest,
     staffSearchBaroniesRequest,
     staffSearchChatsRequest,
@@ -77,7 +79,16 @@
     'ui_staff_create_ticket', 'ui_staff_ticket_subject', 'ui_staff_ticket_body',
     'ui_staff_cancel', 'ui_staff_safe_name_id', 'ui_staff_safe_tag_ids',
     'ui_staff_accepts_minors', 'ui_staff_identity_history', 'ui_staff_moderation_mode',
-    'ui_staff_invitations'
+    'ui_staff_invitations', 'ui_staff_pass', 'ui_staff_pass_active',
+    'ui_staff_pass_permanent', 'ui_staff_pass_expired', 'ui_staff_pass_inactive',
+    'ui_staff_pass_until', 'ui_staff_pass_month', 'ui_staff_pass_months', 'ui_staff_pass_add_months',
+    'ui_staff_pass_make_permanent', 'ui_staff_pass_remove',
+    'ui_staff_pass_history', 'ui_staff_pass_event_grant',
+    'ui_staff_pass_event_revoke', 'ui_staff_pass_event_restore',
+    'ui_staff_pass_event_unknown', 'ui_staff_pass_source_staff_grant',
+    'ui_staff_pass_source_staff_revoke', 'ui_staff_pass_source_staff_undo',
+    'ui_staff_pass_source_purchase', 'ui_staff_pass_source_promo',
+    'ui_staff_pass_source_unknown'
   ];
 
   let texts = $state<Record<string, string>>({});
@@ -94,6 +105,7 @@
   let hash_bans = $state<{ sha256: string; reason: string; created_at: number; revoked_at: number }[]>([]);
   let hash_value = $state('');
   let reason = $state('');
+  let pass_months = $state<Record<number, number>>({});
 
   let baronies = $state<staff_barony_dto[]>([]);
   let selected_barony = $state<staff_barony_dto | null>(null);
@@ -217,6 +229,53 @@
       staffSetSupportLockRequest(selected_account!.account_id, locked, reason)
     );
     await open_account(selected_account.account_id);
+  }
+
+  function pass_month_value(character_id: number): number {
+    return pass_months[character_id] ?? 1;
+  }
+
+  function set_pass_month_value(character_id: number, value: number): void {
+    const bounded = Math.max(1, Math.min(1200, Math.trunc(value) || 1));
+    pass_months = { ...pass_months, [character_id]: bounded };
+  }
+
+  function pass_event_label(event: string): string {
+    if (event === 'grant') return t('ui_staff_pass_event_grant');
+    if (event === 'revoke') return t('ui_staff_pass_event_revoke');
+    if (event === 'restore') return t('ui_staff_pass_event_restore');
+    return t('ui_staff_pass_event_unknown');
+  }
+
+  function pass_source_label(source: string): string {
+    if (source === 'staff_grant') return t('ui_staff_pass_source_staff_grant');
+    if (source === 'staff_revoke') return t('ui_staff_pass_source_staff_revoke');
+    if (source === 'staff_undo') return t('ui_staff_pass_source_staff_undo');
+    if (source === 'purchase') return t('ui_staff_pass_source_purchase');
+    if (source === 'promo') return t('ui_staff_pass_source_promo');
+    return t('ui_staff_pass_source_unknown');
+  }
+
+  async function grant_pass_months(character_id: number): Promise<void> {
+    await run(async () =>
+      staffGrantMonthlyPassRequest(character_id, {
+        months: pass_month_value(character_id),
+        reason
+      })
+    );
+    if (selected_account) await open_account(selected_account.account_id);
+  }
+
+  async function make_pass_permanent(character_id: number): Promise<void> {
+    await run(async () =>
+      staffGrantMonthlyPassRequest(character_id, { permanent: true, reason })
+    );
+    if (selected_account) await open_account(selected_account.account_id);
+  }
+
+  async function revoke_pass(character_id: number): Promise<void> {
+    await run(async () => staffRevokeMonthlyPassRequest(character_id, reason));
+    if (selected_account) await open_account(selected_account.account_id);
   }
 
   async function lock_identity(
@@ -527,6 +586,60 @@
                   <button class="btn btn-sm btn-outline-secondary" onclick={() => lock_identity(character.id, { revert_avatar: true })}>{t('ui_staff_revert_avatar')}</button>
                   {#if character.has_custom_avatar}
                     <button class="btn btn-sm btn-outline-danger" onclick={() => remove_custom_avatar(character.id)}>{t('ui_staff_remove_custom_avatar')}</button>
+                  {/if}
+                </div>
+                <div class="border-top mt-2 pt-2">
+                  <div class="d-flex flex-wrap align-items-center gap-2">
+                    <strong class="small">{t('ui_staff_pass')}:</strong>
+                    {#if character.monthly_pass?.permanent}
+                      <span class="badge text-bg-success">{t('ui_staff_pass_permanent')}</span>
+                    {:else if character.monthly_pass?.active}
+                      <span class="badge text-bg-info">{t('ui_staff_pass_active')}</span>
+                      <span class="small text-secondary">{t('ui_staff_pass_until')} {new Date((character.monthly_pass?.expires_at ?? 0) * 1000).toLocaleDateString()}</span>
+                    {:else if (character.monthly_pass?.expires_at ?? 0) > 0}
+                      <span class="badge text-bg-secondary">{t('ui_staff_pass_expired')}</span>
+                      <span class="small text-secondary">{t('ui_staff_pass_until')} {new Date((character.monthly_pass?.expires_at ?? 0) * 1000).toLocaleDateString()}</span>
+                    {:else}
+                      <span class="badge text-bg-secondary">{t('ui_staff_pass_inactive')}</span>
+                    {/if}
+                  </div>
+                  <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
+                    <input
+                      class="form-control form-control-sm"
+                      style="max-width: 7rem;"
+                      type="number"
+                      min="1"
+                      max="1200"
+                      value={pass_month_value(character.id)}
+                      oninput={(e) => set_pass_month_value(character.id, Number(e.currentTarget.value))}
+                      disabled={character.monthly_pass?.permanent}
+                    />
+                    <button class="btn btn-sm btn-outline-primary" onclick={() => grant_pass_months(character.id)} disabled={character.monthly_pass?.permanent}>{t('ui_staff_pass_add_months')}</button>
+                    <button class="btn btn-sm btn-outline-success" onclick={() => make_pass_permanent(character.id)} disabled={character.monthly_pass?.permanent}>{t('ui_staff_pass_make_permanent')}</button>
+                    <button class="btn btn-sm btn-outline-danger" onclick={() => revoke_pass(character.id)} disabled={!character.monthly_pass?.active}>{t('ui_staff_pass_remove')}</button>
+                  </div>
+                  {#if (character.monthly_pass?.events ?? []).length > 0}
+                    <div class="small mt-2">
+                      <div class="text-secondary">{t('ui_staff_pass_history')}</div>
+                      <ul class="mb-0">
+                        {#each character.monthly_pass?.events ?? [] as event (event.id)}
+                          <li>
+                            {new Date(event.created_at * 1000).toLocaleString()} · {pass_event_label(event.event)} · {pass_source_label(event.source)}
+                            {#if event.permanent}
+                              · {t('ui_staff_pass_permanent')}
+                            {:else if event.months > 0}
+                              · {event.months} {event.months === 1 ? t('ui_staff_pass_month') : t('ui_staff_pass_months')}
+                            {/if}
+                            {#if event.expires_at > 0}
+                              · {t('ui_staff_pass_until')} {new Date(event.expires_at * 1000).toLocaleDateString()}
+                            {/if}
+                            {#if event.reason}
+                              · {event.reason}
+                            {/if}
+                          </li>
+                        {/each}
+                      </ul>
+                    </div>
                   {/if}
                 </div>
                 {#if (identity_history[character.id] ?? []).length > 0}

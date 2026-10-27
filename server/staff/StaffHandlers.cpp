@@ -7,6 +7,7 @@
 
 #include "Database.hpp"
 #include "GameConfigCache.hpp"
+#include "MonthlyPass.hpp"
 #include "Visibility.hpp"
 #include "registration/RegistrationSettings.hpp"
 #include "staff/StaffActionEngine.hpp"
@@ -41,6 +42,14 @@ int64_t resolve_account_id(const json& body) {
         return id.value_or(0);
     }
     return 0;
+}
+
+bool character_exists(int64_t character_id) {
+    auto& db = Database::getInstance().gameDB();
+    bool found = false;
+    db << "SELECT 1 FROM characters WHERE id = ? LIMIT 1;" << character_id
+       >> [&](int) { found = true; };
+    return found;
 }
 
 json ticket_to_json(const staff::support_ticket& ticket, bool include_account) {
@@ -152,7 +161,8 @@ json journal_to_json(const staff::staff_action_journal_entry& entry) {
     };
 }
 
-json character_row(sqlite::database& db, int64_t character_id, bool include_identity) {
+json character_row(sqlite::database& db, int64_t character_id, bool include_identity,
+                   bool include_pass_log) {
     json out = json::object();
     db << "SELECT c.id, c.display_name, c.safe_display_name, c.level, c.user_id, "
           "COALESCE(c.sex, ''), COALESCE(c.avatar_safe_id, ''), "
@@ -179,10 +189,23 @@ json character_row(sqlite::database& db, int64_t character_id, bool include_iden
                   out["avatar_storage"] = storage;
               }
           };
+
+    const monthly_pass::status pass =
+        monthly_pass::get_status(db, character_id, staff::now_seconds());
+    json pass_json = pass.to_json();
+    if (include_pass_log) {
+        json events = json::array();
+        for (const auto& entry : monthly_pass::list_log(db, character_id, 20)) {
+            events.push_back(entry.to_json());
+        }
+        pass_json["events"] = std::move(events);
+    }
+    out["monthly_pass"] = std::move(pass_json);
+
     return out;
 }
 
-json account_row(int64_t account_id, bool include_characters) {
+json account_row(int64_t account_id, bool include_characters, bool include_pass_log) {
     auto& db = Database::getInstance().gameDB();
     json out = json::object();
     bool found = false;
@@ -204,7 +227,8 @@ json account_row(int64_t account_id, bool include_characters) {
         json characters = json::array();
         db << "SELECT id FROM characters WHERE user_id = ? ORDER BY id;" << account_id
            >> [&](int64_t character_id) {
-                  characters.push_back(character_row(db, character_id, true));
+                  characters.push_back(
+                      character_row(db, character_id, true, include_pass_log));
               };
         out["characters"] = std::move(characters);
     }
@@ -679,7 +703,7 @@ ApiResponse handleStaffSearchAccounts(GameConfigCache& config_cache, const json&
           "ORDER BY u.username LIMIT 50;"
        << query << like << like << like
        >> [&](int64_t account_id) {
-              json row = account_row(account_id, true);
+              json row = account_row(account_id, true, false);
               if (!row.empty()) accounts.push_back(std::move(row));
           };
     response.data["accounts"] = std::move(accounts);
@@ -699,7 +723,7 @@ ApiResponse handleStaffGetAccount(GameConfigCache& config_cache, const json& bod
     if (response.needs_auth) return response;
     if (!staff::require_capability(context, "account.view", response)) return response;
     const int64_t account_id = resolve_account_id(body);
-    json account = account_row(account_id, true);
+    json account = account_row(account_id, true, true);
     if (account.empty()) {
         response.error = "account_not_found";
         return response;
@@ -786,6 +810,107 @@ ApiResponse handleStaffSetSupportLock(GameConfigCache& config_cache, const json&
     request.target_id = std::to_string(account_id);
     request.reason = body.value("reason", std::string());
     request.parameters = {{"locked", body["locked"].get<bool>()}};
+    return staff_action_response(staff::StaffActionEngine::instance().execute(context, request),
+                                 new_token);
+}
+
+ApiResponse handleStaffGrantMonthlyPass(GameConfigCache& config_cache, const json& body,
+                                        const std::optional<std::string>& username,
+                                        const ClientInfo& client,
+                                        const std::optional<std::string>& new_token) {
+    (void)config_cache;
+    (void)client;
+    ApiResponse response;
+    staff_context context = resolve_staff(username, response);
+    if (response.needs_auth) return response;
+    if (!staff::require_capability(context, "character.manage_monthly_pass", response)) {
+        return response;
+    }
+
+    const int64_t character_id = body.value("character_id", static_cast<int64_t>(0));
+    if (character_id <= 0) {
+        response.error = "character_id_required";
+        return response;
+    }
+    if (!character_exists(character_id)) {
+        response.error = "character_not_found";
+        return response;
+    }
+
+    if (body.contains("permanent") && !body["permanent"].is_boolean()) {
+        response.error = "permanent_boolean_required";
+        return response;
+    }
+    if (body.contains("months") && !body["months"].is_number_integer()) {
+        response.error = "months_integer_required";
+        return response;
+    }
+
+    const bool permanent = body.value("permanent", false);
+    const int months = body.value("months", 0);
+    if (permanent && months != 0) {
+        response.error = "months_and_permanent_exclusive";
+        return response;
+    }
+    if (!permanent && (months < 1 || months > monthly_pass::k_max_months)) {
+        response.error = "months_out_of_range";
+        return response;
+    }
+
+    auto& db = Database::getInstance().gameDB();
+    const monthly_pass::status current =
+        monthly_pass::get_status(db, character_id, staff::now_seconds());
+    if (current.permanent) {
+        response.error = "already_permanent";
+        return response;
+    }
+
+    staff::staff_action_request request;
+    request.action_type = "staff.grant_monthly_pass";
+    request.target_type = "character";
+    request.target_id = std::to_string(character_id);
+    request.reason = body.value("reason", std::string());
+    request.parameters = {{"months", months}, {"permanent", permanent}};
+    return staff_action_response(staff::StaffActionEngine::instance().execute(context, request),
+                                 new_token);
+}
+
+ApiResponse handleStaffRevokeMonthlyPass(GameConfigCache& config_cache, const json& body,
+                                         const std::optional<std::string>& username,
+                                         const ClientInfo& client,
+                                         const std::optional<std::string>& new_token) {
+    (void)config_cache;
+    (void)client;
+    ApiResponse response;
+    staff_context context = resolve_staff(username, response);
+    if (response.needs_auth) return response;
+    if (!staff::require_capability(context, "character.manage_monthly_pass", response)) {
+        return response;
+    }
+
+    const int64_t character_id = body.value("character_id", static_cast<int64_t>(0));
+    if (character_id <= 0) {
+        response.error = "character_id_required";
+        return response;
+    }
+    if (!character_exists(character_id)) {
+        response.error = "character_not_found";
+        return response;
+    }
+
+    auto& db = Database::getInstance().gameDB();
+    const monthly_pass::status current =
+        monthly_pass::get_status(db, character_id, staff::now_seconds());
+    if (!current.active) {
+        response.error = "pass_not_active";
+        return response;
+    }
+
+    staff::staff_action_request request;
+    request.action_type = "staff.revoke_monthly_pass";
+    request.target_type = "character";
+    request.target_id = std::to_string(character_id);
+    request.reason = body.value("reason", std::string());
     return staff_action_response(staff::StaffActionEngine::instance().execute(context, request),
                                  new_token);
 }
@@ -1695,6 +1820,8 @@ void register_staff_handlers(std::unordered_map<std::string, ApiHandler>& handle
     reg("staffSetAdultStatus", handleStaffSetAdultStatus);
     reg("staffSetSocialRestriction", handleStaffSetSocialRestriction);
     reg("staffSetSupportLock", handleStaffSetSupportLock);
+    reg("staffGrantMonthlyPass", handleStaffGrantMonthlyPass);
+    reg("staffRevokeMonthlyPass", handleStaffRevokeMonthlyPass);
     reg("staffGetIdentityHistory", handleStaffGetIdentityHistory);
     reg("staffLockIdentity", handleStaffLockIdentity);
     reg("staffRevertIdentity", handleStaffRevertIdentity);
