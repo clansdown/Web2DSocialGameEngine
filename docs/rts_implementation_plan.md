@@ -616,8 +616,8 @@ phase; ended payload XP.
 All new strings in `game/text/en/*.txt` (`ui_`-prefixed UI ids, e.g.
 `combat_cmd_move`, `combat_cmd_lob`, `combat_stance_aggressive`,
 `combat_form_wedge`, `combat_touch_mode_smart`,
-`combat_hold_reason_no_safe_arc`); rendered via `GameText` / `loadTexts` —
-**zero hardcoded strings**.
+`combat_hold_reason_no_safe_arc`) plus their class/per-file `.meta` English
+context; rendered via `GameText` / `loadTexts` — **zero hardcoded strings**.
 
 ### Exit criteria
 

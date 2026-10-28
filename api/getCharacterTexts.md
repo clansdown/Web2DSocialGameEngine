@@ -71,6 +71,7 @@ Possible errors:
 ## Notes
 
 - Text substitution order: language lookup → gender tokens → `{character_name}`
+- `.meta` sidecars are offline translation-authoring context only; they are never returned by this endpoint
 - Returns empty string if neither the requested language nor English has the text
 - If the character has no sex set, gender tokens resolve to the male default form
 - `{character_name}` is replaced with `display_name` (not `safe_display_name`)

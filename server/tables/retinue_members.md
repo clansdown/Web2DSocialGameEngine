@@ -78,10 +78,14 @@ billeted in the manor house — they consume no arable or forest land.
 
 ## Recruit Market
 
-- Offers are **generated, never stored**: deterministic from
-  `(character_id, hour bucket)` (`floor(now/3600)`), per-class name pools
-  (`game/text/en/names_<class>_male.txt` / `_female.txt`), class gating
-  (`requires_manor_level`), and candidate level `1..manor_level + offset`.
+- Offers are **generated, never stored**: the class/gender/level/headshot
+  sequence is deterministic from `(character_id, hour bucket)`
+  (`floor(now/3600)`); names come from the account-language pool
+  (`game/text/<language>/names_<class>_male.txt` / `_female.txt`, English
+  fallback), and class gating (`requires_manor_level`) plus candidate level
+  `1..manor_level + offset` apply. Each offer carries `name_language` so hire
+  validation uses the pool that produced its name. Hired names are stored as
+  generated and do not change when the account language later changes.
 - **Identity roll order: class → sex → level → name → headshot.** Names and
   headshots are re-rolled deterministically (walk forward from the drawn index
   in the sorted pool) past anything already used by the character's roster and

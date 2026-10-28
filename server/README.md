@@ -259,6 +259,11 @@ has its own Svelte screen and its own transport.
 - **Retinue**: `retinue_members` table (knight = character). Snapshotted into
   the match at join; casualties written back after the battle per the
   ruleset's `death_handling`. See `server/tables/retinue_members.md`.
+- **Retinue names**: market names come from
+  `game/text/<language>/names_<class>_<gender>.txt` (`users.language`, English
+  fallback) through `TextManager`; each offer carries `name_language`, and
+  hired names stay fixed. Pools are translated offline by
+  `tools/generate_translations.py`.
 - **Retinue portraits**: each member carries a fixed `headshot_id` (path under
   `game/images/retinue/headshots/`), assigned at hire by the deterministic
   market (names/headshots re-roll past identities already in the roster).

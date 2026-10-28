@@ -44,8 +44,11 @@ Design pillars:
 - Class gating by `requires_manor_level` in `player_combatants.json` (spearman 1 /
   archer 1 / knight 3 / mage 4 — tunable).
 - `Gender` is part of the offer (male **and** female pools); names come from
-  `game/text/en/names_<class>_<gender>.txt`.
-  *(deviation: pools are en-only today; per-language wiring is future.)*
+  `game/text/<language>/names_<class>_<gender>.txt`, where `<language>` is the
+  account's `users.language` and English is the fallback. Pools are translated
+  offline by `tools/generate_translations.py`; each offer carries
+  `name_language` so hire validation uses the pool that produced the name.
+  Existing hired names stay fixed at hire time.
 - **Deterministic, never stored**: seeded from `(character_id, hour_bucket)` with a
   splitmix64 PRNG (`server/RetinueMarket.cpp`). Hour cohorts + a grace window
   (`grace_buckets = 1`): an offer from the previous hour stays hirable.

@@ -4,12 +4,15 @@
 #include <string>
 #include <vector>
 
+class TextManager;
+
 // A single named hire offer on the recruit market.
 struct recruit_candidate {
     std::string unit_class;
     std::string display_name;
-    std::string gender;      // "male" | "female"
-    std::string headshot_id; // path under images/retinue/headshots/ (e.g. "male/03.png")
+    std::string name_language; // language whose name pool produced display_name
+    std::string gender;        // "male" | "female"
+    std::string headshot_id;   // path under images/retinue/headshots/ (e.g. "male/03.png")
     int level = 1;
     int hour_bucket = 0;      // hour bucket this offer belongs to
     int64_t expires_at = 0;   // unix ts when the offer is no longer hirable
@@ -22,12 +25,15 @@ struct recruit_candidate {
 // server/tables/retinue_members.md -> "Recruit market" and docs/retinue_design.md.
 //
 // The market is seeded from (character_id, hour_bucket) only, so re-generating
-// a bucket reproduces the exact same offers for a given roster. Names and
-// headshots are re-rolled deterministically past identities already used by the
-// character (roster names + headshots) and past the rest of the displayed
-// cohort, so the normal UI never shows a duplicate. Validation is structural
-// only (class/level/bucket + pool membership) — see the plan's decision to drop
-// the exact-offer regeneration and the name-uniqueness gate.
+// a bucket reproduces the same class/gender/level/headshot sequence for a given
+// roster. Names are drawn from the requesting account's language pool (with an
+// English fallback), so a language change changes the displayed names but not
+// the rest of the offer. Names and headshots are re-rolled deterministically
+// past identities already used by the character (roster names + headshots) and
+// past the rest of the displayed cohort, so the normal UI never shows a
+// duplicate. Validation is structural only (class/level/bucket + pool
+// membership) — see the plan's decision to drop the exact-offer regeneration
+// and the name-uniqueness gate.
 namespace retinue_market {
 
 // Highest candidate level a manor of the given level can attract for a class
@@ -43,7 +49,7 @@ std::vector<recruit_candidate> candidates_for_bucket(
     const nlohmann::json& player_combatants,
     const nlohmann::json& retinue_config,
     int64_t character_id, int hour_bucket, int manor_level,
-    const std::string& text_dir,
+    TextManager& text_manager, const std::string& language,
     std::set<std::string>& used_names,
     std::set<std::string>& used_headshots);
 
@@ -55,7 +61,7 @@ std::vector<recruit_candidate> list_candidates(
     const nlohmann::json& player_combatants,
     const nlohmann::json& retinue_config,
     int64_t character_id, int64_t now, int manor_level,
-    const std::string& text_dir,
+    TextManager& text_manager, const std::string& language,
     std::set<std::string>& used_names,
     std::set<std::string>& used_headshots,
     int& current_bucket, int64_t& next_refresh_at);
@@ -70,7 +76,7 @@ std::vector<recruit_candidate> list_candidates(
 bool is_valid_candidate(const nlohmann::json& player_combatants,
                         const nlohmann::json& retinue_config,
                         int manor_level,
-                        const std::string& text_dir,
+                        TextManager& text_manager, const std::string& language,
                         const recruit_candidate& candidate);
 
 // Per-resource hire fee for a class at a level (linear extension of `costs`).

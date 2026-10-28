@@ -2004,6 +2004,8 @@ export interface retinue_recovery_dto {
 export interface recruit_candidate_dto {
   unit_class: string;
   display_name: string;
+  /** Language whose name pool produced display_name (new offers). */
+  name_language: string;
   gender: string;
   /** Relative headshot id (e.g. "female/17.png"). */
   headshot_id: string;
@@ -2437,6 +2439,7 @@ export async function hireRecruitRequest(
     character_id: characterId,
     unit_class: candidate.unit_class,
     display_name: candidate.display_name,
+    name_language: candidate.name_language,
     gender: candidate.gender,
     headshot_id: candidate.headshot_id,
     level: candidate.level,

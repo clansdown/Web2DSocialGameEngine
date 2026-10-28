@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Generate missing translations for game text using OpenRouter AI.
 
-Scans English source texts in text/en/, compares against target language
+Scans English source texts in game/text/en/, compares against target language
 directories, and calls the OpenRouter chat completions API to translate any
-missing text IDs. Uses text/context.md for game context and
-text/translation_instructions.md for style/terminology rules.
+missing or stale text IDs. Uses game/text/context.md for game context,
+game/text/translation_instructions.md for style/terminology rules, and the
+per-text / per-class .meta sidecars for English authoring context.
 
 Usage:
     # Preview what would be translated for Spanish and German
@@ -18,6 +19,9 @@ Usage:
 
     # Regenerate existing translations (overwrite)
     ./tools/generate_translations.py --target fr --force
+
+    # Fail on any text with no class/per-file .meta context
+    ./tools/generate_translations.py --target es --require-meta
 
     # Use a custom config path
     ./tools/generate_translations.py --target de --config /path/to/config.json
@@ -46,12 +50,14 @@ from typing import Final
 # ---------------------------------------------------------------------------
 
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parent.parent
-TEXT_DIR: Final[Path] = PROJECT_ROOT / "text"
+TEXT_DIR: Final[Path] = PROJECT_ROOT / "game" / "text"
 SOURCE_LANG: Final[str] = "en"
 DEFAULT_CONFIG_PATH: Final[Path] = TEXT_DIR / "config.json"
 CONTEXT_FILE: Final[Path] = TEXT_DIR / "context.md"
 INSTRUCTIONS_FILE: Final[Path] = TEXT_DIR / "translation_instructions.md"
+CLASS_CONTEXT_DIR_NAME: Final[str] = "classes"
 MAX_RETRIES: Final[int] = 3
+NAME_VALIDATION_ATTEMPTS: Final[int] = 2
 RETRY_BACKOFF_SECONDS: Final[list[float]] = [1.0, 2.0, 4.0]
 REQUEST_TIMEOUT_SECONDS: Final[int] = 60
 
@@ -88,6 +94,32 @@ class TranslationReport:
     generated: int = 0
     skipped: int = 0
     errors: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ResolvedTextContext:
+    """English authoring context for one text ID.
+
+    The translator passes this to the model inside a <context> block. Context
+    is inherited from every matching class prefix (broadest first), then the
+    per-file sidecar adds specifics.
+
+    Attributes:
+        class_contexts: (prefix, content, path) tuples, broadest prefix first.
+        file_context: Per-file .meta content, or None.
+        meta_paths: Every context file that exists for this text.
+        newest_mtime: Newest mtime among the context files (0 when none).
+    """
+
+    class_contexts: tuple[tuple[str, str, Path], ...] = ()
+    file_context: str | None = None
+    meta_paths: tuple[Path, ...] = ()
+    newest_mtime: float = 0.0
+
+    @property
+    def has_context(self) -> bool:
+        """True when at least one class or per-file context exists."""
+        return bool(self.class_contexts or self.file_context)
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +191,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Show detailed output including API responses",
+    )
+
+    parser.add_argument(
+        "--require-meta",
+        action="store_true",
+        default=False,
+        help="Fail translation for any text with no class or per-file .meta context",
     )
 
     return parser.parse_args()
@@ -302,6 +341,163 @@ def load_translation_instructions() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Per-text / per-class context
+# ---------------------------------------------------------------------------
+
+
+def _safe_mtime(path: Path) -> float:
+    """Return a file's mtime, or 0.0 when it does not exist.
+
+    Args:
+        path: File to inspect.
+
+    Returns:
+        The POSIX mtime as a float, or 0.0 on any stat failure.
+    """
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def load_text_meta(meta_path: Path) -> str:
+    """Load one free-form English context sidecar.
+
+    Args:
+        meta_path: Path to a .meta file.
+
+    Returns:
+        The trimmed context text, or an empty string when missing/empty.
+    """
+    return load_text_file(meta_path).strip()
+
+
+def class_meta_files(source_dir: Path) -> dict[str, Path]:
+    """Find every prefix-based class context file.
+
+    Class contexts live in `<source_dir>/classes/<prefix>.meta`. A prefix
+    applies to `text_id == prefix` or `text_id.startswith(prefix + "_")`.
+
+    Args:
+        source_dir: English source directory (e.g. game/text/en).
+
+    Returns:
+        Mapping of prefix to .meta path, sorted by prefix.
+    """
+    directory: Path = source_dir / CLASS_CONTEXT_DIR_NAME
+    if not directory.exists():
+        return {}
+
+    result: dict[str, Path] = {}
+    for meta_path in sorted(directory.iterdir()):
+        if meta_path.is_file() and meta_path.suffix == ".meta":
+            result[meta_path.stem] = meta_path
+    return result
+
+
+def resolve_text_context(
+    source_dir: Path,
+    text_id: str,
+    class_meta_paths: dict[str, Path] | None = None,
+) -> ResolvedTextContext:
+    """Resolve all class + per-file context for one text ID.
+
+    Class contexts are accumulated broadest-prefix first, so a name pool can
+    inherit `names` then `names_knight`, and a per-file sidecar adds specifics.
+
+    Args:
+        source_dir: English source directory.
+        text_id: Text ID (filename stem).
+        class_meta_paths: Optional pre-scanned class map.
+
+    Returns:
+        ResolvedTextContext containing content, paths, and newest mtime.
+    """
+    if class_meta_paths is None:
+        class_meta_paths = class_meta_files(source_dir)
+
+    class_contexts: list[tuple[str, str, Path]] = []
+    for prefix, meta_path in class_meta_paths.items():
+        if text_id != prefix and not text_id.startswith(prefix + "_"):
+            continue
+        content: str = load_text_meta(meta_path)
+        if content:
+            class_contexts.append((prefix, content, meta_path))
+    class_contexts.sort(key=lambda item: len(item[0]))
+
+    file_path: Path = source_dir / f"{text_id}.meta"
+    file_context: str | None = None
+    if file_path.exists():
+        file_context = load_text_meta(file_path) or None
+
+    meta_paths: list[Path] = [item[2] for item in class_contexts]
+    if file_context is not None:
+        meta_paths.append(file_path)
+
+    newest_mtime: float = max((_safe_mtime(path) for path in meta_paths), default=0.0)
+    return ResolvedTextContext(
+        class_contexts=tuple(class_contexts),
+        file_context=file_context,
+        meta_paths=tuple(meta_paths),
+        newest_mtime=newest_mtime,
+    )
+
+
+def render_context_block(context: ResolvedTextContext) -> str:
+    """Render resolved context as a single <context> block.
+
+    Args:
+        context: Resolved class + per-file context.
+
+    Returns:
+        The wrapped context block, or an empty string when there is none.
+    """
+    if not context.has_context:
+        return ""
+
+    sections: list[str] = []
+    for prefix, content, _ in context.class_contexts:
+        sections.append(
+            f'Class context for text IDs prefixed "{prefix}":\n{content}'
+        )
+    if context.file_context:
+        sections.append(f"Text-specific context:\n{context.file_context}")
+
+    return "<context>\n" + "\n\n".join(sections) + "\n</context>"
+
+
+def is_translation_stale(
+    source_path: Path,
+    target_path: Path,
+    context: ResolvedTextContext,
+    global_paths: tuple[Path, ...],
+) -> bool:
+    """Check whether a target translation is missing or older than its inputs.
+
+    Args:
+        source_path: English source .txt.
+        target_path: Existing target translation .txt.
+        context: Resolved context (its newest mtime is included).
+        global_paths: Global context/instruction files.
+
+    Returns:
+        True when the target is missing, empty, or older than any input.
+    """
+    try:
+        target_mtime: float = target_path.stat().st_mtime
+        if target_path.stat().st_size == 0:
+            return True
+    except OSError:
+        return True
+
+    newest_input: float = max(
+        [_safe_mtime(source_path), context.newest_mtime]
+        + [_safe_mtime(path) for path in global_paths]
+    )
+    return newest_input > target_mtime
+
+
+# ---------------------------------------------------------------------------
 # Source text scanning
 # ---------------------------------------------------------------------------
 
@@ -374,25 +570,55 @@ def get_existing_ids(lang_dir: Path) -> set[str]:
     return existing_ids
 
 
-def get_missing_ids(
+def get_ids_to_translate(
     source_texts: dict[str, str],
-    existing_ids: set[str],
+    source_dir: Path,
+    target_dir: Path,
     force: bool,
-) -> list[str]:
-    """Determine which text IDs need translation.
+    global_paths: tuple[Path, ...],
+    class_meta_paths: dict[str, Path] | None = None,
+) -> tuple[list[str], int, int]:
+    """Determine which text IDs are missing or stale.
 
     Args:
         source_texts: All available source texts (id → content).
-        existing_ids: IDs that already have translations.
-        force: If True, include existing IDs for regeneration.
+        source_dir: English source directory.
+        target_dir: Target language directory.
+        force: If True, include every source ID.
+        global_paths: Global context/instruction files.
+        class_meta_paths: Optional pre-scanned class context map.
 
     Returns:
-        Sorted list of text IDs that need translation.
+        A tuple of (IDs to translate, missing count, stale count).
     """
-    if force:
-        return sorted(source_texts.keys())
+    existing_ids: set[str] = get_existing_ids(target_dir)
+    if class_meta_paths is None:
+        class_meta_paths = class_meta_files(source_dir)
 
-    return sorted(set(source_texts.keys()) - existing_ids)
+    ids_to_translate: list[str] = []
+    missing_count: int = 0
+    stale_count: int = 0
+
+    for text_id in sorted(source_texts.keys()):
+        if force or text_id not in existing_ids:
+            if text_id not in existing_ids:
+                missing_count += 1
+            ids_to_translate.append(text_id)
+            continue
+
+        context: ResolvedTextContext = resolve_text_context(
+            source_dir, text_id, class_meta_paths
+        )
+        if is_translation_stale(
+            source_dir / f"{text_id}.txt",
+            target_dir / f"{text_id}.txt",
+            context,
+            global_paths,
+        ):
+            stale_count += 1
+            ids_to_translate.append(text_id)
+
+    return ids_to_translate, missing_count, stale_count
 
 
 # ---------------------------------------------------------------------------
@@ -419,26 +645,81 @@ def build_system_prompt(context: str, instructions: str) -> str:
         "## Game Context\n"
         f"{context}\n\n"
         "## Translation Instructions\n"
-        f"{instructions}"
+        f"{instructions}\n\n"
+        "## Authoring Context\n"
+        "Some user messages include a <context> block with English authoring "
+        "context (speaker, addressee, intent, tone, setting, markup, or "
+        "placeholder notes). Use it only to disambiguate the translation. "
+        "Never translate, quote, or include the context block in your output."
     )
 
 
-def build_user_prompt(text_id: str, source_text: str, target_language: str) -> str:
+def build_user_prompt(
+    text_id: str,
+    source_text: str,
+    target_language: str,
+    context: ResolvedTextContext,
+) -> str:
     """Build the user prompt for translating a single text.
 
     Args:
         text_id: The text identifier (for context/debugging).
         source_text: The English source text to translate.
         target_language: Target language name or code.
+        context: Resolved class + per-file English authoring context.
 
     Returns:
         The user prompt string for the API call.
     """
+    context_block: str = render_context_block(context)
+    name_instruction: str = ""
+    if text_id.startswith("names_"):
+        line_count: int = len(
+            [line for line in source_text.splitlines() if line.strip()]
+        )
+        name_instruction = (
+            f"\nThis is a proper-name pool. Return exactly {line_count} lines, "
+            "one localized full name per line, in the same order. Do not "
+            "number the lines, add commentary, or use code fences.\n"
+        )
+
     return (
         f"Translate the following English game text to {target_language}.\n"
-        f"Text ID: {text_id}\n\n"
-        f"{source_text}"
+        f"Text ID: {text_id}\n"
+        f"{name_instruction}\n"
+        f"{context_block}\n\n"
+        f"Source text:\n{source_text}"
     )
+
+
+def validate_name_pool(source_text: str, translated_text: str) -> str | None:
+    """Validate a translated proper-name pool.
+
+    Args:
+        source_text: English source name pool.
+        translated_text: Model output.
+
+    Returns:
+        None when valid, otherwise a human-readable validation error.
+    """
+    source_lines: list[str] = [
+        line.strip() for line in source_text.splitlines() if line.strip()
+    ]
+    translated_lines: list[str] = [
+        line.strip() for line in translated_text.splitlines() if line.strip()
+    ]
+
+    if len(translated_lines) != len(source_lines):
+        return (
+            f"expected {len(source_lines)} name lines, "
+            f"got {len(translated_lines)}"
+        )
+    if any(line[:1].isdigit() for line in translated_lines):
+        return "name lines must not be numbered"
+    folded: list[str] = [line.casefold() for line in translated_lines]
+    if len(set(folded)) != len(folded):
+        return "translated names contain duplicates"
+    return None
 
 
 def call_openrouter(
@@ -633,22 +914,25 @@ def translate_language(
     force: bool,
     dry_run: bool,
     verbose: bool,
+    require_meta: bool,
     report: TranslationReport,
 ) -> None:
     """Generate translations for a single target language.
 
-    Loads source texts, diffs against existing translations, and calls
-    the OpenRouter API for each missing text.
+    Loads source texts, resolves per-class/per-file context, diffs against
+    existing translations, and calls the OpenRouter API for each missing or
+    stale text.
 
     Args:
         config: API configuration.
         source_lang: Source language code (usually \"en\").
         target_lang: Target language code to generate for.
         text_ids_to_generate: If set, only generate these specific IDs.
-            If None, generate all missing IDs.
+            If None, generate all missing/stale IDs.
         force: If True, regenerate existing translations.
         dry_run: If True, only print what would be done, no API calls.
         verbose: If True, print detailed output.
+        require_meta: If True, fail texts with no class/per-file context.
         report: TranslationReport to update with results.
     """
     source_dir: Path = TEXT_DIR / source_lang
@@ -664,69 +948,132 @@ def translate_language(
         print(f"  → No source texts found in {source_lang}/. Skipping.")
         return
 
-    existing_ids: set[str] = get_existing_ids(target_dir)
+    class_meta_paths: dict[str, Path] = class_meta_files(source_dir)
+    global_paths: tuple[Path, ...] = (CONTEXT_FILE, INSTRUCTIONS_FILE)
+    ids_to_translate, missing_count, stale_count = get_ids_to_translate(
+        source_texts, source_dir, target_dir, force, global_paths, class_meta_paths
+    )
 
     if text_ids_to_generate is not None:
-        # Filter to only requested IDs
-        missing_ids: list[str] = sorted(
-            tid for tid in text_ids_to_generate
-            if tid in source_texts
-            and (force or tid not in existing_ids)
-        )
+        requested: set[str] = set(text_ids_to_generate)
+        ids_to_translate = [
+            text_id for text_id in ids_to_translate if text_id in requested
+        ]
         skipped_ids: list[str] = [
-            tid for tid in text_ids_to_generate
-            if tid not in source_texts
+            text_id for text_id in text_ids_to_generate
+            if text_id not in source_texts
         ]
         if skipped_ids:
             print(f"  Warning: Requested IDs not found in source: {skipped_ids}")
-    else:
-        missing_ids = get_missing_ids(source_texts, existing_ids, force)
 
-    if not missing_ids:
-        print(f"  → No missing translations. All {len(source_texts)} texts "
-              f"are already present in {target_lang}/"
-              f"{' (use --force to regenerate)' if not force else ''}.")
-        report.skipped += len(source_texts)
+    existing_ids: set[str] = get_existing_ids(target_dir)
+    missing_count = sum(
+        1 for text_id in ids_to_translate if text_id not in existing_ids
+    )
+    stale_count = 0 if force else len(ids_to_translate) - missing_count
+
+    if not ids_to_translate:
+        if text_ids_to_generate is not None:
+            print(
+                f"  → Requested text(s) are already up to date in "
+                f"{target_lang}/"
+                f"{' (use --force to regenerate)' if not force else ''}."
+            )
+            report.skipped += len(text_ids_to_generate)
+        else:
+            print(
+                f"  → No missing or stale translations. All {len(source_texts)} "
+                f"texts are up to date in {target_lang}/"
+                f"{' (use --force to regenerate)' if not force else ''}."
+            )
+            report.skipped += len(source_texts)
         return
 
-    total: int = len(missing_ids)
-    print(f"  → {total} text(s) to translate")
+    total: int = len(ids_to_translate)
+    print(f"  → {total} text(s) to translate "
+          f"({missing_count} missing, {stale_count} stale)")
 
     if dry_run:
         print(f"\n  Would translate ({target_lang}):")
-        for text_id in missing_ids:
+        for text_id in ids_to_translate:
             source_text: str = source_texts[text_id]
             preview: str = source_text[:60].replace("\n", "\\n")
-            print(f"    - {text_id}: \"{preview}\"")
+            context: ResolvedTextContext = resolve_text_context(
+                source_dir, text_id, class_meta_paths
+            )
+            context_label: str = ", ".join(
+                path.relative_to(TEXT_DIR).as_posix()
+                for path in context.meta_paths
+            ) or "no .meta"
+            print(f"    - {text_id}: \"{preview}\" [context: {context_label}]")
         return
 
-    # Load context and instructions for the system prompt
-    context: str = load_context()
+    system_context: str = load_context()
     instructions: str = load_translation_instructions()
-    system_prompt: str = build_system_prompt(context, instructions)
+    system_prompt: str = build_system_prompt(system_context, instructions)
 
-    # Also load them once as a combined cache
     successful_count: int = 0
     failed_count: int = 0
 
-    for index, text_id in enumerate(missing_ids, start=1):
-        source_text = source_texts[text_id]
-        user_prompt: str = build_user_prompt(text_id, source_text, language_name)
-
+    for index, text_id in enumerate(ids_to_translate, start=1):
+        source_text: str = source_texts[text_id]
+        context: ResolvedTextContext = resolve_text_context(
+            source_dir, text_id, class_meta_paths
+        )
         print(f"\n  [{index}/{total}] Translating '{text_id}'...", end=" ")
 
-        translation: str | None = call_openrouter(
-            config=config,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            verbose=verbose,
+        if require_meta and not context.has_context:
+            print("MISSING CONTEXT")
+            report.errors.append(f"{target_lang}/{text_id}: missing .meta context")
+            failed_count += 1
+            continue
+        if not context.has_context:
+            print(f"\n    Warning: no class or per-file .meta context for '{text_id}'",
+                  file=sys.stderr)
+
+        user_prompt: str = build_user_prompt(
+            text_id, source_text, language_name, context
         )
+
+        translation: str | None = None
+        validation_error: str | None = None
+        max_attempts: int = (
+            NAME_VALIDATION_ATTEMPTS if text_id.startswith("names_") else 1
+        )
+        for _attempt in range(1, max_attempts + 1):
+            translation = call_openrouter(
+                config=config,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                verbose=verbose,
+            )
+            if translation is None:
+                break
+            validation_error = (
+                validate_name_pool(source_text, translation)
+                if text_id.startswith("names_") else None
+            )
+            if validation_error is None:
+                break
 
         if translation is None:
             print("FAILED")
-            report.errors.append(f"{target_lang}/{text_id}: API error after {MAX_RETRIES} retries")
+            report.errors.append(
+                f"{target_lang}/{text_id}: API error after {MAX_RETRIES} retries"
+            )
             failed_count += 1
             continue
+
+        if validation_error is not None:
+            print(f"INVALID ({validation_error})")
+            report.errors.append(f"{target_lang}/{text_id}: {validation_error}")
+            failed_count += 1
+            continue
+
+        if text_id.startswith("names_"):
+            translation = "\n".join(
+                line.strip() for line in translation.splitlines() if line.strip()
+            )
 
         target_path: Path = target_dir / f"{text_id}.txt"
         write_text_file(target_path, translation)
@@ -765,14 +1112,25 @@ def main() -> int:
     else:
         config_path = DEFAULT_CONFIG_PATH
 
-    # Load and validate configuration
+    # Load and validate configuration. A dry run never calls the API, so it can
+    # work without a key (useful for checking context/staleness in CI).
     try:
         config: TranslationConfig = load_config(config_path)
     except (FileNotFoundError, json.JSONDecodeError, ValueError) as config_error:
-        print(f"Configuration error: {config_error}", file=sys.stderr)
-        return 1
+        if not args.dry_run:
+            print(f"Configuration error: {config_error}", file=sys.stderr)
+            return 1
+        print(
+            f"Dry-run: ignoring configuration error: {config_error}",
+            file=sys.stderr,
+        )
+        config = TranslationConfig(
+            openrouter_api_key="dry-run",
+            model="dry-run",
+            base_url="https://example.invalid",
+        )
 
-    if not config.openrouter_api_key:
+    if not config.openrouter_api_key and not args.dry_run:
         print(
             "Error: openrouter_api_key is empty. Set it in config.json:\n"
             f"  {config_path}\n\n"
@@ -821,6 +1179,7 @@ def main() -> int:
             force=args.force,
             dry_run=args.dry_run,
             verbose=args.verbose,
+            require_meta=args.require_meta,
             report=overall_report,
         )
 

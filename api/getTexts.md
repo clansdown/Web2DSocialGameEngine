@@ -54,7 +54,8 @@ For in-game text that needs the player's gender/name, use the authenticated
 
 ## Notes
 
-- Texts are read from `text/{language}/{id}.txt`
+- Texts are read from `game/text/{language}/{id}.txt`
+- `.meta` sidecars are offline translation-authoring context only; they are never returned by this endpoint
 - Returns empty string if neither the requested language nor English has the text
 - Designed for per-component fetching — the client requests only the texts it needs
 - The `sex` field is **not** accepted — the client never sends sex. In-game text

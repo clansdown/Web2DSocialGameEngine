@@ -76,6 +76,8 @@ Combat matches snapshot the *active* members when a player joins (see
 ## Notes
 
 - **Member fields**
+  - `display_name` — generated from the account-language name pool at hire and
+    stored; it does not change when the account language later changes.
   - `gender` — `male` | `female`; drives the recruit name pool and (future)
     gender-aware prose.
   - `health` / `health_updated` — persistent health 0..100 with the last

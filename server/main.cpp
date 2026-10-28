@@ -6623,6 +6623,19 @@ bool verify_character_ownership(const json& body,
     return true;
 }
 
+// The account's chosen interface language, which is also the preferred
+// retinue name-pool language. Empty/invalid values fall back to English.
+std::string account_language_for_character(int64_t character_id) {
+    auto& db = Database::getInstance().gameDB();
+    std::string language = "en";
+    db << "SELECT COALESCE(u.language, 'en') FROM characters c "
+          "JOIN users u ON u.id = c.user_id WHERE c.id = ? LIMIT 1;"
+       << character_id >> [&](std::string value) {
+              if (!value.empty()) language = std::move(value);
+          };
+    return language;
+}
+
 std::vector<combat::retinue_member_snapshot> load_retinue_snapshot(
     int64_t character_id,
     const retinue_db::recovery_settings& settings = retinue_db::recovery_settings{}) {
@@ -7781,10 +7794,11 @@ ApiResponse handleListRecruitCandidates(GameConfigCache& config_cache, const jso
     const int64_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     int current_bucket = 0;
     int64_t next_refresh_at = 0;
+    const std::string language = account_language_for_character(character_id);
     auto candidates = retinue_market::list_candidates(
         config_cache.getPlayerCombatants(), config_cache.getRetinueConfig(),
-        character_id, now, manor_level, g_text_dir, used_names, used_headshots,
-        current_bucket, next_refresh_at);
+        character_id, now, manor_level, *g_text_manager, language,
+        used_names, used_headshots, current_bucket, next_refresh_at);
 
     json arr = json::array();
     for (auto& c : candidates) {
@@ -7842,6 +7856,7 @@ ApiResponse handleHireRecruit(GameConfigCache& config_cache, const json& body,
     recruit_candidate offer;
     offer.unit_class = body.value("unit_class", "");
     offer.display_name = body.value("display_name", "");
+    offer.name_language = body.value("name_language", "");
     offer.gender = body.value("gender", "");
     offer.headshot_id = body.value("headshot_id", "");
     offer.level = body.value("level", 0);
@@ -7854,7 +7869,8 @@ ApiResponse handleHireRecruit(GameConfigCache& config_cache, const json& body,
 
     if (!retinue_market::is_valid_candidate(
             config_cache.getPlayerCombatants(), config_cache.getRetinueConfig(),
-            manor_level, g_text_dir, offer)) {
+            manor_level, *g_text_manager, account_language_for_character(character_id),
+            offer)) {
         response.error = "That offer has expired or was never made.";
         return response;
     }

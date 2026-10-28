@@ -23,26 +23,32 @@ bool safe_path_component(const std::string& value, bool allow_dot) {
 
 std::string TextManager::get_text(const std::string& language, const std::string& text_id) const
 {
+    return get_text_resolved(language, text_id).text;
+}
+
+text_lookup_result TextManager::get_text_resolved(const std::string& language,
+                                                  const std::string& text_id) const
+{
     // Never let a request escape the text directory (path traversal, absolute
     // paths, or NUL bytes).
     if (!safe_path_component(language, false) || !safe_path_component(text_id, false)) {
-        return "";
+        return {};
     }
     auto lang_path = m_base_path / language / (text_id + ".txt");
     auto content = read_file(lang_path);
     if (!content.empty()) {
-        return content;
+        return {content, language};
     }
 
     if (language != "en") {
         auto en_path = m_base_path / "en" / (text_id + ".txt");
         content = read_file(en_path);
         if (!content.empty()) {
-            return content;
+            return {content, "en"};
         }
     }
 
-    return "";
+    return {};
 }
 
 std::string TextManager::substitute_gender(const std::string& text, const std::optional<std::string>& sex)

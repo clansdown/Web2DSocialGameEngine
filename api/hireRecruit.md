@@ -3,9 +3,9 @@
 Hires a **named candidate** from the recruit market into the player's retinue.
 The offer is validated **structurally**: a known class unlocked at the manor's
 level, an in-range level, the **current or previous hour bucket** (grace
-window), a name from the class/sex pool, and an existing headshot for the sex.
-The manor must also have capacity and the fee must be affordable from fiefdom
-stores.
+window), a name from the offer's language pool (English fallback), and an
+existing headshot for the sex. The manor must also have capacity and the fee
+must be affordable from fiefdom stores.
 
 Name/headshot uniqueness is a **generation-time** property (the market re-rolls
 past identities already in the roster), not a server gate: a scripted client may
@@ -21,6 +21,7 @@ the fee and stats — are still fully validated.
     "character_id": 1,
     "unit_class": "spearman",
     "display_name": "William",
+    "name_language": "en",
     "gender": "male",
     "headshot_id": "male/07.png",
     "level": 2,
@@ -87,6 +88,10 @@ All offer fields come from the candidate object returned by
   per-resource `import_settings` toggles).
 - The knight (`is_knight = true`) can never be hired or dismissed; new
   **priority** ranks below every current member (see `/api/getRetinue`).
+- `name_language` identifies the name pool that produced the offer. New clients
+  echo it from `/api/listRecruitCandidates`; if omitted or invalid, the server
+  falls back to the account's current language and then English. This keeps an
+  offer hirable if the player changes language between listing and hiring.
 - `headshot_id` persists on the member and is returned with the portrait in
   `/api/getRetinue`. Duplicate names/headshots are not rejected (generation
   avoids them in normal play).

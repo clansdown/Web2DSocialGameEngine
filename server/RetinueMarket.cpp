@@ -1,12 +1,12 @@
 #include "RetinueMarket.hpp"
 #include "AvatarPool.hpp"
+#include "TextManager.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <ctime>
-#include <fstream>
-#include <filesystem>
 #include <set>
+#include <sstream>
 
 // `recruit_candidate` is declared at global scope in RetinueMarket.hpp, so its
 // member functions must be defined at global scope too (not inside the
@@ -15,6 +15,7 @@ nlohmann::json recruit_candidate::to_json() const {
     nlohmann::json j;
     j["unit_class"] = unit_class;
     j["display_name"] = display_name;
+    j["name_language"] = name_language;
     j["gender"] = gender;
     j["headshot_id"] = headshot_id;
     j["level"] = level;
@@ -72,20 +73,36 @@ std::string lower_copy(const std::string& s) {
     return out;
 }
 
-std::vector<std::string> read_name_pool(const std::string& text_dir,
-                                        const std::string& unit_class,
-                                        const std::string& gender) {
-    std::vector<std::string> names;
-    std::filesystem::path p(text_dir);
-    p /= "en";
-    p /= "names_" + unit_class + "_" + gender + ".txt";
-    std::ifstream f(p);
-    std::string line;
-    while (std::getline(f, line)) {
-        std::string t = trim(line);
-        if (!t.empty()) names.push_back(std::move(t));
+bool safe_language_component(const std::string& value) {
+    if (value.empty() || value.size() > 12) return false;
+    for (char c : value) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '_' || c == '-';
+        if (!ok) return false;
     }
-    return names;
+    return true;
+}
+
+struct name_pool {
+    std::vector<std::string> names;
+    std::string language;
+};
+
+name_pool read_name_pool(TextManager& text_manager, const std::string& language,
+                         const std::string& unit_class, const std::string& gender) {
+    name_pool pool;
+    const text_lookup_result lookup = text_manager.get_text_resolved(
+        language, "names_" + unit_class + "_" + gender);
+    if (lookup.text.empty()) return pool;
+
+    std::istringstream stream(lookup.text);
+    std::string line;
+    while (std::getline(stream, line)) {
+        std::string name = trim(line);
+        if (!name.empty()) pool.names.push_back(std::move(name));
+    }
+    if (!pool.names.empty()) pool.language = lookup.language;
+    return pool;
 }
 
 // Fallback pool if a localized name file is missing (lets the game run before
@@ -184,7 +201,7 @@ json compute_recruit_fee_for(const json& class_config, int level) {
 std::vector<recruit_candidate> candidates_for_bucket(
     const json& player_combatants, const json& retinue_config,
     int64_t character_id, int hour_bucket, int manor_level,
-    const std::string& text_dir,
+    TextManager& text_manager, const std::string& language,
     std::set<std::string>& used_names, std::set<std::string>& used_headshots)
 {
     std::vector<recruit_candidate> out;
@@ -201,10 +218,16 @@ std::vector<recruit_candidate> candidates_for_bucket(
         int class_max = class_config.value("max_level", 1);
         int max_lvl = max_candidate_level(retinue_config, manor_level, class_max);
 
-        auto male_pool = read_name_pool(text_dir, class_id, "male");
-        auto female_pool = read_name_pool(text_dir, class_id, "female");
-        if (male_pool.empty()) male_pool = fallback_names(false);
-        if (female_pool.empty()) female_pool = fallback_names(true);
+        name_pool male_pool = read_name_pool(text_manager, language, class_id, "male");
+        name_pool female_pool = read_name_pool(text_manager, language, class_id, "female");
+        if (male_pool.names.empty()) {
+            male_pool.names = fallback_names(false);
+            male_pool.language = "en";
+        }
+        if (female_pool.names.empty()) {
+            female_pool.names = fallback_names(true);
+            female_pool.language = "en";
+        }
 
         for (int i = 0; i < candidates_per_class; ++i) {
             recruit_candidate c;
@@ -212,20 +235,22 @@ std::vector<recruit_candidate> candidates_for_bucket(
             c.gender = (rng.next() & 1) ? "female" : "male";
             c.level = 1 + static_cast<int>(rng.next() % static_cast<uint64_t>(max_lvl));
 
-            const auto& pool = (c.gender == "female") ? female_pool : male_pool;
-            if (pool.empty()) continue;
+            const name_pool& pool = (c.gender == "female") ? female_pool : male_pool;
+            if (pool.names.empty()) continue;
 
             // Draw a start index, then walk forward to the first name not yet
             // used (by this character's roster or by an earlier cohort in this
             // same list). The walk is deterministic, so the same roster always
             // yields the same replacement.
-            const uint64_t name_start = rng.next() % pool.size();
+            const uint64_t name_start = rng.next() % pool.names.size();
             bool named = false;
-            for (size_t k = 0; k < pool.size(); ++k) {
-                const std::string& candidate_name = pool[(name_start + k) % pool.size()];
+            for (size_t k = 0; k < pool.names.size(); ++k) {
+                const std::string& candidate_name =
+                    pool.names[(name_start + k) % pool.names.size()];
                 const std::string key = lower_copy(candidate_name);
                 if (used_names.count(key)) continue;
                 c.display_name = candidate_name;
+                c.name_language = pool.language;
                 used_names.insert(key);
                 named = true;
                 break;
@@ -260,7 +285,7 @@ std::vector<recruit_candidate> candidates_for_bucket(
 std::vector<recruit_candidate> list_candidates(
     const json& player_combatants, const json& retinue_config,
     int64_t character_id, int64_t now, int manor_level,
-    const std::string& text_dir,
+    TextManager& text_manager, const std::string& language,
     std::set<std::string>& used_names, std::set<std::string>& used_headshots,
     int& current_bucket, int64_t& next_refresh_at)
 {
@@ -271,16 +296,19 @@ std::vector<recruit_candidate> list_candidates(
     // internal duplicates either.
     auto out = candidates_for_bucket(player_combatants, retinue_config,
                                      character_id, current_bucket - 1,
-                                     manor_level, text_dir, used_names, used_headshots);
+                                     manor_level, text_manager, language,
+                                     used_names, used_headshots);
     auto current = candidates_for_bucket(player_combatants, retinue_config,
                                          character_id, current_bucket,
-                                         manor_level, text_dir, used_names, used_headshots);
+                                         manor_level, text_manager, language,
+                                         used_names, used_headshots);
     for (auto& c : current) out.push_back(std::move(c));
     return out;
 }
 
 bool is_valid_candidate(const json& player_combatants, const json& retinue_config,
-                        int manor_level, const std::string& text_dir,
+                        int manor_level, TextManager& text_manager,
+                        const std::string& language,
                         const recruit_candidate& candidate)
 {
     const int64_t now = std::time(nullptr);
@@ -304,16 +332,36 @@ bool is_valid_candidate(const json& player_combatants, const json& retinue_confi
     if (candidate.level > max_lvl) return false;
 
     // The name must come from the class/sex pool (exact, case-insensitive).
+    // Prefer the language that produced the offer; fall back to English so an
+    // offer remains hirable if the account language changed after listing.
     if (candidate.display_name.empty()) return false;
-    auto pool = read_name_pool(text_dir, candidate.unit_class, candidate.gender);
-    if (pool.empty()) pool = fallback_names(candidate.gender == "female");
+    const std::string requested_language =
+        safe_language_component(candidate.name_language)
+            ? candidate.name_language
+            : language;
     const std::string wanted = lower_copy(candidate.display_name);
-    bool name_ok = false;
-    for (const auto& name : pool) {
-        if (lower_copy(name) == wanted) {
-            name_ok = true;
-            break;
+    auto name_matches = [&](const name_pool& pool) {
+        for (const auto& name : pool.names) {
+            if (lower_copy(name) == wanted) return true;
         }
+        return false;
+    };
+
+    name_pool pool = read_name_pool(text_manager, requested_language,
+                                    candidate.unit_class, candidate.gender);
+    if (pool.names.empty()) {
+        pool.names = fallback_names(candidate.gender == "female");
+        pool.language = "en";
+    }
+    bool name_ok = name_matches(pool);
+    if (!name_ok && requested_language != "en") {
+        name_pool english = read_name_pool(text_manager, "en",
+                                           candidate.unit_class, candidate.gender);
+        if (english.names.empty()) {
+            english.names = fallback_names(candidate.gender == "female");
+            english.language = "en";
+        }
+        name_ok = name_matches(english);
     }
     if (!name_ok) return false;
 

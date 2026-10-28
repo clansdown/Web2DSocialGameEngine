@@ -3,6 +3,12 @@
 #include <filesystem>
 #include <optional>
 
+/** The text content plus the language whose file actually supplied it. */
+struct text_lookup_result {
+    std::string text;
+    std::string language;  // "en" when the English fallback was used; empty when nothing was found
+};
+
 /**
  * Manages loading of game text files with language fallback.
  * 
@@ -23,6 +29,14 @@ public:
      * Returns empty string if neither exists.
      */
     std::string get_text(const std::string& language, const std::string& text_id) const;
+
+    /**
+     * Get text content plus the language that actually supplied it. This is
+     * used by data-like text (retinue name pools) where the caller must know
+     * whether it got a localized pool or the English fallback.
+     */
+    text_lookup_result get_text_resolved(const std::string& language,
+                                         const std::string& text_id) const;
 
     /**
      * Replaces {male|female} gender tokens in text based on character sex.
