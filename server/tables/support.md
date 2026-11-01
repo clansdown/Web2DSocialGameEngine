@@ -1,4 +1,4 @@
-# support.* tables (`staff.db`)
+# support.* tables (`ravenest_staff`)
 
 Account-level, text-only support tickets. See `docs/support_tickets.md`.
 

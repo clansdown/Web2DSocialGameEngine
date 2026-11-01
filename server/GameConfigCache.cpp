@@ -114,11 +114,40 @@ bool GameConfigCache::initialize(const std::string& config_dir) {
         entry.last_check_ms = monotonic_ms();
     }
 
+    auto building_it = configs_.find("fiefdom_building_types.json");
+    if (building_it != configs_.end()) {
+        rebuild_building_land_maps(building_it->second.data);
+    }
+
     loaded_ = success;
     return success;
 }
 
+void GameConfigCache::rebuild_building_land_maps(const nlohmann::json& buildings) {
+    std::unordered_map<std::string, int> arable;
+    std::unordered_map<std::string, int> forest;
+    if (buildings.is_array()) {
+        for (const auto& obj : buildings) {
+            if (!obj.is_object() || obj.empty()) continue;
+            for (auto it = obj.begin(); it != obj.end(); ++it) {
+                if (!it.value().is_object()) continue;
+                const auto& cfg = it.value();
+                if (cfg.contains("arable_acres") && cfg["arable_acres"].is_number()) {
+                    arable[it.key()] = cfg["arable_acres"].get<int>();
+                }
+                if (cfg.contains("forest_acres") && cfg["forest_acres"].is_number()) {
+                    forest[it.key()] = cfg["forest_acres"].get<int>();
+                }
+            }
+        }
+    }
+    std::lock_guard<std::mutex> lock(land_mutex_);
+    building_arable_acres_ = std::move(arable);
+    building_forest_acres_ = std::move(forest);
+}
+
 nlohmann::json& GameConfigCache::getConfig(const std::string& name) {
+    std::lock_guard<std::mutex> lock(reload_mutex_);
     auto it = configs_.find(name);
     if (it == configs_.end()) {
         ConfigEntry e;
@@ -126,8 +155,10 @@ nlohmann::json& GameConfigCache::getConfig(const std::string& name) {
         e.last_check_ms = 0;
         it = configs_.emplace(name, std::move(e)).first;
     }
-    std::lock_guard<std::mutex> lock(reload_mutex_);
-    try_reload(it->first, it->second);
+    const char* hot_reload = std::getenv("RAVENEST_CONFIG_HOT_RELOAD");
+    if (hot_reload && std::string(hot_reload) == "1") {
+        try_reload(it->first, it->second);
+    }
     return it->second.data;
 }
 
@@ -148,6 +179,9 @@ void GameConfigCache::try_reload(const std::string& name, ConfigEntry& entry) {
     std::cerr << "[GameConfigCache] Hot-reload: " << name << " changed, re-parsing" << std::endl;
     if (loadConfig(entry.path, name, entry.data)) {
         if (entry.postprocess) entry.postprocess(entry.data);
+        if (name == "fiefdom_building_types.json") {
+            rebuild_building_land_maps(entry.data);
+        }
     }
 }
 
@@ -191,19 +225,9 @@ int GameConfigCache::getRetinueCapacity(int manor_level) {
 }
 
 int GameConfigCache::getBuildingArableAcres(const std::string& type_id) {
-    nlohmann::json& buildings = getFiefdomBuildingTypes();
-    if (buildings.is_array()) {
-        for (auto& obj : buildings) {
-            if (obj.is_object() && obj.contains(type_id)) {
-                const auto& cfg = obj[type_id];
-                if (cfg.is_object() && cfg.contains("arable_acres") && cfg["arable_acres"].is_number()) {
-                    return cfg["arable_acres"].get<int>();
-                }
-                return 0;
-            }
-        }
-    }
-    return 0;
+    std::lock_guard<std::mutex> lock(land_mutex_);
+    const auto it = building_arable_acres_.find(type_id);
+    return it == building_arable_acres_.end() ? 0 : it->second;
 }
 
 double GameConfigCache::getArableLandByLevel(int manor_level) {
@@ -220,19 +244,9 @@ double GameConfigCache::getArableLandByLevel(int manor_level) {
 }
 
 int GameConfigCache::getBuildingForestAcres(const std::string& type_id) {
-    nlohmann::json& buildings = getFiefdomBuildingTypes();
-    if (buildings.is_array()) {
-        for (auto& obj : buildings) {
-            if (obj.is_object() && obj.contains(type_id)) {
-                const auto& cfg = obj[type_id];
-                if (cfg.is_object() && cfg.contains("forest_acres") && cfg["forest_acres"].is_number()) {
-                    return cfg["forest_acres"].get<int>();
-                }
-                return 0;
-            }
-        }
-    }
-    return 0;
+    std::lock_guard<std::mutex> lock(land_mutex_);
+    const auto it = building_forest_acres_.find(type_id);
+    return it == building_forest_acres_.end() ? 0 : it->second;
 }
 
 double GameConfigCache::getForestLandByLevel(int manor_level) {
@@ -359,4 +373,10 @@ nlohmann::json GameConfigCache::getAllConfigs() const {
 
 bool GameConfigCache::isLoaded() const {
     return loaded_;
+}
+
+int64_t GameConfigCache::getConfigGeneration(const std::string& name) {
+    std::lock_guard<std::mutex> lock(reload_mutex_);
+    auto it = configs_.find(name);
+    return it == configs_.end() ? 0 : static_cast<int64_t>(it->second.mtime);
 }

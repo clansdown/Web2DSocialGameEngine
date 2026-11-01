@@ -10,6 +10,7 @@
 #include "AvatarUrl.hpp"
 #include "Database.hpp"
 #include "GameConfigCache.hpp"
+#include "auth/SessionManager.hpp"
 #include "chat/ChatDB.hpp"
 
 namespace visibility {
@@ -84,7 +85,7 @@ viewer_context load_viewer_context(const std::string& username) {
     viewer_context viewer;
     if (username.empty()) return viewer;
     Database::getInstance().gameDB()
-        << "SELECT id, adult FROM users WHERE username = ?;" << username
+        << "SELECT id, adult FROM users WHERE LOWER(username) = LOWER(?);" << username
         >> [&](int64_t id, bool adult) {
                viewer.account_id = id;
                viewer.is_adult = adult;
@@ -217,7 +218,7 @@ std::string avatar_url_for(const viewer_context& viewer, const character_identit
         const std::string r2_url =
             build_avatar_public_url(identity.avatar_storage, identity.custom_avatar_id);
         if (!r2_url.empty()) return r2_url;
-        return "/api/avatar/" + std::to_string(identity.character_id);
+        return "/api/avatar/" + identity.custom_avatar_id;
     }
     if (!identity.safe_avatar_id.empty()) {
         return AvatarPool::safe_avatar_url(identity.safe_avatar_id);
@@ -348,6 +349,9 @@ void admin_set_account_adult_status(GameConfigCache& config_cache, int64_t accou
         << (method.empty() ? std::optional<std::string>() : std::optional<std::string>(method))
         << account_id;
 
+    auth::SessionManager::instance().update_adult(account_id, adult);
+    auth::SessionManager::instance().revoke_all(gdb, account_id, "adult_status_change");
+
     chat::ChatDB::instance().db()
         << "INSERT INTO moderation_log (created_at, actor_character_id, action, chat_id, "
            "target_character_id, payload) VALUES (?, NULL, 'adult_status', NULL, NULL, ?);"
@@ -375,6 +379,8 @@ void demote_account_to_minor(GameConfigCache& config_cache, int64_t account_id,
     auto& cdb = chat::ChatDB::instance().db();
 
     gdb << "UPDATE users SET adult = 0 WHERE id = ?;" << account_id;
+    auth::SessionManager::instance().update_adult(account_id, false);
+    auth::SessionManager::instance().revoke_all(gdb, account_id, "adult_status_change");
 
     const std::vector<int64_t> character_ids = account_character_ids(account_id);
     if (character_ids.empty()) return;

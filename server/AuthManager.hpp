@@ -1,64 +1,31 @@
 #pragma once
+
+#include "Database.hpp"
+#include "auth/SessionManager.hpp"
+
 #include <string>
-#include <unordered_map>
-#include <vector>
-#include <random>
-#include <cstdio>
-#include <openssl/sha.h>
 
+// Legacy facade kept for the existing handler call sites. All state lives in
+// auth::SessionManager; this class performs no token derivation.
 class AuthManager {
-private:
-    std::vector<uint8_t> secret_salt;
-    std::unordered_map<std::string, std::string> tokens;
-
-    std::string hashTokenInput(const std::string& username,
-                               const std::string& password,
-                               const std::string& ip_address) const {
-        std::string salted = std::string((char*)secret_salt.data(), secret_salt.size()) +
-                            username + password + ip_address;
-        unsigned char hash[SHA256_DIGEST_LENGTH];
-        SHA256((unsigned char*)salted.c_str(), salted.size(), hash);
-        std::string hex;
-        hex.reserve(SHA256_DIGEST_LENGTH * 2);
-        for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-            char buf[3];
-            snprintf(buf, sizeof(buf), "%02x", hash[i]);
-            hex += buf;
-        }
-        return hex;
-    }
-
 public:
-    AuthManager() {
-        secret_salt.resize(32);
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::uniform_int_distribution<int> dis(0, 255);
-        for (auto& byte : secret_salt) {
-            byte = static_cast<uint8_t>(dis(gen));
-        }
-    }
-
     std::string authenticateWithPassword(const std::string& username,
-                                        const std::string& password,
-                                        const std::string& ip_address) {
-        std::string token = hashTokenInput(username, password, ip_address);
-        cacheToken(username, token);
-        return token;
+                                         const std::string& password,
+                                         const std::string& ip_address) {
+        std::string error;
+        auto issued = auth::SessionManager::instance().login(
+            Database::getInstance().gameDB(), username, password, ip_address, std::string(), error);
+        return issued ? issued->access_token : std::string();
     }
 
     bool authenticateWithToken(const std::string& username,
-                              const std::string& token) {
-        auto it = tokens.find(username);
-        if (it == tokens.end()) {
-            return false;
-        }
-        return it->second == token;
+                               const std::string& token) {
+        return auth::SessionManager::instance()
+            .validate_access_token_for(username, token)
+            .has_value();
     }
 
-    void cacheToken(const std::string& username, const std::string& token) {
-        tokens[username] = token;
-    }
+    void cacheToken(const std::string&, const std::string&) {}
 
     static AuthManager& getInstance() {
         static AuthManager instance;

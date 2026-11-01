@@ -129,7 +129,7 @@ Every message is a JSON object:
 - **Threading (server)**: matches simulate on worker threads, but uWS is
   single-threaded. Broadcasts are posted onto the uWS loop with `Loop::defer`
   (the only thread-safe uWS entry point) and published from the loop thread
-  (`App::publish` on the match/team/player topics). SQLite writes are deferred to
+  (`App::publish` on the match/team/player topics). PostgreSQL writes are deferred to
   the loop thread the same way. Workers are stopped and joined before the App is
   destroyed on shutdown.
 
@@ -159,7 +159,7 @@ relayed on the loop thread without touching the simulation.
 ## Server Architecture Notes
 
 - **RAM-only matches**: a match lives entirely in memory; nothing is written
-  to SQLite during play. After the battle, casualties are persisted by
+  to PostgreSQL during play. After the battle, casualties are persisted by
   deferring onto the uWS loop thread (`Loop::defer`) so the database stays
   single-owner.
 - **One worker thread per battle** from a bounded pool (`--combat-sim-threads`,
@@ -170,6 +170,7 @@ relayed on the loop thread without touching the simulation.
 ## Voice Chat (WebRTC)
 
 Voice uses the browser WebRTC standard (mesh topology): the server relays only
-signaling (`voice` messages) and media flows player-to-player. STUN is a
-placeholder — production needs a TURN relay for symmetric-NAT players
-(configure in `client/src/combat/CombatVoice.svelte`).
+signaling (`voice` messages) and media flows player-to-player. Pre-alpha runs
+STUN-only with **no TURN relay**; symmetric-NAT/firewall combinations fail and
+the client shows an explicit "direct connection blocked" message with text-chat
+fallback. Configure STUN/TURN in `client/src/combat/CombatVoice.svelte`.

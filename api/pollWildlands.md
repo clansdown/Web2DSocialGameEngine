@@ -22,3 +22,6 @@ view is open.
 - Wildlands never contributes to `pollChats`, has no unread badge, and never
   triggers push.
 - Messages are global; no membership is required to read or post.
+- `translations` entries use the same `{message_id, body, engine, language,
+  detected_source_language, confidence, change_id, tier}` shape as
+  `pollChats`.

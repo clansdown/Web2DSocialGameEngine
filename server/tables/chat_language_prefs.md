@@ -1,6 +1,6 @@
 # chat_language_prefs Table
 
-Per-character translation language preferences. Stored in `chat.db`.
+Per-character translation language preferences. Stored in `ravenest_chat`.
 
 ## Schema
 

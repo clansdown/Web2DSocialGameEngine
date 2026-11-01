@@ -1,6 +1,6 @@
 # chat_bans Table
 
-Chat-level bans applied by owners/moderators. Stored in `chat.db`.
+Chat-level bans applied by owners/moderators. Stored in `ravenest_chat`.
 
 ## Schema
 

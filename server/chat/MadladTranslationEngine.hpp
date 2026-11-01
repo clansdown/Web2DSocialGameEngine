@@ -2,7 +2,6 @@
 #include "chat/TranslationEngine.hpp"
 #include <nlohmann/json.hpp>
 #include <string>
-#include <mutex>
 
 namespace chat {
 
@@ -19,6 +18,8 @@ public:
     bool available() const override { return enabled_; }
 
     std::optional<translation_result> translate(const translation_request& request) override;
+    std::vector<translation_result> translate_many(
+        const std::vector<translation_request>& requests) override;
     std::optional<std::pair<std::string, double>> detect(const std::string& text) override;
 
 private:
@@ -27,7 +28,6 @@ private:
     std::string sidecar_url_;
     int timeout_ms_;
     bool enabled_;
-    std::mutex mutex_;
 };
 
 }  // namespace chat

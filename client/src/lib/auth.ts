@@ -1,6 +1,6 @@
 import * as storage from './storage';
-import type { Character } from './api';
 import { isAuthenticated } from './stores';
+import { api_url } from './public_urls';
 
 const CONFIG_USERNAME = 'username';
 const CONFIG_PASSWORD = 'password';
@@ -9,29 +9,20 @@ const CONFIG_LANGUAGE = 'language';
 
 let sessionToken: string | null = null;
 let inMemoryUsername: string | null = null;
-let inMemoryPassword: string | null = null;
 
 /**
- * Gets the current session token from memory.
- * Returns null if no active session.
- * 
- * @param none
- * @returns string | null - Current session token or null
- * 
- * Usage: Used to get token for API requests
+ * Gets the current access token from memory. The token is never persisted.
+ *
+ * @returns string | null - Current access token or null
  */
 export function getSessionToken(): string | null {
   return sessionToken;
 }
 
 /**
- * Sets the session token in memory.
- * Called after successful login or token refresh.
- * 
- * @param token - New session token or null to clear
- * @returns void
- * 
- * Usage: Called after login/refresh to establish session
+ * Sets the access token in memory. Called after login/refresh.
+ *
+ * @param token - New access token or null to clear
  */
 export function setSessionToken(token: string | null): void {
   sessionToken = token;
@@ -39,90 +30,70 @@ export function setSessionToken(token: string | null): void {
 }
 
 /**
- * Gets username and password stored in memory.
- * Used for token refresh when session expires.
- * 
- * @param none
- * @returns { username: string; password: string } | null - Credentials or null
- * 
- * Usage: Used internally for token refresh
+ * Gets the signed-in username. Retained for callers that need the account name;
+ * passwords are never stored in the browser.
+ *
+ * @returns { username: string; password: string } | null
  */
 export function getInMemoryCredentials(): { username: string; password: string } | null {
-  if (inMemoryUsername && inMemoryPassword) {
-    return { username: inMemoryUsername, password: inMemoryPassword };
+  if (inMemoryUsername) {
+    return { username: inMemoryUsername, password: '' };
   }
   return null;
 }
 
 /**
- * Stores username and password in memory for session restoration.
- * Called after successful login. Credentials not persisted to disk.
- * 
- * @param username - User's account username
- * @param password - User's account password
- * @returns void
- * 
- * Usage: Called after login to enable token refresh
+ * Stores the signed-in username in memory. The password argument is retained
+ * only for source compatibility with older call sites and is ignored.
+ *
+ * @param username - Account username
+ * @param _password - Ignored (never stored)
  */
-export function setInMemoryCredentials(username: string, password: string): void {
+export function setInMemoryCredentials(username: string, _password: string): void {
   inMemoryUsername = username;
-  inMemoryPassword = password;
 }
 
 /**
- * Clears in-memory username and password.
- * Called on logout or when session refresh fails.
- * 
- * @param none
- * @returns void
- * 
- * Usage: Called during logout or auth failure
+ * Stores only the username. Password persistence was removed with the session
+ * rewrite; refresh is handled by the HttpOnly `ravenest_refresh` cookie.
+ *
+ * @param username - Account username
+ */
+export function setStoredUsername(username: string): void {
+  inMemoryUsername = username;
+}
+
+/**
+ * Clears the in-memory username.
  */
 export function clearInMemoryCredentials(): void {
   inMemoryUsername = null;
-  inMemoryPassword = null;
 }
 
 /**
- * Loads stored credentials from OPFS for auto-login.
- * Reads username and password from config storage.
- * 
- * @param none
- * @returns Promise<{ username: string; password: string } | null> - Stored credentials or null
- * 
- * Usage: Called on app mount for automatic login
+ * Legacy credential loader. Passwords are no longer persisted, so this always
+ * returns null. Startup session restoration uses the refresh cookie instead.
+ *
+ * @returns Promise<null>
  */
 export async function loadStoredCredentials(): Promise<{ username: string; password: string } | null> {
-  const username = await storage.getConfigString(CONFIG_USERNAME, '');
-  const password = await storage.getConfigString(CONFIG_PASSWORD, '');
-  if (username && password) {
-    return { username, password };
-  }
   return null;
 }
 
 /**
- * Saves username and password to OPFS for future auto-login.
- * Warning: Stores credentials in plaintext - security risk.
- * 
- * @param username - Username to store
- * @param password - Password to store
- * @returns Promise<void>
- * 
- * Usage: Called when user checks "remember me" on login
+ * Legacy credential writer. Kept as a no-op so old call sites compile; no
+ * credentials are written to OPFS.
+ *
+ * @param _username - Ignored
+ * @param _password - Ignored
  */
-export async function saveCredentialsLocally(username: string, password: string): Promise<void> {
-  await storage.setConfig(CONFIG_USERNAME, username);
-  await storage.setConfig(CONFIG_PASSWORD, password);
+export async function saveCredentialsLocally(_username: string, _password: string): Promise<void> {
+  // Deliberately empty: the access token lives in memory and the refresh token
+  // lives in an HttpOnly cookie.
 }
 
 /**
- * Deletes stored credentials from OPFS.
- * 
- * @param none
- * @returns Promise<void>
- * 
- * Usage: Called on logout or when auto-login fails
+ * Deletes legacy credential keys from OPFS.
  */
 export async function clearStoredCredentials(): Promise<void> {
   await storage.deleteConfig(CONFIG_USERNAME);
@@ -131,12 +102,8 @@ export async function clearStoredCredentials(): Promise<void> {
 
 /**
  * Loads the last selected character ID from OPFS storage.
- * Used to restore the previously selected character on app load.
- * 
- * @param none
- * @returns Promise<number | null> - Character ID or null if none saved
- * 
- * Usage: Called on login to restore character selection
+ *
+ * @returns Promise<number | null> - Character ID or null
  */
 export async function loadCurrentCharacterId(): Promise<number | null> {
   const id = await storage.getConfigNumber(CONFIG_CURRENT_CHARACTER_ID, 0);
@@ -145,12 +112,8 @@ export async function loadCurrentCharacterId(): Promise<number | null> {
 
 /**
  * Saves the selected character ID to OPFS storage.
- * Persists selection for restoration on next app load.
- * 
- * @param characterId - ID of the character to save as current
- * @returns Promise<void>
- * 
- * Usage: Called when user selects a character
+ *
+ * @param characterId - Character ID
  */
 export async function saveCurrentCharacterId(characterId: number): Promise<void> {
   await storage.setConfig(CONFIG_CURRENT_CHARACTER_ID, characterId);
@@ -158,12 +121,8 @@ export async function saveCurrentCharacterId(characterId: number): Promise<void>
 
 /**
  * Loads the stored language preference from OPFS.
- * Returns null if no language has been chosen yet.
  *
- * @param none
  * @returns Promise<string | null> - Language code or null
- *
- * Usage: Called on app mount to check if language is set
  */
 export async function loadStoredLanguage(): Promise<string | null> {
   const lang = await storage.getConfigString(CONFIG_LANGUAGE, '');
@@ -171,65 +130,56 @@ export async function loadStoredLanguage(): Promise<string | null> {
 }
 
 /**
- * Saves the language preference to OPFS for persistence.
+ * Saves the language preference to OPFS.
  *
- * @param lang - Language code to save (e.g. 'en', 'es', 'de')
- * @returns Promise<void>
- *
- * Usage: Called when user selects a language in LanguageSelect
+ * @param lang - Language code
  */
 export async function saveStoredLanguage(lang: string): Promise<void> {
   await storage.setConfig(CONFIG_LANGUAGE, lang);
 }
 
 /**
- * Clears the stored language preference from OPFS.
- *
- * @param none
- * @returns Promise<void>
- *
- * Usage: Called during full logout or language reset
+ * Clears the stored language preference.
  */
 export async function clearStoredLanguage(): Promise<void> {
   await storage.deleteConfig(CONFIG_LANGUAGE);
 }
 
 /**
- * Checks if there is an active session in memory.
- * 
- * @param none
- * @returns boolean - true if session token exists, false otherwise
- * 
- * Usage: Used throughout app to check auth state
+ * True when an access token is present in memory.
+ *
+ * @returns boolean
  */
 export function hasSession(): boolean {
   return sessionToken !== null;
 }
 
 /**
- * Performs complete logout by clearing all session data.
- * Clears session token, in-memory credentials, and stored credentials.
- * 
- * @param none
- * @returns Promise<void>
- * 
- * Usage: Called when user clicks logout button
+ * Performs a complete logout: revokes the refresh session on the server,
+ * clears the in-memory access token/username, and removes legacy OPFS
+ * credentials.
  */
 export async function logout(): Promise<void> {
+  try {
+    await fetch(api_url('/api/auth/logout'), {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+  } catch {
+    // Local logout still proceeds if the server is unreachable.
+  }
   sessionToken = null;
   inMemoryUsername = null;
-  inMemoryPassword = null;
   isAuthenticated.set(false);
   await clearStoredCredentials();
 }
 
 /**
- * Gets the username stored in memory (not from OPFS).
- * 
- * @param none
- * @returns string | null - Username or null if not set
- * 
- * Usage: Used to display current user in UI
+ * Gets the username stored in memory.
+ *
+ * @returns string | null
  */
 export function getStoredUsername(): string | null {
   return inMemoryUsername;

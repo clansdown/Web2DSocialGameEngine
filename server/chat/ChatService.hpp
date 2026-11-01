@@ -11,6 +11,7 @@
 #include <memory>
 
 #include "chat/ChatTypes.hpp"
+#include "chat/TranslationQueue.hpp"
 
 class GameConfigCache;
 
@@ -119,20 +120,37 @@ public:
     bool is_admin(int64_t account_id);
     bool can_view_chat(int64_t character_id, const std::string& chat_id);
 
+    // Languages that should receive an immediate premium fan-out for a message
+    // authored by `author_character_id`: active room members excluding the
+    // author, minors, and anyone with a block involving the author. Languages
+    // are ordered by frequency and capped by
+    // translation.json premium.max_target_languages.
+    std::vector<std::string> translation_targets(
+        const std::string& chat_id, int64_t author_character_id,
+        const std::string& source_language);
+
+    // ── Translation queue bridge (internal; used by TranslationQueue) ──────
+    std::vector<translation_result> translate_baseline_batch(
+        const std::vector<translation_request>& requests);
+    std::optional<fanout_translation_result> translate_premium_fanout(
+        const fanout_translation_request& request);
+    bool store_translation(const translation_job& job,
+                           const translation_result& result);
+    bool baseline_available() const;
+    bool premium_engine_available() const;
+
 private:
     ChatService() = default;
 
     void check_rate_limit(int64_t account_id);
     void dispatch_push(const std::string& chat_id, int64_t author, const std::string& message_id,
-                       const std::string& body, const std::string& source_language,
+                       int64_t message_version, const std::string& body,
+                       const std::string& source_language,
                        const std::string& safe_message_id);
-    // Shared translation path for viewing and push. Returns the display-language
-    // body, or "" when none should be shown; stores new baseline translations.
-    std::string translate_for_display(int64_t viewer_character_id,
-                                      const std::string& message_id,
-                                      const std::string& text,
-                                      const std::string& source_language,
-                                      const std::string& display_language);
+    translation_tier translation_tier_for_viewer(int64_t character_id, int64_t now) const;
+    bool enqueue_translation(const translation_job& job);
+    bool message_version_matches(const std::string& message_id,
+                                 int64_t expected_version) const;
 
     GameConfigCache* config_ = nullptr;
     std::shared_ptr<TranslationEngine> baseline_engine_;

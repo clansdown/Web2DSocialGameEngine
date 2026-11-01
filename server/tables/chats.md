@@ -1,6 +1,6 @@
 # chats Table
 
-A conversation. Stored in `chat.db`.
+A conversation. Stored in `ravenest_chat`.
 
 ## Schema
 

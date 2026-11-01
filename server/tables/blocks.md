@@ -1,6 +1,6 @@
 # blocks Table
 
-Bidirectional blocks. Stored in `chat.db`.
+Bidirectional blocks. Stored in `ravenest_chat`.
 
 ## Schema
 

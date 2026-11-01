@@ -58,9 +58,14 @@
       }
     };
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      if (pc.connectionState === 'failed') {
+        error_message = texts.combat_voice_direct_failed || 'Voice connection failed. Try a different network or use text chat.';
         peers.delete(to_player);
         pc.close();
+      } else if (pc.connectionState === 'disconnected') {
+        error_message = texts.combat_voice_signaling_lost || 'Voice signaling interrupted.';
+      } else if (pc.connectionState === 'closed') {
+        peers.delete(to_player);
       }
     };
     peers.set(to_player, pc);
@@ -82,6 +87,7 @@
       net.voice(to_player, 'offer', { sdp: offer.sdp });
     } catch (e) {
       console.error('[combat voice] offer failed:', e);
+      error_message = texts.combat_voice_direct_failed || 'Voice connection failed. Try a different network or use text chat.';
     }
   }
 
@@ -93,14 +99,22 @@
    * @returns Promise<void>
    */
   async function enable(): Promise<void> {
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+      error_message = texts.combat_voice_unsupported || 'Voice chat is not supported by this browser. Use text chat instead.';
+      return;
+    }
     try {
       local_stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (e) {
-      error_message = 'Microphone access denied';
+      const name = e instanceof DOMException ? e.name : '';
+      error_message = name === 'NotAllowedError'
+        ? (texts.combat_voice_mic_denied || 'Microphone access was denied. Allow access or use text chat.')
+        : (texts.combat_voice_error || 'Voice chat could not start.');
       console.error('[combat voice] getUserMedia failed:', e);
       return;
     }
     active = true;
+    error_message = '';
     for (const teammate of teammates) {
       await create_offer(teammate);
     }
@@ -147,6 +161,7 @@
         net.voice(from, 'answer', { sdp: answer.sdp });
       } catch (e) {
         console.error('[combat voice] offer handling failed:', e);
+        error_message = texts.combat_voice_direct_failed || 'Voice connection failed. Try a different network or use text chat.';
       }
     } else if (payload.signal_type === 'answer') {
       const sdp = (payload.data as { sdp?: string }).sdp ?? '';
@@ -154,6 +169,7 @@
         await pc.setRemoteDescription({ type: 'answer', sdp });
       } catch (e) {
         console.error('[combat voice] answer handling failed:', e);
+        error_message = texts.combat_voice_direct_failed || 'Voice connection failed. Try a different network or use text chat.';
       }
     } else if (payload.signal_type === 'ice') {
       const candidate = (payload.data as { candidate?: RTCIceCandidateInit }).candidate;
@@ -162,6 +178,7 @@
           await pc.addIceCandidate(candidate);
         } catch (e) {
           console.error('[combat voice] ice candidate failed:', e);
+          error_message = texts.combat_voice_direct_failed || 'Voice connection failed. Try a different network or use text chat.';
         }
       }
     }
@@ -171,17 +188,21 @@
     register_voice_handler((payload: combat_voice_payload) => {
       void receive(payload);
     });
-    void enable();
+    void loadTexts([
+      'combat_voice_enabled',
+      'combat_voice_error',
+      'combat_voice_unsupported',
+      'combat_voice_mic_denied',
+      'combat_voice_direct_failed',
+      'combat_voice_signaling_lost'
+    ]).then((loaded) => {
+      texts = loaded;
+      void enable();
+    });
   });
 
   onDestroy(() => {
     disable();
-  });
-
-  $effect(() => {
-    loadTexts(['combat_voice_enabled', 'combat_voice_error']).then((loaded) => {
-      texts = loaded;
-    });
   });
 </script>
 

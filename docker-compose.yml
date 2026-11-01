@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ravenest
+      POSTGRES_PASSWORD: ${RAVENEST_DB_PASSWORD:?set RAVENEST_DB_PASSWORD}
+      POSTGRES_DB: ravenest_game
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ravenest_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ravenest -d ravenest_game"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - max_connections=100
+      - -c
+      - log_min_duration_statement=250ms
+
+  # Optional CPU MADLAD translation sidecar. It is CPU-only and binds to
+  # localhost; keep it off the public network.
+  translation:
+    profiles: ["translation"]
+    build:
+      context: ./server/translation
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8790:8790"
+    volumes:
+      - ./server/translation/models:/models:ro
+    environment:
+      MADLAD_MODEL_DIR: /models/madlad400-3b-ct2-int8
+      MADLAD_HOST: 0.0.0.0
+      MADLAD_PORT: "8790"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8790/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+
+volumes:
+  ravenest_pgdata:

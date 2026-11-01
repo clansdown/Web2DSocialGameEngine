@@ -1,6 +1,6 @@
 # character_mutes Table
 
-Per-character "person mute" (one-directional). Stored in `chat.db`.
+Per-character "person mute" (one-directional). Stored in `ravenest_chat`.
 
 ## Schema
 

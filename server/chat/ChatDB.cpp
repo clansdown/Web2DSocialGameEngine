@@ -3,12 +3,15 @@
 namespace chat {
 
 int64_t ChatDB::allocate_change_id() {
+    // One statement: concurrent writers can never read the same counter value.
+    // The adapter always pins one connection per thread, so RETURNING is safe
+    // even while multiple HTTP workers and the translation queue allocate ids.
     auto& db = this->db();
-    int64_t next = 1;
-    db << "SELECT next_change_id FROM change_counter WHERE id = 1;"
-       >> [&](int64_t v) { next = v; };
-    db << "UPDATE change_counter SET next_change_id = ? WHERE id = 1;" << (next + 1);
-    return next;
+    int64_t allocated = 0;
+    db << "UPDATE change_counter SET next_change_id = next_change_id + 1 "
+          "WHERE id = 1 RETURNING next_change_id - 1;"
+       >> [&](int64_t v) { allocated = v; };
+    return allocated;
 }
 
 int64_t ChatDB::current_change_id() {
@@ -20,13 +23,14 @@ int64_t ChatDB::current_change_id() {
 }
 
 int64_t ChatDB::allocate_seq(const std::string& chat_id, int64_t change_id) {
+    // Atomic per-chat sequence allocation. The UNIQUE (chat_id, seq) constraint
+    // otherwise turns concurrent sends into intermittent insert failures.
     auto& db = this->db();
-    int64_t last_seq = 0;
-    db << "SELECT last_seq FROM chats WHERE id = ?;" << chat_id
-       >> [&](int64_t v) { last_seq = v; };
-    int64_t next_seq = last_seq + 1;
-    db << "UPDATE chats SET last_seq = ?, change_id = ? WHERE id = ?;"
-       << next_seq << change_id << chat_id;
+    int64_t next_seq = 0;
+    db << "UPDATE chats SET last_seq = last_seq + 1, change_id = ? WHERE id = ? "
+          "RETURNING last_seq;"
+       << change_id << chat_id
+       >> [&](int64_t v) { next_seq = v; };
     return next_seq;
 }
 

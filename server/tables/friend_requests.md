@@ -1,6 +1,6 @@
 # friend_requests Table
 
-Pending friend requests (one-directional). Stored in `chat.db`.
+Pending friend requests (one-directional). Stored in `ravenest_chat`.
 
 ## Schema
 

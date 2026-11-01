@@ -3,7 +3,7 @@
 #include <functional>
 #include <map>
 #include <nlohmann/json.hpp>
-#include <sqlite_modern_cpp.h>
+#include "db/postgres_sqlite_compat.hpp"
 #include <string>
 #include <vector>
 

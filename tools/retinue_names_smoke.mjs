@@ -7,7 +7,7 @@
  * existing hired names stay fixed after a language change, and that a missing
  * language pool falls back to English.
  *
- * Usage: node tools/retinue_names_smoke.mjs --port 3401 --db <game.db>
+ * Usage: node tools/retinue_names_smoke.mjs --port 3401 --db-url postgresql://...
  */
 
 import { execFileSync } from 'node:child_process';
@@ -15,9 +15,9 @@ import { readFileSync } from 'node:fs';
 
 const args = process.argv.slice(2);
 const portIdx = args.indexOf('--port');
-const dbIdx = args.indexOf('--db');
+const dbIdx = args.indexOf('--db-url');
 const port = portIdx >= 0 ? parseInt(args[portIdx + 1], 10) : 2290;
-const dbPath = dbIdx >= 0 ? args[dbIdx + 1] : '';
+const dbUrl = dbIdx >= 0 ? args[dbIdx + 1] : (process.env.RAVENEST_GAME_DB_URL ?? '');
 const base = `http://127.0.0.1:${port}`;
 
 async function post(path, body) {
@@ -47,8 +47,11 @@ function safe_words(file) {
 }
 
 function sql(statement) {
-  if (!dbPath) throw new Error('--db is required');
-  return execFileSync('sqlite3', [dbPath, statement], { encoding: 'utf8' }).trim();
+  if (!dbUrl) throw new Error('--db-url (or RAVENEST_GAME_DB_URL) is required');
+  const translated = statement.replaceAll("strftime('%s','now')", 'EXTRACT(EPOCH FROM NOW())::bigint');
+  return execFileSync('psql', [dbUrl, '-v', 'ON_ERROR_STOP=1', '-At', '-c', translated], {
+    encoding: 'utf8'
+  }).trim();
 }
 
 function assert_offer_language(candidates, language, prefix, label) {

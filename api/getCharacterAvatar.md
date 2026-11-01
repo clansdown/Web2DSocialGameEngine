@@ -1,57 +1,43 @@
-# `GET /api/avatar/<character_id>`
+# `GET /api/avatar/<character_id>[/<content-key>]`
 
-Authorized access to a character's **custom (18+) PFP**. The route is always
-age-gated; the storage backend decides what it returns:
+Access to a character's **custom (18+) PFP**.
+
+## Capability URL (preferred)
+
+`/api/avatar/<character_id>/<content-key>` is an unguessable, content-addressed
+URL. Its key is the stored `<character_id>/<sha256>.<ext>` path, and the server
+validates it against `characters.avatar_custom_id` before serving. No token or
+cookie is required.
+
+```
+GET /api/avatar/1/1/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08.webp
+```
 
 - `local` — streams the file from `uploads/avatars/`.
-- `r2` — returns `302 Found` with a `Location` pointing at the public,
-  content-addressed R2 URL. The public object itself is a capability URL; it is
-  only disclosed to an adult owner or adult viewer.
+- `r2` — `302 Found` to the public content-addressed R2 URL.
 
-This is a `GET` (not a JSON `POST`) because it is used directly as an `<img>`
-`src`. Authentication therefore rides the query string.
+The URL is only returned to an adult owner/viewer; minors always receive the
+safe-pool URL. A shared capability URL remains readable until the object is
+deleted.
 
-## Request
+## Legacy age-gated route
 
 ```
-GET /api/avatar/1?username=player&token=session_token_hex
+GET /api/avatar/1?username=player&token=access_token
 ```
 
-| Query param | Purpose |
-|---|---|
-| `username` | Account username |
-| `token` | Session token for `username` |
+The bare form is retained for old clients and forwards to the same file. It
+requires `username` + `token` and returns `404` for a non-owner minor viewer.
 
-## Success Response
+## Errors
 
-Local storage: `200 OK` with the image bytes and the matching `Content-Type`
-(`image/png`, `image/jpeg`, `image/webp`, or `image/avif`).
-
-R2 storage: `302 Found` with `Location` set to the public assets URL. The
-redirect response is `Cache-Control: private, no-store`; the R2 object carries
-an immutable public cache policy.
-
-## Error Responses
-
-`404 Not Found` (plain text) when any of these hold:
-
-- the character id is missing/invalid, or `username`/`token` are absent;
-- the token is invalid for the username;
-- the character has no custom avatar;
-- the owner's account is not an adult;
-- the viewer is neither the owner nor an adult.
-
-Returning `404` (rather than `403`) avoids confirming that a custom image exists.
+`404 Not Found` (plain text) when the id/key is invalid, the key does not match
+the stored custom avatar, the character has no custom avatar, the owner is not
+an adult, or (legacy route only) the token/viewer check fails.
 
 ## Notes
 
-- Viewer resolution: an under-18 viewer always sees the safe pick instead (the
-  server never hands them this URL). `/api/getRetinue` and `/api/getCharacter`
-  return a resolved `avatar_url`; for local custom storage the client appends
-  `?username=&token=`. R2 custom URLs are absolute and need no credentials (see
-  `with_avatar_auth` in `client/src/lib/avatars.ts`).
 - Upload is `/api/uploadCharacterAvatar`; removal is `/api/removeCustomAvatar`.
-- The R2 redirect is still behind the same owner/adult checks. A leaked public
-  capability URL may remain readable until the object is deleted; removal
-  deletes the object and purges the exact edge URL (browser copies are accepted).
+- Removing/replacing an avatar deletes the old object and purges the exact R2
+  edge URL. Browser copies are accepted.
 - **TODO: moderation.** There is no content review yet.

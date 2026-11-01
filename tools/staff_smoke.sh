@@ -15,6 +15,9 @@ DB_DIR="$ROOT/test_run/staff_smoke_${PORT}"
 SERVER_BIN="$ROOT/server/build/server"
 STAFF_BIN="$ROOT/server/build/staff_admin"
 
+source "$ROOT/tools/postgres_test_env.sh"
+postgres_test_env_init "ravenest_staff_${PORT}"
+
 if [ ! -x "$SERVER_BIN" ] || [ ! -x "$STAFF_BIN" ]; then
     echo "Building server…"
     (cd "$ROOT" && ./compile_server.sh -q >/dev/null 2>&1) || {
@@ -28,7 +31,7 @@ mkdir -p "$DB_DIR"
 
 ( cd "$DB_DIR" && "$SERVER_BIN" --port "$PORT" --content "$GAME_DIR" ) &
 SRV_PID=$!
-trap 'kill $SRV_PID 2>/dev/null; wait $SRV_PID 2>/dev/null; rm -rf "$DB_DIR"' EXIT
+trap 'kill $SRV_PID 2>/dev/null; wait $SRV_PID 2>/dev/null; postgres_test_env_cleanup; rm -rf "$DB_DIR"' EXIT
 
 # Readiness poll: a cold scratch DB can take several seconds to initialize.
 READY=0

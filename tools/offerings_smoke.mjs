@@ -78,6 +78,15 @@ try {
     throw new Error(`malformed offering: ${JSON.stringify(offering)}`);
   }
 
+  // The same character/hour must produce an identical board; the warband LRU
+  // and class-power cache must not introduce nondeterminism.
+  const board_again = await post('getCombatOfferings', { auth, character_id });
+  const again_ids = (board_again.data?.offerings ?? []).map((o) => o.id);
+  const first_ids = offerings.map((o) => o.id);
+  if (JSON.stringify(again_ids) !== JSON.stringify(first_ids)) {
+    throw new Error('offering board changed within the same hour');
+  }
+
   const created = await post('combatCreate', {
     auth,
     character_id,

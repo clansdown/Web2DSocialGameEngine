@@ -8,6 +8,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <iostream>
 
 using json = nlohmann::json;
 
@@ -2256,6 +2257,48 @@ double getTotalForestAcres(GameConfigCache& cache, int fiefdom_id) {
 
 double getAvailableForestAcres(GameConfigCache& cache, int fiefdom_id) {
     return getTotalForestAcres(cache, fiefdom_id) - getUsedForestAcres(cache, fiefdom_id);
+}
+
+// In-memory land accounting. These avoid eight redundant queries per
+// getFiefdom/Reeve report when the caller already has the building list.
+int getUsedArableAcres(GameConfigCache& cache,
+                       const std::vector<BuildingData>& buildings) {
+    int used = 0;
+    for (const auto& building : buildings) {
+        if (building.level <= 0) continue;
+        used += cache.getBuildingArableAcres(building.name);
+    }
+    return used;
+}
+
+int getUsedForestAcres(GameConfigCache& cache,
+                       const std::vector<BuildingData>& buildings) {
+    int used = 0;
+    for (const auto& building : buildings) {
+        if (building.level <= 0) continue;
+        used += cache.getBuildingForestAcres(building.name);
+    }
+    return used;
+}
+
+double getTotalArableAcresForManor(GameConfigCache& cache, int manor_level) {
+    return cache.getArableLandByLevel(manor_level);
+}
+
+double getTotalForestAcresForManor(GameConfigCache& cache, int manor_level) {
+    return cache.getForestLandByLevel(manor_level);
+}
+
+double getAvailableArableAcres(GameConfigCache& cache, int manor_level,
+                               const std::vector<BuildingData>& buildings) {
+    return getTotalArableAcresForManor(cache, manor_level) -
+           getUsedArableAcres(cache, buildings);
+}
+
+double getAvailableForestAcres(GameConfigCache& cache, int manor_level,
+                               const std::vector<BuildingData>& buildings) {
+    return getTotalForestAcresForManor(cache, manor_level) -
+           getUsedForestAcres(cache, buildings);
 }
 
 bool checkFiefdomPrerequisites(GameConfigCache& cache, int fiefdom_id, const nlohmann::json& prerequisites) {

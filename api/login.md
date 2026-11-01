@@ -6,10 +6,15 @@ Authenticate a user and return all characters associated with the account.
 
 ```json
 {
-  "username": "player_name",
-  "password": "password_value"
+  "auth": {
+    "username": "player_name",
+    "password": "password_value"
+  }
 }
 ```
+
+The password is only accepted on `/api/login` and `/api/createAccount`. Normal
+API calls use `Authorization: Bearer <access token>`.
 
 ## Response
 
@@ -35,47 +40,42 @@ Authenticate a user and return all characters associated with the account.
         "avatar_changed_at": 0,
         "avatar_url": "/images/avatars/safe/male/3.png"
       }
-    ]
-  },
-  "token": "hex_token_string"
+    ],
+    "token": "rvs_at_..."
+  }
 }
+```
+
+The response also sets:
+
+```text
+Set-Cookie: ravenest_refresh=rvs_rt_...;
+            HttpOnly; Secure; SameSite=Lax; Path=/api/auth; Max-Age=34560000
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| user_id | integer | User account ID |
-| username | string | Login username |
-| adult | boolean | Whether account is for adults |
-| language | string | Account interface / display language (chosen at creation) |
-| characters | array | Array of character objects owned by this user |
-| characters[].id | integer | Character ID |
-| characters[].display_name | string | Character display name |
-| characters[].safe_display_name | string | Character safe display name |
-| characters[].level | integer | Character level |
-| characters[].avatar_safe_id | string \| null | Safe-pool PFP id |
-| characters[].avatar_custom_id | string \| null | Content-addressed custom PFP key, or null |
-| characters[].avatar_storage | string | `local` or `r2` |
-| characters[].avatar_changed_at | integer | Unix ts of the last PFP change (24h cooldown) |
-| characters[].avatar_url | string | Server-resolved PFP URL for this viewer (safe pick for minors) |
-| token | string | Authentication token (included if password used) |
+| data.token | string | 15-minute access token; send as `Authorization: Bearer` |
+| data.characters | array | Characters owned by the account |
+| data.language | string | Account interface/display language |
+| data.adult | boolean | Staff/credential-verified adult status |
 
-### Error (400 Bad Request)
+The refresh token is never returned in the JSON body.
+
+### Error (401 Unauthorized)
 
 ```json
 {
-  "error": "Invalid username or password"
+  "error": "invalid_credentials",
+  "status": "ok",
+  "needs_auth": false,
+  "auth_failed": true
 }
 ```
 
 ## Implementation Notes
 
-- Queries users table to verify credentials and get user_id
-- Queries characters table by user_id to retrieve all characters
-- Returns array of characters to support multiple characters per user
-- Token is generated when password authentication succeeds
-
-## Implementation Status
-
-- Database queries: Implemented
-- Password hashing: Implemented
-- Session token generation: Implemented
+- Password verification uses Argon2id and runs on an HTTP worker, never the uWS loop.
+- At most 5 refresh sessions are kept per account; the least-recently-used is revoked.
+- A successful login creates a new `user_sessions` row and an in-memory access token.
+- `WWW-Authenticate: Bearer` is set on 401 responses.

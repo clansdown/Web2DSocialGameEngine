@@ -724,7 +724,7 @@ client never needs to be deterministic.
 ### 16.4 Threading & persistence
 
 Unchanged foundation: one worker thread per match, loop thread only enqueues commands,
-SQLite writes deferred via `Loop::defer` after battle ends (wounds, XP, morale).
+PostgreSQL writes deferred via `Loop::defer` after battle ends (wounds, XP, morale).
 
 ## 17. Protocol & Config Delta
 

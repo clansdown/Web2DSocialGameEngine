@@ -75,6 +75,9 @@ public:
 
     nlohmann::json getAllConfigs() const;
     bool isLoaded() const;
+    // Monotonic-ish file mtime used as a cache generation for derived config
+    // data (land maps, combat class power tables, warband cache keys).
+    int64_t getConfigGeneration(const std::string& name);
 
 private:
     struct ConfigEntry {
@@ -88,11 +91,15 @@ private:
     std::string config_dir_;
     std::unordered_map<std::string, ConfigEntry> configs_;
     std::mutex reload_mutex_;
+    mutable std::mutex land_mutex_;
+    std::unordered_map<std::string, int> building_arable_acres_;
+    std::unordered_map<std::string, int> building_forest_acres_;
     bool loaded_ = false;
 
     bool loadConfig(const std::string& path, const std::string& name, nlohmann::json& target);
     nlohmann::json& getConfig(const std::string& name);
     void try_reload(const std::string& name, ConfigEntry& entry);
+    void rebuild_building_land_maps(const nlohmann::json& buildings);
 
     static int64_t monotonic_ms();
     static void scaleTDPieceValues(nlohmann::json& pieces);

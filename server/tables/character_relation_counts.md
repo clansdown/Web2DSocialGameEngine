@@ -1,7 +1,7 @@
 # character_relation_counts Table
 
 Fast-path counter: the number of block/mute relationships a character
-participates in, in either direction. Stored in `chat.db`.
+participates in, in either direction. Stored in `ravenest_chat`.
 
 ## Schema
 

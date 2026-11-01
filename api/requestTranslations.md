@@ -1,7 +1,8 @@
 # `/api/requestTranslations`
 
-Returns translations of the given messages into the viewer's language, using
-stored results or generating them via the baseline translation sidecar.
+Returns cached translations of the given messages into the viewer's language.
+Cache misses are enqueued on the background baseline translation worker; the
+response never waits for the sidecar.
 
 **Requires authentication.**
 
@@ -17,11 +18,19 @@ stored results or generating them via the baseline translation sidecar.
 ```json
 { "status": "ok", "data": { "translations": {
   "m_..": { "body": "bonjour", "engine": "madlad400-3b", "language": "fr",
-            "detected_source_language": "en", "confidence": 0.9 } } } }
+            "detected_source_language": "en", "confidence": 0.9,
+            "tier": "baseline" } } } }
 ```
 
 ## Notes
 
 - Messages already in `lang` are skipped; inaccessible messages are ignored.
-- New translations are stored and later delivered via `pollChats.translations`.
-- If the sidecar is unavailable, the map is simply empty (original shown).
+- Only cached rows are returned. A miss returns no entry for that message and is
+  queued; the result is delivered later via `pollChats.translations` (or
+  `pollWildlands.translations`) with `message_id`, `change_id`, and `tier`.
+- A queued job is version-guarded: if the message is edited before the sidecar
+  finishes, the stale translation is discarded.
+- If the sidecar is unavailable, the map stays empty and the original is shown.
+- Monthly-pass viewers enqueue the premium tier when that engine is enabled
+  (Phase 2); cached premium rows are shared with every adult viewer of the same
+  language.

@@ -34,21 +34,32 @@ text_lookup_result TextManager::get_text_resolved(const std::string& language,
     if (!safe_path_component(language, false) || !safe_path_component(text_id, false)) {
         return {};
     }
+
+    const std::string cache_key = language + '\x1f' + text_id;
+    {
+        std::lock_guard<std::mutex> lock(m_cache_mutex);
+        auto it = m_cache.find(cache_key);
+        if (it != m_cache.end()) return it->second;
+    }
+
+    text_lookup_result result;
     auto lang_path = m_base_path / language / (text_id + ".txt");
     auto content = read_file(lang_path);
     if (!content.empty()) {
-        return {content, language};
-    }
-
-    if (language != "en") {
+        result = {content, language};
+    } else if (language != "en") {
         auto en_path = m_base_path / "en" / (text_id + ".txt");
         content = read_file(en_path);
         if (!content.empty()) {
-            return {content, "en"};
+            result = {content, "en"};
         }
     }
 
-    return {};
+    {
+        std::lock_guard<std::mutex> lock(m_cache_mutex);
+        m_cache[cache_key] = result;
+    }
+    return result;
 }
 
 std::string TextManager::substitute_gender(const std::string& text, const std::optional<std::string>& sex)

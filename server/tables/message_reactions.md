@@ -1,6 +1,6 @@
 # message_reactions Table
 
-Emoji reactions. Stored in `chat.db`.
+Emoji reactions. Stored in `ravenest_chat`.
 
 ## Schema
 

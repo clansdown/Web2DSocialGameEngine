@@ -1,6 +1,6 @@
 # chat_invites Table
 
-Pending group invitations. Stored in `chat.db`.
+Pending group invitations. Stored in `ravenest_chat`.
 
 ## Schema
 

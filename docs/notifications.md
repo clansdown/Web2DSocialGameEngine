@@ -6,7 +6,7 @@ belong in support tickets.
 
 ## Storage
 
-`staff.db` `notifications`:
+`ravenest_staff` `notifications`:
 
 - `id`, `account_id`, optional `character_id`
 - `kind`: `moderation_action`, `moderation_reversal`, `social_restriction`,

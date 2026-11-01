@@ -9,7 +9,7 @@
  * It also verifies every text id referenced by the report exists in
  * game/text/en, and that no raw advisor English is returned.
  *
- * Usage: node tools/reeve_smoke.mjs --port 3399 --db test_run/smoke_3399/game.db
+ * Usage: node tools/reeve_smoke.mjs --port 3399 --db-url postgresql://...
  */
 
 import { execFileSync } from 'node:child_process';
@@ -17,9 +17,9 @@ import { existsSync, readFileSync } from 'node:fs';
 
 const args = process.argv.slice(2);
 const portIdx = args.indexOf('--port');
-const dbIdx = args.indexOf('--db');
+const dbIdx = args.indexOf('--db-url');
 const port = portIdx >= 0 ? parseInt(args[portIdx + 1], 10) : 2290;
-const dbPath = dbIdx >= 0 ? args[dbIdx + 1] : '';
+const dbUrl = dbIdx >= 0 ? args[dbIdx + 1] : (process.env.RAVENEST_GAME_DB_URL ?? '');
 const base = `http://127.0.0.1:${port}`;
 
 async function post(path, body) {
@@ -50,8 +50,11 @@ function numeric(value) {
 }
 
 function sql(statement) {
-  if (!dbPath) throw new Error('--db is required for the seeded smoke flow');
-  return execFileSync('sqlite3', [dbPath, statement], { encoding: 'utf8' }).trim();
+  if (!dbUrl) throw new Error('--db-url (or RAVENEST_GAME_DB_URL) is required for the seeded smoke flow');
+  const translated = statement.replaceAll("strftime('%s','now')", 'EXTRACT(EPOCH FROM NOW())::bigint');
+  return execFileSync('psql', [dbUrl, '-v', 'ON_ERROR_STOP=1', '-At', '-c', translated], {
+    encoding: 'utf8'
+  }).trim();
 }
 
 function collect_text_ids(value, ids = new Set()) {

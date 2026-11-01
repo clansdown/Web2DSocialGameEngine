@@ -11,7 +11,7 @@ tables each have a doc under `server/tables/`.
 
 ## Storage
 
-Chat lives in its **own SQLite database** (`chat.db`), independent of `game.db`.
+Chat lives in its **own PostgreSQL database** (`ravenest_chat`), independent of `ravenest_game`.
 There are **no cross-database foreign keys** — character/chat ids are plain
 integers. `Database::getInstance().chatDB()` is the handle; `initializeChatDB()`
 creates the schema.
@@ -97,10 +97,26 @@ transport-agnostic, so a future `/ws/chat` is additive.
 ## Translation
 
 Integral, not bolted on. Every message stores a detected `source_language` and
-confidence. On view, `requestTranslations` returns stored translations for the
-viewer's language or generates them via the baseline engine, storing them per
-`(message_id, target_language, engine, model_version)`. The UI shows the original
-and a collapsible translation (shown by default).
+confidence. `requestTranslations` returns cached rows only; a miss is enqueued on
+`BaselineTranslationQueue` and the result arrives through `pollChats.translations`
+(or `pollWildlands.translations`). The queue uses one long-lived worker and sends
+one batched `/translate` request per drain. Translations are stored per
+`(message_id, target_language, engine, model_version)` with a `tier`
+(`baseline`/`premium`). A queued job carries the source message `version`; a result
+that arrives after an edit is discarded. The UI shows the original and a
+collapsible translation (shown by default).
+
+The baseline engine is lazy per viewer. Monthly-pass authors fan out immediately
+in Phase 2: one LLM call carries the conversation context and the languages of
+active adults in the room (author, minors, and either-direction blocks excluded;
+frequency-ordered and capped by `translation.json premium.max_target_languages`).
+Cached premium rows are shared with every adult viewer reading that language.
+`PremiumTranslationQueue` is the inert Phase 2 seam and is not started in Phase 1.
+
+Test-only probe: `testTranslationTargets` is registered only when
+`RAVENEST_TEST_TRANSLATION_TARGETS=1`. It returns
+`{ languages: [...] }` for a `chat_id`/`source_language` pair and exists solely so
+`tools/translation_smoke.sh` can assert the premium room-language rules.
 
 Engines (`server/chat/TranslationEngine.hpp`):
 
@@ -131,10 +147,9 @@ the OS notification when a client window is focused (per-device dedupe).
 Push bodies are translated exactly as the recipient would see the message when
 viewing it: to their display language (`users.language`), skipping when the
 source matches the display language or the recipient disabled that source
-language, using stored-or-library translations only (never the LLM engine, and
-never a blocking LLM call). If only an LLM translation would exist, the body
-falls back to the original; the recipient still sees the LLM translation when
-they open the chat.
+language. Push performs a cached lookup only; a miss enqueues background work and
+sends the original body. It never performs sidecar or LLM I/O inline. The
+recipient still sees the translation when they open the chat.
 
 ## Moderation, staff, and admin
 
@@ -147,14 +162,14 @@ Three separate authorization domains:
 1. **Scoped chat moderation** — `chat_members.role` (`owner`/`moderator`), one
    chat.
 2. **Chat-wide admin allowlist** — `game/config/chat_admins.json`, chat-only.
-3. **Game staff** — `staff.db` roles/capabilities. Staff with
+3. **Game staff** — `ravenest_staff` roles/capabilities. Staff with
    `chat.moderate_any` can view and moderate any chat server-side, independent
    of the client's opt-in moderation-mode toggle. Staff identity locks live in
    `server/docs/chat_identity_lock.md`.
 
 Every scoped moderation action (ban/unban, kick, delete message, set/clear
 moderator, rename group) and every staff-wide moderation action is written to
-the shared append-only journal in `staff.db`; staff with `staff.undo` can undo
+the shared append-only journal in `ravenest_staff`; staff with `staff.undo` can undo
 it. The journal also records sensitive staff chat reads. See
 `docs/staff_action_journal.md`.
 
@@ -185,4 +200,4 @@ offline.
 - GIF provider/curation (one server-provided GIF per message; `messages.gif`).
 - Library-translation reaping.
 - Server-side search (search is client-side over the loaded window).
-- Asynchronous push dispatch (currently synchronous on the HTTP thread).
+- Asynchronous push dispatch (push fan-out runs on the HTTP worker pool; a dedicated push pool is a follow-up).

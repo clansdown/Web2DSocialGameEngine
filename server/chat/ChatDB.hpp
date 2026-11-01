@@ -2,7 +2,7 @@
 // Thin access layer over the dedicated chat.db connection (see Database.hpp).
 // Owns cursor allocation (per-chat `seq` + global `change_id`) and the small
 // set of cross-cutting queries used by ChatService.
-#include <sqlite_modern_cpp.h>
+#include "db/postgres_sqlite_compat.hpp"
 #include <nlohmann/json.hpp>
 #include <string>
 #include <cstdint>

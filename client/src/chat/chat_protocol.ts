@@ -58,6 +58,13 @@ export interface chat_translation {
   language: string;
   detected_source_language: string;
   confidence: number;
+  tier: string;
+}
+
+/** A translation delta delivered by pollChats/pollWildlands. */
+export interface chat_poll_translation extends chat_translation {
+  message_id: string;
+  change_id: number;
 }
 
 export interface chat_message {
@@ -107,7 +114,7 @@ export interface chat_poll {
   memberships: chat_membership[];
   members: chat_membership[];
   messages: chat_message[];
-  translations: chat_translation[];
+  translations: chat_poll_translation[];
   friend_events: unknown[];
   invites: chat_invite[];
   bans: chat_ban[];

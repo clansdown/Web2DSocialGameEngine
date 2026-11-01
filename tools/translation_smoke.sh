@@ -13,8 +13,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PORT="${1:-3394}"
 SIDECAR_PORT="${2:-8790}"
 GAME_DIR="$ROOT/game"
-DB_DIR="$ROOT/.translation_smoke_db_${PORT}"
 SERVER_BIN="$ROOT/server/build/server"
+
+source "$ROOT/tools/postgres_test_env.sh"
+postgres_test_env_init "ravenest_translation_${PORT}"
 
 if [ ! -x "$SERVER_BIN" ]; then
     echo "Building server…"
@@ -24,15 +26,22 @@ if [ ! -x "$SERVER_BIN" ]; then
     }
 fi
 
-rm -rf "$DB_DIR"
-mkdir -p "$DB_DIR"
+# Create enough single-use invitation codes for the room-language fixtures.
+# In `off` mode the server ignores them; in `global_code`/`invite_only` they are
+# accepted. Missing invite_admin is non-fatal (registration may be off).
+if [ -x "$ROOT/server/build/invite_admin" ]; then
+    TRANSLATION_INVITE_CODES="$("$ROOT/server/build/invite_admin" create --count 20 2>/dev/null \
+        | awk -F'\t' '$1 != "" { print $1 }' | paste -sd, -)"
+    export TRANSLATION_INVITE_CODES
+fi
 
-python3 "$ROOT/server/translation/sidecar.py" --port "$SIDECAR_PORT" --passthrough &
+python3 "$ROOT/server/translation/sidecar.py" --port "$SIDECAR_PORT" --passthrough --delay-ms 1000 &
 SIDECAR_PID=$!
 ( cd "$GAME_DIR" && RAVENEST_TEST_ADULT_ACCOUNTS=1 \
-    "$SERVER_BIN" --port "$PORT" --db-dir "$DB_DIR" --test-timeout-seconds 600 ) &
+    RAVENEST_TEST_TRANSLATION_TARGETS=1 \
+    "$SERVER_BIN" --port "$PORT" --test-timeout-seconds 600 ) &
 SRV_PID=$!
-trap 'kill $SRV_PID $SIDECAR_PID 2>/dev/null; wait $SRV_PID $SIDECAR_PID 2>/dev/null; rm -rf "$DB_DIR"' EXIT
+trap 'kill $SRV_PID $SIDECAR_PID 2>/dev/null; wait $SRV_PID $SIDECAR_PID 2>/dev/null; postgres_test_env_cleanup' EXIT
 
 sleep 0.3
 ready=0

@@ -1,219 +1,125 @@
 # Ravenest Server
 
-C++23 HTTP API server for Ravenest Build and Battle game backend.
+C++23 HTTP API server for Ravenest Build and Battle.
 
 ## Overview
 
-High-performance server built with:
-- **uWebSockets**: Async HTTP endpoint handling
-- **nlohmann/json**: Modern JSON parsing
-- **sqlite_modern_cpp**: SQLite ORM wrapper
-- **OpenSSL**: SHA-256 for token generation
-- **glibc crypt()**: Yescrypt ($y$ prefix) for password hashing
+- **uWebSockets**: HTTP + realtime combat WebSocket
+- **nlohmann/json**: JSON parsing
+- **PostgreSQL (libpq)**: four independent logical databases
+- **Argon2id (libargon2)**: password hashing
+- **OpenSSL**: SHA-256, HMAC, random bytes
+- **libcurl**: translation sidecar, R2, Web Push
 
 Design goals:
-- Minimal code duplication via unified handler
-- Pre-dispatch authentication for all endpoints
-- Clean architecture with logical header separation
+
+- PostgreSQL-only runtime (no SQLite)
+- no blocking DB/network/CPU work on the uWS loop
+- bounded worker queues and graceful saturation (`server_busy`)
+- repositories/adapter own SQL; handlers own orchestration
+- invite-only pre-alpha registration
 
 ## Architecture
 
-### Request Flow
+### Request flow
 
 ```
-Request → POST /api/{endpoint}
-    ↓
-Unified /api/* handler (single handler for all endpoints)
-    ↓
-[1] Buffer accumulation (once)
-    ↓
-[2] Parse JSON body
-    ↓
-[3] Extract endpoint name from URL (/api/login → "login")
-    ↓
-[4] Extract auth object and IP address (X-Real-IP header)
-    ↓
-[5] CALL handleAuth() - authentication logic
-    ├─ Returns AuthResult with:
-    │   - authenticated username (optional)
-    │   - new_token (optional)
-    │   - needs_auth (bool)
-    │   - auth_failed (bool)
-    │   - error (optional)
-    │
-    ├─ If auth fails/needs auth: return early with ApiResponse
-    └─ If auth succeeds: proceed to dispatch
-    ↓
-[6] Endpoint dispatch
-    ├─ If endpoint == "createAccount": handleCreateAccount() (special case)
-    └─ Otherwise: lookup in handler map → dispatch to handler function
-    ↓
-[7] Handler returns ApiResponse
-    ↓
-[8] sendJsonResponse(ApiResponse)
+uWS loop
+  /api/*  -> onData: accumulate body, parse JSON
+          -> copy endpoint/headers/body
+          -> http_pool.try_post(work)
+               worker:
+                 auth (Bearer / refresh cookie / login password)
+                 handler -> ApiResponse
+                 loop_dispatcher.post(completion)
+                   loop: sendJsonResponse(res)
 ```
 
-### Header File Organization
+- Body cap: 4 MiB.
+- `res->onAborted` sets an atomic; completions check it before touching `res`.
+- `uploadCharacterAvatar` authenticates on the loop (in-memory) and completes through its own upload manager.
+
+See `docs/threading.md`.
+
+### Layout
 
 ```
 server/
-├── main.cpp              # Entry point, unified handler, all endpoint implementations
-├── init_db.cpp            # Database initialization (tables + indexes)
-├── init_db.hpp            # Database initialization declarations
-├── CMakeLists.txt        # Build configuration (FetchContent for deps)
-├── Database.hpp          # Database singleton & connection management
-├── ApiResponse.hpp       # Response structure with auth flags
-├── AuthManager.hpp       # Token cache and SHA256 generation
-├── ApiHandlers.hpp       # Handler types, ClientInfo, endpoint map
-├── PasswordHash.hpp      # glibc crypt() yescrypt hashing
-├── SafeNameGenerator.*   # Safe display name generation
-├── GameConfigCache.*     # Game configuration JSON caching
-├── images/
-│   ├── ImageCache.hpp    # Image directory scanning and caching
-│   └── ImageCache.cpp    # Image path queries and filtering
+├── main.cpp                  # routes, handlers, startup/shutdown
+├── init_db.cpp               # schema bootstrap (PostgreSQL baseline)
+├── Database.hpp              # four logical DB handles
+├── db/
+│   ├── Database.hpp          # value/error/result/row concepts + transaction
+│   ├── PostgresConnection.*  # libpq implementation of connection_like
+│   ├── Executor.hpp          # bounded 4-worker per-DB executor + registry
+│   ├── BaselineSchema.hpp    # full PostgreSQL baseline (game/chat/staff/invites)
+│   ├── Schema.cpp            # migration runner + advisory bootstrap
+│   ├── libpq_api.hpp         # minimal libpq C API declarations
+│   └── postgres_sqlite_compat.hpp # streaming query adapter for legacy modules
+├── auth/
+│   ├── Argon2.*              # Argon2id hash/verify
+│   └── SessionManager.*      # access tokens, refresh sessions, revocation
+├── runtime/LoopDispatcher.*  # the only Loop::defer gate for HTTP completions
+├── registration/             # invite-only settings/store/service/rate limiting
+└── chat/                     # chat, translation engine, push, presence
 ```
 
-## Authentication System
+## Authentication
 
-### Request Format
+- Passwords: **Argon2id** PHC strings (64 MiB, 3 iterations).
+- Access token: `Authorization: Bearer rvs_at_...`, 15 minutes, in memory.
+- Refresh token: HttpOnly `ravenest_refresh` cookie scoped to `/api/auth`, long-lived, no rotation.
+- Multiple sessions; max 5, LRU eviction.
+- Revocation on logout, logout-all, password change, adult-status change, and account lock.
 
-All endpoints expect (except createAccount):
-```json
-{
-  "auth": {
-    "username": "player_name",
-    "password": "xxx"                    // OR
-    "token": "yyy"
-  },
-  "player_id": 123                         // endpoint-specific fields
-}
-```
-
-### Token Generation
-
-**Algorithm**: `SHA256(secret_salt + username + password + IP_address)`
-
-1. Server generates 32 random bytes at startup (secret_salt)
-2. Hash computed using OpenSSL SHA256
-3. Token stored in in-memory cache: `unordered_map<username, token>`
-4. Token validity: Until server restart (stateless deployment)
-
-### Password Hashing
-
-**Algorithm**: glibc `crypt()` with yescrypt prefix (`$y$`)
-
-```cpp
-std::string salt = "$y$" + generateRandomSalt(16) + "$";
-char* hashed = crypt(password.c_str(), salt.c_str());
-```
-
-Yescrypt is memory-hard and CPU-hard, providing security against offline attacks.
-
-### Auth Flow Logic
-
-Handled in `handleAuth()` function (pre-dispatch):
+Auth endpoints:
 
 ```
-handleAuth(endpoint, auth_object, ip_address)
-    ↓
-if endpoint == "createAccount":
-    └─ skip auth, return anonymous
-
-if !auth_object.is_object() OR empty:
-    └─ return needs_auth = true
-
-if username empty:
-    └─ return error = "username required"
-
-if password supplied:
-    ├─ Fetch stored hash from DB
-    ├─ If user not found: auth_failed = true
-    ├─ Verify password with crypt()
-    ├─ If mismatch: auth_failed = true
-    ├─ Generate token with SHA256(secret + user + pass + ip)
-    ├─ Cache token
-    └─ return username + new_token
-
-if token supplied:
-    ├─ Lookup username in cache
-    ├─ If not found OR mismatch: needs_auth = true
-    └─ return username
-
-if neither:
-    └─ return needs_auth = true
+POST /api/login
+POST /api/createAccount
+POST /api/auth/refresh
+POST /api/auth/logout
+POST /api/auth/logoutAll
+POST /api/auth/changePassword
+GET  /api/auth/sessions
+POST /api/auth/revokeSession
 ```
 
-### Response Format
+Full details: `docs/auth.md`.
 
-All responses descend from base structure:
+## Databases
 
-```json
-{
-  "status": "ok",
-  "data": { /* endpoint-specific fields */ },
-  "needs-auth": false,
-  "auth-failed": false,
-  "error": null
-}
+| Database | Contents |
+|---|---|
+| `ravenest_game` | users, `user_sessions`, characters, fiefdoms, retinue, combat, progression, monetization |
+| `ravenest_chat` | chats, messages, translations, social graph, moderation, push |
+| `ravenest_staff` | staff, journal, support, notifications |
+| `ravenest_invites` | invitation codes |
+
+No cross-database joins or transactions. Connection URLs:
+
+```text
+RAVENEST_GAME_DB_URL
+RAVENEST_CHAT_DB_URL
+RAVENEST_STAFF_DB_URL
+RAVENEST_INVITES_DB_URL
 ```
 
-**Response interpretation:**
-- `data.token`: Included when new token generated (password supplied)
-- `auth-failed = true`: Only when password verification fails
-- `needs-auth = true`: No auth, expired token, or token mismatch
-- `error`: Error message string (present only on error)
+Setup and backups: `docs/database.md`, `docs/postgres_operations.md`.
 
-## API Endpoints
+## Invite-only pre-alpha
 
-### createAccount
-- **Auth**: Not required
-- **Behavior**: Creates user + default character, returns user_id, characters array, and token
-- **Response**: `{ "user_id": ..., "username": ..., "characters": [...], "token": "..." }`
+`game/config/registration.json` uses `"mode": "invite_only"`. Generate codes with:
 
-### login
-- **Auth**: Required (password OR token)
-- **Behavior**: Returns user account info and all characters
-- **Response**: `{ "user_id": ..., "username": ..., "adult": ..., "characters": [...], token }`
+```bash
+./invite_admin create --count 20
+```
 
-### getCharacter
-- **Auth**: Required (password OR token)
-- **Behavior**: Returns character data by character_id
-- **Response**: `{ "id": ..., "display_name": ..., "safe_display_name": ..., "level": ... }`
+The game-side redemption ledger is `users.invitation_code_id` (partial unique index); `invitation_codes.used_at` is bookkeeping. See `docs/registration.md`.
 
-### updateUserProfile
-- **Auth**: Required (password OR token)
-- **Behavior**: Update user account settings (adult flag)
-- **Response**: `{ "adult": ..., "token": "..." }`
+## API endpoints
 
-### updateCharacterProfile
-- **Auth**: Required (password OR token)
-- **Behavior**: Update character display names (requires character_id, checks adult flag)
-- **Response**: `{ "id": ..., "display_name": ..., "safe_display_name": ..., "level": ..., "token": "..." }`
-
-### getGameInfo
-- **Auth**: Required (password OR token)
-- **Behavior**: Returns game configuration data and image information for all assets. Supports optional filtering via `filters` parameter.
-- **Response**: `{ "configs": {...}, "images": {...}, "token": "..." }`
-- **Filtering**: Optional `filters` parameter with `asset_types` (config and image types) and/or `asset_ids` (specific asset identifiers)
-- **Note**: Returns both `configs` (JSON config data) and `images` (image paths grouped by asset type and action)
-
-### getPlayer, Build, getWorld, getFiefdom, sally, campaign, hunt
-- **Auth**: Required (password OR token)
-- **Behavior**: Endpoint-specific functionality
-- **Token refresh**: Accept password in auth object to generate new token
-
-### getTexts
-- **Auth**: Not required (public, pre-auth screens only)
-- **Behavior**: Returns translated text for `language` + `text_ids` with NO gender/name substitution (gender tokens resolve to male default)
-- **Response**: `{ "texts": { "<id>": "...", ... } }`
-- **Note**: The client never sends `sex` to this endpoint. See `getCharacterTexts` for in-game text.
-
-### getCharacterTexts
-- **Auth**: Required (password OR token)
-- **Behavior**: Returns translated text for `language` + `text_ids`, applying gender substitution (`{male|female}` tokens) and `{character_name}` replacement using the character's stored `sex` and `display_name`
-- **Request**: `{ "character_id": ..., "language": "...", "text_ids": [...] }`
-- **Response**: `{ "texts": { "<id>": "...", ... } }`
-- **Note**: Character must belong to the authenticated user. Client callers use `loadTexts()`/`loadText()` from `client/src/lib/text.ts`, which route here automatically.
+Every endpoint has a file in `api/`. Authenticated endpoints use the Bearer header; `createAccount`, `getRegistrationConfig`, `getTexts`, and `getUITextures` are public. `authRefresh`/`authLogout` use the refresh cookie.
 
 ## Realtime Combat (WebSocket)
 
@@ -223,9 +129,9 @@ the REST API. Unlike the single-player mini-games, it is not a mini-game: it
 has its own Svelte screen and its own transport.
 
 - **RAM-only matches**: matches live entirely in memory (`combat/` module).
-  Nothing is written to SQLite during play; after a battle ends, casualties
-  are persisted by deferring onto the uWS loop thread (`Loop::defer`) so the
-  Database singleton stays single-owner.
+  Nothing is written to PostgreSQL during play; after a battle ends, casualties
+  are persisted through a loop-dispatched completion so the uWS loop remains the
+  only owner of response/socket state.
 - **Threading**: one worker thread per battle from a bounded pool
   (`--combat-sim-threads`, default = CPU count capped at 64). Lobby phases
   consume no worker. The loop thread only enqueues commands into the match's
@@ -288,7 +194,8 @@ has its own Svelte screen and its own transport.
   scanned at startup and auto-rescanned when the pool directory changes — no
   restart needed). Custom keys are content-addressed
   (`<character_id>/<sha256>.<ext>`); the local backend is served only by the
-  age-gated `GET /api/avatar/<character_id>`, while R2 returns an absolute
+  unguessable `GET /api/avatar/<character_id>/<content-key>` capability URL,
+  while R2 returns an absolute
   capability URL under the assets origin. Uploads are validated and written on a
   bounded worker pool; R2 PUT/DELETE and Cloudflare PURGE use the minimal
   SigV4 client in `server/avatars/`. Endpoints: `getAvatarPool`,
@@ -338,7 +245,7 @@ When touching `main.cpp`:
    not invent a stop API.
 5. **Avatar uploads** run base64/decode/hash/dimension checks and the R2 PUT on
    `avatar_upload_manager`'s bounded pool. The completion *always* returns via
-   `Loop::defer` before reading/writing SQLite or touching `res`. Join the pools
+   `Loop::defer` before updating PostgreSQL or touching `res`. Join the pools
    during shutdown, before the App/loop is destroyed.
 
 Concurrency regressions are covered by `tools/combat_shutdown_test.sh` (graceful
@@ -548,7 +455,7 @@ Push, and admin identity locks. Full reference: `server/docs/chat.md`.
 
 - **Transport**: polling-first REST (`pollChats` / `pollWildlands`); the delta
   envelope is transport-agnostic so a future `/ws/chat` is additive.
-- **Storage**: a dedicated `chat.db` (see Database Architecture below).
+- **Storage**: a dedicated `ravenest_chat` database (see Database Architecture below).
 - **Translation**: baseline MADLAD-400-3B via an internal localhost sidecar
   (`server/translation/`), with a stubbed premium LLM engine behind the same
   seam. Degrades to the original text when the sidecar is down.
@@ -577,178 +484,50 @@ Chat endpoints: `getChats`, `getChatMessages`, `pollChats`, `pollWildlands`,
 
 ## Database Architecture
 
-Four independent SQLite databases for maximum concurrency:
+One PostgreSQL cluster with four independent logical databases:
 
-### game.db
-- `users`: User accounts (id, username, password_hash, created_at, adult)
-- `characters`: Character entities (id, user_id, display_name, safe_display_name, level)
-- `fiefdoms`: Character territories (id, owner_id, x, y) + resource/state columns.
-  Fiefdoms are **unnamed**; the legacy `name` column is internal-only and never
-  exposed.
-- `fiefdom_buildings`: Building instances (level, x/y, construction, `output_rates`, `pond_type`)
-- `fiefdom_river`: Per-fiefdom water-power river cells
-- `player_game_state`: Progression phase + `honor_name` + `barony_left_at` (tenure cooldown)
-- `character_letters`: In-game letters (text-system key + read state)
-- `character_milestones`: Per-character progression milestones (e.g. `ettin_slain`)
-- `baronies` / `barony_members`: Barony tenure (incl. `baronies.defunct_at` tombstoning)
+### `ravenest_game`
+- `users`, `user_sessions`, `characters`, `safe_name_registry`
+- fiefdoms/buildings/river, retinue, combat attempts, progression, baronies, letters
+- monetization (`platinum_*`, cosmetics, loadout, monthly pass)
+- `character_identity_history` (admin identity lock)
 
-### chat.db
-- The entire chat system: `chats`, `chat_members`, `chat_invites`, `messages`,
-  `message_versions`, `message_translations`, `message_reactions`, `bookmarks`,
-  the social graph (`friends`, `friend_requests`, `blocks`, `character_mutes`,
-  `character_relation_counts`), moderation (`chat_bans`, `moderation_log`),
-  rate limiting (`rate_limit_violations`, `rate_limit_timeouts`), push
-  (`push_subscriptions`, `push_preferences`), and `chat_language_prefs`.
+### `ravenest_chat`
+- chats, members, messages, versions, translations, reactions, bookmarks
+- social graph, moderation, rate limiting, push, language prefs
 - Full reference: `server/docs/chat.md` and `server/tables/*.md`.
 
-### staff.db
-- Staff identity/roles, the shared action journal, support tickets,
-  notifications, and avatar hash bans. See `server/tables/staff.md`.
+### `ravenest_staff`
+- staff roles/accounts/preferences, shared action journal, support tickets,
+  notifications, banned avatar hashes.
 
-### invites.db (lazy)
-- `invitation_codes`: single-use registration invitation codes (plaintext,
-  staff/player creator, used/revoked metadata).
-- Opened lazily only when registration mode is `global_code`/`invite_only` and
-  an invite lookup/generation/list actually runs. `off` mode never creates it.
-  See `docs/registration.md` and `server/tables/invitation_codes.md`.
+### `ravenest_invites`
+- `invitation_codes`: single-use registration codes.
+- The hard redemption ledger is `ravenest_game.users.invitation_code_id`.
 
 **Design:**
-- No joins across databases
-- Concurrent writes to all simultaneously
-- Separate file handles for true parallel access
+- No joins or foreign keys across databases
+- Concurrent writes to all four
+- One connection per worker thread per database
 - Chat uses a global `change_id` cursor for delta polling
 
 **Initialization:**
-- Schema creation and index management handled by `init_db.cpp`
-- `initializeGameDB()` creates tables + indexes for game.db
-- `initializeChatDB()` creates tables + indexes for chat.db
-- `initializeStaffDB()` creates tables + indexes for staff.db
-- `initializeInvitesDB()` is called lazily by `InvitationStore::ensure_ready()`
-  when invites.db is first needed
-- `initializeAllDatabases()` initializes game.db, chat.db, and staff.db
+- `server/db/BaselineSchema.hpp` is the full baseline DDL
+- `db::initialize_schema` applies it per database and records `schema_migrations`
+- `RAVENEST_{GAME,CHAT,STAFF,INVITES}_DB_URL` selects the cluster
 
-### game.db Schema
+### Schema reference
 
-```sql
-CREATE TABLE users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    adult INTEGER NOT NULL DEFAULT 0,
-    language TEXT NOT NULL DEFAULT 'en'
-);
-
-CREATE TABLE characters (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    display_name TEXT NOT NULL,
-    safe_display_name TEXT NOT NULL,
-    level INTEGER DEFAULT 1,
-    FOREIGN KEY(user_id) REFERENCES users(id)
-);
-
-CREATE TABLE fiefdoms (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    owner_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    x INTEGER NOT NULL,
-    y INTEGER NOT NULL,
-    gold INTEGER NOT NULL DEFAULT 0,
-    silver_pence REAL NOT NULL DEFAULT 0,
-    grain INTEGER NOT NULL DEFAULT 0,
-    wood INTEGER NOT NULL DEFAULT 0,
-    steel INTEGER NOT NULL DEFAULT 0,
-    bronze INTEGER NOT NULL DEFAULT 0,
-    stone INTEGER NOT NULL DEFAULT 0,       -- retired: stone costs removed from the game (stays 0)
-    leather INTEGER NOT NULL DEFAULT 0,
-    mana INTEGER NOT NULL DEFAULT 0,
-    charcoal INTEGER NOT NULL DEFAULT 0,
-    iron INTEGER NOT NULL DEFAULT 0,
-    ironwork INTEGER NOT NULL DEFAULT 0,
-    fancy_ironwork INTEGER NOT NULL DEFAULT 0,
-    beams INTEGER NOT NULL DEFAULT 0,
-    boards INTEGER NOT NULL DEFAULT 0,
-    wall_count INTEGER NOT NULL DEFAULT 0,
-    morale REAL NOT NULL DEFAULT 0,
-    last_update_time INTEGER NOT NULL DEFAULT 0,
-    manor_level INTEGER NOT NULL DEFAULT 0,
-    import_settings TEXT NOT NULL DEFAULT '{}',
-    reserves TEXT NOT NULL DEFAULT '{}',
-    FOREIGN KEY(owner_id) REFERENCES characters(id)
-);
-
-CREATE TABLE fiefdom_buildings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    fiefdom_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    level INTEGER NOT NULL DEFAULT 0,
-    x INTEGER NOT NULL DEFAULT 0,
-    y INTEGER NOT NULL DEFAULT 0,
-    construction_start_ts INTEGER NOT NULL DEFAULT 0,
-    last_updated INTEGER NOT NULL DEFAULT 0,
-    action_start_ts INTEGER NOT NULL DEFAULT 0,
-    action_tag TEXT NOT NULL DEFAULT '',
-    output_rates TEXT NOT NULL DEFAULT '{}',
-    pond_type TEXT NOT NULL DEFAULT '',
-    FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id)
-);
-
-CREATE TABLE fiefdom_river (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    fiefdom_id INTEGER NOT NULL,
-    x INTEGER NOT NULL,
-    y INTEGER NOT NULL,
-    FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id),
-    UNIQUE(fiefdom_id, x, y)
-);
-```
-
-`manor_level`/`import_settings` (fiefdoms) and `output_rates`/`pond_type`
-(fiefdom_buildings) are added by migrations in `init_db.cpp`; `fiefdom_river`
-holds the water-power river cells seeded from `manor_river.json`. See
-`server/tables/fiefdoms.md`, `server/tables/fiefdom_buildings.md`, and
-`server/tables/fiefdom_river.md` for the full reference.
-
-CREATE TABLE officials (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    fiefdom_id INTEGER NOT NULL,
-    role TEXT NOT NULL,
-    portrait_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    level INTEGER NOT NULL DEFAULT 1,
-    intelligence INTEGER NOT NULL,
-    charisma INTEGER NOT NULL,
-    wisdom INTEGER NOT NULL,
-    diligence INTEGER NOT NULL,
-    FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id)
-);
-```
-
-### chat.db Schema
-
-Chat has its own database with ~21 tables. Rather than duplicate the full DDL
-here, see the architecture doc and per-table references:
-
-- `server/docs/chat.md` — storage model, polling, translation, push, moderation
-- `server/tables/change_counter.md`, `chats.md`, `chat_members.md`,
-  `chat_invites.md`, `messages.md`, `message_versions.md`,
-  `message_translations.md`, `message_reactions.md`, `bookmarks.md`,
-  `friends.md`, `friend_requests.md`, `blocks.md`, `character_mutes.md`,
-  `character_relation_counts.md`, `chat_bans.md`, `moderation_log.md`,
-  `rate_limit_violations.md`, `rate_limit_timeouts.md`,
-  `push_subscriptions.md`, `push_preferences.md`, `chat_language_prefs.md`
-- `character_identity_history` lives in **game.db** (admin identity lock):
-  `server/tables/character_identity_history.md`
-
-The combat game adds `retinue_members` (the player's army — knight = character
-plus named soldiers with class/level/gear; see `server/tables/retinue_members.md`).
+The full baseline DDL is in `server/db/BaselineSchema.hpp`. Per-table docs:
+`server/tables/*.md`; chat design: `server/docs/chat.md`. The combat game adds
+`retinue_members` (knight = character plus named soldiers; see
+`server/tables/retinue_members.md`).
 
 ## Deployment
 
 - **Port**: 2290 (HTTP + WebSocket on the same listener)
 - **HTTPS**: Cloudflare Tunnel in production (or nginx as an alternative)
-- **Databases**: `game.db`, `chat.db`, and `staff.db` are created in `--db-dir` (default: the working directory) on first run. `staff.db` holds staff roles/accounts, the shared action journal, support tickets, notifications, and banned avatar hashes. `invites.db` is created lazily only in `global_code`/`invite_only` registration modes; `off` mode never creates it (see `docs/registration.md`).
+- **Databases**: PostgreSQL holds `ravenest_game`, `ravenest_chat`, `ravenest_staff`, and `ravenest_invites`. Connection URLs come from `RAVENEST_{GAME,CHAT,STAFF,INVITES}_DB_URL`. The baseline schema is applied on startup; `invites` is opened lazily only when registration mode is `global_code`/`invite_only` and an invite operation actually runs (see `docs/registration.md`).
 - **Assets**: `config/`, `images/`, and `text/` are read from the `--content` root
   (default: the working directory). Pointing `--content` at `game/` while running
   from a scratch directory keeps databases and uploads out of the synced assets
@@ -769,7 +548,7 @@ RAVENEST_CORS_ORIGINS="https://app.example.com"
 - Empty/unset means `*`; this is safe for the current API because it uses
   explicit JSON/query credentials and no cookies.
 - `OPTIONS /api/*` returns `204 No Content`.
-- `GET /api/avatar/<id>` is sent with `Cache-Control: private, no-store`.
+- `GET /api/avatar/<id>[/<content-key>]` is sent with `Cache-Control: private, no-store`.
 
 `install.sh` writes this value to the server env file from `.deploy` and
 optionally restarts the service. See `docs/publishing.md`.
@@ -831,7 +610,7 @@ the timeouts idle sockets (voice calls, waiting players) get dropped.
 | Option | Description |
 |--------|-------------|
 | `--content PATH` | Asset root holding `config/`, `images/`, `text/` (default: current directory) |
-| `--db-dir PATH` | Database directory (default: current directory) |
+| `--db-dir PATH` | Deprecated; ignored (use `RAVENEST_*_DB_URL`) |
 | `--text-dir PATH` | Text directory (default: `<content>/text`) |
 | `--port PORT` | Port to bind (default: 2290) |
 | `--combat-sim-threads N` | Realtime combat simulation worker threads (default: CPU count, capped 64) |
@@ -846,23 +625,23 @@ the timeouts idle sockets (voice calls, waiting players) get dropped.
 
 ### Database Initialization
 
-The server uses `init_db.cpp` to manage database schema creation and index management. Three command-line modes are available:
+The baseline schema lives in `server/db/BaselineSchema.hpp` and is applied by
+`db::initialize_schema`. The three operations modes are idempotent aliases:
 
 ```bash
-# Initial database setup (creates tables and indexes)
-./server --init-db --db-dir /var/lib/ravenest
+export RAVENEST_GAME_DB_URL=postgresql://...
+export RAVENEST_CHAT_DB_URL=postgresql://...
+export RAVENEST_STAFF_DB_URL=postgresql://...
+export RAVENEST_INVITES_DB_URL=postgresql://...
 
-# Create tables only (for new databases)
-./server --create-tables --db-dir /var/lib/ravenest
-
-# Ensure indexes exist (use after backup/restore)
-./server --ensure-indexes --db-dir /var/lib/ravenest
-
-# Normal server startup (auto-initializes)
-./server --port 2290 --db-dir /var/lib/ravenest
+./server --init-db
+./server --create-tables
+./server --ensure-indexes
+./server --port 2290
 ```
 
-For normal server operation, `initializeAllDatabases()` is called automatically on startup to create tables and ensure indexes.
+For normal server operation the schema is applied automatically on startup.
+See `docs/database.md` and `docs/postgres_operations.md`.
 
 ### Configuration and Image Loading
 

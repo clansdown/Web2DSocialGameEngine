@@ -74,7 +74,7 @@ ownership is explicit; this table is the checklist the milestones map back to.
 ### Threading rule (regression-proofing)
 
 The match worker thread must **never** touch `GameConfigCache`, `FiefdomFetcher`,
-or SQLite directly. All config the sim needs is resolved on the uWS loop thread
+or PostgreSQL directly. All config the sim needs is resolved on the uWS loop thread
 at create/join time into a `combat_match_config` snapshot (JSON copies) passed
 into the match constructor (C16). Persistence continues via `Loop::defer`
 (design §16.4). This is the single most important invariant for any combat work:
@@ -730,7 +730,7 @@ REST surface — with no gameplay key reachable by the simulation.
   adventure-reward seam, §15.6).
 
 ### Server
-- DB (game.db, idempotent migrations in `init_db.cpp`):
+- DB (`ravenest_game`, idempotent baseline in `server/db/BaselineSchema.hpp`):
   - `platinum_ledger (character_id PK, balance INTEGER NOT NULL DEFAULT 0)`
   - `platinum_transactions (id, character_id, product_id, platinum, status, idempotency_key UNIQUE, created_at)`
   - `character_cosmetics (id, character_id, cosmetic_id, source, acquired_at, revoked)`

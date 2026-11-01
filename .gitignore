@@ -76,3 +76,5 @@ push_to_production.sh
 
 # Python files
 __pycache__/
+/server/translation/.venv/
+/server/translation/models/

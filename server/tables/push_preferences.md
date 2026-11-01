@@ -1,6 +1,6 @@
 # push_preferences Table
 
-Per-character push preferences. Stored in `chat.db`.
+Per-character push preferences. Stored in `ravenest_chat`.
 
 ## Schema
 

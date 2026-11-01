@@ -1,12 +1,13 @@
 #pragma once
-#include <sqlite_modern_cpp.h>
-#include <string>
 
+#include "db/postgres_sqlite_compat.hpp"
+
+// Schema bootstrap. The SQLite DDL and incremental ALTERs have been replaced by
+// the PostgreSQL baseline in db/BaselineSchema.hpp.
 void initializeGameDB(sqlite::database& db);
 void initializeChatDB(sqlite::database& db);
 void initializeStaffDB(sqlite::database& db);
 void initializeInvitesDB(sqlite::database& db);
-void migrate_placements(sqlite::database& db);
 
 void initializeAllDatabases(sqlite::database& game_db, sqlite::database& chat_db,
                             sqlite::database& staff_db);

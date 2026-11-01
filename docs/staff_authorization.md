@@ -88,11 +88,15 @@ monthly-pass content are deferred.
 ## CLI
 
 ```bash
-staff_admin --db-dir <dir> grant <username|account_id> <role>
-staff_admin --db-dir <dir> revoke <username|account_id>
-staff_admin --db-dir <dir> list
-staff_admin --db-dir <dir> roles
+# Requires RAVENEST_GAME_DB_URL, RAVENEST_CHAT_DB_URL, RAVENEST_STAFF_DB_URL,
+# RAVENEST_INVITES_DB_URL.
+staff_admin grant <username|account_id> <role>
+staff_admin revoke <username|account_id>
+staff_admin list
+staff_admin roles
 ```
+
+`--db-dir` is accepted but ignored for compatibility.
 
 CLI changes are journaled with `actor_type=cli`, `authority=cli`, and the OS
 user label.

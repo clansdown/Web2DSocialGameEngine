@@ -1,6 +1,6 @@
 # chat_members Table
 
-Per-character membership and per-chat settings. Stored in `chat.db`.
+Per-character membership and per-chat settings. Stored in `ravenest_chat`.
 
 ## Schema
 

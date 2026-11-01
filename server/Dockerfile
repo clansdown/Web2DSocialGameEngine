@@ -8,9 +8,12 @@ RUN apt-get update && apt-get install -y \
     make \
     build-essential \
     libssl-dev \
+    libpq-dev \
+    libargon2-dev \
+    libcurl4-openssl-dev \
     zlib1g-dev \
-    libsqlite3-dev \
     pkg-config \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/server

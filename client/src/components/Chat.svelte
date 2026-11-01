@@ -22,6 +22,7 @@
     chat_character,
     chat_invite,
     chat_ban,
+    chat_poll_translation,
     chat_search_entry,
     friends_result,
     language_prefs,
@@ -223,6 +224,7 @@
     memberships: chat_membership[];
     members: chat_membership[];
     messages: chat_message[];
+    translations?: chat_poll_translation[];
     invites: chat_invite[];
     bans: chat_ban[];
     characters: Record<string, chat_character>;
@@ -232,6 +234,22 @@
     for (const membership of result.members) upsert_membership(membership, false);
     for (const message of result.messages) upsert_message(message);
     merge_character_map(result.characters || {});
+    // Background translations arrive as their own poll delta after the message
+    // row. Merge them into whichever loaded chat holds the message.
+    if (result.translations && result.translations.length > 0) {
+      const by_message = new Map<string, chat_poll_translation>();
+      for (const translation of result.translations) {
+        by_message.set(translation.message_id, translation);
+      }
+      const next: Record<string, chat_message[]> = {};
+      for (const [chat_id, list] of Object.entries(messages)) {
+        next[chat_id] = list.map((message) => {
+          const translation = by_message.get(message.id);
+          return translation ? { ...message, translation } : message;
+        });
+      }
+      messages = next;
+    }
     for (const invite of result.invites) {
       if (!invites.some((i) => i.chat_id === invite.chat_id)) invites = [...invites, invite];
     }

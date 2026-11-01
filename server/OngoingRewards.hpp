@@ -1,6 +1,6 @@
 #pragma once
 #include <nlohmann/json.hpp>
-#include <sqlite_modern_cpp.h>
+#include "db/postgres_sqlite_compat.hpp"
 #include <string>
 
 namespace ongoing_rewards {

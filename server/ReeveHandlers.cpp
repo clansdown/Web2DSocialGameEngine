@@ -43,7 +43,7 @@ ApiResponse handleGetReeveReport(
     db << "SELECT owner_id FROM fiefdoms WHERE id = ?;" << fiefdom_id
        >> [&](int id) { owner_id = id; };
     int user_id = 0;
-    db << "SELECT id FROM users WHERE username = ?;" << *username
+    db << "SELECT id FROM users WHERE LOWER(username) = LOWER(?);" << *username
        >> [&](int id) { user_id = id; };
     if (owner_id == 0 || user_id == 0) {
         response.error = "fiefdom not found";

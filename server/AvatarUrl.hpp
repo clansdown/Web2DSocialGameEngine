@@ -32,7 +32,7 @@ std::string build_avatar_public_url(std::string_view storage, std::string_view k
 bool account_is_adult(int64_t character_id);
 
 // Resolves the portrait URL a viewer should see for `character_id`. Returns the
-// public content-addressed R2 URL (or "/api/avatar/<id>" for local storage) only
+// public content-addressed R2 URL (or an unguessable local capability URL) only
 // when the owner is an adult, the viewer is an adult, and a custom upload
 // exists; otherwise the public safe-pool URL; otherwise "" when the character
 // has neither.

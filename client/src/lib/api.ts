@@ -129,22 +129,25 @@ export async function apiPost<T = unknown>(
 ): Promise<ApiResponse<T>> {
   const requestBody: Record<string, unknown> = { ...body };
 
-  if (options?.username) {
-    if (!requestBody.auth) {
-      requestBody.auth = {};
-    }
-    (requestBody.auth as Record<string, unknown>).username = options.username;
+  // Login still carries its credentials in the body. Normal requests never do:
+  // they use the Authorization header, and refresh uses the HttpOnly cookie.
+  if (options?.username && options.password) {
+    requestBody.auth = {
+      ...(requestBody.auth as Record<string, unknown> | undefined),
+      username: options.username,
+      password: options.password
+    };
+  }
 
-    if (options.password) {
-      (requestBody.auth as Record<string, unknown>).password = options.password;
-    } else if (options.token) {
-      (requestBody.auth as Record<string, unknown>).token = options.token;
-    }
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (options?.token) {
+    headers.Authorization = `Bearer ${options.token}`;
   }
 
   const response = await fetch(api_url(`/api/${endpoint}`), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    headers,
     body: JSON.stringify(requestBody)
   });
 
@@ -159,15 +162,44 @@ export async function apiPost<T = unknown>(
 }
 
 /**
- * Makes an authenticated API call with automatic token refresh.
- * If the server returns needs_auth, refreshes via stored password
- * and retries the request once. Transparent to callers.
+ * Calls the refresh-cookie endpoint and installs the new short-lived access
+ * token. Returns the login payload (user, characters, token) on success.
+ *
+ * @returns Promise<AuthResponse | null> - Refreshed identity or null
+ */
+export async function refreshAccessToken(): Promise<AuthResponse | null> {
+  try {
+    const response = await fetch(api_url('/api/auth/refresh'), {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+    const parsed = await response.json() as ApiResponse<AuthResponse>;
+    const data = parsed.data as AuthResponse | undefined;
+    if (parsed.error || !data?.token) {
+      auth.setSessionToken(null);
+      auth.clearInMemoryCredentials();
+      return null;
+    }
+    auth.setSessionToken(data.token);
+    auth.setStoredUsername(data.username);
+    return data;
+  } catch {
+    auth.setSessionToken(null);
+    auth.clearInMemoryCredentials();
+    return null;
+  }
+}
+
+/**
+ * Makes an authenticated API call with automatic access-token refresh.
+ * A rejected access token is refreshed once via the HttpOnly cookie and the
+ * request is retried. Transparent to callers.
  *
  * @param endpoint - API endpoint (e.g. 'tdRound', 'getPlayerState')
  * @param body - Request body as JSON-compatible object
  * @returns Promise<T> - The API response data
- *
- * Usage: General-purpose authenticated API entry point for all callers
  */
 export async function authenticatedPost<T>(
   endpoint: string,
@@ -177,31 +209,27 @@ export async function authenticatedPost<T>(
     throw new Error('Use apiPost directly for login');
   }
 
-  const creds = auth.getInMemoryCredentials();
-  const token = auth.getSessionToken();
-  if (!token || !creds) {
-    throw new Error('Not authenticated');
+  let token = auth.getSessionToken();
+  if (!token) {
+    const refreshed = await refreshAccessToken();
+    token = refreshed?.token ?? null;
+    if (!token) throw new Error('Not authenticated');
   }
 
-  const doFetch = async (t: string) =>
-    await apiPost<T>(endpoint, body, { username: creds.username, token: t });
+  const doFetch = async (accessToken: string) =>
+    await apiPost<T>(endpoint, body, { token: accessToken });
 
   let response = await doFetch(token);
 
-  if (response.needs_auth) {
-    // Token rejected — refresh via stored password
-    const loginRes = await apiPost<any>('login', {}, {
-      username: creds.username,
-      password: creds.password
-    });
-    const newToken = loginRes.data?.token;
-    if (!newToken) throw new Error('Session expired');
+  const tokenRejected = response.needs_auth || response.auth_failed ||
+    response.error === 'token_expired' || response.error === 'token_invalid' ||
+    response.error === 'token_missing';
 
-    auth.setSessionToken(newToken);
-
-    // Retry original request with fresh token
-    response = await doFetch(newToken);
-    if (response.needs_auth) throw new Error('Session expired');
+  if (tokenRejected) {
+    const refreshed = await refreshAccessToken();
+    if (!refreshed?.token) throw new Error('Session expired');
+    response = await doFetch(refreshed.token);
+    if (response.needs_auth || response.auth_failed) throw new Error('Session expired');
   }
 
   if (response.error) throw new Error(response.error);
@@ -226,7 +254,12 @@ export async function loginRequest(
   if (res.error) {
     throw new Error(res.error);
   }
-  return res.data as AuthResponse;
+  const data = res.data as AuthResponse;
+  if (data.token) {
+    auth.setSessionToken(data.token);
+    auth.setStoredUsername(data.username);
+  }
+  return data;
 }
 
 /**
@@ -284,7 +317,12 @@ export async function createAccountRequest(
   if (res.error) {
     throw new Error(res.error);
   }
-  return res.data as AuthResponse;
+  const data = res.data as AuthResponse;
+  if (data.token) {
+    auth.setSessionToken(data.token);
+    auth.setStoredUsername(data.username);
+  }
+  return data;
 }
 
 export type registration_mode = 'off' | 'global_code' | 'invite_only';
@@ -379,19 +417,70 @@ export async function updateCharacterProfileRequest(
  * Usage: Called when session expires and needs refresh
  */
 export async function refreshToken(
-  username: string,
-  password: string
+  _username: string,
+  _password: string
 ): Promise<{ token: string }> {
-  const res = await apiPost<{ token: string }>('login', {
-    username,
-    password
-  });
-
-  if (res.error || !res.token) {
-    throw new Error(res.error || 'Failed to refresh token');
+  const refreshed = await refreshAccessToken();
+  if (!refreshed?.token) {
+    throw new Error('Failed to refresh token');
   }
+  return { token: refreshed.token };
+}
 
-  return { token: res.token };
+/**
+ * Lists the account's active refresh sessions.
+ */
+export async function getAuthSessionsRequest(): Promise<Array<{
+  session_id: string;
+  created_at: number;
+  last_used_at: number;
+  user_agent: string;
+  ip: string;
+  current: boolean;
+}>> {
+  const data = await authenticatedPost<{ sessions: Array<{
+    session_id: string;
+    created_at: number;
+    last_used_at: number;
+    user_agent: string;
+    ip: string;
+    current: boolean;
+  }> }>('authSessions', {});
+  return data.sessions;
+}
+
+/**
+ * Revokes one refresh session belonging to the account.
+ */
+export async function revokeAuthSessionRequest(sessionId: string): Promise<void> {
+  await authenticatedPost<{ revoked: boolean }>('authRevokeSession', {
+    session_id: sessionId
+  });
+}
+
+/**
+ * Changes the account password. Other sessions are revoked server-side.
+ */
+export async function changePasswordRequest(
+  currentPassword: string,
+  newPassword: string
+): Promise<void> {
+  await authenticatedPost<{ password_changed: boolean }>('authChangePassword', {
+    current_password: currentPassword,
+    new_password: newPassword
+  });
+}
+
+/**
+ * Revokes every refresh session for the account (including this one).
+ */
+export async function logoutAllRequest(): Promise<void> {
+  try {
+    await authenticatedPost<{ logged_out: boolean }>('authLogoutAll', {});
+  } finally {
+    auth.setSessionToken(null);
+    auth.clearInMemoryCredentials();
+  }
 }
 
 // ── Mini-game API types ──────────────────────────────────────────────

@@ -12,8 +12,10 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PORT="${1:-3399}"
 GAME_DIR="$ROOT/game"
-DB_DIR="$ROOT/test_run/smoke_${PORT}"
 SERVER_BIN="${SERVER_BIN:-$ROOT/server/build/server}"
+
+source "$ROOT/tools/postgres_test_env.sh"
+postgres_test_env_init "ravenest_reeve_${PORT}"
 
 if [ ! -x "$SERVER_BIN" ]; then
     echo "Building server…"
@@ -23,12 +25,10 @@ if [ ! -x "$SERVER_BIN" ]; then
     }
 fi
 
-rm -rf "$DB_DIR"
-mkdir -p "$DB_DIR"
-
-( cd "$DB_DIR" && "$SERVER_BIN" --port "$PORT" --content "$GAME_DIR" ) &
+mkdir -p "$ROOT/test_run"
+( cd "$ROOT/test_run" && "$SERVER_BIN" --port "$PORT" --content "$GAME_DIR" ) &
 SRV_PID=$!
-trap 'kill $SRV_PID 2>/dev/null; wait $SRV_PID 2>/dev/null; rm -rf "$DB_DIR"' EXIT
+trap 'kill $SRV_PID 2>/dev/null; wait $SRV_PID 2>/dev/null; postgres_test_env_cleanup' EXIT
 
 sleep 1.5
 if ! kill -0 "$SRV_PID" 2>/dev/null; then
@@ -44,7 +44,7 @@ for _ in $(seq 1 80); do
     sleep 0.25
 done
 
-if node "$ROOT/tools/reeve_smoke.mjs" --port "$PORT" --db "$DB_DIR/game.db"; then
+if node "$ROOT/tools/reeve_smoke.mjs" --port "$PORT" --db-url "$RAVENEST_GAME_DB_URL"; then
     echo "Reeve smoke PASSED"
     exit 0
 fi

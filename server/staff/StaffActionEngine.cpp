@@ -1404,10 +1404,11 @@ staff_action_result StaffActionEngine::undo(const staff_context& context,
         } else if (type == "registration.invite_generate") {
             const std::string code_id = before.value("code_id", std::string());
             auto& idb = Database::getInstance().invitesDB();
-            idb << "DELETE FROM invitation_codes WHERE id = ? AND used_at IS NULL;"
-                << code_id;
             int changed = 0;
-            idb << "SELECT changes();" >> changed;
+            idb << "DELETE FROM invitation_codes WHERE id = ? AND used_at IS NULL "
+                   "RETURNING id;"
+                << code_id
+                >> [&](std::string) { changed = 1; };
             if (changed == 0) {
                 error = "invitation_code_used";
             } else {
@@ -1418,12 +1419,13 @@ staff_action_result StaffActionEngine::undo(const staff_context& context,
             const std::int64_t revoked_at =
                 original->after_state.value("revoked_at", static_cast<std::int64_t>(0));
             auto& idb = Database::getInstance().invitesDB();
+            int changed = 0;
             idb << "UPDATE invitation_codes SET revoked_at = NULL, "
                    "revoked_by_account_id = NULL "
-                   "WHERE id = ? AND used_at IS NULL AND revoked_at = ?;"
-                << code_id << revoked_at;
-            int changed = 0;
-            idb << "SELECT changes();" >> changed;
+                   "WHERE id = ? AND used_at IS NULL AND revoked_at = ? "
+                   "RETURNING id;"
+                << code_id << revoked_at
+                >> [&](std::string) { changed = 1; };
             if (changed == 0) {
                 error = "invitation_code_changed";
             } else {

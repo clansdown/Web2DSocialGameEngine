@@ -12,8 +12,10 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PORT="${1:-3393}"
 GAME_DIR="$ROOT/game"
-DB_DIR="$ROOT/.chat_smoke_db_${PORT}"
 SERVER_BIN="$ROOT/server/build/server"
+
+source "$ROOT/tools/postgres_test_env.sh"
+postgres_test_env_init "ravenest_chat_${PORT}"
 
 if [ ! -x "$SERVER_BIN" ]; then
     echo "Building server…"
@@ -23,13 +25,10 @@ if [ ! -x "$SERVER_BIN" ]; then
     }
 fi
 
-rm -rf "$DB_DIR"
-mkdir -p "$DB_DIR"
-
 ( cd "$GAME_DIR" && RAVENEST_TEST_ADULT_ACCOUNTS=1 \
-    "$SERVER_BIN" --port "$PORT" --db-dir "$DB_DIR" --test-timeout-seconds 600 ) &
+    "$SERVER_BIN" --port "$PORT" --test-timeout-seconds 600 ) &
 SRV_PID=$!
-trap 'kill $SRV_PID 2>/dev/null; wait $SRV_PID 2>/dev/null; rm -rf "$DB_DIR"' EXIT
+trap 'kill $SRV_PID 2>/dev/null; wait $SRV_PID 2>/dev/null; postgres_test_env_cleanup' EXIT
 
 sleep 0.3
 # Wait for the listener to accept connections (schema creation on a fresh DB can

@@ -6149,6 +6149,26 @@ class ConfigValidator:
         timeout = data.get("request_timeout_ms")
         if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
             self._add_issue(file, 1, None, "'request_timeout_ms' must be a positive integer", Severity.ERROR)
+        queue = data.get("queue")
+        if queue is not None:
+            if not isinstance(queue, dict):
+                self._add_issue(file, 1, None, "'queue' must be an object", Severity.ERROR)
+            else:
+                for key in ("max_pending", "batch_size"):
+                    value = queue.get(key)
+                    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                        self._add_issue(file, 1, None, f"'queue.{key}' must be a positive integer", Severity.ERROR)
+        premium = data.get("premium")
+        if premium is not None:
+            if not isinstance(premium, dict):
+                self._add_issue(file, 1, None, "'premium' must be an object", Severity.ERROR)
+            else:
+                max_targets = premium.get("max_target_languages")
+                if (not isinstance(max_targets, int) or isinstance(max_targets, bool)
+                        or max_targets < 0):
+                    self._add_issue(file, 1, None,
+                                    "'premium.max_target_languages' must be a non-negative integer",
+                                    Severity.ERROR)
         self.validated_files.append(file)
 
     def validate_push(self, file: Path, content: str) -> None:

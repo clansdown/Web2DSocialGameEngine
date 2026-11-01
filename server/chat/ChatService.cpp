@@ -11,6 +11,7 @@
 #include "AvatarUrl.hpp"
 #include "Database.hpp"
 #include "GameConfigCache.hpp"
+#include "MonthlyPass.hpp"
 #include "Visibility.hpp"
 #include "chat/ChatDB.hpp"
 #include "chat/MadladTranslationEngine.hpp"
@@ -308,19 +309,23 @@ json reactions_for(const std::string& message_id, GameConfigCache* config,
 json translation_for(const std::string& message_id, const std::string& viewer_lang) {
     if (viewer_lang.empty()) return nullptr;
     json result = nullptr;
+    // Premium translations are intentionally shared: when one exists for this
+    // target language it wins over the baseline library row.
     ChatDB::instance().db()
-        << "SELECT body, engine, target_language, detected_source_language, confidence "
+        << "SELECT body, engine, target_language, detected_source_language, confidence, tier "
            "FROM message_translations WHERE message_id = ? AND target_language = ? "
-           "ORDER BY created_at DESC LIMIT 1;"
+           "ORDER BY CASE WHEN tier = 'premium' THEN 0 ELSE 1 END, created_at DESC LIMIT 1;"
         << message_id << viewer_lang
         >> [&](std::string body, std::string engine, std::string target,
-               std::optional<std::string> detected, std::optional<double> confidence) {
+               std::optional<std::string> detected, std::optional<double> confidence,
+               std::string tier) {
                result = {
                    {"body", body},
                    {"engine", engine},
                    {"language", target},
                    {"detected_source_language", detected.value_or("")},
-                   {"confidence", confidence.value_or(0.0)}};
+                   {"confidence", confidence.value_or(0.0)},
+                   {"tier", tier.empty() ? std::string("baseline") : tier}};
            };
     return result;
 }
@@ -943,7 +948,8 @@ json ChatService::poll(int64_t character_id, int64_t cursor, const std::string& 
     // Translations produced for my language since the cursor, in chats I'm in.
     // Minors never receive custom translations (safe messages use server text).
     if (!viewer_lang.empty() && dir.viewer_adult) {
-        db << "SELECT t.message_id, t.body, t.engine, t.detected_source_language, t.confidence, t.change_id "
+        db << "SELECT t.message_id, t.body, t.engine, t.detected_source_language, t.confidence, "
+              "t.change_id, t.tier "
               "FROM message_translations t JOIN messages m ON m.id = t.message_id "
               "WHERE t.change_id > ? AND t.target_language = ? "
               "AND EXISTS (SELECT 1 FROM chat_members cm WHERE cm.chat_id = m.chat_id "
@@ -952,7 +958,7 @@ json ChatService::poll(int64_t character_id, int64_t cursor, const std::string& 
            << cursor << viewer_lang << character_id << cap
            >> [&](std::string message_id, std::string body, std::string engine,
                   std::optional<std::string> detected, std::optional<double> confidence,
-                  int64_t change_id) {
+                  int64_t change_id, std::string tier) {
                   result["translations"].push_back(
                       {{"message_id", message_id},
                        {"body", body},
@@ -960,7 +966,8 @@ json ChatService::poll(int64_t character_id, int64_t cursor, const std::string& 
                        {"language", viewer_lang},
                        {"detected_source_language", detected.value_or("")},
                        {"confidence", confidence.value_or(0.0)},
-                       {"change_id", change_id}});
+                       {"change_id", change_id},
+                       {"tier", tier.empty() ? std::string("baseline") : tier}});
                   if (change_id > max_change) max_change = change_id;
               };
     }
@@ -1080,14 +1087,15 @@ json ChatService::poll_wildlands(int64_t character_id, int64_t cursor,
         result["messages"].push_back(std::move(message));
     }
     if (!viewer_lang.empty() && dir.viewer_adult) {
-        db << "SELECT t.message_id, t.body, t.engine, t.detected_source_language, t.confidence, t.change_id "
+        db << "SELECT t.message_id, t.body, t.engine, t.detected_source_language, t.confidence, "
+              "t.change_id, t.tier "
               "FROM message_translations t JOIN messages m ON m.id = t.message_id "
               "WHERE t.change_id > ? AND t.target_language = ? AND m.chat_id = ? "
               "ORDER BY t.change_id ASC LIMIT ?;"
            << cursor << viewer_lang << wid << cap
            >> [&](std::string message_id, std::string body, std::string engine,
                   std::optional<std::string> detected, std::optional<double> confidence,
-                  int64_t change_id) {
+                  int64_t change_id, std::string tier) {
                   result["translations"].push_back(
                       {{"message_id", message_id},
                        {"body", body},
@@ -1095,7 +1103,8 @@ json ChatService::poll_wildlands(int64_t character_id, int64_t cursor,
                        {"language", viewer_lang},
                        {"detected_source_language", detected.value_or("")},
                        {"confidence", confidence.value_or(0.0)},
-                       {"change_id", change_id}});
+                       {"change_id", change_id},
+                       {"tier", tier.empty() ? std::string("baseline") : tier}});
                   if (change_id > max_change) max_change = change_id;
               };
     }
@@ -1311,6 +1320,7 @@ json ChatService::send_message(int64_t character_id, const std::string& chat_id,
 
     int64_t change_id = ChatDB::instance().allocate_change_id();
     int64_t seq = ChatDB::instance().allocate_seq(chat_id, change_id);
+    const int64_t created_at = now_seconds();
     std::string id = generate_id("m_");
     db << "INSERT INTO messages (id, chat_id, seq, author_character_id, body, safe_message_id, "
           "source_language, source_language_confidence, gif, gif_id, reply_to_message_id, "
@@ -1336,13 +1346,37 @@ json ChatService::send_message(int64_t character_id, const std::string& chat_id,
                                       : std::optional<std::string>(reply_safe_excerpt))
        << (reply_src.empty() ? std::optional<std::string>()
                               : std::optional<std::string>(reply_src))
-       << now_seconds() << change_id;
+       << created_at << change_id;
 
     const std::string push_body = has_safe_message && config_
         ? visibility::safe_message_body(*config_, safe_message_id)
         : body;
     apply_unread(chat_id, character_id, change_id, has_safe_message);
-    dispatch_push(chat_id, character_id, id, push_body, source_language, safe_message_id);
+    dispatch_push(chat_id, character_id, id, 1, push_body, source_language, safe_message_id);
+
+    // Monthly-pass authors fan out immediately to the languages of the people
+    // actually in the room. The premium queue is not started in Phase 1, so
+    // this branch stays inert until the Phase 2 LLM engine exists.
+    if (!has_safe_message && !source_language.empty() &&
+        PremiumTranslationQueue::instance().available() && premium_engine_available()) {
+        const monthly_pass::status pass = monthly_pass::get_status(
+            Database::getInstance().gameDB(), character_id, now_seconds());
+        if (pass.active) {
+            db << "UPDATE messages SET llm_translation_eligible = TRUE WHERE id = ?;" << id;
+            translation_job job;
+            job.message_id = id;
+            job.chat_id = chat_id;
+            job.text = body;
+            job.source_language = source_language;
+            job.message_version = 1;
+            job.message_created_at = created_at;
+            job.tier = translation_tier::premium;
+            job.target_languages = translation_targets(chat_id, character_id, source_language);
+            if (!job.target_languages.empty()) {
+                PremiumTranslationQueue::instance().enqueue(std::move(job));
+            }
+        }
+    }
 
     MessageRow r;
     r.id = id;
@@ -1359,7 +1393,7 @@ json ChatService::send_message(int64_t character_id, const std::string& chat_id,
     r.reply_excerpt = reply_excerpt;
     r.reply_safe_excerpt = reply_safe_excerpt;
     r.reply_source_language = reply_src;
-    r.created_at = now_seconds();
+    r.created_at = created_at;
     r.version = 1;
     r.change_id = change_id;
     CharacterDirectory dir(author_is_adult, character_id);
@@ -1616,41 +1650,168 @@ json ChatService::search_characters(int64_t character_id, const std::string& que
 
 // ── Translation ─────────────────────────────────────────────────────────────
 
-// Shared translation path for viewing and push. Returns the display-language
-// body for a message, or "" when none should be shown (same language, source
-// disabled, empty text, or engine unavailable). Stores new baseline
-// translations. Never uses the LLM engine (push must not block on it).
-std::string ChatService::translate_for_display(int64_t viewer_character_id,
-                                               const std::string& message_id,
-                                               const std::string& text,
-                                               const std::string& source_language,
-                                               const std::string& display_language) {
-    if (display_language.empty() || text.empty()) return "";
-    if (!source_language.empty() && source_language == display_language) return "";
-    if (!language_enabled(viewer_character_id, source_language)) return "";
+bool ChatService::baseline_available() const {
+    return baseline_engine_ && baseline_engine_->available();
+}
 
-    json existing = translation_for(message_id, display_language);
-    if (!existing.is_null() && existing.contains("body") && existing["body"].is_string()) {
-        return existing["body"].get<std::string>();
+bool ChatService::premium_engine_available() const {
+    return llm_engine_ && llm_engine_->available();
+}
+
+std::vector<translation_result> ChatService::translate_baseline_batch(
+    const std::vector<translation_request>& requests) {
+    if (!baseline_available()) return {};
+    return baseline_engine_->translate_batch(requests);
+}
+
+std::optional<fanout_translation_result> ChatService::translate_premium_fanout(
+    const fanout_translation_request& request) {
+    if (!premium_engine_available()) return std::nullopt;
+    return llm_engine_->translate_fanout(request);
+}
+
+bool ChatService::message_version_matches(const std::string& message_id,
+                                          int64_t expected_version) const {
+    if (message_id.empty() || expected_version <= 0) return false;
+    int64_t version = 0;
+    bool found = false;
+    ChatDB::instance().db()
+        << "SELECT version FROM messages WHERE id = ?;" << message_id
+        >> [&](int64_t v) {
+               version = v;
+               found = true;
+           };
+    return found && version == expected_version;
+}
+
+translation_tier ChatService::translation_tier_for_viewer(int64_t character_id,
+                                                          int64_t now) const {
+    if (character_id <= 0) return translation_tier::baseline;
+    const monthly_pass::status pass =
+        monthly_pass::get_status(Database::getInstance().gameDB(), character_id, now);
+    return pass.active ? translation_tier::premium : translation_tier::baseline;
+}
+
+bool ChatService::enqueue_translation(const translation_job& job) {
+    if (job.message_id.empty() || job.target_language.empty() || job.text.empty()) return false;
+    if (job.message_version <= 0) return false;
+    if (job.tier == translation_tier::premium &&
+        PremiumTranslationQueue::instance().available() && premium_engine_available()) {
+        return PremiumTranslationQueue::instance().enqueue(job);
     }
-    if (!baseline_engine_ || !baseline_engine_->available()) return "";
+    translation_job baseline_job = job;
+    baseline_job.tier = translation_tier::baseline;
+    baseline_job.target_languages.clear();
+    return BaselineTranslationQueue::instance().enqueue(std::move(baseline_job));
+}
 
-    translation_request request{message_id, text, source_language, display_language};
-    auto translated = baseline_engine_->translate(request);
-    if (!translated || !translated->ok) return "";
+bool ChatService::store_translation(const translation_job& job,
+                                    const translation_result& result) {
+    if (!result.ok || result.translated_text.empty()) return false;
+    // A queued translation for an older message version must never resurrect the
+    // pre-edit text after edit_message deleted the translation rows. The insert
+    // re-checks the version in the same statement so an edit racing this write
+    // cannot slip between the check and the insert.
+    if (!message_version_matches(job.message_id, job.message_version)) return false;
+
+    const bool premium = job.tier == translation_tier::premium;
+    const std::string engine =
+        premium ? std::string("llm")
+                : (baseline_engine_ ? baseline_engine_->name() : std::string("unknown"));
+    const std::string model_version =
+        premium ? std::string("llm")
+                : (baseline_engine_ ? baseline_engine_->model_version() : std::string("unknown"));
 
     int64_t change_id = ChatDB::instance().allocate_change_id();
+    bool stored = false;
     ChatDB::instance().db()
-        << "INSERT OR REPLACE INTO message_translations (message_id, target_language, engine, "
-           "model_version, body, detected_source_language, confidence, created_at, change_id) "
-           "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);"
-        << message_id << display_language << baseline_engine_->name()
-        << baseline_engine_->model_version() << translated->translated_text
-        << (translated->detected_source_language.empty()
+        << "INSERT INTO message_translations (message_id, target_language, engine, "
+           "model_version, body, detected_source_language, confidence, created_at, change_id, tier) "
+           "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? "
+           "WHERE EXISTS (SELECT 1 FROM messages WHERE id = ? AND version = ?) "
+           "ON CONFLICT (message_id, target_language, engine, model_version) DO UPDATE SET "
+           "body = EXCLUDED.body, detected_source_language = EXCLUDED.detected_source_language, "
+           "confidence = EXCLUDED.confidence, created_at = EXCLUDED.created_at, "
+           "change_id = EXCLUDED.change_id, tier = EXCLUDED.tier "
+           "RETURNING message_id;"
+        << job.message_id << job.target_language << engine << model_version
+        << result.translated_text
+        << (result.detected_source_language.empty()
                 ? std::optional<std::string>()
-                : std::optional<std::string>(translated->detected_source_language))
-        << translated->confidence << now_seconds() << change_id;
-    return translated->translated_text;
+                : std::optional<std::string>(result.detected_source_language))
+        << result.confidence << now_seconds() << change_id
+        << (premium ? std::string("premium") : std::string("baseline"))
+        << job.message_id << job.message_version
+        >> [&](std::string) { stored = true; };
+    return stored;
+}
+
+std::vector<std::string> ChatService::translation_targets(
+    const std::string& chat_id, int64_t author_character_id,
+    const std::string& source_language) {
+    std::vector<std::string> targets;
+    if (chat_id.empty() || author_character_id <= 0) return targets;
+
+    auto& chat_db = ChatDB::instance().db();
+    std::set<int64_t> blocked;
+    chat_db << "SELECT blocker_character_id, blocked_character_id FROM blocks "
+               "WHERE blocker_character_id = ? OR blocked_character_id = ?;"
+            << author_character_id << author_character_id
+            >> [&](int64_t blocker, int64_t blocked_character) {
+                   if (blocker != author_character_id) blocked.insert(blocker);
+                   if (blocked_character != author_character_id) blocked.insert(blocked_character);
+               };
+
+    std::vector<int64_t> members;
+    chat_db << "SELECT character_id FROM chat_members "
+               "WHERE chat_id = ? AND left_at IS NULL AND character_id != ?;"
+            << chat_id << author_character_id
+            >> [&](int64_t cid) {
+                   if (blocked.find(cid) == blocked.end()) members.push_back(cid);
+               };
+    if (members.empty()) return targets;
+
+    // One cross-database lookup for every member (no per-member game-DB query).
+    std::string sql =
+        "SELECT c.id, COALESCE(u.language, 'en'), u.adult "
+        "FROM characters c JOIN users u ON u.id = c.user_id WHERE c.id IN (";
+    for (std::size_t i = 0; i < members.size(); ++i) {
+        if (i) sql += ",";
+        sql += "?";
+    }
+    sql += ");";
+
+    std::map<std::string, int> counts;
+    auto stmt = Database::getInstance().gameDB() << sql;
+    for (int64_t id : members) stmt << id;
+    stmt >> [&](int64_t cid, std::string language, bool adult) {
+        (void)cid;
+        if (!adult) return;
+        if (language.empty() || language == source_language) return;
+        counts[language] += 1;
+    };
+
+    int max_targets = 8;
+    if (config_) {
+        const json translation = config_->getTranslationConfig();
+        if (translation.is_object() && translation.contains("premium") &&
+            translation["premium"].is_object()) {
+            max_targets = translation["premium"].value("max_target_languages", max_targets);
+        }
+    }
+    if (max_targets < 0) max_targets = 0;
+
+    std::vector<std::pair<std::string, int>> ordered(counts.begin(), counts.end());
+    std::sort(ordered.begin(), ordered.end(),
+              [](const auto& a, const auto& b) {
+                  if (a.second != b.second) return a.second > b.second;
+                  return a.first < b.first;
+              });
+    const std::size_t limit =
+        std::min<std::size_t>(ordered.size(), static_cast<std::size_t>(max_targets));
+    targets.reserve(limit);
+    for (std::size_t i = 0; i < limit; ++i) targets.push_back(ordered[i].first);
+    return targets;
 }
 
 json ChatService::request_translations(int64_t character_id,
@@ -1668,20 +1829,26 @@ json ChatService::request_translations(int64_t character_id,
         return result;
     }
     const bool viewer_is_adult = visibility::character_is_adult(character_id);
+    const translation_tier requested_tier =
+        translation_tier_for_viewer(character_id, now_seconds());
 
     for (const auto& message_id : message_ids) {
         std::string chat_id;
         std::string text;
         std::string source_language;
         std::string safe_message_id;
+        int64_t message_version = 0;
         bool found = false;
         db << "SELECT chat_id, COALESCE(body, ''), COALESCE(source_language, ''), "
-              "COALESCE(safe_message_id, '') FROM messages WHERE id = ?;"
-           << message_id >> [&](std::string c, std::string b, std::string s, std::string safe_id) {
+              "COALESCE(safe_message_id, ''), version FROM messages WHERE id = ?;"
+           << message_id
+           >> [&](std::string c, std::string b, std::string s, std::string safe_id,
+                  int64_t version) {
                   chat_id = c;
                   text = b;
                   source_language = s;
                   safe_message_id = safe_id;
+                  message_version = version;
                   found = true;
               };
         if (!found || text.empty()) continue;
@@ -1691,12 +1858,20 @@ json ChatService::request_translations(int64_t character_id,
         if (!language_enabled(character_id, source_language)) continue;
 
         json existing = translation_for(message_id, display_language);
-        if (existing.is_null()) {
-            std::string body = translate_for_display(character_id, message_id, text,
-                                                     source_language, display_language);
-            if (!body.empty()) existing = translation_for(message_id, display_language);
+        if (!existing.is_null()) {
+            translations[message_id] = existing;
+            continue;
         }
-        if (!existing.is_null()) translations[message_id] = existing;
+
+        translation_job job;
+        job.message_id = message_id;
+        job.chat_id = chat_id;
+        job.text = text;
+        job.source_language = source_language;
+        job.target_language = display_language;
+        job.message_version = message_version;
+        job.tier = requested_tier;
+        enqueue_translation(job);
     }
 
     json result;
@@ -2137,12 +2312,12 @@ json ChatService::set_push_preferences(int64_t character_id, const json& body) {
     return result;
 }
 
-// Push bodies are sent in the original language. Per-character translation of
-// push payloads is a TODO (the design wants stored-or-library translation, never
-// LLM); the translation seam exists but the recipient's display language is not
-// yet stored server-side. See server/docs/chat.md.
+// Push uses the stored-or-queued translation for the recipient's display
+// language. A cache miss enqueues background work and sends the original text;
+// push never performs sidecar or LLM I/O inline.
 void ChatService::dispatch_push(const std::string& chat_id, int64_t author,
-                                const std::string& message_id, const std::string& body,
+                                const std::string& message_id, int64_t message_version,
+                                const std::string& body,
                                 const std::string& source_language,
                                 const std::string& safe_message_id) {
     if (!PushSender::instance().configured()) return;
@@ -2209,16 +2384,28 @@ void ChatService::dispatch_push(const std::string& chat_id, int64_t author,
 
         // Translate the notification exactly as the recipient would see the
         // message when viewing it: display language, respecting their per-source
-        // language prefs, using stored-or-library translations only (never LLM).
+        // language prefs, using stored-or-queued translations only.
         std::string display_language = display_language_for_character(recipient.character_id);
         std::string push_body = safe_message_id.empty()
             ? body.substr(0, 200)
             : (config_ ? visibility::safe_message_body(*config_, safe_message_id).substr(0, 200)
                        : std::string());
         if (safe_message_id.empty()) {
-            std::string translated = translate_for_display(recipient.character_id, message_id, body,
-                                                           source_language, display_language);
-            if (!translated.empty()) push_body = translated.substr(0, 200);
+            json cached = translation_for(message_id, display_language);
+            if (!cached.is_null() && cached.contains("body") && cached["body"].is_string()) {
+                push_body = cached["body"].get<std::string>().substr(0, 200);
+            } else if (!display_language.empty() && display_language != source_language &&
+                       language_enabled(recipient.character_id, source_language)) {
+                translation_job job;
+                job.message_id = message_id;
+                job.chat_id = chat_id;
+                job.text = body;
+                job.source_language = source_language;
+                job.target_language = display_language;
+                job.message_version = message_version;
+                job.tier = translation_tier_for_viewer(recipient.character_id, now_seconds());
+                enqueue_translation(job);
+            }
         }
 
         push_message message;

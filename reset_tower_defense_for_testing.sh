@@ -1,16 +1,15 @@
-#!/bin/bash
-# Resets all tower defense progress for testing.
-
-DB="${1:-game/game.db}"
-
-if [ ! -f "$DB" ]; then
-  echo "Error: $DB not found"
-  echo "Usage: $0 [path/to/game.db]"
+#!/usr/bin/env bash
+# Clears tower-defense progress and sessions for all characters.
+# Usage: ./reset_tower_defense_for_testing.sh [db_url]
+set -euo pipefail
+DB_URL="${1:-${RAVENEST_GAME_DB_URL:-}}"
+if [ -z "$DB_URL" ]; then
+  echo "Error: set RAVENEST_GAME_DB_URL or pass the database URL" >&2
   exit 1
 fi
-
-echo "Resetting tower defense progress in $DB..."
-sqlite3 "$DB" "DELETE FROM mini_game_progress WHERE mini_game = 'tower_defense';"
-sqlite3 "$DB" "DELETE FROM game_sessions WHERE mini_game = 'tower_defense';"
-sqlite3 "$DB" "DELETE FROM td_player_unlocks;"
-echo "Done."
+psql "$DB_URL" -v ON_ERROR_STOP=1 <<'SQL'
+DELETE FROM mini_game_progress WHERE mini_game = 'tower_defense';
+DELETE FROM game_sessions WHERE mini_game = 'tower_defense';
+DELETE FROM td_player_unlocks;
+SQL
+echo "Tower-defense progress cleared."

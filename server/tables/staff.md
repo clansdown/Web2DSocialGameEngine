@@ -1,6 +1,6 @@
-# staff.* tables (`staff.db`)
+# staff.* tables (`ravenest_staff`)
 
-The staff database is independent of `game.db` and `chat.db`. No cross-database
+The staff database is independent of `ravenest_game` and `ravenest_chat`. No cross-database
 foreign keys exist; ids are plain integers/strings.
 
 ## `staff_roles`
@@ -24,7 +24,7 @@ role. Capability strings are listed in `docs/staff_authorization.md`.
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| account_id | INTEGER PK | `users.id` in game.db |
+| account_id | INTEGER PK | `users.id` in ravenest_game |
 | created_at | INTEGER | grant time |
 | created_by_label | TEXT | CLI/OS label |
 | revoked_at | INTEGER | NULL while active |

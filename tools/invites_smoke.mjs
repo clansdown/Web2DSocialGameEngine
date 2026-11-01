@@ -14,7 +14,6 @@ import {
   readFileSync,
   writeFileSync
 } from 'node:fs';
-import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
@@ -146,8 +145,17 @@ async function scenario_off() {
   );
 
   expect(
-    !existsSync(path.join(db_dir, 'invites.db')),
-    'off mode must not create invites.db'
+    (() => {
+      const invites_url = process.env.RAVENEST_INVITES_DB_URL ?? '';
+      if (!invites_url) fail('RAVENEST_INVITES_DB_URL is required');
+      return execFileSync(
+        'psql',
+        [invites_url, '-At', '-c',
+         "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'invitation_codes'"],
+        { encoding: 'utf8' }
+      ).trim();
+    })() === '0',
+    'off mode must not create the invitation_codes table'
   );
 
   save_state({
@@ -159,7 +167,7 @@ async function scenario_off() {
       character_id: player.character_id
     }
   });
-  console.log('off: account creation works and invites.db is absent');
+  console.log('off: account creation works and invitation_codes is absent');
 }
 
 async function scenario_invite_only() {

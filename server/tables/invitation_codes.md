@@ -1,9 +1,10 @@
-# invitation_codes Table (`invites.db`)
+# invitation_codes Table (`ravenest_invites`)
 
 Single-use registration invitation codes. This table lives in its own
-**lazily-opened** database (`invites.db`) so the whole invitation feature can be
-retired by switching `game/config/registration.json` to `mode: "off"`, stopping
-the server, and deleting the file.
+`ravenest_invites` database so the whole invitation feature can be retired by
+switching `game/config/registration.json` to `mode: "off"` and dropping the
+database. The hard redemption ledger is `ravenest_game.users.invitation_code_id`
+(partial UNIQUE index).
 
 ## Schema
 
@@ -11,13 +12,13 @@ the server, and deleting the file.
 CREATE TABLE invitation_codes (
     id TEXT PRIMARY KEY,
     code TEXT NOT NULL UNIQUE,
-    created_by_account_id INTEGER NOT NULL,
-    created_by_kind TEXT NOT NULL,        -- 'staff' | 'player'
-    created_at INTEGER NOT NULL,
-    used_at INTEGER,
-    used_by_account_id INTEGER UNIQUE,    -- nullable; many NULLs allowed
-    revoked_at INTEGER,
-    revoked_by_account_id INTEGER
+    created_by_account_id BIGINT NOT NULL,
+    created_by_kind TEXT NOT NULL,        -- 'staff' | 'player' | 'cli'
+    created_at BIGINT NOT NULL,
+    used_at BIGINT,
+    used_by_account_id BIGINT UNIQUE,     -- nullable; many NULLs allowed
+    revoked_at BIGINT,
+    revoked_by_account_id BIGINT
 );
 ```
 
@@ -38,7 +39,7 @@ CREATE TABLE invitation_codes (
 ## Indexes
 
 - `code` is `UNIQUE`.
-- `used_by_account_id` is `UNIQUE` (SQLite allows multiple `NULL`s).
+- `used_by_account_id` is `UNIQUE` (PostgreSQL allows multiple `NULL`s).
 - `idx_invitation_codes_creator_created` on `(created_by_account_id, created_at)`
   — daily/lifetime player generation counts.
 - `idx_invitation_codes_created` on `(created_at)`.
@@ -49,7 +50,7 @@ CREATE TABLE invitation_codes (
 
 1. Staff (in `invite_only` mode) or a player with allowance generates a code.
 2. A new account submits it to `/api/createAccount`.
-3. The server inserts the `game.db` user with `users.invitation_code_id` equal
+3. The server inserts the `ravenest_game` user with `users.invitation_code_id` equal
    to this row's `id`; the unique index on that column is the hard single-use
    race guard.
 4. After the game transaction commits, the server sets `used_at` /
@@ -62,7 +63,7 @@ CREATE TABLE invitation_codes (
 - `global_code` mode accepts the configured global code **and** any still-valid
   individual codes from this table. `off` ignores codes entirely and never
   opens this database.
-- When deleting `invites.db`, `users.invitation_code_id` can optionally be
+- When deleting `ravenest_invites`, `users.invitation_code_id` can optionally be
   cleared (`UPDATE users SET invitation_code_id = NULL;`). Random text ids mean
   a recreated database cannot collide with dangling ledger values, but clearing
   is still the cleanest teardown.

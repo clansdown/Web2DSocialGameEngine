@@ -1,6 +1,6 @@
 # bookmarks Table
 
-Private per-character message bookmarks. Stored in `chat.db`.
+Private per-character message bookmarks. Stored in `ravenest_chat`.
 
 ## Schema
 

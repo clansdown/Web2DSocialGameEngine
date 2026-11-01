@@ -76,7 +76,9 @@ std::string resolve_avatar_url(int64_t character_id, bool viewer_is_adult) {
     if (viewer_is_adult && owner_adult && custom_id && !custom_id->empty()) {
         const std::string r2_url = build_avatar_public_url(avatar_storage, *custom_id);
         if (!r2_url.empty()) return r2_url;
-        return "/api/avatar/" + std::to_string(character_id);
+        // Local capability URL: the content-addressed key is unguessable and
+        // contains no credentials. The route validates it against the DB.
+        return "/api/avatar/" + *custom_id;
     }
     if (safe_id && !safe_id->empty()) {
         return AvatarPool::safe_avatar_url(*safe_id);

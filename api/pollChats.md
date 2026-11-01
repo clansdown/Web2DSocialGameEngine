@@ -28,6 +28,16 @@ excluded — see `/api/pollWildlands`).
 Only rows with `change_id > cursor` are returned (capped at 200). `cursor`
 advances to the max applied. Tombstones are returned with `deleted: true`.
 
+Translation deltas carry the message id and tier:
+
+```json
+"translations": [
+  { "message_id": "m_..", "body": "bonjour", "engine": "madlad400-3b",
+    "language": "fr", "detected_source_language": "en", "confidence": 0.9,
+    "change_id": 10491, "tier": "baseline" }
+]
+```
+
 ## Error Responses
 
 ```json

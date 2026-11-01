@@ -29,143 +29,126 @@ This maintains living documentation that grows with the codebase.
 ## Server
 
 The server is a C++23 application built with CMake that:
-- Uses uWebSockets for HTTP endpoint handling
+- Uses uWebSockets for HTTP endpoint handling and realtime combat WebSocket
 - Uses nlohmann/json for JSON request/response parsing
-- Uses sqlite_modern_cpp for SQLite database operations
-- Listens on port 2290 for incoming requests (HTTP only)
-- Designed to be deployed behind nginx or other HTTPS reverse proxies
+- Uses PostgreSQL (libpq) for all persistent storage
+- Uses Argon2id (libargon2) for passwords
+- Runs blocking work on bounded worker pools, never on the uWS loop
+- Listens on port 2290 for incoming HTTP/WS (TLS terminates at the reverse proxy)
 
 ### Dependencies
 - **uWebSockets**: High-performance async web server framework
 - **nlohmann/json**: Modern JSON library for C++
-- **sqlite_modern_cpp**: Header-only SQLite C++ wrapper
-- **SQLite3**: Embedded database (system library)
+- **PostgreSQL / libpq**: Four independent logical databases
+- **libargon2**: Argon2id password hashing
+- **OpenSSL**: SHA-256, HMAC, random bytes
+- **libcurl**: translation sidecar, R2, Web Push
 
 ### Documentation References
 
 - **uWebSockets**: https://unetworking.github.io/uWebSockets.js/generated/index.html
 - **nlohmann/json**: https://github.com/nlohmann/json
-- **sqlite_modern_cpp**: https://github.com/SqliteModernCpp/sqlite_modern_cpp
+- **PostgreSQL libpq**: https://www.postgresql.org/docs/current/libpq.html
+- **Argon2**: https://github.com/P-H-C/phc-winner-argon2
 
 ### Table Documentation
 
 The `server/tables/` directory contains detailed schema documentation for each SQL table:
-- `server/tables/users.md` - users table
-- `server/tables/invitation_codes.md` - invitation codes (invites.db; lazily opened)
-- `server/tables/characters.md` - characters table (renamed from players)
+- `server/tables/users.md` - users table (Argon2id hash, invitation ledger)
+- `server/tables/invitation_codes.md` - invitation codes (`ravenest_invites`)
+- `server/tables/characters.md` - characters table
 - `server/tables/fiefdoms.md` - fiefdoms table
 - `server/tables/fiefdom_buildings.md` - fiefdom_buildings table (level, x/y, construction, `pond_type`, `output_rates`)
 - `server/tables/fiefdom_river.md` - fiefdom_river table (water-power river cells)
-- `server/tables/player_game_state.md` - player_game_state table (game phases, baron-track honor name, `barony_left_at` join cooldown)
-- `server/tables/character_letters.md` - in-game letters (text-system key + read state; game.db)
-- `server/tables/character_milestones.md` - per-character progression milestones (e.g. `ettin_slain`; game.db)
-- `server/tables/character_counters.md` - generic per-character counters (e.g. `slain.<class>`; game.db)
-- `server/tables/character_mission_completions.md` - completed one-shot PvE mission offerings (game.db)
-- `server/tables/combat_mission_attempts.md` - every finished combat mission attempt + warband end state (game.db)
-- `server/tables/character_identity_history.md` - prior names/avatars (admin identity lock; game.db)
-- `server/tables/change_counter.md`, `chats.md`, `chat_members.md`, `chat_invites.md`,
-  `messages.md`, `message_versions.md`, `message_translations.md`, `message_reactions.md`,
-  `bookmarks.md`, `friends.md`, `friend_requests.md`, `blocks.md`, `character_mutes.md`,
-  `character_relation_counts.md`, `chat_bans.md`, `moderation_log.md`,
-  `rate_limit_violations.md`, `rate_limit_timeouts.md`, `push_subscriptions.md`,
-  `push_preferences.md`, `chat_language_prefs.md` - the chat system (chat.db)
-- `server/tables/staff.md` - staff roles/accounts/preferences and the shared action journal (`staff.db`)
-- `server/tables/support.md` - support tickets/messages/action links (`staff.db`)
-- `server/tables/notifications.md` - account notifications (`staff.db`)
-- `server/tables/banned_avatar_hashes.md` - exact SHA-256 avatar upload bans (`staff.db`)
-- `server/tables/platinum_ledger.md` - premium currency balance (non-fungible; variety only)
-- `server/tables/platinum_transactions.md` - idempotent premium purchase records
-- `server/tables/character_cosmetics.md` - character-bound owned cosmetics (revoke flag)
-- `server/tables/character_loadout.md` - equipped cosmetic slots (slot → item JSON)
-- `server/tables/character_monthly_pass.md` - current per-character monthly-pass entitlement (staff tooling)
-- `server/tables/character_monthly_pass_log.md` - append-only grant/revoke/restore history with provenance
+- `server/tables/player_game_state.md` - game phases, honor name, join cooldown
+- `server/tables/character_letters.md` - in-game letters
+- `server/tables/character_milestones.md` - per-character progression milestones
+- `server/tables/character_counters.md` - generic per-character counters
+- `server/tables/character_mission_completions.md` - completed one-shot PvE offerings
+- `server/tables/combat_mission_attempts.md` - finished combat attempts + warband state
+- `server/tables/character_identity_history.md` - prior names/avatars
+- chat tables under `server/tables/` - `ravenest_chat`
+- `server/tables/staff.md`, `support.md`, `notifications.md`, `banned_avatar_hashes.md` - `ravenest_staff`
+- `server/tables/platinum_ledger.md`, `platinum_transactions.md`, `character_cosmetics.md`,
+  `character_loadout.md`, `character_monthly_pass.md`, `character_monthly_pass_log.md`
+- New: `server/tables/user_sessions.md` - refresh sessions
 
-Each `.md` file documents the table's purpose, full schema, field descriptions, indexes, relationships, and usage notes. See `server/tables/README.md` for guidance on documenting new tables.
+Each `.md` file documents the table's purpose, schema, field descriptions, indexes, relationships, and usage notes. See `server/tables/README.md` for guidance.
 
 ### Database Architecture
 
-The server uses **four independent SQLite databases** for maximum concurrency:
+The server uses **one PostgreSQL cluster with four independent logical databases**:
 
-1. **game.db** - Game state and persistent data
-   - `users`: User accounts and authentication
-   - `characters`: Character entities with display names and levels
-   - `fiefdoms`: Character territories and holdings
-   - `character_identity_history`: prior names/avatars (admin identity lock)
-   - `character_counters`: generic per-character counters (`slain.<class>` etc.)
-   - `character_mission_completions`: completed one-shot PvE offerings
-   - `combat_mission_attempts`: finished combat mission attempts + warband end state
-   - `character_monthly_pass`: current per-character staff-granted pass entitlement
-   - `character_monthly_pass_log`: append-only grant/revoke/restore history
-   - Future game tables as needed
+1. **`ravenest_game`** - Game state and persistent data
+   - `users`, `user_sessions`, `characters`, `safe_name_registry`
+   - `fiefdoms`, `fiefdom_buildings`, `fiefdom_walls`, `fiefdom_river`
+   - `retinue_members`, `combat_mission_attempts`, progression tables
+   - `baronies`, `barony_members`, `character_letters`
+   - monetization tables (`platinum_*`, `character_cosmetics`, `character_loadout`,
+     `character_monthly_pass*`)
 
-2. **chat.db** - The chat system
+2. **`ravenest_chat`** - The chat system
    - `chats`, `chat_members`, `chat_invites`, `messages`, `message_versions`,
      `message_translations`, `message_reactions`, `bookmarks`
-   - Social graph: `friends`, `friend_requests`, `blocks`, `character_mutes`,
-     `character_relation_counts`
-   - Moderation: `chat_bans`, `moderation_log`
-   - Rate limiting: `rate_limit_violations`, `rate_limit_timeouts`
-   - Push: `push_subscriptions`, `push_preferences`
-   - `chat_language_prefs`
+   - Social graph, moderation, rate limiting, push, language prefs
    - Full reference: `server/docs/chat.md`
 
-3. **staff.db** - Game staff, audit, support, and notifications
-   - Staff identity/roles: `staff_roles`, `staff_role_capabilities`,
-     `staff_accounts`, `staff_account_roles`, `staff_preferences`
-   - Audit: `staff_action_journal`, `staff_action_events`, `staff_action_links`
-   - Support: `support_tickets`, `support_ticket_messages`,
-     `support_ticket_action_links`
-   - Notifications: `notifications`
-   - Avatar moderation: `banned_avatar_hashes`
-   - Staff actions can span game.db and chat.db, so the shared journal lives in
-     its own database. Full reference: `docs/staff_action_journal.md`,
-     `docs/support_tickets.md`, `docs/notifications.md`, and
-     `server/tables/staff.md`.
+3. **`ravenest_staff`** - Staff, audit, support, notifications
+   - roles/capabilities/accounts/preferences
+   - `staff_action_journal`, `staff_action_events`, `staff_action_links`
+   - support tickets, notifications, banned avatar hashes
 
-4. **invites.db** - Registration invitation codes (lazily opened)
-   - `invitation_codes`: single-use plaintext codes (`created_by_kind`
-     staff/player, used/revoked metadata)
-   - Opened only when registration mode is `global_code`/`invite_only` and an
-     invite lookup/generation/staff list actually runs. `off` mode never
-     creates the file; switching to `off` and deleting `invites.db` retires the
-     feature. The redemption ledger is `game.db` `users.invitation_code_id`
-     (UNIQUE). See `server/tables/invitation_codes.md` and
-     `docs/registration.md`.
+4. **`ravenest_invites`** - Registration invitation codes
+   - `invitation_codes` (plaintext recall, single use)
+   - The hard redemption ledger is `ravenest_game.users.invitation_code_id`
+     (partial unique index).
 
 **Design Notes:**
-- No joins across databases - they are completely independent
-- Concurrent writes possible to all databases simultaneously
-- Separate file handles allow true parallel access
-- Database files created automatically in working directory
+- No joins or foreign keys across databases
+- Concurrent writes possible to all four databases
+- One connection per worker thread per database
+- Connection URLs come from `RAVENEST_{GAME,CHAT,STAFF,INVITES}_DB_URL`
+- Schema baseline lives in `server/db/BaselineSchema.hpp`; see `docs/database.md`
 
-### game.db Schema
+### PostgreSQL Schema
+
+The full baseline is in `server/db/BaselineSchema.hpp`. Representative tables:
 
 ```sql
 CREATE TABLE users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
+    id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    username TEXT NOT NULL,
     password_hash TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
+    created_at BIGINT NOT NULL,
     adult INTEGER NOT NULL DEFAULT 0,
     language TEXT NOT NULL DEFAULT 'en',
-    invitation_code_id TEXT  -- UNIQUE index; redemption ledger for invites.db
+    invitation_code_id TEXT
+);
+CREATE UNIQUE INDEX users_username_lower_unique ON users (LOWER(username));
+
+CREATE TABLE user_sessions (
+    id UUID PRIMARY KEY,
+    account_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    refresh_token_hash TEXT NOT NULL UNIQUE,
+    created_at BIGINT NOT NULL,
+    last_used_at BIGINT NOT NULL,
+    revoked_at BIGINT
 );
 
 CREATE TABLE characters (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
+    id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     display_name TEXT NOT NULL,
     safe_display_name TEXT NOT NULL,
-    level INTEGER DEFAULT 1,
-    FOREIGN KEY(user_id) REFERENCES users(id)
+    level INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE fiefdoms (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    owner_id INTEGER NOT NULL,
-    x INTEGER NOT NULL,
-    y INTEGER NOT NULL,
-    FOREIGN KEY(owner_id) REFERENCES characters(id)
+    id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    owner_id BIGINT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+    gold DOUBLE PRECISION NOT NULL DEFAULT 0,
+    silver_pence DOUBLE PRECISION NOT NULL DEFAULT 0,
+    manor_level INTEGER NOT NULL DEFAULT 0
 );
 ```
 
@@ -246,34 +229,33 @@ the **generic money layer** in `server/Money.hpp/.cpp` (`money::wallet`, `money:
 `Validation::hasEnoughResources`/`deductResources` and the economy-tick import/export/gold-upkeep math
 delegate to it, and hire fees route through the same fungible, auto-importing path.
 
-### chat.db Schema
+### `ravenest_chat` Schema
 
 Chat lives in its own database with ~21 tables (chats, members, messages,
 translations, reactions, the social graph, moderation, rate limiting, push, and
 language prefs). The full DDL and design are documented in `server/docs/chat.md`
-and the per-table files under `server/tables/` (see the Table Documentation list
-above). `character_identity_history` (admin identity lock) lives in **game.db**.
+and the per-table files under `server/tables/`. `character_identity_history`
+(admin identity lock) lives in **`ravenest_game`**.
 
 Key cross-cutting primitive: every mutated chat row carries a global `change_id`
 (from `change_counter`), so one integer cursor drives delta polling.
 
-### game.db Additional Tables
+### Additional game tables
 
 ```sql
 CREATE TABLE game_sessions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    character_id INTEGER NOT NULL,
+    id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    character_id BIGINT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
     mini_game TEXT NOT NULL,
     level_id INTEGER NOT NULL DEFAULT 0,
-    started_at INTEGER NOT NULL,
-    last_activity INTEGER NOT NULL,
+    started_at BIGINT NOT NULL,
+    last_activity BIGINT NOT NULL,
     total_rounds INTEGER NOT NULL DEFAULT 1,
     current_round INTEGER NOT NULL DEFAULT 0,
     difficulty INTEGER NOT NULL DEFAULT 1,
     lives INTEGER NOT NULL DEFAULT 20,
     gold INTEGER NOT NULL DEFAULT 100,
-    state TEXT NOT NULL DEFAULT 'active',
-    FOREIGN KEY(character_id) REFERENCES characters(id)
+    state TEXT NOT NULL DEFAULT 'active'
 );
 ```
 
@@ -281,12 +263,11 @@ Used for ongoing tower defense game sessions. Created on tdRound kickoff, update
 
 ```sql
 CREATE TABLE fiefdom_river (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    fiefdom_id INTEGER NOT NULL,
+    id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    fiefdom_id BIGINT NOT NULL REFERENCES fiefdoms(id) ON DELETE CASCADE,
     x INTEGER NOT NULL,
     y INTEGER NOT NULL,
-    FOREIGN KEY(fiefdom_id) REFERENCES fiefdoms(id),
-    UNIQUE(fiefdom_id, x, y)
+    UNIQUE (fiefdom_id, x, y)
 );
 ```
 
@@ -530,7 +511,7 @@ The combat game (PvE 1–8; PvP 2–64 later) is a server-authoritative RTS over
 protocol: `docs/combat_protocol.md`; mission rules: `docs/combat_rulesets.md`;
 map format: `docs/combat_maps.md`.
 
-- Matches live **entirely in RAM** (`server/combat/`); SQLite is only touched
+- Matches live **entirely in RAM** (`server/combat/`); PostgreSQL is only touched
   after a battle ends (casualty persistence deferred to the uWS loop thread).
 - One worker thread per battle from a bounded pool (`--combat-sim-threads`);
   the loop thread only enqueues commands and relays chat/voice.
@@ -665,7 +646,7 @@ delete → journal → undo (message restored). Exits 0 on pass, 2 on failure;
 isolated per-port scratch DB.
 
 **Invitation smoke test** (`bash tools/invites_smoke.sh [PORT]`): uses a temporary
-content root to exercise `off` (no invitation input/`invites.db` is not
+content root to exercise `off` (no invitation input/`ravenest_invites` is not
 created), `global_code` (shared + existing individual code), `invite_only`
 (staff-generated bootstrap, player generation/limits, single-use redemption),
 staff generate/revoke + journal/undo without plaintext codes, and the bounded
@@ -688,7 +669,7 @@ outcome. Exits 0 on match, 2 on mismatch. (`--combat-seed N` and
 
 ### March Progress Testing
 
-Use `tools/set_march_progress.sh` to set a character's march progress to an exact point for testing campaign/phase flows. It edits `game.db` directly via sqlite3 (no API calls), so the server can be running or stopped.
+Use `tools/set_march_progress.sh` to set a character's march progress to an exact point for testing campaign/phase flows. It edits the PostgreSQL game database directly via psql (no API calls), so the server can be running or stopped.
 
 ```bash
 ./tools/set_march_progress.sh                                          # List characters (find id)
@@ -708,8 +689,8 @@ Use `tools/set_march_progress.sh` to set a character's march progress to an exac
 ### Deployment Notes
 
 1. **HTTP Only**: The server listens on HTTP (port 2290). TLS/HTTPS is handled by a reverse proxy (nginx, etc.)
-2. **Databases**: `game.db`, `chat.db`, and `staff.db` are created in `--db-dir` (default: the working directory) on first run. `invites.db` is created lazily only when registration mode is `global_code`/`invite_only` and an invite operation actually runs; `off` mode leaves it absent. (`messages.db` is retired.)
-3. **Concurrent Access**: Four independent database connections allow simultaneous read/write operations (`invites.db` opens lazily)
+2. **Databases**: PostgreSQL holds `ravenest_game`, `ravenest_chat`, `ravenest_staff`, and `ravenest_invites`. Connection URLs come from `RAVENEST_{GAME,CHAT,STAFF,INVITES}_DB_URL`. The baseline schema is applied on startup; `invites` is opened lazily only when registration mode is `global_code`/`invite_only` and an invite operation actually runs.
+3. **Concurrent Access**: Each worker thread opens one connection per logical database; the four databases remain independent.
 4. **Error Handling**: All errors return JSON with format `{ "error": "description" }`
 5. **API Documentation**: Every endpoint has a corresponding `.md` file in `api/` directory with detailed request/response examples
 6. **Assets vs working directory**: the read-only assets `config/`, `images/`, and `text/` are read from the `--content` root (default: the working directory). `run_server.sh` runs the server from `test_run/` and passes `--content <repo>/game`, so databases and uploads land in `test_run/` and `game/` stays pristine for `push_to_production.sh`. Image paths like `images/ui/` resolve under the content root, so assets at `game/images/ui/book.png` are served from `/images/ui/book.png`. The client resolves API/asset/WebSocket origins from `VITE_API_BASE_URL`, `VITE_ASSETS_BASE_URL`, and `VITE_WS_BASE_URL` at build time (`install.sh` fills them from `.deploy`); empty values fall back to same-origin, which keeps the Vite dev proxy (`/api`, `/images`, `/ws` → `localhost:2290`) working. Production serves the client from Pages, the API from `api.<zone>`, and assets from `assets.<zone>`; the API uses `RAVENEST_CORS_ORIGINS` (see `docs/publishing.md`).
@@ -1074,6 +1055,7 @@ Build the full game progression and content system with a working tower defense 
 ### Progress
 
 #### Done
+- **PostgreSQL + threading rewrite (Phase 1)**: SQLite is gone. Four PostgreSQL databases (`ravenest_game/chat/staff/invites`) use the baseline in `server/db/BaselineSchema.hpp`; the legacy streaming SQL adapter and the typed `db::` layer (`value/result/row/connection_like/transaction`, `postgres_connection`, bounded per-DB executors) are in place. API handlers run on an 8-thread pool and return through `loop_dispatcher`; the refresh-cookie auth flow uses Argon2id + `user_sessions`; invite-only pre-alpha has `invite_admin`; local avatars use content-addressed capability URLs; voice is STUN-only with explicit failure text. Ops/docs: `docker-compose.yml`, `ravenest.env.example`, `tools/init_postgres.sh`, `tools/backup_postgres.sh`, `docs/database.md`, `docs/threading.md`, `docs/auth.md`, `docs/postgres_operations.md`, `docs/translation_sidecar.md`. Runtime verification awaits a host with PostgreSQL; compile + client/text checks pass.
 - **Reeve advisor**: a manor HUD panel backed by `/api/getReeveReport` (text ids only). The endpoint runs a lazy real tick, then projects one full day through the economy engine in a rolled-back transaction so advice never advances the fiefdom. Reports cover treasury, stores, production, land, water, morale, retinue, and trade with card/panel drill-downs, plus exactly one style-weighted recommendation (build/upgrade/convert/road link/set reserve/set import/set output rate) or an informational hold. Placement avoids reserved road corridors, prefers road-connected sites, and anchors speculative roads via dangling road ends. `economy_report.building_status` feeds both the Reeve and the building card; `demand` distinguishes consumed from unsupplied. Config: `game/config/reeve.json`; engine: `server/Reeve*.{hpp,cpp}`; client: `ReevePanel.svelte`, `ReeveText.svelte`, `reeve_text.ts`, `reeve_actions.ts`; docs: `api/getReeveReport.md`, `server/docs/reeve.md`; smoke: `tools/reeve_smoke.sh`.
 - **Offline translation context + localized retinue names**: free-form English
   `.meta` context lives beside English text and in prefix-based
@@ -1089,7 +1071,7 @@ Build the full game progression and content system with a working tower defense 
   `docs/retinue_design.md`, API/table docs; smoke:
   `tools/retinue_names_smoke.sh`.
 - **Game staff console, shared audit journal, support tickets, and notifications**:
-  staff are normal accounts with `staff.db` records and capability roles
+  staff are normal accounts with `ravenest_staff` records and capability roles
   (`staffGetContext`, `staff_admin` CLI grant/revoke only). The shared
   append-only journal covers staff actions and scoped chat moderation, with
   preflight + compensating undo (`staff.undo`), pending recovery, sensitive-read
@@ -1144,7 +1126,7 @@ Build the full game progression and content system with a working tower defense 
 - **Per-commodity export pricing**: Export price resolves per resource with precedence `export_prices[resource]` (explicit gold/pence sell price) → `export_sell_multipliers[resource]` (ratio of import price) → global `export_sell_multiplier` (0.5). Engine resolves the unit sell value in the resource's market currency; linter validates both new maps in `economy.json`.
 - **Multi-output buildings + per-output rates**: A building may define an `outputs` array — each output with its own `inputs`, a `min_level` unlock, and a per-player rate (0..1). The blacksmith now produces `ironwork` (level 1+) and `fancy_ironwork` (level 2+, 2× iron input), both simultaneously at level 2+. Engine uses per-output plans: each output is gated by its own input-satisfaction ratio, rates scale output + inputs (0 = off). `fancy_ironwork` added as a real fiefdom resource (column + migration + full plumbing). Rates stored in `fiefdom_buildings.output_rates` (JSON), set via `/api/setBuildingOutputRate`; client has a Production Rates panel in `ManorMenu` with per-output sliders.
 - **Metalworking economy + household grain**: Every craft building (peasant, blacksmith, collier, woodcutter, wood_hewer) is a self-contained household — produces **18 grain/day** and consumes **36 grain/day** via `daily_cost`, plus a small `ironwork` tool upkeep (home_base 20, peasant 1, woodcutter 5, wood_hewer 5, miller 5, collier 2). Blacksmith output scaled to **100 ironwork/day** (input-gated on charcoal 100 + iron 40 per day; no separate charcoal `daily_cost`, so one collier's 120 charcoal nets ~+20 vs one blacksmith); collier charcoal 120 (wood 80 input), bloomery iron 20 (charcoal 30 input), woodcutter wood 20 — so ~5 bloomeries + ~9 colliers feed one full blacksmith, and one blacksmith covers ~50 peasants + 2 woodcutters + 2 woodhewers + a miller + a few colliers + the home base. **Prices deflate with production** (anchored to grain at 1 shilling ≈ 0.05 gold): wood 0.03, charcoal 0.03, iron 0.06, ironwork 0.02 import. **Ironwork exports sell at 25% of import** (`export_sell_multipliers.ironwork = 0.25`), other resources at 50%. `default_reserves` scaled up (grain 150, wood 100, steel 50, bronze 25, leather 25, mana 10, charcoal/iron/ironwork 50, fancy_ironwork 10).
-- **Realtime combat scaffold**: Server-authoritative RTS over WebSocket `/ws/combat` (same port 2290) — matches live entirely in RAM (`server/combat/`), one worker thread per battle from a bounded pool (`--combat-sim-threads`), 10 ticks/s with entity-level deltas + full snapshots every 25 ticks, pluggable codec (`combat_codec`; `json_codec` default with hand-rolled fast serializer, `binary_codec` placeholder), uWS pub/sub topics for broadcast (`match:<id>`, team chat, per-player voice signaling), SQLite writes deferred to the loop thread (`Loop::defer`). REST surface: `combatCreate`/`combatJoin`/`combatList`/`combatGetConfigs`/`combatMatchmaking` (stub)/`getRetinue`. **Retinue defined now**: new `retinue_members` table (knight = character, auto-created; units come from the manor's `train_troops` stub later), casualties persisted after matches per ruleset death handling. Configs: `combat/rulesets.json` (skirmish PvE **wounded**/no-death + scrimmage PvP respawn) and `combat/maps/meadow.json` (16×16 with normalized spawn points, tile_costs cost grid for future pathfinding, lenient parse — unknown fields preserved, linter warns not errors). Client: `src/combat/` — CombatScreen (lobby→battle→results), CombatNetClient (first-message auth, backoff reconnect), CombatGame (SimpleGame canvas, entity store + interpolation, select/move), CombatHud, CombatChat (team), CombatVoice (WebRTC mesh, WS-relayed signaling, STUN placeholder), MatchLobby (create/join by code). No hub cards — combat is reached through game flow later (module kept for future integration). Vite proxies `/ws` (ws:true); nginx needs Upgrade headers + long timeouts (server README).
+- **Realtime combat scaffold**: Server-authoritative RTS over WebSocket `/ws/combat` (same port 2290) — matches live entirely in RAM (`server/combat/`), one worker thread per battle from a bounded pool (`--combat-sim-threads`), 10 ticks/s with entity-level deltas + full snapshots every 25 ticks, pluggable codec (`combat_codec`; `json_codec` default with hand-rolled fast serializer, `binary_codec` placeholder), uWS pub/sub topics for broadcast (`match:<id>`, team chat, per-player voice signaling), PostgreSQL writes deferred to the loop thread (`Loop::defer`). REST surface: `combatCreate`/`combatJoin`/`combatList`/`combatGetConfigs`/`combatMatchmaking` (stub)/`getRetinue`. **Retinue defined now**: new `retinue_members` table (knight = character, auto-created; units come from the manor's `train_troops` stub later), casualties persisted after matches per ruleset death handling. Configs: `combat/rulesets.json` (skirmish PvE **wounded**/no-death + scrimmage PvP respawn) and `combat/maps/meadow.json` (16×16 with normalized spawn points, tile_costs cost grid for future pathfinding, lenient parse — unknown fields preserved, linter warns not errors). Client: `src/combat/` — CombatScreen (lobby→battle→results), CombatNetClient (first-message auth, backoff reconnect), CombatGame (SimpleGame canvas, entity store + interpolation, select/move), CombatHud, CombatChat (team), CombatVoice (WebRTC mesh, WS-relayed signaling, STUN placeholder), MatchLobby (create/join by code). No hub cards — combat is reached through game flow later (module kept for future integration). Vite proxies `/ws` (ws:true); nginx needs Upgrade headers + long timeouts (server README).
 
 - **Hash-based history routing**: In-app navigation is URL-driven via `client/src/lib/router.ts` — `#/` hub, `#/activity/<id>[/…]` (arbitrary-depth nested sub-routes, e.g. `#/activity/chat/thread/42`), `#/game/<game>/<level>`. Components read `route_store` and call `navigate()` / `replace_route()` (redirects: game complete/error replaces the game entry so Back doesn't re-enter it) / `go_back()` (in-app Back buttons). Entering an activity/game from an empty/foreign URL pushes a `#/` hub entry first so browser Back always lands on the hub grid. Reload restores the screen from the URL; mobile app-switch fires no hash events and never disturbs the open screen. The old OPFS `last_activity` restore is gone; barony create/join → hub, baron-track start → `#/activity/tasks`. Backing out of a mini-game mid-round leaves an active session that the server resumes on next kickoff (existing logic).
 - **Manor loading fixed**: Two bugs kept the manor at an infinite "Loading Manor…" spinner. (1) `/api/getBuildingConfigs` is authenticated; the client now sends `auth` (it previously called without credentials, got a `needs_auth` response with no `error`/`data`, silently returned `undefined`, and `Object.entries(undefined)` in `ManorMenu.setupGame` threw). (2) `whenLoaded(setupGame)` was registered *after* `initEngine(canvasEl, debugDiv, false, () => {})` — initEngine's synchronous first loop closes the one-shot "all classes loaded" gate, so a late-registered `whenLoaded` never fires and `loading` stays true. Fixed by passing `setupGame` as initEngine's 4th argument (the documented pattern in SimpleGame/Embedding.md, matching TowerDefense/WeedingGame/CombatGame) and removing the `whenLoaded` call. The server now also serves `/images/manor/*` (background + building sprites). `getBuildingConfigsRequest` takes `{ username, token }` and throws on missing data; the manor loading spinner has a Back button as an escape hatch.
@@ -1180,7 +1162,7 @@ Build the full game progression and content system with a working tower defense 
   (`uploads/avatars/`) or `r2` (public assets bucket). Keys are content-addressed
   (`<character_id>/<sha256>.<ext>`); uploads validate/decode/hash/dimension-check
   on a bounded `thread_pool`, write through a minimal SigV4 `r2_client`, and
-  complete on the uWS loop before updating SQLite. Authorized adults receive the
+  complete on the uWS loop before updating PostgreSQL. Authorized adults receive the
   absolute `https://assets.../avatars/...` URL; minors always get the safe pick.
   Local mode still serves via age-gated `GET /api/avatar/<id>`; R2 redirects to
   the public capability URL. Replacement/removal deletes the old object and
@@ -1229,7 +1211,7 @@ Build the full game progression and content system with a working tower defense 
 - **`rename_field` self-rename bug**: `rename_field(obj, "x", "x")` with `from == to` destroys the field. Fixed by removing these calls.
 - **Level ID** threaded through: `App.svelte → MiniGameContainer → TowerDefense` (not hardcoded 0).
 - **Combat is not a mini-game**: it never routes through `MiniGameContainer`/`startMiniGame`; the `client/src/combat/` module is kept for future game-flow entry (hub cards were removed — combat is no longer launched from `available_activities`).
-- **Combat threading**: match sim runs on its own worker thread; the uWS loop thread only enqueues commands and relays chat/voice. **uWS is single-threaded — the only thread-safe entry point is `Loop::defer`.** Worker broadcasts are posted to the loop (which calls `App::publish` on the loop thread); the App address is held in a shared atomic slot nulled before destruction. SQLite writes are also `Loop::defer`-ed back to the loop thread. Worker threads are **joinable**; on shutdown (SIGINT/SIGTERM or `--shutdown-after-ms`) the server falls through (close sockets + listener → `App::run()` returns) and `combat_match_manager::shutdown()` stops + joins the pool *before* the App is destroyed. `ClientInfo` owns `std::string`s (never uWS request views, which die with the handler). Regression: `tools/combat_shutdown_test.sh`, `tools/combat_broadcast_stress.sh`, TSan via `./compile_debug-server.sh --tsan`.
+- **Combat threading**: match sim runs on its own worker thread; the uWS loop thread only enqueues commands and relays chat/voice. **uWS is single-threaded — the only thread-safe entry point is `Loop::defer`.** Worker broadcasts are posted to the loop (which calls `App::publish` on the loop thread); the App address is held in a shared atomic slot nulled before destruction. PostgreSQL writes are also loop-dispatched back to the loop thread. Worker threads are **joinable**; on shutdown (SIGINT/SIGTERM or `--shutdown-after-ms`) the server falls through (close sockets + listener → `App::run()` returns) and `combat_match_manager::shutdown()` stops + joins the pool *before* the App is destroyed. `ClientInfo` owns `std::string`s (never uWS request views, which die with the handler). Regression: `tools/combat_shutdown_test.sh`, `tools/combat_broadcast_stress.sh`, TSan via `./compile_debug-server.sh --tsan`.
 - **Combat maps are lenient**: `CombatMapCache` preserves unknown fields; the linter warns (not errors) on them so the format can evolve (see `docs/combat_maps.md`).
 
 ### Relevant Files

@@ -9,7 +9,7 @@ std::optional<int64_t> account_id_for_username(const std::string& username) {
     if (username.empty()) return std::nullopt;
     auto& db = Database::getInstance().gameDB();
     std::optional<int64_t> id;
-    db << "SELECT id FROM users WHERE username = ?;" << username
+    db << "SELECT id FROM users WHERE LOWER(username) = LOWER(?);" << username
        >> [&](int64_t value) { id = value; };
     return id;
 }

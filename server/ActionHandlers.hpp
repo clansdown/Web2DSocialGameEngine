@@ -68,6 +68,19 @@ int getUsedForestAcres(GameConfigCache& cache, int fiefdom_id);
 double getTotalForestAcres(GameConfigCache& cache, int fiefdom_id);
 double getAvailableForestAcres(GameConfigCache& cache, int fiefdom_id);
 
+// In-memory overloads for callers that already fetched the building list
+// (getFiefdom with include_buildings, the Reeve snapshot and economy report).
+int getUsedArableAcres(GameConfigCache& cache,
+                       const std::vector<BuildingData>& buildings);
+int getUsedForestAcres(GameConfigCache& cache,
+                       const std::vector<BuildingData>& buildings);
+double getTotalArableAcresForManor(GameConfigCache& cache, int manor_level);
+double getTotalForestAcresForManor(GameConfigCache& cache, int manor_level);
+double getAvailableArableAcres(GameConfigCache& cache, int manor_level,
+                               const std::vector<BuildingData>& buildings);
+double getAvailableForestAcres(GameConfigCache& cache, int manor_level,
+                               const std::vector<BuildingData>& buildings);
+
 bool checkFiefdomPrerequisites(GameConfigCache& cache, int fiefdom_id, const nlohmann::json& prerequisites);
 
 bool hasCompletedHomeBase(int fiefdom_id);

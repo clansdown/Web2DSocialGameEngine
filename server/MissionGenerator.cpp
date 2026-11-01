@@ -4,9 +4,13 @@
 #include "combat/CombatantStats.hpp"
 #include "combat/CombatMapCache.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
+#include <list>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <unordered_map>
@@ -55,7 +59,79 @@ std::string pick_map(offering_rng& rng, GameConfigCache& cache) {
 struct class_power_table {
     std::vector<std::string> classes;
     std::unordered_map<std::string, std::vector<double>> by_class;
+    double p_min = 0.0;
+    double p_ref = 1.0;
+    int64_t generation = -1;
+    retinue_strength::strength_tuning tuning;
 };
+
+// The table is a pure function of enemy_combatants.json + offerings.encounter.
+// It is rebuilt only when either file's mtime changes, and returned through a
+// shared_ptr so a concurrent hot reload can replace the cache without
+// invalidating readers already assembling a warband.
+std::shared_ptr<const class_power_table> get_class_power_table(GameConfigCache& cache) {
+    const int64_t generation =
+        cache.getConfigGeneration("enemy_combatants.json") * 1000003LL +
+        cache.getConfigGeneration("combat/offerings.json");
+    static std::mutex mutex;
+    static std::shared_ptr<const class_power_table> cached;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (cached && cached->generation == generation) return cached;
+    }
+
+    auto table = std::make_shared<class_power_table>();
+    table->generation = generation;
+    const nlohmann::json& cfg = cache.getCombatOfferings();
+    const nlohmann::json& enemy = cache.getEnemyCombatants();
+    table->tuning = retinue_strength::load_strength_tuning(cfg);
+
+    if (enemy.is_object()) {
+        for (auto it = enemy.begin(); it != enemy.end(); ++it) {
+            if (it.value().is_object()) table->classes.push_back(it.key());
+        }
+    }
+
+    double p_min = std::numeric_limits<double>::max();
+    double log_sum = 0.0;
+    int weighted_classes = 0;
+    for (const std::string& cls : table->classes) {
+        const int max_level = std::max(1, combat::combatant_max_level(enemy, cls));
+        std::vector<double> levels(static_cast<std::size_t>(max_level) + 1, 0.0);
+        for (int level = 1; level <= max_level; ++level) {
+            const double p = retinue_strength::combatant_power(enemy, cls, level, table->tuning);
+            levels[static_cast<std::size_t>(level)] = p;
+            if (p > 0.0) p_min = std::min(p_min, p);
+        }
+        if (!levels.empty() && levels.size() > 1 && levels[1] > 0.0) {
+            log_sum += std::log(levels[1]);
+            ++weighted_classes;
+        }
+        table->by_class[cls] = std::move(levels);
+    }
+    table->p_min = p_min == std::numeric_limits<double>::max() ? 0.0 : p_min;
+    table->p_ref = weighted_classes > 0
+                       ? std::exp(log_sum / static_cast<double>(weighted_classes))
+                       : 1.0;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        cached = table;
+    }
+    return table;
+}
+
+std::shared_ptr<const retinue_strength::strength_tuning> get_strength_tuning(
+    GameConfigCache& cache) {
+    const std::shared_ptr<const class_power_table> table = get_class_power_table(cache);
+    return std::shared_ptr<const retinue_strength::strength_tuning>(
+        table, &table->tuning);
+}
+
+int64_t now_seconds() {
+    return std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+}
 
 struct assembly_context {
     GameConfigCache* cache = nullptr;
@@ -281,6 +357,73 @@ void merge_warband_entries(std::vector<combat::warband_spawn_entry>& entries) {
     entries = std::move(merged);
 }
 
+// ── Warband LRU ─────────────────────────────────────────────────────────────
+// Offerings are pure functions of their id, but a board call assembles 8 per
+// tier and combatCreate assembles the selected one again. Cache the assembled
+// result per (id + config generation) until the offering's validity window
+// closes. 512 entries covers several characters/hours without unbounded growth.
+struct warband_cache_entry {
+    assembled_warband warband;
+    int64_t expires_at = 0;
+};
+
+struct warband_lru {
+    std::mutex mutex;
+    std::list<std::string> order;  // most recently used first
+    std::unordered_map<
+        std::string,
+        std::pair<warband_cache_entry, std::list<std::string>::iterator>>
+        entries;
+};
+
+warband_lru& warband_cache() {
+    static warband_lru cache;
+    return cache;
+}
+
+assembled_warband get_or_assemble_warband(const offering_id_parts& parts,
+                                          const warband_spec& spec,
+                                          GameConfigCache& cache) {
+    const nlohmann::json& cfg = cache.getCombatOfferings();
+    const int validity_hours =
+        std::max(1, cfg.value("board", nlohmann::json::object()).value("validity_hours", 8));
+    const int64_t expires_at =
+        (parts.hour_bucket + static_cast<int64_t>(validity_hours)) * 3600;
+    const int64_t now = now_seconds();
+
+    std::string key = encode_offering_id(parts);
+    key += "|" + std::to_string(cache.getConfigGeneration("enemy_combatants.json"));
+    key += "|" + std::to_string(cache.getConfigGeneration("combat/offerings.json"));
+
+    warband_lru& lru = warband_cache();
+    {
+        std::lock_guard<std::mutex> lock(lru.mutex);
+        auto it = lru.entries.find(key);
+        if (it != lru.entries.end()) {
+            if (it->second.first.expires_at > now) {
+                lru.order.splice(lru.order.begin(), lru.order, it->second.second);
+                return it->second.first.warband;
+            }
+            lru.order.erase(it->second.second);
+            lru.entries.erase(it);
+        }
+    }
+
+    assembled_warband warband = assemble_warband(spec, cache);
+
+    {
+        std::lock_guard<std::mutex> lock(lru.mutex);
+        while (lru.entries.size() >= 512 && !lru.order.empty()) {
+            const std::string lru_key = lru.order.back();
+            lru.order.pop_back();
+            lru.entries.erase(lru_key);
+        }
+        lru.order.push_front(key);
+        lru.entries[key] = {{std::move(warband), expires_at}, lru.order.begin()};
+        return lru.entries[key].first.warband;
+    }
+}
+
 } // namespace
 
 uint64_t offering_rng::next() {
@@ -413,8 +556,8 @@ std::vector<mission_tier> parse_tiers(const nlohmann::json& offerings_config) {
 party_army party_army_for_tier(const mission_tier& tier, const retinue_army_summary& self_army,
                                const std::vector<retinue_army_summary>& barony_armies,
                                GameConfigCache& cache) {
-    const retinue_strength::strength_tuning tuning =
-        retinue_strength::load_strength_tuning(cache.getCombatOfferings());
+    const std::shared_ptr<const retinue_strength::strength_tuning> tuning =
+        get_strength_tuning(cache);
 
     std::vector<retinue_army_summary> sorted = barony_armies;
     std::sort(sorted.begin(), sorted.end(),
@@ -434,7 +577,7 @@ party_army party_army_for_tier(const mission_tier& tier, const retinue_army_summ
         troop_count += sorted[static_cast<size_t>(i)].unit_count;
     }
     army.troop_count = troop_count;
-    army.power = retinue_strength::army_strength(sum_power, troop_count, tuning);
+    army.power = retinue_strength::army_strength(sum_power, troop_count, *tuning);
     return army;
 }
 
@@ -442,54 +585,22 @@ assembled_warband assemble_warband(const warband_spec& spec, GameConfigCache& ca
     assembled_warband out;
     const nlohmann::json& cfg = cache.getCombatOfferings();
     const nlohmann::json& enemy = cache.getEnemyCombatants();
-    const retinue_strength::strength_tuning tuning =
-        retinue_strength::load_strength_tuning(cfg);
-
-    class_power_table table;
-    if (enemy.is_object()) {
-        for (auto it = enemy.begin(); it != enemy.end(); ++it) {
-            if (it.value().is_object()) table.classes.push_back(it.key());
-        }
-    }
-    if (table.classes.empty()) return out;
-
-    double p_min = std::numeric_limits<double>::max();
-    for (const std::string& cls : table.classes) {
-        const int max_level = std::max(1, combat::combatant_max_level(enemy, cls));
-        std::vector<double> levels(static_cast<size_t>(max_level) + 1, 0.0);
-        for (int level = 1; level <= max_level; ++level) {
-            const double p = retinue_strength::combatant_power(enemy, cls, level, tuning);
-            levels[static_cast<size_t>(level)] = p;
-            if (p > 0.0) p_min = std::min(p_min, p);
-        }
-        table.by_class[cls] = std::move(levels);
-    }
-    if (p_min == std::numeric_limits<double>::max()) p_min = 0.0;
+    const std::shared_ptr<const class_power_table> table = get_class_power_table(cache);
+    if (!table || table->classes.empty()) return out;
 
     assembly_context ctx;
     ctx.cache = &cache;
     ctx.enemy_combatants = &enemy;
-    ctx.tuning = tuning;
-    ctx.powers = &table;
-    ctx.min_monster_power = p_min;
+    ctx.tuning = table->tuning;
+    ctx.powers = table.get();
+    ctx.min_monster_power = table->p_min;
 
     nlohmann::json enc_scratch;
     const nlohmann::json& enc = obj_or_empty(cfg, "encounter", enc_scratch);
     ctx.max_units = std::max(1, enc.value("max_units", 60));
     ctx.max_depth = std::max(0, enc.value("prerequisite_depth", 8));
 
-    // Reference power for the weighting: geometric mean of level-1 class powers.
-    double log_sum = 0.0;
-    int weighted_classes = 0;
-    for (const std::string& cls : table.classes) {
-        const double p = power_of(ctx, cls, 1);
-        if (p > 0.0) {
-            log_sum += std::log(p);
-            ++weighted_classes;
-        }
-    }
-    const double p_ref =
-        weighted_classes > 0 ? std::exp(log_sum / static_cast<double>(weighted_classes)) : 1.0;
+    const double p_ref = table->p_ref;
 
     offering_rng rng;
     rng.state = spec.seed;
@@ -506,11 +617,11 @@ assembled_warband assemble_warband(const warband_spec& spec, GameConfigCache& ca
     // is the normal exit; the bound is only a backstop.
     for (int i = 0; i < 10000; ++i) {
         if (static_cast<int>(warband.size()) >= ctx.max_units) break;
-        if (attempted.size() >= table.classes.size()) break;
+        if (attempted.size() >= table->classes.size()) break;
 
         std::vector<std::string> candidates;
-        candidates.reserve(table.classes.size());
-        for (const std::string& cls : table.classes) {
+        candidates.reserve(table->classes.size());
+        for (const std::string& cls : table->classes) {
             if (attempted.find(cls) == attempted.end()) candidates.push_back(cls);
         }
         if (candidates.empty()) break;
@@ -526,7 +637,7 @@ assembled_warband assemble_warband(const warband_spec& spec, GameConfigCache& ca
 
     merge_warband_entries(warband);
     out.entries = std::move(warband);
-    out.realized_power = retinue_strength::warband_power(out.entries, cache, tuning);
+    out.realized_power = retinue_strength::warband_power(out.entries, cache, table->tuning);
     return out;
 }
 
@@ -571,7 +682,7 @@ mission_offering generate_offering(const offering_id_parts& parts, GameConfigCac
     spec.party_troop_count = parts.troop_count;
     spec.party_power = dequantize_power(parts.power_bucket, cfg);
 
-    const assembled_warband assembled = assemble_warband(spec, cache);
+    const assembled_warband assembled = get_or_assemble_warband(parts, spec, cache);
     off.warband = assembled.entries;
     off.difficulty = assembled.difficulty;
     off.target_power = assembled.target_power;

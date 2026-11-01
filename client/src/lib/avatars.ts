@@ -17,22 +17,28 @@ function is_custom_avatar_url(url: string): boolean {
 }
 
 /**
- * Appends the session credentials to an age-gated custom-avatar URL so it can
- * be used directly as an <img> src. Safe-pool and static URLs are rebased onto
- * the asset origin and pass through unchanged (they are public).
- *
- * Local custom avatars resolve to `/api/avatar/<character_id>` and require
- * `?username=&token=` because a browser image request cannot carry a POST auth
- * body. R2 custom avatars are already absolute public capability URLs and pass
- * through unchanged.
+ * Resolves an avatar URL. Content-addressed capability URLs are used as-is;
+ * only the legacy bare `/api/avatar/<id>` route appends session credentials
+ * because a browser image request cannot send an Authorization header.
  *
  * @param url - Server-resolved avatar URL (possibly a custom-avatar route)
- * @returns The URL with credentials appended when required
+ * @returns The URL with legacy credentials appended when required
  */
 export function with_avatar_auth(url: string): string {
   if (!url) return url;
   const resolved = resolve_server_url(url);
   if (!is_custom_avatar_url(resolved)) return resolved;
+
+  // Capability URLs (`/api/avatar/<id>/<content-key>`) need no credentials.
+  // Only the legacy bare `/api/avatar/<id>` route is age-gated by query auth.
+  try {
+    const path = new URL(resolved, window.location.origin).pathname;
+    const rest = path.startsWith('/api/avatar/') ? path.slice('/api/avatar/'.length) : '';
+    if (rest.includes('/')) return resolved;
+  } catch {
+    return resolved;
+  }
+
   const creds = auth.getInMemoryCredentials();
   const token = auth.getSessionToken();
   if (!creds || !token) return resolved;

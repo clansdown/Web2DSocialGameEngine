@@ -64,6 +64,7 @@
 #include "AvatarUrl.hpp"
 #include "Base64.hpp"
 #include "ThreadPool.hpp"
+#include "http/StaticAssets.hpp"
 #include "avatars/AvatarKey.hpp"
 #include "avatars/AvatarStore.hpp"
 #include "avatars/AvatarUploadManager.hpp"
@@ -80,13 +81,20 @@
 #include "registration/RegistrationRateLimiter.hpp"
 #include "registration/RegistrationSettings.hpp"
 #include "Visibility.hpp"
-#include <sqlite_modern_cpp/errors.h>
+#include "db/postgres_sqlite_compat.hpp"
+#include "runtime/LoopDispatcher.hpp"
 
 using json = nlohmann::json;
 
 static const bool login_debug = false;
 static MiniGames* g_mini_games = nullptr;
 static combat::combat_match_manager g_combat_manager;
+static std::unique_ptr<loop_dispatcher> g_loop_dispatcher;
+static std::unique_ptr<thread_pool> g_http_pool;
+// Dedicated static/avatar file I/O pool. Keeping these reads off both the uWS
+// loop and the API request pool prevents a large sprite/avatar from delaying
+// /api responses.
+static std::unique_ptr<thread_pool> g_file_pool;
 // Deterministic combat seed (D27): 0 = random per match; non-zero (from
 // --combat-seed) makes every match reproducible for replay/tests.
 static uint32_t g_combat_seed = 0;
@@ -235,7 +243,7 @@ static bool character_owned_by(sqlite::database& db, const std::optional<std::st
                                int character_id, std::string& error) {
     int user_id = 0;
     int owner_id = 0;
-    db << "SELECT id FROM users WHERE username = ?;" << *username >> [&](int id) { user_id = id; };
+    db << "SELECT id FROM users WHERE LOWER(username) = LOWER(?);" << *username >> [&](int id) { user_id = id; };
     db << "SELECT user_id FROM characters WHERE id = ?;" << character_id >> [&](int uid) { owner_id = uid; };
     if (owner_id != user_id) {
         error = "Character does not belong to this user";
@@ -388,7 +396,44 @@ void increment_request_count() {
     g_request_count++;
 }
 
+static bool refresh_cookie_secure() {
+    const char* value = std::getenv("RAVENEST_COOKIE_SECURE");
+    if (value && (std::string(value) == "0" || std::string(value) == "false")) return false;
+    return true;
+}
+
+static std::string refresh_cookie_header(const std::string& token) {
+    std::string cookie = "ravenest_refresh=" + token + "; HttpOnly; SameSite=Lax; Path=/api/auth; Max-Age=34560000";
+    if (refresh_cookie_secure()) cookie += "; Secure";
+    return cookie;
+}
+
+static std::string clear_refresh_cookie_header() {
+    std::string cookie = "ravenest_refresh=; HttpOnly; SameSite=Lax; Path=/api/auth; Max-Age=0";
+    if (refresh_cookie_secure()) cookie += "; Secure";
+    return cookie;
+}
+
 void sendJsonResponse(auto* res, const ApiResponse& response) {
+    if (response.http_status == 401) {
+        res->writeStatus("401 Unauthorized");
+        res->writeHeader("WWW-Authenticate", "Bearer");
+    } else if (response.http_status == 403) {
+        res->writeStatus("403 Forbidden");
+    } else if (response.http_status == 429) {
+        res->writeStatus("429 Too Many Requests");
+    } else if (response.http_status == 503) {
+        res->writeStatus("503 Service Unavailable");
+    }
+    if (response.no_store) {
+        res->writeHeader("Cache-Control", "no-store");
+        res->writeHeader("Pragma", "no-cache");
+    }
+    if (response.refresh_token) {
+        res->writeHeader("Set-Cookie", refresh_cookie_header(*response.refresh_token));
+    } else if (response.clear_refresh_cookie) {
+        res->writeHeader("Set-Cookie", clear_refresh_cookie_header());
+    }
     res->end(response.toJson().dump());
 }
 
@@ -450,8 +495,11 @@ static void set_cors_headers(Res* res, Req* req) {
     }
 
     res->writeHeader("Access-Control-Allow-Origin", allow_origin);
+    if (allow_origin != "*") {
+        res->writeHeader("Access-Control-Allow-Credentials", "true");
+    }
     res->writeHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
-    res->writeHeader("Access-Control-Allow-Headers", "Content-Type");
+    res->writeHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
     res->writeHeader("Access-Control-Max-Age", "86400");
 }
 
@@ -465,82 +513,134 @@ std::string extractEndpointName(std::string_view path) {
 struct AuthResult {
     std::optional<std::string> username;
     std::optional<std::string> new_token;
+    std::optional<std::string> refresh_token;
+    std::string session_id;
+    int64_t account_id = 0;
+    std::vector<int64_t> character_ids;
+    bool adult = false;
+    std::string language = "en";
     bool needs_auth = false;
     bool auth_failed = false;
     std::optional<std::string> error;
+    int http_status = 0;
+    bool no_store = false;
 
     bool isOk() const {
         return username.has_value() && !auth_failed && !needs_auth && !error.has_value();
     }
 };
 
+static void fill_auth_from_snapshot(AuthResult& result,
+                                    const auth::session_snapshot& snapshot) {
+    result.username = snapshot.username;
+    result.session_id = snapshot.session_id;
+    result.account_id = snapshot.account_id;
+    result.character_ids = snapshot.character_ids;
+    result.adult = snapshot.adult;
+    result.language = snapshot.language;
+}
+
+static std::string extract_refresh_cookie(const std::string& cookie_header) {
+    const std::string name = "ravenest_refresh=";
+    std::size_t start = 0;
+    while (start < cookie_header.size()) {
+        std::size_t end = cookie_header.find(';', start);
+        if (end == std::string::npos) end = cookie_header.size();
+        std::string part = trim_ascii(cookie_header.substr(start, end - start));
+        if (part.rfind(name, 0) == 0) {
+            return part.substr(name.size());
+        }
+        start = end + 1;
+    }
+    return {};
+}
+
 AuthResult handleAuth(const std::string& endpoint,
                       const json& auth_object,
-                      const std::string& ip_address)
+                      const std::string& authorization,
+                      const std::string& cookie_header,
+                      const std::string& ip_address,
+                      const std::string& user_agent)
 {
+    (void)cookie_header;
     AuthResult result;
 
-    if (endpoint == "createAccount") {
-        result.username = std::string();
-        return result;
-    }
-
-    if (!auth_object.is_object() || auth_object.empty()) {
-        std::cout << "[DEBUG] handleAuth: no auth object for endpoint=" << endpoint << std::endl;
-        result.needs_auth = true;
-        return result;
-    }
-
-    std::string username = auth_object.value("username", "");
-    if (username.empty()) {
-        result.error = "username required";
-        return result;
-    }
-
-    bool has_password = auth_object.contains("password");
-    bool has_token = auth_object.contains("token");
-
-    if (has_password) {
-        std::string password = auth_object["password"];
-
-        auto& db = Database::getInstance().gameDB();
-        std::string stored_hash;
-
-        db << "SELECT password_hash FROM users WHERE username = ?;"
-           << username
-           >> [&](std::string hash) { stored_hash = hash; };
-
-        if (stored_hash.empty()) {
+    if (endpoint == "login") {
+        const std::string username = auth_object.value("username", "");
+        const std::string password = auth_object.value("password", "");
+        if (username.empty() || password.empty()) {
             result.auth_failed = true;
+            result.error = "invalid_credentials";
+            result.http_status = 401;
+            result.no_store = true;
             return result;
         }
-
-        if (!verifyPassword(password, stored_hash)) {
+        std::string error;
+        auto issued = auth::SessionManager::instance().login(
+            Database::getInstance().gameDB(), username, password, ip_address, user_agent, error);
+        if (!issued) {
             result.auth_failed = true;
+            result.error = error.empty() ? "invalid_credentials" : error;
+            result.http_status = 401;
+            result.no_store = true;
             return result;
         }
-
-        std::string token = AuthManager::getInstance().authenticateWithPassword(
-            username, password, ip_address);
-
-        result.username = std::string(username);
-        result.new_token = std::string(token);
+        fill_auth_from_snapshot(result, issued->snapshot);
+        result.new_token = issued->access_token;
+        result.refresh_token = issued->refresh_token;
         return result;
     }
 
-    if (has_token) {
-        std::string token = auth_object["token"];
+    std::string bearer;
+    const std::string prefix = "Bearer ";
+    if (authorization.rfind(prefix, 0) == 0) {
+        bearer = authorization.substr(prefix.size());
+    }
 
-        if (!AuthManager::getInstance().authenticateWithToken(username, token)) {
+    if (!bearer.empty()) {
+        auto snapshot = auth::SessionManager::instance().validate_access_token(bearer);
+        if (!snapshot) {
             result.needs_auth = true;
+            result.error = "token_invalid";
+            result.http_status = 401;
+            result.no_store = true;
             return result;
         }
-
-        result.username = std::string(username);
+        fill_auth_from_snapshot(result, *snapshot);
+        // Echo the current token for legacy handlers that surface response.data.token.
+        result.new_token = bearer;
         return result;
+    }
+
+    // Legacy body auth: {auth:{username, token}}.
+    if (auth_object.is_object() && !auth_object.empty()) {
+        const std::string username = auth_object.value("username", "");
+        const std::string token = auth_object.value("token", "");
+        if (username.empty()) {
+            result.error = "username required";
+            result.http_status = 401;
+            result.no_store = true;
+            return result;
+        }
+        if (!token.empty()) {
+            auto snapshot = auth::SessionManager::instance().validate_access_token_for(username, token);
+            if (!snapshot) {
+                result.needs_auth = true;
+                result.error = "token_invalid";
+                result.http_status = 401;
+                result.no_store = true;
+                return result;
+            }
+            fill_auth_from_snapshot(result, *snapshot);
+            result.new_token = token;
+            return result;
+        }
     }
 
     result.needs_auth = true;
+    result.error = "token_missing";
+    result.http_status = 401;
+    result.no_store = true;
     return result;
 }
 
@@ -558,7 +658,7 @@ ApiResponse handleLogin(GameConfigCache& config_cache, const json& body,
     int user_id = 0;
     bool adult = false;
     std::string language = "en";
-    db << "SELECT id, adult, COALESCE(language, 'en') FROM users WHERE username = ?;"
+    db << "SELECT id, adult, COALESCE(language, 'en') FROM users WHERE LOWER(username) = LOWER(?);"
        << *username
        >> [&](int id, bool a, std::string lang) { user_id = id; adult = a; language = lang; };
 
@@ -596,6 +696,135 @@ ApiResponse handleLogin(GameConfigCache& config_cache, const json& body,
     return response;
 }
 
+ApiResponse handleAuthRefresh(GameConfigCache& config_cache, const json&,
+                              const ClientInfo& client,
+                              const std::string& cookie_header) {
+    ApiResponse response;
+    const std::string refresh_token = extract_refresh_cookie(cookie_header);
+    if (refresh_token.empty()) {
+        response.error = "invalid_refresh_token";
+        response.clear_refresh_cookie = true;
+        response.http_status = 401;
+        response.no_store = true;
+        return response;
+    }
+    std::string error;
+    auto issued = auth::SessionManager::instance().refresh(
+        Database::getInstance().gameDB(), refresh_token, error);
+    if (!issued) {
+        response.error = error.empty() ? "invalid_refresh_token" : error;
+        response.clear_refresh_cookie = true;
+        response.http_status = 401;
+        response.no_store = true;
+        return response;
+    }
+    ApiResponse refreshed = handleLogin(config_cache, json::object(),
+                                        std::optional<std::string>(issued->snapshot.username),
+                                        client, issued->access_token);
+    refreshed.refresh_token = refresh_token;
+    refreshed.no_store = true;
+    return refreshed;
+}
+
+ApiResponse handleAuthLogout(const std::string& cookie_header) {
+    ApiResponse response;
+    const std::string refresh_token = extract_refresh_cookie(cookie_header);
+    if (!refresh_token.empty()) {
+        auth::SessionManager::instance().revoke_by_refresh(
+            Database::getInstance().gameDB(), refresh_token, "logout");
+    }
+    response.clear_refresh_cookie = true;
+    response.no_store = true;
+    response.data["logged_out"] = true;
+    return response;
+}
+
+ApiResponse handleAuthLogoutAll(int64_t account_id) {
+    ApiResponse response;
+    auth::SessionManager::instance().revoke_all(
+        Database::getInstance().gameDB(), account_id, "logout_all");
+    response.clear_refresh_cookie = true;
+    response.no_store = true;
+    response.data["logged_out"] = true;
+    return response;
+}
+
+ApiResponse handleAuthChangePassword(const json& body,
+                                     const std::string& username,
+                                     int64_t account_id,
+                                     const std::string& current_session_id) {
+    ApiResponse response;
+    const std::string current_password = body.value("current_password", "");
+    const std::string new_password = body.value("new_password", "");
+    if (current_password.empty() || new_password.empty()) {
+        response.error = "current_password and new_password required";
+        return response;
+    }
+    auto& db = Database::getInstance().gameDB();
+    std::string stored_hash;
+    bool found = false;
+    db << "SELECT password_hash FROM users WHERE LOWER(username) = LOWER(?)"
+       << username
+       >> [&](std::string hash) { stored_hash = std::move(hash); found = true; };
+    if (!found || !verifyPassword(current_password, stored_hash)) {
+        response.error = "invalid_credentials";
+        response.http_status = 401;
+        response.no_store = true;
+        return response;
+    }
+    const std::string new_hash = hashPassword(new_password);
+    db << "UPDATE users SET password_hash = ? WHERE id = ?" << new_hash << account_id;
+    auth::SessionManager::instance().revoke_all_except(
+        db, account_id, current_session_id, "password_change");
+    response.no_store = true;
+    response.data["password_changed"] = true;
+    return response;
+}
+
+ApiResponse handleAuthSessions(int64_t account_id, const std::string& current_session_id) {
+    ApiResponse response;
+    const auto entries = auth::SessionManager::instance().list_sessions(
+        Database::getInstance().gameDB(), account_id, current_session_id);
+    json sessions = json::array();
+    for (const auto& entry : entries) {
+        sessions.push_back({{"session_id", entry.session_id},
+                            {"created_at", entry.created_at},
+                            {"last_used_at", entry.last_used_at},
+                            {"user_agent", entry.user_agent},
+                            {"ip", entry.ip},
+                            {"current", entry.current}});
+    }
+    response.data["sessions"] = std::move(sessions);
+    return response;
+}
+
+ApiResponse handleAuthRevokeSession(const json& body, int64_t account_id,
+                                    const std::string& current_session_id) {
+    ApiResponse response;
+    const std::string target = body.value("session_id", "");
+    if (target.empty()) {
+        response.error = "session_id required";
+        return response;
+    }
+    auto& db = Database::getInstance().gameDB();
+    int64_t owner = 0;
+    bool found = false;
+    db << "SELECT account_id FROM user_sessions WHERE id = ? AND revoked_at IS NULL"
+       << target
+       >> [&](int64_t value) { owner = value; found = true; };
+    if (!found || owner != account_id) {
+        response.error = "session_not_found";
+        return response;
+    }
+    auth::SessionManager::instance().revoke_session(db, target, "user_revoked");
+    if (target == current_session_id) {
+        response.clear_refresh_cookie = true;
+    }
+    response.no_store = true;
+    response.data["revoked"] = true;
+    return response;
+}
+
 // ASCII lowercase copy (used for case-insensitive name-pool comparisons).
 static std::string lower_ascii(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(),
@@ -608,7 +837,7 @@ static bool user_is_adult(const std::optional<std::string>& username) {
     if (!username || username->empty()) return false;
     bool adult = false;
     auto& db = Database::getInstance().gameDB();
-    db << "SELECT adult FROM users WHERE username = ?;" << *username
+    db << "SELECT adult FROM users WHERE LOWER(username) = LOWER(?);" << *username
        >> [&](bool a) { adult = a; };
     return adult;
 }
@@ -630,7 +859,7 @@ static bool character_owned_by(const json& body,
     int user_id = 0;
     db << "SELECT user_id FROM characters WHERE id = ?;" << character_id
        >> [&](int uid) { owner_id = uid; };
-    db << "SELECT id FROM users WHERE username = ?;" << *username
+    db << "SELECT id FROM users WHERE LOWER(username) = LOWER(?);" << *username
        >> [&](int id) { user_id = id; };
     if (owner_id == 0 || owner_id != user_id) return false;
     db << "SELECT display_name FROM characters WHERE id = ?;" << character_id
@@ -785,7 +1014,7 @@ ApiResponse handleGetFiefdom(GameConfigCache& config_cache, const json& body,
         owner_db << "SELECT owner_id FROM fiefdoms WHERE id = ?;" << fiefdom_id
                  >> [&](int id) { owner_id = id; };
         int user_id = 0;
-        owner_db << "SELECT id FROM users WHERE username = ?;" << *username
+        owner_db << "SELECT id FROM users WHERE LOWER(username) = LOWER(?);" << *username
                  >> [&](int id) { user_id = id; };
         if (owner_id == 0 || user_id == 0) {
             response.error = "fiefdom not found";
@@ -939,11 +1168,23 @@ ApiResponse handleGetFiefdom(GameConfigCache& config_cache, const json& body,
 
     // Arable land (abstract resource limiting manor growth). Total scales with
     // the manor (home-base) level; used is the sum of each building's acres.
+    // When buildings were already fetched, use the in-memory accounting and add
+    // zero queries to this response.
     {
         json arable = json::object();
-        arable["total"] = GameLogic::Validation::getTotalArableAcres(config_cache, fiefdom_id);
-        arable["used"] = GameLogic::Validation::getUsedArableAcres(config_cache, fiefdom_id);
-        arable["available"] = GameLogic::Validation::getAvailableArableAcres(config_cache, fiefdom_id);
+        if (include_buildings) {
+            arable["total"] = GameLogic::Validation::getTotalArableAcresForManor(
+                config_cache, fiefdom.manor_level);
+            arable["used"] = GameLogic::Validation::getUsedArableAcres(
+                config_cache, fiefdom.buildings);
+            arable["available"] = GameLogic::Validation::getAvailableArableAcres(
+                config_cache, fiefdom.manor_level, fiefdom.buildings);
+        } else {
+            arable["total"] = GameLogic::Validation::getTotalArableAcres(config_cache, fiefdom_id);
+            arable["used"] = GameLogic::Validation::getUsedArableAcres(config_cache, fiefdom_id);
+            arable["available"] =
+                GameLogic::Validation::getAvailableArableAcres(config_cache, fiefdom_id);
+        }
         response.data["arable_land"] = std::move(arable);
     }
 
@@ -951,9 +1192,19 @@ ApiResponse handleGetFiefdom(GameConfigCache& config_cache, const json& body,
     // manor level like arable; used is the sum of each wood producer's acres.
     {
         json forest = json::object();
-        forest["total"] = GameLogic::Validation::getTotalForestAcres(config_cache, fiefdom_id);
-        forest["used"] = GameLogic::Validation::getUsedForestAcres(config_cache, fiefdom_id);
-        forest["available"] = GameLogic::Validation::getAvailableForestAcres(config_cache, fiefdom_id);
+        if (include_buildings) {
+            forest["total"] = GameLogic::Validation::getTotalForestAcresForManor(
+                config_cache, fiefdom.manor_level);
+            forest["used"] = GameLogic::Validation::getUsedForestAcres(
+                config_cache, fiefdom.buildings);
+            forest["available"] = GameLogic::Validation::getAvailableForestAcres(
+                config_cache, fiefdom.manor_level, fiefdom.buildings);
+        } else {
+            forest["total"] = GameLogic::Validation::getTotalForestAcres(config_cache, fiefdom_id);
+            forest["used"] = GameLogic::Validation::getUsedForestAcres(config_cache, fiefdom_id);
+            forest["available"] =
+                GameLogic::Validation::getAvailableForestAcres(config_cache, fiefdom_id);
+        }
         response.data["forest_land"] = std::move(forest);
     }
 
@@ -1001,6 +1252,26 @@ ApiResponse handleHunt(GameConfigCache& config_cache, const json& body,
         response.data["token"] = *new_token;
     }
     return response;
+}
+
+// Defined later in this file; used by the safe-name allocator below.
+static std::string lower_ascii(std::string value);
+
+// Atomically allocates a case-insensitively unique safe display name. The
+// registry row is the lock; suffix 1 is the base name, suffix N > 1 is
+// "<base>-N". The character unique index remains the final guard.
+static std::string allocate_safe_display_name(sqlite::database& db, const std::string& base) {
+    const std::string key = lower_ascii(base);
+    int suffix = 1;
+    db << "INSERT INTO safe_name_registry (base_key, base_display, next_suffix) "
+          "VALUES (?, ?, 1) "
+          "ON CONFLICT (base_key) DO UPDATE "
+          "SET next_suffix = safe_name_registry.next_suffix + 1 "
+          "RETURNING next_suffix"
+       << key << base
+       >> [&](int value) { suffix = value; };
+    if (suffix <= 1) return base;
+    return base + "-" + std::to_string(suffix);
 }
 
 ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
@@ -1116,7 +1387,7 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
         std::cout << "[DEBUG] handleCreateAccount: calling Database::getInstance().gameDB()..." << std::endl;
         auto& db = Database::getInstance().gameDB();
         std::cout << "[DEBUG] handleCreateAccount: gameDB() OK, checking username uniqueness..." << std::endl;
-        db << "SELECT username FROM users WHERE username = ?;"
+        db << "SELECT username FROM users WHERE LOWER(username) = LOWER(?);"
            << new_username
            >> [&](std::string u) { existing = u; };
         std::cout << "[DEBUG] handleCreateAccount: SELECT username check done, existing=" << (existing.empty() ? "(none)" : existing) << std::endl;
@@ -1258,6 +1529,15 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
         user_id = db.last_insert_rowid();
         std::cout << "[DEBUG] handleCreateAccount: user_id=" << user_id << std::endl;
 
+        // Allocate a case-insensitively unique safe name. When the player did
+        // not choose an adult custom display name, the visible name follows the
+        // allocated safe name (including the -2/-3 suffix).
+        {
+            const std::string original_safe = safe_display_name;
+            safe_display_name = allocate_safe_display_name(db, original_safe);
+            if (display_name == original_safe) display_name = safe_display_name;
+        }
+
         // Step 2: insert character
         {
             std::string sex_str = body.value("sex", "");
@@ -1285,7 +1565,6 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
 
         character_id = db.last_insert_rowid();
         std::cout << "[DEBUG] handleCreateAccount: character_id=" << character_id << std::endl;
-
         // Step 3: create player game state
         {
             std::cout << "[DEBUG] handleCreateAccount: Step 3 - player_game_state" << std::endl;
@@ -1325,10 +1604,15 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
             }
         }
 
-        std::cout << "[DEBUG] handleCreateAccount: authenticating..." << std::endl;
+        std::cout << "[DEBUG] handleCreateAccount: creating session..." << std::endl;
         std::string ip = std::string(client.real_ip);
-        std::string token = AuthManager::getInstance().authenticateWithPassword(
-            new_username, password, ip);
+        std::string session_error;
+        auto issued = auth::SessionManager::instance().create_session(
+            db, user_id, new_username, adult, language, ip, std::string(), session_error);
+        if (!issued) {
+            response.error = session_error.empty() ? "session_failed" : session_error;
+            return response;
+        }
 
         visibility::viewer_context viewer;
         viewer.account_id = user_id;
@@ -1348,7 +1632,9 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
         response.data["adult"] = adult;
         response.data["language"] = language;
         response.data["characters"] = std::vector<json>{character};
-        response.data["token"] = token;
+        response.data["token"] = issued->access_token;
+        response.refresh_token = issued->refresh_token;
+        response.no_store = true;
     }
 
     std::cout << "[DEBUG] handleCreateAccount: complete for user=" << new_username << std::endl;
@@ -1378,7 +1664,7 @@ ApiResponse handleUpdateUserProfile(GameConfigCache& config_cache, const json& b
 
     int user_id = 0;
     bool adult = false;
-    db << "SELECT id, adult FROM users WHERE username = ?;"
+    db << "SELECT id, adult FROM users WHERE LOWER(username) = LOWER(?);"
        << *username
        >> [&](int id, bool value) {
               user_id = id;
@@ -1405,6 +1691,7 @@ ApiResponse handleUpdateUserProfile(GameConfigCache& config_cache, const json& b
             }
         }
         db << "UPDATE users SET language = ? WHERE id = ?;" << language << user_id;
+        auth::SessionManager::instance().update_language(user_id, language);
         response.data["language"] = language;
     }
 
@@ -1451,7 +1738,7 @@ ApiResponse handleUpdateCharacterProfile(GameConfigCache& config_cache, const js
     }
 
     int authenticated_user_id = 0;
-    db << "SELECT id FROM users WHERE username = ?;" << *username
+    db << "SELECT id FROM users WHERE LOWER(username) = LOWER(?);" << *username
        >> [&](int id) { authenticated_user_id = id; };
     if (authenticated_user_id == 0 || authenticated_user_id != character_user_id) {
         response.error = "Character does not belong to this user";
@@ -4186,6 +4473,10 @@ ApiResponse handleGetTexts(GameConfigCache& config_cache, const json& body,
         response.error = "text_ids array required";
         return response;
     }
+    if (body["text_ids"].size() > 500) {
+        response.error = "too_many_text_ids";
+        return response;
+    }
 
     json texts = json::object();
 
@@ -4235,6 +4526,10 @@ ApiResponse handleGetCharacterTexts(GameConfigCache& config_cache, const json& b
         response.error = "text_ids array required";
         return response;
     }
+    if (body["text_ids"].size() > 500) {
+        response.error = "too_many_text_ids";
+        return response;
+    }
 
     int character_id = body["character_id"].get<int>();
     auto& db = Database::getInstance().gameDB();
@@ -4250,7 +4545,7 @@ ApiResponse handleGetCharacterTexts(GameConfigCache& config_cache, const json& b
     }
 
     int user_id = 0;
-    db << "SELECT id FROM users WHERE username = ?;"
+    db << "SELECT id FROM users WHERE LOWER(username) = LOWER(?);"
        << *username
        >> [&](int id) { user_id = id; };
 
@@ -4388,7 +4683,7 @@ ApiResponse handleAdminSetAdultStatus(GameConfigCache& config_cache, const json&
     if (account_id == 0 && body.contains("target_username") &&
         body["target_username"].is_string()) {
         const std::string target = body["target_username"].get<std::string>();
-        db << "SELECT id FROM users WHERE username = ?;" << target
+        db << "SELECT id FROM users WHERE LOWER(username) = LOWER(?);" << target
            >> [&](int64_t id) { account_id = id; };
     }
     if (account_id == 0) {
@@ -4605,7 +4900,7 @@ ApiResponse handleSetCharacterArchetype(GameConfigCache& config_cache, const jso
     }
 
     int user_id = 0;
-    db << "SELECT id FROM users WHERE username = ?;"
+    db << "SELECT id FROM users WHERE LOWER(username) = LOWER(?);"
        << *username
        >> [&](int id) { user_id = id; };
 
@@ -4823,7 +5118,7 @@ ApiResponse handleSetBuildingOutputRate(GameConfigCache& config_cache, const jso
         db << "SELECT user_id FROM characters WHERE id = ?;" << owner_character
            >> [&](int uid) { owner_user = uid; };
         int user_id = 0;
-        db << "SELECT id FROM users WHERE username = ?;" << *username
+        db << "SELECT id FROM users WHERE LOWER(username) = LOWER(?);" << *username
            >> [&](int id) { user_id = id; };
         if (owner_user != user_id) {
             response.error = "Character does not belong to this user";
@@ -4925,7 +5220,7 @@ ApiResponse handleSetCharacterSex(GameConfigCache& config_cache, const json& bod
     }
 
     int user_id = 0;
-    db << "SELECT id FROM users WHERE username = ?;"
+    db << "SELECT id FROM users WHERE LOWER(username) = LOWER(?);"
        << *username
        >> [&](int id) { user_id = id; };
 
@@ -5124,7 +5419,7 @@ void complete_avatar_upload(avatar_upload_context context,
 
         std::string avatar_url = store.public_url(store.active_kind(), result.key);
         if (avatar_url.empty()) {
-            avatar_url = "/api/avatar/" + std::to_string(context.character_id);
+            avatar_url = "/api/avatar/" + result.key;
         }
         ApiResponse response;
         response.data["avatar_custom_id"] = result.key;
@@ -5657,7 +5952,7 @@ ApiResponse handleGetBaronyMembers(GameConfigCache& config_cache, const json& bo
     try {
         auto& db = Database::getInstance().gameDB();
         int user_id = 0;
-        db << "SELECT id FROM users WHERE username = ?;" << *username >> [&](int id) { user_id = id; };
+        db << "SELECT id FROM users WHERE LOWER(username) = LOWER(?);" << *username >> [&](int id) { user_id = id; };
         int is_member = 0;
         db << "SELECT COUNT(*) FROM barony_members bm JOIN characters c ON c.id = bm.character_id "
               "WHERE bm.barony_id = ? AND c.user_id = ?;"
@@ -5771,7 +6066,7 @@ ApiResponse handleJoinBarony(GameConfigCache& config_cache, const json& body,
         // Verify character ownership
         int owner_id = 0;
         int user_id = 0;
-        db << "SELECT id FROM users WHERE username = ?;" << *username >> [&](int id) { user_id = id; };
+        db << "SELECT id FROM users WHERE LOWER(username) = LOWER(?);" << *username >> [&](int id) { user_id = id; };
         db << "SELECT user_id FROM characters WHERE id = ?;" << character_id >> [&](int uid) { owner_id = uid; };
 
         if (owner_id != user_id) {
@@ -5930,7 +6225,7 @@ ApiResponse handleCreateBarony(GameConfigCache& config_cache, const json& body,
         // Verify character ownership
         int owner_id = 0;
         int user_id = 0;
-        db << "SELECT id FROM users WHERE username = ?;" << *username >> [&](int id) { user_id = id; };
+        db << "SELECT id FROM users WHERE LOWER(username) = LOWER(?);" << *username >> [&](int id) { user_id = id; };
         db << "SELECT user_id FROM characters WHERE id = ?;" << character_id >> [&](int uid) { owner_id = uid; };
         if (owner_id != user_id) {
             response.error = "Character does not belong to this user";
@@ -6073,7 +6368,7 @@ ApiResponse handleStartBaronTrack(GameConfigCache& config_cache, const json& bod
         // Verify character ownership
         int owner_id = 0;
         int user_id = 0;
-        db << "SELECT id FROM users WHERE username = ?;" << *username >> [&](int id) { user_id = id; };
+        db << "SELECT id FROM users WHERE LOWER(username) = LOWER(?);" << *username >> [&](int id) { user_id = id; };
         db << "SELECT user_id FROM characters WHERE id = ?;" << character_id >> [&](int uid) { owner_id = uid; };
         if (owner_id != user_id) {
             response.error = "Character does not belong to this user";
@@ -6613,7 +6908,7 @@ bool verify_character_ownership(const json& body,
     int owner_id = 0;
     int user_id = 0;
     db << "SELECT user_id FROM characters WHERE id = ?;" << character_id >> [&](int uid) { owner_id = uid; };
-    db << "SELECT id FROM users WHERE username = ?;" << *username >> [&](int id) { user_id = id; };
+    db << "SELECT id FROM users WHERE LOWER(username) = LOWER(?);" << *username >> [&](int id) { user_id = id; };
     if (owner_id == 0 || owner_id != user_id) return false;
 
     // Combat and retinue names are safe names for every viewer. Custom display
@@ -8702,6 +8997,9 @@ void handleApiRequest(GameConfigCache& config_cache, auto* res, auto* req,
     std::string endpoint = extractEndpointName(req->getUrl());
     ClientInfo client = parseClientHeaders(req);
     std::string ip_address = std::string(client.real_ip);
+    std::string authorization = std::string(req->getHeader("authorization"));
+    std::string cookie_header = std::string(req->getHeader("cookie"));
+    std::string user_agent = std::string(req->getHeader("user-agent"));
 
     // uWS requires an abort handler when using onData. One shared flag lets the
     // asynchronous avatar completion skip a response after a client abort.
@@ -8710,7 +9008,9 @@ void handleApiRequest(GameConfigCache& config_cache, auto* res, auto* req,
 
     std::string buffer;
     res->onData([res, endpoint = std::move(endpoint), client = std::move(client),
-                 ip_address = std::move(ip_address), buffer = std::move(buffer),
+                 ip_address = std::move(ip_address), authorization = std::move(authorization),
+                 cookie_header = std::move(cookie_header), user_agent = std::move(user_agent),
+                 buffer = std::move(buffer),
                  aborted, too_large = false, &config_cache, &avatar_services]
                 (std::string_view data, bool isLast) mutable {
         if (too_large) return;
@@ -8724,91 +9024,176 @@ void handleApiRequest(GameConfigCache& config_cache, auto* res, auto* req,
         buffer += data;
         if (!isLast) return;
 
-        try {
-            json body = json::parse(buffer, nullptr, true, true, true);
-
-            json auth_object;
-            if (body.contains("auth") && body["auth"].is_object()) {
-                auth_object = body["auth"];
-            }
-
-            // Handle public endpoints before authentication check
-            if (PUBLIC_ENDPOINTS.count(endpoint)) {
-                ApiResponse response;
-                if (endpoint == "createAccount") {
-                    response = handleCreateAccount(config_cache, body, std::nullopt, client, std::nullopt);
-                } else if (endpoint == "getRegistrationConfig") {
-                    response = handleGetRegistrationConfig(config_cache, body, std::nullopt,
-                                                           client, std::nullopt);
-                } else if (endpoint == "getTexts") {
-                    response = handleGetTexts(config_cache, body, std::nullopt, client, std::nullopt);
-                } else if (endpoint == "getUITextures") {
-                    response = handleGetUITextures(config_cache, body, std::nullopt, client, std::nullopt);
-                }
-                sendJsonResponse(res, response);
-                return;
-            }
-
-            // Authenticate other endpoints
-            AuthResult auth_result = handleAuth(endpoint, auth_object, ip_address);
-
-            if (!auth_result.isOk()) {
-                std::cout << "[DEBUG] Auth check failed: endpoint=" << endpoint
-                          << " needs_auth=" << auth_result.needs_auth
-                          << " auth_failed=" << auth_result.auth_failed << std::endl;
-                ApiResponse response;
-                response.needs_auth = auth_result.needs_auth;
-                response.auth_failed = auth_result.auth_failed;
-                if (auth_result.error) response.error = *auth_result.error;
-                sendJsonResponse(res, response);
-                return;
-            }
-
-            // Authenticated endpoints with deferred or service-backed storage.
-            if (endpoint == "uploadCharacterAvatar") {
-                handle_upload_character_avatar_async(
-                    body, auth_result.username, auth_result.new_token, res, aborted,
-                    avatar_services);
-                increment_request_count();
-                return;
-            }
-            if (endpoint == "removeCustomAvatar") {
-                ApiResponse response = handle_remove_custom_avatar(
-                    body, auth_result.username, auth_result.new_token, avatar_services);
-                sendJsonResponse(res, response);
-                increment_request_count();
-                return;
-            }
-
-            auto handlers = getEndpointHandlers(config_cache);
-            if (handlers.count(endpoint)) {
-                ApiResponse response = handlers[endpoint](config_cache, body, auth_result.username, client, auth_result.new_token);
-                sendJsonResponse(res, response);
-            } else {
-                ApiResponse error_response;
-                error_response.error = "Unknown endpoint: " + endpoint;
-                sendJsonResponse(res, error_response);
-            }
-
+        auto respond = [res, aborted](ApiResponse response) {
             increment_request_count();
+            if (!g_loop_dispatcher) return;
+            g_loop_dispatcher->post([res, aborted, response = std::move(response)]() mutable {
+                if (!aborted->load(std::memory_order_relaxed)) {
+                    sendJsonResponse(res, response);
+                }
+            });
+        };
 
-        } catch (const json::exception& e) {
-            log_error(endpoint, std::string("JSON parse error: type=") + typeid(e).name() + " what=" + e.what());
-            ApiResponse error_response;
-            error_response.error = std::string("Invalid JSON: ") + e.what();
-            sendJsonResponse(res, error_response);
-        } catch (const std::exception& e) {
-            log_error(endpoint, std::string("type=") + typeid(e).name() + " what=" + e.what());
-            ApiResponse error_response;
-            error_response.error = e.what();
-            sendJsonResponse(res, error_response);
-        } catch (...) {
-            log_error(endpoint, "Unknown exception (not a std::exception)");
-            // Catch-all: uWS aborts if ANY exception escapes a handler.
-            // This prevents std::terminate() from unexpected errors.
-            ApiResponse error_response;
-            error_response.error = "Internal server error";
-            sendJsonResponse(res, error_response);
+        // Avatar upload completes through its own deferred path and needs the
+        // uWS response handle, so authenticate and start it on the loop. Token
+        // validation is in-memory; the upload body itself runs on the avatar
+        // thread pool.
+        if (endpoint == "uploadCharacterAvatar") {
+            json upload_body;
+            try {
+                upload_body = json::parse(buffer, nullptr, true, true, true);
+            } catch (const json::exception& e) {
+                ApiResponse response;
+                response.error = std::string("Invalid JSON: ") + e.what();
+                respond(response);
+                return;
+            }
+            json upload_auth_object;
+            if (upload_body.contains("auth") && upload_body["auth"].is_object()) {
+                upload_auth_object = upload_body["auth"];
+            }
+            AuthResult upload_auth = handleAuth(endpoint, upload_auth_object, authorization,
+                                                cookie_header, ip_address, user_agent);
+            if (!upload_auth.isOk()) {
+                ApiResponse response;
+                response.needs_auth = upload_auth.needs_auth;
+                response.auth_failed = upload_auth.auth_failed;
+                response.http_status = upload_auth.http_status;
+                response.no_store = upload_auth.no_store;
+                if (upload_auth.error) response.error = *upload_auth.error;
+                respond(response);
+                return;
+            }
+            increment_request_count();
+            handle_upload_character_avatar_async(
+                upload_body, upload_auth.username, upload_auth.new_token, res, aborted, avatar_services);
+            return;
+        }
+
+        if (!g_http_pool) {
+            ApiResponse response;
+            response.error = "server_busy";
+            response.http_status = 503;
+            respond(response);
+            return;
+        }
+
+        auto work = [endpoint = std::move(endpoint), client = std::move(client),
+                     ip_address = std::move(ip_address), authorization = std::move(authorization),
+                     cookie_header = std::move(cookie_header), user_agent = std::move(user_agent),
+                     buffer = std::move(buffer), respond,
+                     &config_cache, &avatar_services]() mutable {
+            json body;
+            json auth_object;
+            try {
+                body = json::parse(buffer, nullptr, true, true, true);
+                if (body.contains("auth") && body["auth"].is_object()) {
+                    auth_object = body["auth"];
+                }
+
+                // Cookie-based auth endpoints. Refresh and logout are public:
+                // they authenticate with the HttpOnly refresh cookie.
+                if (endpoint == "authRefresh") {
+                    respond(handleAuthRefresh(config_cache, body, client, cookie_header));
+                    return;
+                }
+                if (endpoint == "authLogout") {
+                    respond(handleAuthLogout(cookie_header));
+                    return;
+                }
+
+                if (PUBLIC_ENDPOINTS.count(endpoint)) {
+                    ApiResponse response;
+                    if (endpoint == "createAccount") {
+                        response = handleCreateAccount(config_cache, body, std::nullopt, client, std::nullopt);
+                    } else if (endpoint == "getRegistrationConfig") {
+                        response = handleGetRegistrationConfig(config_cache, body, std::nullopt,
+                                                               client, std::nullopt);
+                    } else if (endpoint == "getTexts") {
+                        response = handleGetTexts(config_cache, body, std::nullopt, client, std::nullopt);
+                    } else if (endpoint == "getUITextures") {
+                        response = handleGetUITextures(config_cache, body, std::nullopt, client, std::nullopt);
+                    }
+                    respond(response);
+                    return;
+                }
+
+                AuthResult auth_result = handleAuth(endpoint, auth_object, authorization,
+                                                    cookie_header, ip_address, user_agent);
+                if (!auth_result.isOk()) {
+                    ApiResponse response;
+                    response.needs_auth = auth_result.needs_auth;
+                    response.auth_failed = auth_result.auth_failed;
+                    response.http_status = auth_result.http_status;
+                    response.no_store = auth_result.no_store;
+                    if (auth_result.error) response.error = *auth_result.error;
+                    respond(response);
+                    return;
+                }
+
+                if (endpoint == "authLogoutAll") {
+                    respond(handleAuthLogoutAll(auth_result.account_id));
+                    return;
+                }
+                if (endpoint == "authChangePassword") {
+                    respond(handleAuthChangePassword(
+                        body, auth_result.username.value_or(""), auth_result.account_id,
+                        auth_result.session_id));
+                    return;
+                }
+                if (endpoint == "authSessions") {
+                    respond(handleAuthSessions(auth_result.account_id, auth_result.session_id));
+                    return;
+                }
+                if (endpoint == "authRevokeSession") {
+                    respond(handleAuthRevokeSession(body, auth_result.account_id,
+                                                    auth_result.session_id));
+                    return;
+                }
+                if (endpoint == "removeCustomAvatar") {
+                    respond(handle_remove_custom_avatar(
+                        body, auth_result.username, auth_result.new_token, avatar_services));
+                    return;
+                }
+
+                auto handlers = getEndpointHandlers(config_cache);
+                if (handlers.count(endpoint)) {
+                    ApiResponse response = handlers[endpoint](
+                        config_cache, body, auth_result.username, client, auth_result.new_token);
+                    if (endpoint == "login") {
+                        if (auth_result.refresh_token) response.refresh_token = *auth_result.refresh_token;
+                        response.no_store = true;
+                    }
+                    respond(response);
+                } else {
+                    ApiResponse error_response;
+                    error_response.error = "Unknown endpoint: " + endpoint;
+                    respond(error_response);
+                }
+            } catch (const json::exception& e) {
+                log_error(endpoint, std::string("JSON parse error: type=") + typeid(e).name() +
+                                       " what=" + e.what());
+                ApiResponse error_response;
+                error_response.error = std::string("Invalid JSON: ") + e.what();
+                respond(error_response);
+            } catch (const std::exception& e) {
+                log_error(endpoint, std::string("type=") + typeid(e).name() + " what=" + e.what());
+                ApiResponse error_response;
+                error_response.error = e.what();
+                respond(error_response);
+            } catch (...) {
+                log_error(endpoint, "Unknown exception (not a std::exception)");
+                ApiResponse error_response;
+                error_response.error = "Internal server error";
+                respond(error_response);
+            }
+        };
+
+        if (!g_http_pool->post(std::move(work))) {
+            ApiResponse response;
+            response.error = "server_busy";
+            response.http_status = 503;
+            respond(response);
         }
     });
 }
@@ -8901,7 +9286,7 @@ void print_usage(const char* program_name) {
     std::cout << std::endl;
     std::cout << "Options:" << std::endl;
     std::cout << "  --content PATH             Asset root holding config/, images/, text/ (default: .)" << std::endl;
-    std::cout << "  --db-dir PATH              Database directory (default: current)" << std::endl;
+    std::cout << "  --db-dir PATH              Deprecated; ignored (use RAVENEST_*_DB_URL)" << std::endl;
     std::cout << "  --text-dir PATH            Text directory (default: <content>/text)" << std::endl;
     std::cout << "  --port PORT                Port to bind (default: 2290)" << std::endl;
     std::cout << "  --combat-sim-threads N     Realtime combat simulation worker threads (default: CPU count, capped 64)" << std::endl;
@@ -8924,33 +9309,109 @@ void print_usage(const char* program_name) {
 }
 
 // Serves a file from `root` (relative to the server working directory) for a
-// URL starting with `prefix`. Guards against path traversal and maps the image
-// extensions we accept (png/jpg/jpeg/webp/avif) to their MIME types.
+// URL starting with `prefix`. Validation happens on the loop; the read runs on
+// the dedicated file pool and the response is completed through the loop
+// dispatcher. Guards against path traversal and maps the image extensions we
+// accept (png/jpg/jpeg/webp/avif) to their MIME types.
 template <typename Res>
 static void serve_image_subtree(Res* res, const std::string& url,
                                 const std::string& prefix, const std::string& root) {
     std::string relative = url.substr(prefix.length());
-    if (relative.empty() || relative.find("..") != std::string::npos) {
+    if (relative.empty() || relative.find("..") != std::string::npos ||
+        relative.find('\0') != std::string::npos) {
         res->writeStatus("404 Not Found")->end("Not found");
         return;
     }
-    std::ifstream file(root + relative, std::ios::binary);
-    if (!file) {
-        res->writeStatus("404 Not Found")->end("Not found");
+    if (!g_file_pool) {
+        res->writeStatus("503 Service Unavailable")->end("Server busy");
         return;
     }
-    std::string content((std::istreambuf_iterator<char>(file)),
-                        std::istreambuf_iterator<char>());
-    const std::string lower = lower_ascii(relative);
-    auto ends_with = [&](const char* suffix) {
-        const size_t n = std::strlen(suffix);
-        return lower.size() >= n && lower.compare(lower.size() - n, n, suffix) == 0;
-    };
-    if (ends_with(".png")) res->writeHeader("Content-Type", "image/png");
-    else if (ends_with(".jpg") || ends_with(".jpeg")) res->writeHeader("Content-Type", "image/jpeg");
-    else if (ends_with(".webp")) res->writeHeader("Content-Type", "image/webp");
-    else if (ends_with(".avif")) res->writeHeader("Content-Type", "image/avif");
-    res->end(content);
+    auto aborted = std::make_shared<std::atomic<bool>>(false);
+    res->onAborted([aborted]() { aborted->store(true, std::memory_order_relaxed); });
+    const bool posted = g_file_pool->post(
+        [res, aborted, root, relative = std::move(relative)]() mutable {
+            http_assets::asset_response response =
+                http_assets::load_static_asset(root, relative);
+            if (!g_loop_dispatcher) return;
+            g_loop_dispatcher->post(
+                [res, aborted, response = std::move(response)]() mutable {
+                    if (aborted->load(std::memory_order_relaxed)) return;
+                    if (response.status == 404) {
+                        res->writeStatus("404 Not Found")->end("Not found");
+                        return;
+                    }
+                    if (response.status == 413) {
+                        res->writeStatus("413 Payload Too Large")->end();
+                        return;
+                    }
+                    res->writeStatus("200 OK");
+                    res->writeHeader("Content-Type", response.content_type);
+                    res->writeHeader("Cache-Control", "public, max-age=3600");
+                    res->end(response.body);
+                });
+        });
+    if (!posted) {
+        res->writeStatus("503 Service Unavailable")->end("Server busy");
+    }
+}
+
+// Worker-side avatar resolution: one DB lookup, capability/auth check, then a
+// single local read or an R2 redirect. Runs on g_file_pool.
+static http_assets::asset_response load_avatar_asset(
+    int64_t character_id, const std::string& key_part,
+    const std::string& legacy_username, const std::string& legacy_token) {
+    http_assets::asset_response response;
+    response.status = 404;
+    if (character_id <= 0) return response;
+
+    auto& db = Database::getInstance().gameDB();
+    std::unique_ptr<std::string> custom_id;
+    std::string avatar_storage = "local";
+    int owner_user_id = 0;
+    db << "SELECT avatar_custom_id, COALESCE(avatar_storage, 'local'), user_id "
+          "FROM characters WHERE id = ?;"
+       << character_id
+       >> [&](std::unique_ptr<std::string> c, std::string storage, int uid) {
+              custom_id = std::move(c);
+              avatar_storage = std::move(storage);
+              owner_user_id = uid;
+          };
+    if (!custom_id || custom_id->empty() || owner_user_id == 0) return response;
+
+    bool owner_adult = false;
+    db << "SELECT adult FROM users WHERE id = ?;" << owner_user_id
+       >> [&](bool a) { owner_adult = a; };
+    if (!owner_adult) return response;
+
+    if (!key_part.empty()) {
+        const std::string prefix = std::to_string(character_id) + "/";
+        if (custom_id->rfind(prefix, 0) != 0 || custom_id->substr(prefix.size()) != key_part) {
+            return response;
+        }
+    } else {
+        if (legacy_username.empty() || legacy_token.empty() ||
+            !AuthManager::getInstance().authenticateWithToken(legacy_username, legacy_token)) {
+            return response;
+        }
+        int viewer_user_id = 0;
+        bool viewer_adult = false;
+        db << "SELECT id, adult FROM users WHERE LOWER(username) = LOWER(?);" << legacy_username
+           >> [&](int id, bool a) { viewer_user_id = id; viewer_adult = a; };
+        if (viewer_user_id == 0 ||
+            (viewer_user_id != owner_user_id && !viewer_adult)) {
+            return response;
+        }
+    }
+
+    if (avatar_storage == "r2") {
+        const std::string public_url = build_avatar_public_url("r2", *custom_id);
+        if (public_url.empty()) return response;
+        response.status = 302;
+        response.location = public_url;
+        return response;
+    }
+
+    return http_assets::load_static_asset("uploads/avatars", *custom_id);
 }
 
 int main(int argc, char* argv[]) {
@@ -9048,7 +9509,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Content directory: " << g_content_dir << std::endl;
         std::cout << "Config directory: " << g_config_dir << std::endl;
         std::cout << "Images directory: " << g_images_dir << std::endl;
-        std::cout << "Database directory: " << g_db_dir << std::endl;
+        std::cout << "Database: PostgreSQL (RAVENEST_GAME/CHAT/STAFF/INVITES_DB_URL)" << std::endl;
         std::cout << "Port: " << port << std::endl;
         if (g_test_num_requests > 0 || g_test_timeout_seconds > 0) {
             std::cout << "Test mode: enabled" << std::endl;
@@ -9089,14 +9550,17 @@ int main(int argc, char* argv[]) {
     std::string chat_db_path = g_db_dir + "/chat.db";
     std::string staff_db_path = g_db_dir + "/staff.db";
     std::string invites_db_path = g_db_dir + "/invites.db";
+    (void)game_db_path;
+    (void)chat_db_path;
+    (void)staff_db_path;
+    (void)invites_db_path;
 
     if (!quiet) {
         std::cout << "Opening databases..." << std::endl;
     }
 
     try {
-        Database::getInstance().init(game_db_path, chat_db_path, staff_db_path,
-                                     invites_db_path);
+        Database::getInstance().init_from_env();
     } catch (const std::exception& e) {
         std::cerr << "Failed to initialize databases: " << e.what() << std::endl;
         return 1;
@@ -9175,6 +9639,10 @@ int main(int argc, char* argv[]) {
     } catch (const std::exception& e) {
         std::cerr << "Warning: chat alliance reconcile failed: " << e.what() << std::endl;
     }
+    // Baseline translations run on one long-lived worker so request handlers and
+    // push dispatch never block on the sidecar. The premium queue is the Phase 2
+    // seam and is intentionally not started here.
+    chat::BaselineTranslationQueue::instance().start(&mini_games.config_cache());
 
     // Register all manor action handlers (build, demolish, move, upgrade, walls,
     // train, research) into the registry used by /api/Build and friends.
@@ -9241,6 +9709,11 @@ int main(int argc, char* argv[]) {
     // SQLite writes are likewise deferred to this loop thread so the Database
     // singleton stays single-owner. See docs/combat_protocol.md.
     uWS::Loop* main_loop = uWS::Loop::get();
+    g_loop_dispatcher = std::make_unique<loop_dispatcher>(main_loop);
+    g_http_pool = std::make_unique<thread_pool>(8, 256);
+    // Separate small pool for static/avatar file reads so a burst of large
+    // sprites cannot starve API worker threads.
+    g_file_pool = std::make_unique<thread_pool>(4, 128);
     auto app_slot = std::make_shared<std::atomic<uWS::App*>>(&app);
     g_combat_manager.initialize(
         std::make_shared<combat::json_codec>(),
@@ -9309,7 +9782,7 @@ int main(int argc, char* argv[]) {
         int owner_id = 0;
         int user_id = 0;
         db << "SELECT user_id FROM characters WHERE id = ?;" << character_id >> [&](int uid) { owner_id = uid; };
-        db << "SELECT id FROM users WHERE username = ?;" << username >> [&](int id) { user_id = id; };
+        db << "SELECT id FROM users WHERE LOWER(username) = LOWER(?);" << username >> [&](int id) { user_id = id; };
         if (owner_id == 0 || owner_id != user_id) {
             send_ws_error(ws, match_id, "character does not belong to this user");
             ws->close();
@@ -9636,15 +10109,9 @@ int main(int argc, char* argv[]) {
     // Age-gated custom PFP stream. Never served statically: a custom avatar is
     // returned only to an authenticated viewer who is the owner or an adult.
     // Auth rides the query string (?username=&token=) because the browser
-    // requests this via <img src>. TODO: moderation/review before release.
+    // requests this via <img src>. DB + file I/O run on the file pool. TODO:
+    // moderation/review before release.
     app.get("/api/avatar/*", [](auto *res, auto *req) {
-        auto respond_not_found = [res, req]() {
-            // uWS's writeHeader implicitly selects 200, so set the status first.
-            res->writeStatus("404 Not Found");
-            set_cors_headers(res, req);
-            res->writeHeader("Cache-Control", "private, no-store");
-            res->end("Not found");
-        };
         // getUrl() is the path only in this uWS version; getQuery() returns the
         // raw query string without the leading '?'. Keep both (path parsing is
         // tolerant if a future version includes the query in getUrl()).
@@ -9682,15 +10149,16 @@ int main(int argc, char* argv[]) {
             return out;
         };
 
-        // Parse the id and the auth query params.
-        int64_t character_id = 0;
-        std::string username;
-        std::string token;
-        try {
-            character_id = std::stoll(rest);
-        } catch (const std::exception&) {
-            character_id = 0;
+        std::string id_part = rest;
+        std::string key_part;
+        const size_t slash = rest.find('/');
+        if (slash != std::string::npos) {
+            id_part = rest.substr(0, slash);
+            key_part = rest.substr(slash + 1);
         }
+
+        std::string legacy_username;
+        std::string legacy_token;
         size_t pos = 0;
         while (pos < query_string.size()) {
             const size_t amp = query_string.find('&', pos);
@@ -9700,72 +10168,112 @@ int main(int argc, char* argv[]) {
             if (eq != std::string::npos) {
                 const std::string key = pair.substr(0, eq);
                 const std::string value = decode_query_value(pair.substr(eq + 1));
-                if (key == "username") username = value;
-                else if (key == "token") token = value;
+                if (key == "username") legacy_username = value;
+                else if (key == "token") legacy_token = value;
             }
             if (amp == std::string::npos) break;
             pos = amp + 1;
         }
 
-        if (character_id <= 0 || username.empty() || token.empty() ||
-            !AuthManager::getInstance().authenticateWithToken(username, token)) {
-            respond_not_found();
-            return;
+        int64_t character_id = 0;
+        try {
+            character_id = std::stoll(id_part);
+        } catch (const std::exception&) {
+            character_id = 0;
         }
 
-        auto& db = Database::getInstance().gameDB();
-        std::unique_ptr<std::string> custom_id;
-        std::string avatar_storage = "local";
-        int owner_user_id = 0;
-        db << "SELECT avatar_custom_id, COALESCE(avatar_storage, 'local'), user_id "
-              "FROM characters WHERE id = ?;"
-           << character_id
-           >> [&](std::unique_ptr<std::string> c, std::string storage, int uid) {
-                  custom_id = std::move(c);
-                  avatar_storage = std::move(storage);
-                  owner_user_id = uid;
-              };
-        if (!custom_id || custom_id->empty() || owner_user_id == 0) {
-            respond_not_found();
-            return;
-        }
-
-        bool owner_adult = false;
-        db << "SELECT adult FROM users WHERE id = ?;" << owner_user_id
-           >> [&](bool a) { owner_adult = a; };
-        int viewer_user_id = 0;
-        bool viewer_adult = false;
-        db << "SELECT id, adult FROM users WHERE username = ?;" << username
-           >> [&](int id, bool a) { viewer_user_id = id; viewer_adult = a; };
-        if (!owner_adult || viewer_user_id == 0 ||
-            (viewer_user_id != owner_user_id && !viewer_adult)) {
-            respond_not_found();
-            return;
-        }
-
-        if (avatar_storage == "r2") {
-            const std::string public_url = build_avatar_public_url("r2", *custom_id);
-            if (public_url.empty()) {
-                respond_not_found();
-                return;
+        // Compute CORS once while req is valid; the completion runs later.
+        const std::string origin(req->getHeader("origin"));
+        std::string allow_origin;
+        if (!origin.empty()) {
+            if (g_cors_origins.empty()) {
+                allow_origin = "*";
+            } else if (std::find(g_cors_origins.begin(), g_cors_origins.end(), origin) !=
+                       g_cors_origins.end()) {
+                allow_origin = origin;
             }
-            // Set the status before any headers (uWS's writeHeader selects 200).
-            res->writeStatus("302 Found");
-            set_cors_headers(res, req);
-            res->writeHeader("Cache-Control", "private, no-store");
-            res->writeHeader("Location", public_url);
-            res->end();
-            return;
         }
+        auto write_avatar_headers = [res, allow_origin]() {
+            if (!allow_origin.empty()) {
+                res->writeHeader("Access-Control-Allow-Origin", allow_origin);
+                if (allow_origin != "*") {
+                    res->writeHeader("Access-Control-Allow-Credentials", "true");
+                }
+                res->writeHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+                res->writeHeader("Access-Control-Allow-Headers",
+                                 "Content-Type, Authorization");
+                res->writeHeader("Access-Control-Max-Age", "86400");
+            }
+            res->writeHeader("Cache-Control", "private, no-store");
+        };
 
-        if (!std::ifstream("uploads/avatars/" + *custom_id, std::ios::binary)) {
+        auto respond_not_found = [res, &write_avatar_headers]() {
+            res->writeStatus("404 Not Found");
+            write_avatar_headers();
+            res->end("Not found");
+        };
+        if (character_id <= 0) {
             respond_not_found();
             return;
         }
-        res->writeStatus("200 OK");
-        set_cors_headers(res, req);
-        res->writeHeader("Cache-Control", "private, no-store");
-        serve_image_subtree(res, "/" + *custom_id, "/", "uploads/avatars/");
+        if (!g_file_pool) {
+            res->writeStatus("503 Service Unavailable");
+            write_avatar_headers();
+            res->end("Server busy");
+            return;
+        }
+
+        auto aborted = std::make_shared<std::atomic<bool>>(false);
+        res->onAborted([aborted] { aborted->store(true, std::memory_order_relaxed); });
+        const bool posted = g_file_pool->post(
+            [res, aborted, character_id, key_part = std::move(key_part),
+             legacy_username = std::move(legacy_username),
+             legacy_token = std::move(legacy_token), allow_origin]() mutable {
+                http_assets::asset_response response = load_avatar_asset(
+                    character_id, key_part, legacy_username, legacy_token);
+                if (!g_loop_dispatcher) return;
+                g_loop_dispatcher->post(
+                    [res, aborted, response = std::move(response), allow_origin]() mutable {
+                        if (aborted->load(std::memory_order_relaxed)) return;
+                        auto write_headers = [res, &allow_origin]() {
+                            if (!allow_origin.empty()) {
+                                res->writeHeader("Access-Control-Allow-Origin", allow_origin);
+                                if (allow_origin != "*") {
+                                    res->writeHeader("Access-Control-Allow-Credentials",
+                                                     "true");
+                                }
+                                res->writeHeader("Access-Control-Allow-Methods",
+                                                 "POST, GET, OPTIONS");
+                                res->writeHeader("Access-Control-Allow-Headers",
+                                                 "Content-Type, Authorization");
+                                res->writeHeader("Access-Control-Max-Age", "86400");
+                            }
+                            res->writeHeader("Cache-Control", "private, no-store");
+                        };
+                        if (response.status == 302) {
+                            res->writeStatus("302 Found");
+                            write_headers();
+                            res->writeHeader("Location", response.location);
+                            res->end();
+                            return;
+                        }
+                        if (response.status != 200) {
+                            res->writeStatus("404 Not Found");
+                            write_headers();
+                            res->end("Not found");
+                            return;
+                        }
+                        res->writeStatus("200 OK");
+                        write_headers();
+                        res->writeHeader("Content-Type", response.content_type);
+                        res->end(response.body);
+                    });
+            });
+        if (!posted) {
+            res->writeStatus("503 Service Unavailable");
+            write_avatar_headers();
+            res->end("Server busy");
+        }
     });
 
     if (!quiet) {
@@ -9775,6 +10283,64 @@ int main(int argc, char* argv[]) {
             res->end("Ravenest Build and Battle Server v1.0");
         });
     }
+
+    // GET /api/auth/sessions (the POST form is also accepted through the
+    // generic dispatcher). Runs on the worker pool; the completion returns to
+    // the uWS loop via loop_dispatcher.
+    app.get("/api/auth/sessions", [](auto* res, auto* req) {
+        set_cors_headers(res, req);
+        std::string authorization(req->getHeader("authorization"));
+        auto aborted = std::make_shared<std::atomic<bool>>(false);
+        res->onAborted([aborted] { aborted->store(true, std::memory_order_relaxed); });
+        auto send = [res, aborted](ApiResponse response) {
+            if (!g_loop_dispatcher) return;
+            g_loop_dispatcher->post([res, aborted, response = std::move(response)]() mutable {
+                if (!aborted->load(std::memory_order_relaxed)) sendJsonResponse(res, response);
+            });
+        };
+        if (!g_http_pool) {
+            ApiResponse response;
+            response.error = "server_busy";
+            response.http_status = 503;
+            send(response);
+            return;
+        }
+        const bool posted = g_http_pool->post([authorization, send]() mutable {
+            ApiResponse response;
+            const std::string prefix = "Bearer ";
+            std::optional<auth::session_snapshot> snapshot;
+            if (authorization.rfind(prefix, 0) == 0) {
+                snapshot = auth::SessionManager::instance().validate_access_token(
+                    authorization.substr(prefix.size()));
+            }
+            if (!snapshot) {
+                response.error = "token_invalid";
+                response.needs_auth = true;
+                response.http_status = 401;
+                response.no_store = true;
+            } else {
+                json sessions = json::array();
+                for (const auto& entry : auth::SessionManager::instance().list_sessions(
+                         Database::getInstance().gameDB(), snapshot->account_id,
+                         snapshot->session_id)) {
+                    sessions.push_back({{"session_id", entry.session_id},
+                                        {"created_at", entry.created_at},
+                                        {"last_used_at", entry.last_used_at},
+                                        {"user_agent", entry.user_agent},
+                                        {"ip", entry.ip},
+                                        {"current", entry.current}});
+                }
+                response.data["sessions"] = std::move(sessions);
+            }
+            send(std::move(response));
+        });
+        if (!posted) {
+            ApiResponse response;
+            response.error = "server_busy";
+            response.http_status = 503;
+            send(response);
+        }
+    });
 
     // CORS preflight for every API endpoint. The browser sends OPTIONS before
     // a JSON POST because Content-Type: application/json is not a simple
@@ -9857,8 +10423,16 @@ int main(int argc, char* argv[]) {
     g_shutdown_requested.store(true, std::memory_order_relaxed);
     if (shutdown_monitor.joinable()) shutdown_monitor.join();
     app_slot->store(nullptr, std::memory_order_release);
+    chat::BaselineTranslationQueue::instance().stop();
+    chat::PremiumTranslationQueue::instance().stop();
+    if (g_file_pool) g_file_pool->shutdown();
+    if (g_loop_dispatcher) g_loop_dispatcher->shutdown();
+    if (g_http_pool) g_http_pool->shutdown();
     avatar_uploads.shutdown();
     g_combat_manager.shutdown();
+    g_http_pool.reset();
+    g_file_pool.reset();
+    g_loop_dispatcher.reset();
     curl_global_cleanup();
 
     return 0;

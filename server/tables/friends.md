@@ -1,6 +1,6 @@
 # friends Table
 
-The friend graph (stored symmetrically). Stored in `chat.db`.
+The friend graph (stored symmetrically). Stored in `ravenest_chat`.
 
 ## Schema
 

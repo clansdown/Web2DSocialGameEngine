@@ -1,6 +1,6 @@
 # message_versions Table
 
-Edit history for messages. Stored in `chat.db`.
+Edit history for messages. Stored in `ravenest_chat`.
 
 ## Schema
 

@@ -7,8 +7,8 @@
 #   ./compile_debug-server.sh --build-dir DIR custom build dir
 #
 # Debug/sanitizer trees reuse the normal tree's uWebSockets clone + prebuilt
-# uSockets.a and sqlite_modern_cpp source (no re-download). Run
-# ./compile_server.sh once first to populate server/build/_deps.
+# uSockets.a (no re-download). Run ./compile_server.sh once first to populate
+# server/build/_deps.
 #
 # Exit codes: 0 = success, 1 = failure.
 set -u
@@ -74,7 +74,6 @@ if [ -z "$BUILD_DIR" ]; then
 fi
 
 UWS_SHARED="$SCRIPT_DIR/server/build/_deps/uwebsockets-src"
-SQLITE_SHARED="$SCRIPT_DIR/server/build/_deps/sqlite_modern_cpp-src"
 if [ ! -d "$UWS_SHARED" ]; then
     echo "Error: run ./compile_server.sh once first (needs server/build/_deps)." >&2
     exit 1
@@ -98,9 +97,6 @@ CMAKE_ARGS=(
 )
 if [ -n "$LINK_FLAGS" ]; then
     CMAKE_ARGS+=("-DCMAKE_EXE_LINKER_FLAGS=$LINK_FLAGS")
-fi
-if [ -d "$SQLITE_SHARED" ]; then
-    CMAKE_ARGS+=("-DFETCHCONTENT_SOURCE_DIR_SQLITE_MODERN_CPP=$SQLITE_SHARED")
 fi
 
 mkdir -p "$BUILD_DIR"

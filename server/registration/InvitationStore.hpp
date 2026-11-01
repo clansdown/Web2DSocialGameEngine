@@ -5,6 +5,7 @@
 // in plaintext because the creator/staff need to be able to read them again.
 
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -67,7 +68,7 @@ public:
 
 private:
     InvitationStore() = default;
-    bool initialized_ = false;
+    std::once_flag init_flag_;
 };
 
 std::string canonicalize_invitation_code(const std::string& input);

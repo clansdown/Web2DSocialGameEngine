@@ -1,14 +1,14 @@
 # Staff Action Journal
 
-`staff.db` holds one append-only journal for game-staff actions **and** scoped
+`ravenest_staff` holds one append-only journal for game-staff actions **and** scoped
 chat moderation actions. The journal is staff-only; there is no player-facing
 action history.
 
 ## Why a fourth database
 
-An action can mutate `game.db` (accounts, characters, baronies, fiefdoms) and
-`chat.db` (bans, messages, chat names). A journal in either database could not
-faithfully link both sides. `staff.db` is independent and has no cross-database
+An action can mutate `ravenest_game` (accounts, characters, baronies, fiefdoms) and
+`ravenest_chat` (bans, messages, chat names). A journal in either database could not
+faithfully link both sides. `ravenest_staff` is independent and has no cross-database
 foreign keys; ids are stored as plain values.
 
 ## Entry shape

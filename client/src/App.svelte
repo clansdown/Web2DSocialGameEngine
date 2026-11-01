@@ -17,7 +17,7 @@
   import MiniGameContainer from './minigames/MiniGameContainer.svelte';
   import * as auth from './lib/auth';
   import { user, characters, currentCharacter, authLoading, playerGameState, language, isAuthenticated } from './lib/stores';
-  import { loginRequest, refreshToken, setCharacterArchetypeRequest, setCharacterSexRequest, acknowledgeLandPatentRequest } from './lib/api';
+  import { refreshAccessToken, setCharacterArchetypeRequest, setCharacterSexRequest, acknowledgeLandPatentRequest } from './lib/api';
   import { loadTexts, loadText } from './lib/text';
   import { asset_url } from './lib/public_urls';
   import { fetchPlayerState } from './lib/game_state';
@@ -94,62 +94,52 @@
    * Attempts to automatically log in using stored credentials.
    */
   async function attemptAutoLogin() {
-    const storedCreds = await auth.loadStoredCredentials();
-    if (storedCreds) {
-      authLoading.set(true);
-      try {
-        const response = await loginRequest(storedCreds.username, storedCreds.password);
+    authLoading.set(true);
+    try {
+      const response = await refreshAccessToken();
+      if (response?.token) {
+        auth.setStoredUsername(response.username);
 
-        if (response.token) {
-          auth.setSessionToken(response.token);
-          auth.setInMemoryCredentials(storedCreds.username, storedCreds.password);
+        user.set({
+          id: response.user_id,
+          username: response.username,
+          adult: response.adult
+        });
+        characters.set(response.characters);
 
-          user.set({
-            id: response.user_id,
-            username: response.username,
-            adult: response.adult
-          });
-          characters.set(response.characters);
-
-          // Adopt the account's interface / display language on this device.
-          if (response.language) {
-            language.set(response.language);
-            await auth.saveStoredLanguage(response.language);
-            languageSet = true;
-          }
-
-          const lastCharId = await auth.loadCurrentCharacterId();
-          const lastChar = response.characters.find(c => c.id === lastCharId) || response.characters[0];
-          currentCharacter.set(lastChar || null);
-
-          needsAuth = false;
-          return;
+        // Adopt the account's interface / display language on this device.
+        if (response.language) {
+          language.set(response.language);
+          await auth.saveStoredLanguage(response.language);
+          languageSet = true;
         }
-      } catch {
-        await auth.clearStoredCredentials();
-      } finally {
-        authLoading.set(false);
+
+        const lastCharId = await auth.loadCurrentCharacterId();
+        const lastChar = response.characters.find(c => c.id === lastCharId) || response.characters[0];
+        currentCharacter.set(lastChar || null);
+
+        needsAuth = false;
+        return;
       }
+    } catch {
+      // No refresh cookie or it was revoked; fall through to login.
+    } finally {
+      authLoading.set(false);
     }
     needsAuth = true;
   }
 
   /**
-   * Handles re-authentication when session is lost or expired.
+   * Handles re-authentication when the access token is lost or expired.
    */
   async function handleNeedsAuth() {
-    const creds = auth.getInMemoryCredentials();
-    if (creds) {
-      try {
-        const result = await refreshToken(creds.username, creds.password);
-        auth.setSessionToken(result.token);
-        return true;
-      } catch {
-        auth.clearInMemoryCredentials();
-        needsAuth = true;
-        return false;
-      }
+    try {
+      const refreshed = await refreshAccessToken();
+      if (refreshed?.token) return true;
+    } catch {
+      // fall through
     }
+    auth.clearInMemoryCredentials();
     needsAuth = true;
     return false;
   }

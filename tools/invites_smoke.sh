@@ -19,6 +19,9 @@ SERVER_BIN="$ROOT/server/build/server"
 STAFF_BIN="$ROOT/server/build/staff_admin"
 GLOBAL_CODE="SMOKE-GLOBAL-9Q7X"
 
+source "$ROOT/tools/postgres_test_env.sh"
+postgres_test_env_init "ravenest_invites_${PORT}"
+
 if [ ! -x "$SERVER_BIN" ] || [ ! -x "$STAFF_BIN" ]; then
     echo "Building server…"
     (cd "$ROOT" && ./compile_server.sh -q >/dev/null 2>&1) || {
@@ -66,6 +69,7 @@ stop_server() {
 
 cleanup() {
     stop_server
+    postgres_test_env_cleanup
     rm -rf "$BASE_DIR"
 }
 trap cleanup EXIT
@@ -103,7 +107,7 @@ run_scenario() {
         --scenario "$scenario" --global-code "$GLOBAL_CODE"
 }
 
-# 1. off: create the bootstrap accounts; invites.db must stay absent.
+# 1. off: create the bootstrap accounts; invitation_codes must stay absent.
 write_config "off" "" false 0 0 300 10000
 start_server
 run_scenario "off" || { stop_server; echo "Invites smoke FAILED (off)" >&2; exit 2; }

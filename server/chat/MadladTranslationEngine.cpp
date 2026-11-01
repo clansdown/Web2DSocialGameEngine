@@ -18,7 +18,6 @@ MadladTranslationEngine::MadladTranslationEngine(std::string sidecar_url, int ti
 
 std::optional<nlohmann::json> MadladTranslationEngine::post(const std::string& path,
                                                             const nlohmann::json& body) {
-    std::lock_guard<std::mutex> lock(mutex_);
     CURL* curl = curl_easy_init();
     if (!curl) return std::nullopt;
 
@@ -74,6 +73,39 @@ std::optional<translation_result> MadladTranslationEngine::translate(
     out.confidence = row.value("confidence", 0.0);
     out.ok = !out.translated_text.empty();
     if (!out.ok) return std::nullopt;
+    return out;
+}
+
+std::vector<translation_result> MadladTranslationEngine::translate_many(
+    const std::vector<translation_request>& requests) {
+    std::vector<translation_result> out;
+    if (!enabled_ || requests.empty()) return out;
+
+    nlohmann::json items = nlohmann::json::array();
+    for (const auto& request : requests) {
+        if (request.text.empty() || request.target.empty()) continue;
+        items.push_back({{"id", request.id},
+                         {"text", request.text},
+                         {"source", request.source},
+                         {"target", request.target}});
+    }
+    if (items.empty()) return out;
+
+    auto response = post("/translate", {{"items", items}});
+    if (!response || !response->contains("results") || !(*response)["results"].is_array()) {
+        return out;
+    }
+    for (const auto& row : (*response)["results"]) {
+        if (!row.is_object()) continue;
+        translation_result result;
+        result.id = row.value("id", std::string());
+        result.translated_text = row.value("translated_text", std::string());
+        result.detected_source_language =
+            row.value("detected_source_language", std::string());
+        result.confidence = row.value("confidence", 0.0);
+        result.ok = !result.translated_text.empty();
+        if (result.ok) out.push_back(std::move(result));
+    }
     return out;
 }
 

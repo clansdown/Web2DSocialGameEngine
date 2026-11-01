@@ -21,23 +21,25 @@ SERVER_BIN="${SERVER_BIN:-$ROOT/server/build/server}"
 DB_DIR="$ROOT/.combat_shutdown_db_${PORT}"
 LOG="$ROOT/.combat_shutdown_${PORT}.log"
 
+source "$ROOT/tools/postgres_test_env.sh"
+postgres_test_env_init "ravenest_shutdown_${PORT}"
+
 if [ ! -x "$SERVER_BIN" ]; then
     echo "Shutdown test: server binary not found at $SERVER_BIN (run ./compile_server.sh)" >&2
     exit 1
 fi
 
-rm -rf "$DB_DIR"
 mkdir -p "$DB_DIR"
 
 echo "Starting server (shutdown-after-ms=$SHUTDOWN_MS)…"
 # Run from game/ so relative config/images paths resolve (same as combat_smoke.sh).
 if [ "${TSAN:-0}" = "1" ]; then
     ( cd "$GAME_DIR" && TSAN_OPTIONS="halt_on_error=0" exec "$SERVER_BIN" \
-        --port "$PORT" --db-dir "$DB_DIR" --combat-seed 4242 \
+        --port "$PORT" --combat-seed 4242 \
         --shutdown-after-ms "$SHUTDOWN_MS" ) >"$LOG" 2>&1 &
 else
     ( cd "$GAME_DIR" && exec "$SERVER_BIN" \
-        --port "$PORT" --db-dir "$DB_DIR" --combat-seed 4242 \
+        --port "$PORT" --combat-seed 4242 \
         --shutdown-after-ms "$SHUTDOWN_MS" ) >"$LOG" 2>&1 &
 fi
 SRV_PID=$!
@@ -45,6 +47,7 @@ SRV_PID=$!
 cleanup() {
     kill "$SRV_PID" 2>/dev/null
     wait "$SRV_PID" 2>/dev/null
+    postgres_test_env_cleanup
     rm -rf "$DB_DIR"
 }
 trap cleanup EXIT

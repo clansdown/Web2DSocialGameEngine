@@ -13,6 +13,15 @@ VERBOSE=false
 TEST_NUM_REQUESTS=0
 TEST_TIMEOUT=0
 
+# Scratch PostgreSQL databases for this run. Override the prefix when running
+# multiple test servers against one cluster.
+TEST_DB_PREFIX="${RAVENEST_TEST_DB_PREFIX:-ravenest_test_${PORT}}"
+TEST_DB_USER="${RAVENEST_DB_USER:-ravenest}"
+TEST_DB_PASSWORD="${RAVENEST_DB_PASSWORD:-ravenest_dev}"
+TEST_DB_HOST="${RAVENEST_DB_HOST:-127.0.0.1}"
+TEST_DB_PORT="${RAVENEST_DB_PORT:-5432}"
+ADMIN_URL="${RAVENEST_TEST_ADMIN_URL:-}"
+
 print_usage() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
@@ -95,6 +104,38 @@ fi
 mkdir -p "$AGENT_DB_DIR"
 rm -rf "$AGENT_DB_DIR"/*
 
+psql_admin() {
+    if [ -n "$ADMIN_URL" ]; then
+        psql "$ADMIN_URL" "$@"
+    else
+        psql -d postgres "$@"
+    fi
+}
+
+drop_test_databases() {
+    for suffix in game chat staff invites; do
+        psql_admin -v ON_ERROR_STOP=1 \
+            -c "DROP DATABASE IF EXISTS \"${TEST_DB_PREFIX}_${suffix}\"" >/dev/null 2>&1 || true
+    done
+}
+
+if ! command -v psql >/dev/null 2>&1; then
+    echo "Error: psql is required (install postgresql-client)" >&2
+    exit 2
+fi
+
+drop_test_databases
+for suffix in game chat staff invites; do
+    database="${TEST_DB_PREFIX}_${suffix}"
+    psql_admin -v ON_ERROR_STOP=1 \
+        -c "CREATE DATABASE \"${database}\" OWNER \"${TEST_DB_USER}\"" >/dev/null
+done
+
+export RAVENEST_GAME_DB_URL="postgresql://${TEST_DB_USER}:${TEST_DB_PASSWORD}@${TEST_DB_HOST}:${TEST_DB_PORT}/${TEST_DB_PREFIX}_game"
+export RAVENEST_CHAT_DB_URL="postgresql://${TEST_DB_USER}:${TEST_DB_PASSWORD}@${TEST_DB_HOST}:${TEST_DB_PORT}/${TEST_DB_PREFIX}_chat"
+export RAVENEST_STAFF_DB_URL="postgresql://${TEST_DB_USER}:${TEST_DB_PASSWORD}@${TEST_DB_HOST}:${TEST_DB_PORT}/${TEST_DB_PREFIX}_staff"
+export RAVENEST_INVITES_DB_URL="postgresql://${TEST_DB_USER}:${TEST_DB_PASSWORD}@${TEST_DB_HOST}:${TEST_DB_PORT}/${TEST_DB_PREFIX}_invites"
+
 if [ "$QUIET" = true ]; then
     VERBOSE_FLAG="--quiet"
 elif [ "$VERBOSE" = true ]; then
@@ -134,7 +175,7 @@ if [ "$QUIET" = false ]; then
     echo "Starting $GAME_NAME test server on port $PORT..."
     echo "  Requests limit: ${TEST_NUM_REQUESTS:-unlimited}"
     echo "  Time limit: ${TEST_TIMEOUT:-unlimited} seconds"
-    echo "  Database dir: $AGENT_DB_DIR"
+    echo "  Database prefix: $TEST_DB_PREFIX"
 fi
 
 START_TIME=$(date +%s)
@@ -181,8 +222,9 @@ fi
 
 if [ "$KEEP_DB" = false ]; then
     if [ "$QUIET" = false ]; then
-        echo "Cleaning up test database directory..."
+        echo "Cleaning up scratch PostgreSQL databases..."
     fi
+    drop_test_databases
     rm -rf "$AGENT_DB_DIR"
 fi
 

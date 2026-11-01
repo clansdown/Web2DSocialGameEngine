@@ -28,6 +28,7 @@ import argparse
 import json
 import re
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -122,6 +123,7 @@ def translate_one(text: str, source: str, target: str, passthrough: bool) -> dic
 
 class Handler(BaseHTTPRequestHandler):
     passthrough = False
+    delay_ms = 0
 
     def log_message(self, fmt: str, *args: Any) -> None:  # keep stderr quiet
         return
@@ -152,6 +154,8 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/translate":
             items = request.get("items", [])
             results = []
+            if self.delay_ms > 0:
+                time.sleep(self.delay_ms / 1000.0)
             for item in items:
                 try:
                     out = translate_one(str(item.get("text", "")), str(item.get("source", "")),
@@ -180,9 +184,12 @@ def main() -> int:
     parser.add_argument("--model", default=MODEL_DIR_DEFAULT)
     parser.add_argument("--passthrough", action="store_true",
                         help="deterministic test mode; never use in production")
+    parser.add_argument("--delay-ms", type=int, default=0,
+                        help="test-only delay before /translate results")
     args = parser.parse_args()
 
     Handler.passthrough = args.passthrough
+    Handler.delay_ms = max(0, args.delay_ms)
     if not args.passthrough:
         load_detector()
         load_model(args.model)

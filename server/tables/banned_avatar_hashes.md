@@ -1,4 +1,4 @@
-# banned_avatar_hashes (`staff.db`)
+# banned_avatar_hashes (`ravenest_staff`)
 
 Exact-match SHA-256 bans for custom avatar uploads. Bans are independent of the
 avatar objects, so they survive deletion/replacement.

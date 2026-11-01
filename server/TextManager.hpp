@@ -1,7 +1,9 @@
 #pragma once
 #include <string>
 #include <filesystem>
+#include <mutex>
 #include <optional>
+#include <unordered_map>
 
 /** The text content plus the language whose file actually supplied it. */
 struct text_lookup_result {
@@ -48,6 +50,12 @@ public:
 
 private:
     std::filesystem::path m_base_path;
+
+    // Repeated UI fetches hit the same small set of ids. Caching the resolved
+    // result (including the English fallback and misses) keeps text reads off
+    // the hot path and avoids repeated filesystem work on worker threads.
+    mutable std::mutex m_cache_mutex;
+    mutable std::unordered_map<std::string, text_lookup_result> m_cache;
 
     /** Read the full contents of a file as a string. Returns empty string if file doesn't exist. */
     std::string read_file(const std::filesystem::path& path) const;

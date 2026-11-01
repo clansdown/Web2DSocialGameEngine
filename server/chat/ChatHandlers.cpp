@@ -1,5 +1,6 @@
 #include "chat/ChatHandlers.hpp"
 
+#include <cstdlib>
 #include <optional>
 #include <string>
 #include <vector>
@@ -28,7 +29,7 @@ Actor resolve_actor(const nlohmann::json& body, const std::optional<std::string>
         return actor;
     }
     auto& db = Database::getInstance().gameDB();
-    db << "SELECT id FROM users WHERE username = ?;" << *username
+    db << "SELECT id FROM users WHERE LOWER(username) = LOWER(?);" << *username
        >> [&](int64_t id) { actor.account_id = id; };
     if (body.contains("character_id") && body["character_id"].is_number_integer()) {
         int64_t cid = body["character_id"].get<int64_t>();
@@ -328,6 +329,24 @@ ApiResponse handleAdminLockIdentity(GameConfigCache& config_cache, const nlohman
     }, new_token);
 }
 
+// Test-only probe for the premium fan-out language selection. Registered only
+// when RAVENEST_TEST_TRANSLATION_TARGETS=1, so production never exposes it.
+ApiResponse handleTestTranslationTargets(
+    GameConfigCache& config_cache, const nlohmann::json& body,
+    const std::optional<std::string>& username, const ClientInfo& client,
+    const std::optional<std::string>& new_token) {
+    (void)config_cache;
+    (void)client;
+    Actor actor = resolve_actor(body, username);
+    if (!actor.ok) return auth_error(actor, username.has_value());
+    return run([&]() -> json {
+        return json{{"languages", chat::ChatService::instance().translation_targets(
+                                      body.value("chat_id", std::string()),
+                                      actor.character_id,
+                                      body.value("source_language", std::string()))}};
+    }, new_token);
+}
+
 }  // namespace
 
 void register_chat_handlers(std::unordered_map<std::string, ApiHandler>& handlers) {
@@ -392,4 +411,9 @@ void register_chat_handlers(std::unordered_map<std::string, ApiHandler>& handler
     reg("banFromChat", handleBanFromChat);
     reg("unbanFromChat", handleUnbanFromChat);
     reg("getModerationLog", handleGetModerationLog);
+
+    const char* test_targets = std::getenv("RAVENEST_TEST_TRANSLATION_TARGETS");
+    if (test_targets != nullptr && std::string(test_targets) == "1") {
+        reg("testTranslationTargets", handleTestTranslationTargets);
+    }
 }

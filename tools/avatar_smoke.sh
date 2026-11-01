@@ -15,6 +15,9 @@ GAME_DIR="$ROOT/game"
 DB_DIR="$ROOT/test_run/smoke_${PORT}"
 SERVER_BIN="${SERVER_BIN:-$ROOT/server/build/server}"
 
+source "$ROOT/tools/postgres_test_env.sh"
+postgres_test_env_init "ravenest_avatar_${PORT}"
+
 if [ ! -x "$SERVER_BIN" ]; then
     echo "Building server…"
     (cd "$ROOT" && ./compile_server.sh -q >/dev/null 2>&1) || {
@@ -23,7 +26,6 @@ if [ ! -x "$SERVER_BIN" ]; then
     }
 fi
 
-rm -rf "$DB_DIR"
 mkdir -p "$DB_DIR"
 
 AVATAR_STORAGE="$(printf '%s' "${RAVENEST_AVATAR_STORAGE:-local}" | tr '[:upper:]' '[:lower:]')"
@@ -33,7 +35,7 @@ AVATAR_STORAGE="$(printf '%s' "${RAVENEST_AVATAR_STORAGE:-local}" | tr '[:upper:
         "$SERVER_BIN" --port "$PORT" --content "$GAME_DIR" --test-timeout-seconds 600
 ) &
 SRV_PID=$!
-trap 'kill $SRV_PID 2>/dev/null; wait $SRV_PID 2>/dev/null; rm -rf "$DB_DIR"' EXIT
+trap 'kill $SRV_PID 2>/dev/null; wait $SRV_PID 2>/dev/null; postgres_test_env_cleanup; rm -rf "$DB_DIR"' EXIT
 
 for _ in $(seq 1 80); do
     if ! kill -0 "$SRV_PID" 2>/dev/null; then

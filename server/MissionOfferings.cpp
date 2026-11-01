@@ -64,6 +64,28 @@ bool offering_is_completed(sqlite::database& db, int64_t character_id,
     return count > 0;
 }
 
+std::set<std::string> completed_offering_ids(
+    sqlite::database& db, int64_t character_id,
+    const std::vector<std::string>& offering_ids) {
+    std::set<std::string> completed;
+    if (offering_ids.empty()) return completed;
+
+    std::string sql =
+        "SELECT offering_id FROM character_mission_completions "
+        "WHERE character_id = ? AND offering_id IN (";
+    for (std::size_t i = 0; i < offering_ids.size(); ++i) {
+        if (i) sql += ",";
+        sql += "?";
+    }
+    sql += ");";
+
+    auto stmt = db << sql;
+    stmt << character_id;
+    for (const auto& offering_id : offering_ids) stmt << offering_id;
+    stmt >> [&](std::string offering_id) { completed.insert(std::move(offering_id)); };
+    return completed;
+}
+
 bool validate_offering_authentic(sqlite::database& db, const mission_gen::offering_id_parts& parts,
                                  int64_t character_id, int64_t now, GameConfigCache& cache) {
     if (parts.player_id != character_id) return false;
@@ -113,10 +135,16 @@ std::vector<mission_gen::mission_offering> load_board(sqlite::database& db, int6
     std::vector<mission_gen::mission_offering> board = mission_gen::generate_board(
         character_id, hour, self_army, members, in_barony, cache);
 
+    std::vector<std::string> offering_ids;
+    offering_ids.reserve(board.size());
+    for (const auto& off : board) offering_ids.push_back(off.id);
+    const std::set<std::string> completed =
+        completed_offering_ids(db, character_id, offering_ids);
+
     std::vector<mission_gen::mission_offering> filtered;
     filtered.reserve(board.size());
     for (auto& off : board) {
-        if (!offering_is_completed(db, character_id, off.id)) {
+        if (completed.find(off.id) == completed.end()) {
             filtered.push_back(std::move(off));
         }
     }

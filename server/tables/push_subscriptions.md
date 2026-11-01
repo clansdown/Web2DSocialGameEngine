@@ -1,7 +1,7 @@
 # push_subscriptions Table
 
 Web Push subscriptions, keyed on **account** (all characters of an account).
-Stored in `chat.db`.
+Stored in `ravenest_chat`.
 
 ## Schema
 

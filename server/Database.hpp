@@ -1,9 +1,15 @@
 #pragma once
-#include <sqlite_modern_cpp.h>
-#include <memory>
-#include <string>
-#include <sys/stat.h>
 
+#include "db/postgres_sqlite_compat.hpp"
+
+#include <cstdlib>
+#include <memory>
+#include <stdexcept>
+#include <string>
+
+// Process-wide database handles. Each handle is a PostgreSQL connection pool:
+// one connection per worker thread, opened lazily. The four logical databases
+// remain independent; there are no cross-database joins or transactions.
 class Database {
 public:
     static Database& getInstance() {
@@ -11,48 +17,48 @@ public:
         return instance;
     }
 
+    // The path arguments are kept for source compatibility with the old SQLite
+    // call sites. They are ignored: connection URLs come from
+    // RAVENEST_{GAME,CHAT,STAFF,INVITES}_DB_URL.
     void init(const std::string& game_db_path, const std::string& chat_db_path,
               const std::string& staff_db_path, const std::string& invites_db_path) {
-        ensure_directory(game_db_path);
-        ensure_directory(chat_db_path);
-        ensure_directory(staff_db_path);
-
-        game_db = sqlite::database(game_db_path);
-        chat_db = sqlite::database(chat_db_path);
-        staff_db = sqlite::database(staff_db_path);
-
-        // invites.db is intentionally lazy: the registration gate can be off
-        // for the whole life of a deployment, and no invite file should exist.
-        invites_db.reset();
-        invites_db_path_ = invites_db_path;
+        (void)game_db_path;
+        (void)chat_db_path;
+        (void)staff_db_path;
+        (void)invites_db_path;
+        init_from_env();
     }
 
-    // Backwards-compatible three-database init (invites.db lives beside them).
     void init(const std::string& game_db_path, const std::string& chat_db_path,
               const std::string& staff_db_path) {
-        init(game_db_path, chat_db_path, staff_db_path,
-             sibling_path(game_db_path, "invites.db"));
+        init(game_db_path, chat_db_path, staff_db_path, std::string());
     }
 
-    // Backwards-compatible two-database init (staff.db/invites.db live beside them).
     void init(const std::string& game_db_path, const std::string& chat_db_path) {
-        init(game_db_path, chat_db_path, sibling_path(game_db_path, "staff.db"));
+        init(game_db_path, chat_db_path, std::string());
     }
 
-    sqlite::database& gameDB() {
-        return game_db;
+    void init_from_env() {
+        game_db = sqlite::database(env_url("RAVENEST_GAME_DB_URL", "ravenest_game"));
+        chat_db = sqlite::database(env_url("RAVENEST_CHAT_DB_URL", "ravenest_chat"));
+        staff_db = sqlite::database(env_url("RAVENEST_STAFF_DB_URL", "ravenest_staff"));
+        invites_conninfo_ = env_url("RAVENEST_INVITES_DB_URL", "ravenest_invites");
+        invites_db.reset();
     }
 
-    sqlite::database& chatDB() {
-        return chat_db;
+    // CLI tools that only touch invitation codes do not need the other three
+    // connection URLs.
+    void init_invites_from_env() {
+        invites_conninfo_ = env_url("RAVENEST_INVITES_DB_URL", "ravenest_invites");
+        invites_db.reset();
     }
 
-    sqlite::database& staffDB() {
-        return staff_db;
-    }
+    sqlite::database& gameDB() { return game_db; }
+    sqlite::database& chatDB() { return chat_db; }
+    sqlite::database& staffDB() { return staff_db; }
 
-    // Opens invites.db on first use. Registration code never calls this in
-    // `off` mode, so the file stays absent until an invite is actually needed.
+    // Opens the invites handle on first use. In `off` registration mode no
+    // invite operation runs, so the connection is never opened.
     sqlite::database& invitesDB() {
         ensureInvitesDB();
         return *invites_db;
@@ -60,50 +66,26 @@ public:
 
     void ensureInvitesDB() {
         if (invites_db) return;
-        if (invites_db_path_.empty()) {
-            invites_db_path_ = "invites.db";
-        }
-        ensure_directory(invites_db_path_);
-        invites_db = std::make_unique<sqlite::database>(invites_db_path_);
+        invites_db = std::make_unique<sqlite::database>(invites_conninfo_);
     }
 
-    bool invitesDBOpen() const {
-        return invites_db != nullptr;
-    }
-
-    const std::string& invitesDBPath() const {
-        return invites_db_path_;
-    }
+    bool invitesDBOpen() const { return invites_db != nullptr; }
+    const std::string& invitesDBPath() const { return invites_conninfo_; }
 
 private:
-    Database()
-        : game_db(":memory:")
-        , chat_db(":memory:")
-        , staff_db(":memory:") {
-        // init() reassigns these to the real --db-dir paths. Keeping the
-        // pre-init handles in memory prevents short-lived CLI tools (which may
-        // run from the repository root) from creating stray game.db/chat.db/
-        // staff.db files before init() is called.
-    }
+    Database() = default;
 
-    static std::string sibling_path(const std::string& base_path, const std::string& filename) {
-        const size_t slash = base_path.find_last_of('/');
-        if (slash == std::string::npos) return filename;
-        return base_path.substr(0, slash + 1) + filename;
-    }
-
-    void ensure_directory(const std::string& path) {
-        size_t last_slash = path.find_last_of('/');
-        if (last_slash != std::string::npos) {
-            std::string dir = path.substr(0, last_slash);
-            mkdir(dir.c_str(), 0755);
+    static std::string env_url(const char* variable, const char* database_name) {
+        (void)database_name;
+        if (const char* value = std::getenv(variable); value && *value) {
+            return value;
         }
+        throw std::runtime_error(std::string("missing database URL: ") + variable);
     }
 
-private:
     sqlite::database game_db;
     sqlite::database chat_db;
     sqlite::database staff_db;
-    std::string invites_db_path_;
+    std::string invites_conninfo_ = "dbname=ravenest_invites";
     std::unique_ptr<sqlite::database> invites_db;
 };

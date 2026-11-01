@@ -1,6 +1,6 @@
 # rate_limit_timeouts Table
 
-Current active rate-limit timeout per account. Stored in `chat.db`.
+Current active rate-limit timeout per account. Stored in `ravenest_chat`.
 
 ## Schema
 

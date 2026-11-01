@@ -193,7 +193,8 @@ std::optional<invitation_code_record> generate_for_player(
         for (int attempt = 0; attempt < 10; ++attempt) {
             const invitation_code_draft draft = store.make_code_draft();
             if (!store.insert_code(draft, account_id, "player", now, error)) {
-                if (error.find("UNIQUE") != std::string::npos) {
+                if (error.find("UNIQUE") != std::string::npos ||
+                    error.find("duplicate key") != std::string::npos) {
                     continue;
                 }
                 db << "ROLLBACK;";

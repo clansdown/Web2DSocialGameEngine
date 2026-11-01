@@ -1,8 +1,8 @@
 # change_counter Table
 
-Single-row global cursor allocator for `chat.db`. Every mutated chat row is
+Single-row global cursor allocator for `ravenest_chat`. Every mutated chat row is
 stamped with a fresh `change_id`, so a poll cursor (one integer) can detect
-updates across all tables. Stored in `chat.db`.
+updates across all tables. Stored in `ravenest_chat`.
 
 ## Schema
 

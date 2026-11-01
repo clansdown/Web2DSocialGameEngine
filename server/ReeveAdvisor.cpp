@@ -414,12 +414,20 @@ ReeveSnapshot build_reeve_snapshot(
         cache.getFiefdomBuildingTypes(), fiefdom.buildings, snapshot.river_cells);
     snapshot.water_powered = water.powered;
 
-    snapshot.arable_total = GameLogic::Validation::getTotalArableAcres(cache, fiefdom.id);
-    snapshot.arable_used = GameLogic::Validation::getUsedArableAcres(cache, fiefdom.id);
-    snapshot.arable_available = GameLogic::Validation::getAvailableArableAcres(cache, fiefdom.id);
-    snapshot.forest_total = GameLogic::Validation::getTotalForestAcres(cache, fiefdom.id);
-    snapshot.forest_used = GameLogic::Validation::getUsedForestAcres(cache, fiefdom.id);
-    snapshot.forest_available = GameLogic::Validation::getAvailableForestAcres(cache, fiefdom.id);
+    // The snapshot already has the building list; reuse it instead of issuing
+    // the eight per-land DB queries.
+    snapshot.arable_total = GameLogic::Validation::getTotalArableAcresForManor(
+        cache, fiefdom.manor_level);
+    snapshot.arable_used = GameLogic::Validation::getUsedArableAcres(
+        cache, fiefdom.buildings);
+    snapshot.arable_available = GameLogic::Validation::getAvailableArableAcres(
+        cache, fiefdom.manor_level, fiefdom.buildings);
+    snapshot.forest_total = GameLogic::Validation::getTotalForestAcresForManor(
+        cache, fiefdom.manor_level);
+    snapshot.forest_used = GameLogic::Validation::getUsedForestAcres(
+        cache, fiefdom.buildings);
+    snapshot.forest_available = GameLogic::Validation::getAvailableForestAcres(
+        cache, fiefdom.manor_level, fiefdom.buildings);
 
     if (snapshot.economy_report.contains("retinue") &&
         snapshot.economy_report["retinue"].is_object()) {

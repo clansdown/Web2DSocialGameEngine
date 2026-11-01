@@ -1,5 +1,5 @@
 #pragma once
-#include <sqlite_modern_cpp.h>
+#include "db/postgres_sqlite_compat.hpp"
 #include <cstdint>
 #include <optional>
 #include <string>

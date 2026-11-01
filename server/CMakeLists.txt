@@ -9,14 +9,24 @@ set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
 find_package(OpenSSL REQUIRED)
 find_package(CURL REQUIRED)
 
+# PostgreSQL and Argon2 runtime libraries. The deployment image installs the
+# -dev packages; this fallback also finds the runtime sonames in minimal
+# sandboxes.
+find_file(RAVENEST_LIBPQ_LIBRARY
+    NAMES libpq.so libpq.so.5
+    PATHS /usr/lib/x86_64-linux-gnu /usr/lib /usr/local/lib /usr/local/pgsql/lib)
+find_file(RAVENEST_ARGON2_LIBRARY
+    NAMES libargon2.so libargon2.so.1
+    PATHS /usr/lib/x86_64-linux-gnu /usr/lib /usr/local/lib)
+if(NOT RAVENEST_LIBPQ_LIBRARY)
+    message(FATAL_ERROR "libpq not found (install libpq-dev / postgresql-client)")
+endif()
+if(NOT RAVENEST_ARGON2_LIBRARY)
+    message(FATAL_ERROR "libargon2 not found (install libargon2-dev)")
+endif()
+
 include(FetchContent)
 include(ExternalProject)
-
-FetchContent_Declare(sqlite_modern_cpp
-    GIT_REPOSITORY https://github.com/SqliteModernCpp/sqlite_modern_cpp.git
-    GIT_TAG master
-)
-FetchContent_MakeAvailable(sqlite_modern_cpp)
 
 # ── uWebSockets / uSockets ─────────────────────────────────────────────
 # CACHE so a second build tree (e.g. --tsan) can reuse the same source clone
@@ -55,17 +65,17 @@ foreach(header IN LISTS UWS_HEADERS)
     execute_process(COMMAND ln -sf "${UWS_SRC_DIR}/src/${header_name}" "${UWS_INCLUDE_DIR}/${header_name}" OUTPUT_QUIET ERROR_QUIET)
 endforeach()
 
-add_executable(server main.cpp ImageReader.cpp SafeNameGenerator.cpp init_db.cpp FiefdomFetcher.cpp combatants.cpp heroes.cpp fiefdom_officials.cpp GameConfigCache.cpp MoraleCalculator.cpp WaterNetwork.cpp ActionHandlers.cpp game_logic.cpp DigitalCredentialsVerifier.cpp images/ImageCache.cpp PlayerStateDB.cpp Letters.cpp Progression.cpp TowerDefenseMapCache.cpp TextManager.cpp GridCollision.cpp UnitUnlockCalculator.cpp TDPlacementValidator.cpp TDGoldCalculator.cpp mini_games/tower_defense_handler.cpp WeedingGameLogic.cpp OngoingRewards.cpp Money.cpp RetinueDB.cpp RetinueMarket.cpp RetinueStrength.cpp MissionGenerator.cpp MissionOfferings.cpp AvatarPool.cpp AvatarUrl.cpp Visibility.cpp Hash.cpp Base64.cpp ThreadPool.cpp avatars/AvatarKey.cpp avatars/AvatarValidation.cpp avatars/AvatarStore.cpp avatars/R2Client.cpp avatars/AvatarUploadManager.cpp avatars/CloudflarePurge.cpp combat/CombatCodecJson.cpp combat/CombatCodecBinary.cpp combat/CombatMatch.cpp combat/CombatantStats.cpp combat/CombatMatchManager.cpp combat/CombatMapCache.cpp combat/CombatPathfinding.cpp CosmeticsDB.cpp MonthlyPass.cpp ReeveConfig.cpp ReeveAdvisor.cpp ReevePlacement.cpp ReeveHandlers.cpp chat/ChatDB.cpp chat/ChatService.cpp chat/ChatHandlers.cpp chat/MadladTranslationEngine.cpp chat/Presence.cpp chat/PushSender.cpp staff/StaffStore.cpp staff/StaffAuth.cpp staff/StaffActionEngine.cpp staff/StaffHandlers.cpp registration/RegistrationSettings.cpp registration/InvitationStore.cpp registration/InvitationService.cpp registration/RegistrationRateLimiter.cpp registration/InvitationHandlers.cpp)
+add_executable(server main.cpp ImageReader.cpp SafeNameGenerator.cpp init_db.cpp FiefdomFetcher.cpp combatants.cpp heroes.cpp fiefdom_officials.cpp GameConfigCache.cpp MoraleCalculator.cpp WaterNetwork.cpp ActionHandlers.cpp game_logic.cpp DigitalCredentialsVerifier.cpp images/ImageCache.cpp PlayerStateDB.cpp Letters.cpp Progression.cpp TowerDefenseMapCache.cpp TextManager.cpp GridCollision.cpp UnitUnlockCalculator.cpp TDPlacementValidator.cpp TDGoldCalculator.cpp mini_games/tower_defense_handler.cpp WeedingGameLogic.cpp OngoingRewards.cpp Money.cpp RetinueDB.cpp RetinueMarket.cpp RetinueStrength.cpp MissionGenerator.cpp MissionOfferings.cpp AvatarPool.cpp AvatarUrl.cpp Visibility.cpp Hash.cpp Base64.cpp ThreadPool.cpp avatars/AvatarKey.cpp avatars/AvatarValidation.cpp avatars/AvatarStore.cpp avatars/R2Client.cpp avatars/AvatarUploadManager.cpp avatars/CloudflarePurge.cpp combat/CombatCodecJson.cpp combat/CombatCodecBinary.cpp combat/CombatMatch.cpp combat/CombatantStats.cpp combat/CombatMatchManager.cpp combat/CombatMapCache.cpp combat/CombatPathfinding.cpp CosmeticsDB.cpp MonthlyPass.cpp ReeveConfig.cpp ReeveAdvisor.cpp ReevePlacement.cpp ReeveHandlers.cpp chat/ChatDB.cpp chat/ChatService.cpp chat/ChatHandlers.cpp chat/MadladTranslationEngine.cpp chat/TranslationQueue.cpp chat/Presence.cpp chat/PushSender.cpp staff/StaffStore.cpp staff/StaffAuth.cpp staff/StaffActionEngine.cpp staff/StaffHandlers.cpp registration/RegistrationSettings.cpp registration/InvitationStore.cpp registration/InvitationService.cpp registration/RegistrationRateLimiter.cpp registration/InvitationHandlers.cpp db/Schema.cpp auth/Argon2.cpp auth/SessionManager.cpp runtime/LoopDispatcher.cpp db/PostgresConnection.cpp http/StaticAssets.cpp)
 
 target_include_directories(server PRIVATE
-    "${sqlite_modern_cpp_SOURCE_DIR}/hdr"
     "${CMAKE_CURRENT_SOURCE_DIR}/vendor/nlohmann"
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${UWS_INCLUDE_DIR}"
     "${UWS_SRC_DIR}/uSockets/src"
 )
 target_link_libraries(server PRIVATE
-    sqlite3
+    "${RAVENEST_LIBPQ_LIBRARY}"
+    "${RAVENEST_ARGON2_LIBRARY}"
     OpenSSL::SSL
     OpenSSL::Crypto
     "${UWS_SRC_DIR}/uSockets/uSockets.a"
@@ -73,12 +83,17 @@ target_link_libraries(server PRIVATE
     CURL::libcurl
 )
 
-# Staff grant/revoke CLI. Intentionally minimal: it only needs SQLite and the
-# staff store, never the HTTP server or chat service.
-add_executable(staff_admin StaffAdminMain.cpp init_db.cpp staff/StaffStore.cpp staff/StaffAuth.cpp)
+# Staff grant/revoke CLI. It only needs the database layer and staff store.
+add_executable(staff_admin StaffAdminMain.cpp init_db.cpp db/Schema.cpp staff/StaffStore.cpp staff/StaffAuth.cpp)
 target_include_directories(staff_admin PRIVATE
-    "${sqlite_modern_cpp_SOURCE_DIR}/hdr"
     "${CMAKE_CURRENT_SOURCE_DIR}/vendor/nlohmann"
     "${CMAKE_CURRENT_SOURCE_DIR}"
 )
-target_link_libraries(staff_admin PRIVATE sqlite3 OpenSSL::Crypto)
+target_link_libraries(staff_admin PRIVATE "${RAVENEST_LIBPQ_LIBRARY}" OpenSSL::Crypto)
+
+# Invitation code administration (pre-alpha invite-only onboarding).
+add_executable(invite_admin InviteAdminMain.cpp init_db.cpp db/Schema.cpp registration/InvitationStore.cpp)
+target_include_directories(invite_admin PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(invite_admin PRIVATE "${RAVENEST_LIBPQ_LIBRARY}" OpenSSL::Crypto)

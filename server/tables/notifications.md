@@ -1,4 +1,4 @@
-# notifications (`staff.db`)
+# notifications (`ravenest_staff`)
 
 Account-level system notifications. See `docs/notifications.md`.
 

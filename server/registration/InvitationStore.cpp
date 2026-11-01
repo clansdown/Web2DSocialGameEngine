@@ -80,10 +80,10 @@ InvitationStore& InvitationStore::instance() {
 }
 
 void InvitationStore::ensure_ready() {
-    if (initialized_) return;
-    auto& db = Database::getInstance().invitesDB();
-    initializeInvitesDB(db);
-    initialized_ = true;
+    std::call_once(init_flag_, [] {
+        auto& db = Database::getInstance().invitesDB();
+        initializeInvitesDB(db);
+    });
 }
 
 std::optional<invitation_code_record> InvitationStore::find_by_code(
@@ -149,7 +149,8 @@ std::optional<invitation_code_record> InvitationStore::create_code(
     for (int attempt = 0; attempt < 10; ++attempt) {
         const invitation_code_draft draft = make_code_draft();
         if (!insert_code(draft, account_id, created_by_kind, now_seconds_utc(), error)) {
-            if (error.find("UNIQUE") != std::string::npos) {
+            if (error.find("UNIQUE") != std::string::npos ||
+                error.find("duplicate key") != std::string::npos) {
                 continue;  // extremely unlikely 12-char collision; try again
             }
             return std::nullopt;
@@ -165,11 +166,12 @@ bool InvitationStore::mark_used(const std::string& id, std::int64_t account_id,
     ensure_ready();
     try {
         auto& db = Database::getInstance().invitesDB();
-        db << "UPDATE invitation_codes SET used_at = ?, used_by_account_id = ? "
-              "WHERE id = ? AND used_at IS NULL AND revoked_at IS NULL;"
-           << used_at << account_id << id;
         int changed = 0;
-        db << "SELECT changes();" >> changed;
+        db << "UPDATE invitation_codes SET used_at = ?, used_by_account_id = ? "
+              "WHERE id = ? AND used_at IS NULL AND revoked_at IS NULL "
+              "RETURNING id;"
+           << used_at << account_id << id
+           >> [&](std::string) { changed = 1; };
         if (changed == 0) {
             error = "invitation_code_not_usable";
             return false;
@@ -187,11 +189,12 @@ bool InvitationStore::revoke_code(const std::string& id, std::int64_t staff_acco
     ensure_ready();
     try {
         auto& db = Database::getInstance().invitesDB();
-        db << "UPDATE invitation_codes SET revoked_at = ?, revoked_by_account_id = ? "
-              "WHERE id = ? AND used_at IS NULL AND revoked_at IS NULL;"
-           << revoked_at << staff_account_id << id;
         int changed = 0;
-        db << "SELECT changes();" >> changed;
+        db << "UPDATE invitation_codes SET revoked_at = ?, revoked_by_account_id = ? "
+              "WHERE id = ? AND used_at IS NULL AND revoked_at IS NULL "
+              "RETURNING id;"
+           << revoked_at << staff_account_id << id
+           >> [&](std::string) { changed = 1; };
         if (changed == 0) {
             const auto existing = find_by_id(id);
             if (!existing) {
@@ -254,7 +257,7 @@ std::vector<invitation_code_record> InvitationStore::list_all(
                             "       (? = 'used' AND used_at IS NOT NULL) OR "
                             "       (? = 'revoked' AND revoked_at IS NOT NULL)) "
                             "AND (? = '' OR created_by_kind = ?) "
-                            "AND (? = '' OR code LIKE ? OR id LIKE ?) "
+                            "AND (? = '' OR code ILIKE ? OR id ILIKE ?) "
                             "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?;";
     auto& db = Database::getInstance().invitesDB();
     db << sql << status << status << status << status << status

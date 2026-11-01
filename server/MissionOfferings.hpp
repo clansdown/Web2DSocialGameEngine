@@ -2,8 +2,9 @@
 #include "MissionGenerator.hpp"
 #include <cstdint>
 #include <map>
+#include <set>
 #include <nlohmann/json.hpp>
-#include <sqlite_modern_cpp.h>
+#include "db/postgres_sqlite_compat.hpp"
 #include <string>
 #include <vector>
 
@@ -35,6 +36,11 @@ std::vector<mission_gen::retinue_army_summary> barony_member_armies(
 
 bool offering_is_completed(sqlite::database& db, int64_t character_id,
                            const std::string& offering_id);
+
+// One query for a whole board instead of one COUNT(*) per offering.
+std::set<std::string> completed_offering_ids(
+    sqlite::database& db, int64_t character_id,
+    const std::vector<std::string>& offering_ids);
 
 // Authenticity (not eligibility): the id belongs to this character, is within
 // the validity window, and its frozen party fields (players / troop count /

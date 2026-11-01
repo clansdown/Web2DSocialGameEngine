@@ -1,6 +1,6 @@
 # messages Table
 
-A chat message (or system event). Stored in `chat.db`.
+A chat message (or system event). Stored in `ravenest_chat`.
 
 ## Schema
 
@@ -8,28 +8,29 @@ A chat message (or system event). Stored in `chat.db`.
 CREATE TABLE messages (
     id TEXT PRIMARY KEY,
     chat_id TEXT NOT NULL,
-    seq INTEGER NOT NULL,
-    author_character_id INTEGER,
+    seq BIGINT NOT NULL,
+    author_character_id BIGINT,
     body TEXT,
     safe_message_id TEXT,
     source_language TEXT,
-    source_language_confidence REAL,
+    source_language_confidence DOUBLE PRECISION,
     gif TEXT,
     gif_id TEXT,
     reply_to_message_id TEXT,
-    reply_author_character_id INTEGER,
+    reply_author_character_id BIGINT,
     reply_excerpt TEXT,
     reply_safe_excerpt TEXT,
     reply_source_language TEXT,
     system_id TEXT,
     system_args TEXT,
-    created_at INTEGER NOT NULL,
-    edited_at INTEGER,
-    deleted_at INTEGER,
+    created_at BIGINT NOT NULL,
+    edited_at BIGINT,
+    deleted_at BIGINT,
     deletion_reason TEXT,
-    deleted_by_account_id INTEGER,
+    deleted_by_account_id BIGINT,
     version INTEGER NOT NULL DEFAULT 1,
-    change_id INTEGER NOT NULL,
+    change_id BIGINT NOT NULL,
+    llm_translation_eligible BOOLEAN NOT NULL DEFAULT FALSE,
     UNIQUE (chat_id, seq)
 );
 ```
@@ -53,6 +54,7 @@ CREATE TABLE messages (
 | `deleted_at` | Tombstone marker (body set NULL). |
 | `version` | Edit version counter. |
 | `change_id` | Global update cursor (also bumped by reaction changes). |
+| `llm_translation_eligible` | Set for a monthly-pass author's custom message; Phase 2 uses it to select the premium fan-out path. |
 
 ## Notes
 
