@@ -1,0 +1,11 @@
+build/
+build-*/
+bin/
+config/
+images/
+translation/
+*.db
+*.md
+*.xcf
+.git/
+.gitignore

@@ -1,0 +1,44 @@
+# Production API server base. install.sh writes this file and compose.env to
+# SERVER_PATH. It is used alone for SERVER_DB_MODE=external:
+#
+#   docker compose --env-file compose.env -f docker-compose.yml up -d
+#
+# For SERVER_DB_MODE=bundled, install.sh also writes docker-compose.bundled.yml
+# and both files are passed to compose:
+#
+#   docker compose --env-file compose.env \
+#     -f docker-compose.yml -f docker-compose.bundled.yml up -d
+#
+# The four DB URLs always come from the runtime env file (RAVENEST_ENV_FILE).
+
+name: ravenest
+
+services:
+  ravenest:
+    image: ${RAVENEST_IMAGE:?set RAVENEST_IMAGE in compose.env}
+    container_name: ravenest
+    restart: unless-stopped
+    env_file:
+      - ${RAVENEST_ENV_FILE:?set RAVENEST_ENV_FILE in compose.env}
+    ports:
+      - "127.0.0.1:2290:2290"
+    volumes:
+      - ${RAVENEST_GAME_PATH:?set RAVENEST_GAME_PATH in compose.env}:/app/game:ro
+      - ${RAVENEST_UPLOADS_PATH:?set RAVENEST_UPLOADS_PATH in compose.env}:/app/uploads
+    tmpfs:
+      - /tmp
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 25s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/2290'"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s

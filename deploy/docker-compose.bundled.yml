@@ -1,0 +1,68 @@
+# Bundled PostgreSQL overlay. install.sh writes this file to
+# SERVER_COMPOSE_OVERLAY_PATH when SERVER_DB_MODE=bundled, then runs:
+#
+#   docker compose --env-file compose.env \
+#     -f docker-compose.yml \
+#     -f docker-compose.bundled.yml \
+#     up -d --remove-orphans
+#
+# PostgreSQL is internal to the compose network: no host port is published.
+# The app receives derived URLs whose host is the service name `postgres`.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${RAVENEST_DB_USER:?set RAVENEST_DB_USER in compose.env}
+      POSTGRES_PASSWORD: ${RAVENEST_DB_PASSWORD:?set RAVENEST_DB_PASSWORD in compose.env}
+      POSTGRES_DB: ravenest_game
+    volumes:
+      - ravenest_pgdata:/var/lib/postgresql/data
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${RAVENEST_DB_USER:?set RAVENEST_DB_USER in compose.env} -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Idempotent database creation. Unlike /docker-entrypoint-initdb.d, this runs
+  # on every `up`, including against an existing data volume.
+  db-init:
+    image: postgres:16-alpine
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: ${RAVENEST_DB_USER:?set RAVENEST_DB_USER in compose.env}
+      PGPASSWORD: ${RAVENEST_DB_PASSWORD:?set RAVENEST_DB_PASSWORD in compose.env}
+      PGDATABASE: postgres
+    volumes:
+      - ${RAVENEST_DB_INIT_PATH:?set RAVENEST_DB_INIT_PATH in compose.env}:/init:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        psql -v ON_ERROR_STOP=1 -d postgres -f /init/01-databases.sql
+        psql -v ON_ERROR_STOP=1 -d postgres -c "ALTER ROLE \"$$PGUSER\" WITH PASSWORD '$$PGPASSWORD'"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  ravenest:
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+
+volumes:
+  ravenest_pgdata:

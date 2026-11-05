@@ -1,4 +1,6 @@
 #!/bin/bash
+# Build the server Docker image and save it as a tarball for offline transfer.
+# The image is built by server/Dockerfile, so no host-side CMake/make is needed.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,44 +16,20 @@ fi
 
 mkdir -p server/bin
 
-echo "Building $GAME_NAME server..."
-
-if [ ! -f server/CMakeLists.txt ]; then
-    echo "Error: server/CMakeLists.txt not found"
-    exit 1
-fi
-
-cd server/build
-
-if [ ! -f CMakeCache.txt ]; then
-    echo "Running cmake..."
-    cmake ..
-else
-    echo "CMake cache exists, skipping cmake configuration"
-fi
-
-echo "Building server..."
-make -j$(nproc)
-
-if [ ! -f server ]; then
-    echo "Error: Server binary not found after build"
-    exit 1
-fi
-
-echo "Building Docker image..."
-cd "$SCRIPT_DIR"
-docker build -t "${GAME_NAME}-server:latest" server/
+IMAGE="${GAME_NAME}-server:latest"
+echo "Building $GAME_NAME server image..."
+"$SCRIPT_DIR/tools/build_server_image.sh" "$IMAGE"
 
 DOCKER_TAR="server/bin/${GAME_NAME}-server.tar"
 echo "Saving Docker image to $DOCKER_TAR..."
-docker save "${GAME_NAME}-server:latest" -o "$DOCKER_TAR"
+docker save "$IMAGE" -o "$DOCKER_TAR"
 
-IMAGE_SIZE=$(docker images "${GAME_NAME}-server:latest" --format "{{.Size}}" | head -1)
+IMAGE_SIZE=$(docker images "$IMAGE" --format "{{.Size}}" | head -1)
 echo ""
 echo "================================"
 echo "Build complete!"
 echo "================================"
-echo "Docker image: ${GAME_NAME}-server:latest"
+echo "Docker image: $IMAGE"
 echo "Image size: $IMAGE_SIZE"
 echo "Saved to: $DOCKER_TAR"
 echo ""

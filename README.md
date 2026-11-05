@@ -30,51 +30,93 @@ Your game name used for Docker image naming.
 Ravenest
 ```
 
-#### `.docker_repo`
-Your Docker registry repository URL for pushing images.
-```
-ghcr.io/yourusername/ravenest-server
-```
-Alternative formats:
-- GitHub Container Registry: `ghcr.io/username/repo-name`
-- Docker Hub: `registry.hub.docker.com/username/repo-name`
-- Private registry: `registry.local:5000/repo-name`
+#### `.deploy` image keys (preferred)
 
-#### `.docker_creds`
-Docker registry credentials in format `username:token`.
-```
-myuser:ghp_xxxxxxxxxxxxxxxx
-```
+For `install.sh` (including `--image-only`), set the repository and credentials
+in `.deploy`:
 
-For registries:
-- **GitHub Container Registry**: Create a PAT with `write:packages` permission
-- **Docker Hub**: Create an Access Token (NOT your Docker Hub password)
-
-### Docker Registry Setup
-
-#### GitHub Container Registry
 ```bash
-# Create PAT at: https://github.com/settings/tokens
-# Required scope: write:packages
-# Format: yourusername:ghp_token_here
+SERVER_IMAGE=ghcr.io/yourusername/ravenest-server
+SERVER_REGISTRY=ghcr.io
+SERVER_REGISTRY_USERNAME=yourusername
+SERVER_REGISTRY_TOKEN=ghp_xxxxxxxxxxxxxxxx  # PAT with write:packages
 ```
 
-#### Docker Hub
-```bash
-# Create Access Token at: https://hub.docker.com/settings/security
-# Format: yourusername:your_access_token_here
+Image paths must be lowercase, so use a lowercase package name such as
+`ravenest-server` even if the GitHub repository uses capitals.
+
+On GHCR, the first push creates a **private** package. Set it public once
+(package settings → Change visibility → Public) so the deploy host can pull
+anonymously.
+
+#### Legacy `.docker_repo` / `.docker_creds`
+
+`build_release.sh` still reads these files:
+
+```text
+.docker_repo:  ghcr.io/yourusername/ravenest-server
+.docker_creds: yourusername:ghp_xxxxxxxxxxxxxxxx
 ```
 
-#### Tagging Best Practices
+Prefer `./install.sh --image-only`; it uses the `.deploy` keys above.
 
-- **Semantic versioning**: `v1.0.0`, `v1.0.1`, `v2.0.0`
-- **Branch-based**: `dev`, `staging`, `main`
-- **Date-based**: `2025-02-04`, `2025-02-04T19-09-14`
+#### Tagging
+
+`--image-only` derives an immutable `<UTC timestamp>-<git sha>[-dirty]` tag and
+prints it. Set `SERVER_IMAGE_TAG` explicitly to pin a tag across runs.
 
 Example usage:
+
 ```bash
-./build_release.sh v1.0.0      # Pushes to myregistry/ravenest-server:v1.0.0
-./build_release.sh              # Pushes to myregistry/ravenest-server:20250204T190914
+./install.sh --image-only       # Pushes ghcr.io/yourusername/ravenest-server:<tag>
+./build_release.sh v1.0.0       # Legacy: pushes .docker_repo:v1.0.0
+```
+
+Both `build_server.sh` and `build_release.sh` build the multi-stage
+`server/Dockerfile` through `tools/build_server_image.sh`. The production image
+runs as uid `10001`, expects game content at `/app/game`, and writes uploads to
+`/app/uploads`.
+
+Production deployment is normally done with `install.sh`, which can build/push
+the image and write the compose files:
+
+```bash
+# .deploy — bundled PostgreSQL (default)
+SERVER_DEPLOY_MODE=docker
+SERVER_DB_MODE=bundled
+SERVER_DB_USER=ravenest
+SERVER_DB_PASSWORD=...       # generate once: openssl rand -hex 24
+SERVER_IMAGE=ghcr.io/yourusername/ravenest-server
+SERVER_REGISTRY_USERNAME=yourusername
+SERVER_REGISTRY_TOKEN=...    # PAT with write:packages
+```
+
+To publish the server image without deploying content or configuration:
+
+```bash
+./install.sh --image-only
+```
+
+The image path must be lowercase. On GHCR, the first push creates a private
+package; set it public once (package settings → Change visibility → Public) so
+the deploy host can pull anonymously. Game content is not in the image: compose
+mounts `${SERVER_PATH}/game` read-only at `/app/game`, so configs can be copied
+separately.
+
+`deploy/docker-compose.yml` is the app-only base. With
+`SERVER_DB_MODE=bundled`, `install.sh` also writes
+`deploy/docker-compose.bundled.yml` and a `db-init` service that creates the four
+databases; PostgreSQL runs in the same stack with no published port and its data
+in the `ravenest_pgdata` volume.
+
+For managed or host-managed PostgreSQL, set `SERVER_DB_MODE=external` and supply
+the four `SERVER_GAME_DB_URL` / `SERVER_CHAT_DB_URL` / `SERVER_STAFF_DB_URL` /
+`SERVER_INVITES_DB_URL` values. `systemd` app deployments must use `external`.
+
+Local development can use the `app` profile in the root `docker-compose.yml`:
+
+```bash
+RAVENEST_DB_PASSWORD=ravenest_dev docker compose --profile app up -d --build
 ```
 
 ## Nginx Configuration

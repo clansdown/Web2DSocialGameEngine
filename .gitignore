@@ -71,8 +71,21 @@ push_to_production.sh
 # Private publishing configuration (never commit)
 /.deploy
 
+# Real runtime env created from ravenest.env.example (contains DB URLs)
+/ravenest.env
+
+# Local avatar uploads when the server runs from the repo root
+/uploads/
+
+# Bundled-mode compose env contains RAVENEST_DB_PASSWORD
+/compose.env
+/deploy/compose.env
+
 # Local generation statistics
 .commit/
+
+# macOS metadata
+.DS_Store
 
 # Python files
 __pycache__/

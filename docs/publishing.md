@@ -157,7 +157,28 @@ values are later used as literal paths.
 | `SERVER_SSH_KEY` | server | optional | no | private key path; omit to use the SSH agent/config |
 | `SERVER_CORS_ORIGINS` | server | optional override | no | comma-separated browser origins; empty uses `PUBLIC_SITE_ORIGIN` |
 | `SERVER_ENV_PATH` | server | optional | no | default `${SERVER_PATH}/ravenest.env`; must be outside `game/` |
-| `SERVER_RESTART_CMD` | server | optional | no | e.g. `sudo systemctl restart ravenest` |
+| `SERVER_RESTART_CMD` | server | optional | no | e.g. `sudo systemctl restart ravenest`; Docker mode defaults to `docker compose up -d` |
+| `SERVER_DEPLOY_MODE` | server | optional | no | `docker` (default) or `systemd` |
+| `SERVER_DB_MODE` | server | optional | no | `bundled` (default) or `external` |
+| `SERVER_DB_USER` | server | bundled | no | default `ravenest`; PostgreSQL identifier |
+| `SERVER_DB_PASSWORD` | server | bundled | **yes** | URL-safe password, e.g. `openssl rand -hex 24` |
+| `SERVER_DB_INIT_PATH` | server | optional | no | default `${SERVER_PATH}/postgres/init` |
+| `SERVER_COMPOSE_OVERLAY_PATH` | server | optional | no | default `${SERVER_PATH}/docker-compose.bundled.yml` |
+| `SERVER_GAME_DB_URL` | server | external | **yes** | `postgresql://…/ravenest_game` |
+| `SERVER_CHAT_DB_URL` | server | external | **yes** | `postgresql://…/ravenest_chat` |
+| `SERVER_STAFF_DB_URL` | server | external | **yes** | `postgresql://…/ravenest_staff` |
+| `SERVER_INVITES_DB_URL` | server | external | **yes** | `postgresql://…/ravenest_invites` |
+| `SERVER_IMAGE` | server | Docker mode | **yes** | lowercase full repository path, e.g. `ghcr.io/org/ravenest-server` |
+| `SERVER_IMAGE_TAG` | server | optional | no | default `<UTC timestamp>-<git sha>[-dirty]`; `--image-only` prints the pushed value |
+| `SERVER_REGISTRY` | server | optional | no | defaults to the first segment of `SERVER_IMAGE` |
+| `SERVER_REGISTRY_USERNAME` | server | Docker push | if logging in | falls back to `.docker_creds`; omit to use an existing `docker login` |
+| `SERVER_REGISTRY_TOKEN` | server | Docker push | if logging in | falls back to `.docker_creds`; PAT with `write:packages` for GHCR |
+| `SERVER_PLATFORM` | server | optional | no | `linux/amd64` (default) or `linux/arm64` |
+| `SERVER_COMPOSE_PATH` | server | optional | no | default `${SERVER_PATH}/docker-compose.yml` |
+| `SERVER_COMPOSE_ENV_PATH` | server | optional | no | default `${SERVER_PATH}/compose.env` |
+| `SERVER_UPLOADS_PATH` | server | optional | no | default `${SERVER_PATH}/uploads` |
+| `SERVER_UPLOADS_OWNER` | server | optional | no | owner for the uploads bind mount; image runs as `10001:10001` |
+| `SERVER_ALLOW_LOOPBACK_DB_URL` | server | optional | no | `1` silences the Docker loopback warning |
 | `SERVER_AVATAR_STORAGE` | server | optional | no | `local` (default) or `r2` |
 | `AVATAR_R2_ACCESS_KEY_ID` | server | avatar r2 | **yes** | separate scoped R2 token access key |
 | `AVATAR_R2_SECRET_ACCESS_KEY` | server | avatar r2 | **yes** | separate scoped R2 token secret |
@@ -186,7 +207,10 @@ Security notes:
 
 - `chmod 600 .deploy`; `install.sh` warns if the mode is looser.
 - `.deploy` is sourced, so it must contain assignments, not arbitrary commands.
-- `install.sh` never uses `set -x` and never prints credential values.
+- `install.sh` never uses `set -x` and never prints credential values. The four
+  `SERVER_*_DB_URL` values and registry tokens are secrets.
+- The generated runtime env file is mode `600`; `compose.env` is mode `600`;
+  the compose file itself is mode `644` and contains no secrets.
 - Do not put `.deploy` in the site repo or the ops overlay.
 
 ## 5. First-time setup
@@ -198,7 +222,12 @@ Checklist:
 - [ ] R2 bucket + `assets.example.com` custom domain + API token;
 - [ ] R2 CORS policy for the Pages origin;
 - [ ] `cloudflared` tunnel + `api.example.com` public hostname;
-- [ ] API service reads `SERVER_ENV_PATH` and allows `RAVENEST_CORS_ORIGINS`;
+- [ ] API service reads `SERVER_ENV_PATH`, including all four
+      `RAVENEST_*_DB_URL` values, and allows `RAVENEST_CORS_ORIGINS`;
+- [ ] for Docker mode: registry access, `SERVER_IMAGE`, and a writable
+      `${SERVER_UPLOADS_PATH}` owned by `10001:10001`;
+- [ ] choose `SERVER_DB_MODE`: `bundled` (generate `SERVER_DB_PASSWORD`) or
+      `external` (create the four databases and URLs);
 - [ ] Cache Rules (bypass API host, cache assets host at 1h);
 - [ ] `.deploy` filled in and `chmod 600`;
 - [ ] `DRY_RUN=1 ./install.sh`;
@@ -452,9 +481,16 @@ The order is fixed:
 2. **R2** — public art is uploaded before the shell that references it.
 3. **Pages** — `client/dist` is synced to the site repo, the overlay is copied,
    then the site repo is committed and pushed.
-4. **server content** — `game/` is mirrored to the API server.
-5. **server env** — `RAVENEST_CORS_ORIGINS` is written to the server env file.
-6. **restart** — `SERVER_RESTART_CMD` runs after an env change, if configured.
+4. **server image** — in Docker mode, `server/Dockerfile` is built and the
+   immutable image tag is pushed to the registry.
+5. **server content** — `game/` is mirrored to the API server.
+6. **server env** — the four `RAVENEST_*_DB_URL` values (supplied or derived),
+   CORS, and avatar variables are written to the server env file.
+7. **compose files** — in Docker mode, `docker-compose.yml`, the bundled
+   Postgres overlay/init SQL when selected, and `compose.env` are written next
+   to the content.
+8. **restart** — `SERVER_RESTART_CMD` runs after a change, if configured. In
+   Docker mode it defaults to `docker compose up -d`.
 
 ### Options
 
@@ -465,6 +501,7 @@ The order is fixed:
 | `--skip-r2` | Skip the R2 stage even if `R2_BUCKET` is set. |
 | `--skip-pages` | Skip the Pages stage even if `SITE_REPO` is set. |
 | `--skip-server` | Skip the server content, env, and restart stages even if `SERVER_HOST` is set. |
+| `--image-only` | Build and push `SERVER_IMAGE:<tag>`, then exit. Requires no `SERVER_HOST`, `SERVER_PATH`, database, CORS, client, or game configuration. |
 | `--help` | Show usage. |
 
 ### Build stage
@@ -578,12 +615,20 @@ Run `DRY_RUN=1 ./install.sh` before the first real mirror.
 
 ```bash
 # Generated by install.sh from .deploy; do not edit.
-RAVENEST_CORS_ORIGINS=https://app.example.com
 RAVENEST_GAME_DB_URL=postgresql://...
 RAVENEST_CHAT_DB_URL=postgresql://...
 RAVENEST_STAFF_DB_URL=postgresql://...
 RAVENEST_INVITES_DB_URL=postgresql://...
+RAVENEST_CORS_ORIGINS=https://app.example.com
+RAVENEST_AVATAR_STORAGE=local
 ```
+
+With `SERVER_DB_MODE=external`, all four database URLs are required and
+passwords with URL-reserved characters must be percent-encoded. With
+`SERVER_DB_MODE=bundled`, `install.sh` derives the same four URLs from
+`SERVER_DB_USER`/`SERVER_DB_PASSWORD` and the compose service name `postgres`.
+The values are never printed; a dry run only says “database URLs configured
+(redacted)”.
 
 It writes a local mode-`600` temp file, compares its SHA-256 with the remote
 file, and skips the write/restart when unchanged. On a change it:
@@ -596,7 +641,8 @@ file, and skips the write/restart when unchanged. On a change it:
 If the restart fails, it restores `.previous` and retries the restart. If no
 restart command is configured, it writes the file and prints a gentle reminder.
 
-This stage does **not** deploy the server binary. Binary rollout is separate.
+This stage does **not** deploy the server binary. In Docker mode the image and
+compose stages below do; otherwise binary rollout is separate.
 
 ### Avatar storage
 
@@ -647,11 +693,200 @@ age-isolation audit/fix is complete (server-enforced separation of minors from
 adult messages, discovery, names, and avatars). The R2 path is not gated in code;
 do not enable `SERVER_AVATAR_STORAGE=r2` in production before that sign-off.
 
+### Docker server deployment
+
+`SERVER_DEPLOY_MODE=docker` is the default. It adds an image stage and a compose
+stage. `SERVER_DB_MODE` selects the database topology:
+
+- `bundled` (default) — PostgreSQL runs in the same compose stack.
+- `external` — the app runs in compose but PostgreSQL is managed elsewhere.
+
+Existing host-managed/external installs must set `SERVER_DB_MODE=external`
+explicitly; otherwise the default bundled mode rejects the leftover
+`SERVER_*_DB_URL` values.
+
+```bash
+SERVER_DEPLOY_MODE=docker
+SERVER_DB_MODE=bundled
+SERVER_DB_USER=ravenest
+SERVER_DB_PASSWORD=...       # openssl rand -hex 24
+SERVER_IMAGE=ghcr.io/example/ravenest-server
+SERVER_IMAGE_TAG=            # empty: <UTC timestamp>-<git sha>[-dirty]
+SERVER_REGISTRY=ghcr.io
+SERVER_REGISTRY_USERNAME=...
+SERVER_REGISTRY_TOKEN=...
+SERVER_PLATFORM=linux/amd64
+```
+
+For compatibility, an empty `SERVER_IMAGE` falls back to `.docker_repo`, and
+empty `SERVER_REGISTRY_USERNAME`/`SERVER_REGISTRY_TOKEN` fall back to
+`.docker_creds` (`username:token`). The `.deploy` values always win.
+
+The image is built from `server/Dockerfile` (multi-stage, non-root uid `10001`)
+and pushed as `<SERVER_IMAGE>:<SERVER_IMAGE_TAG>`. `install.sh` writes:
+
+- `${SERVER_COMPOSE_PATH}` (`docker-compose.yml`, mode `644`, app only);
+- `${SERVER_COMPOSE_OVERLAY_PATH}` (`docker-compose.bundled.yml`, mode `644`,
+  bundled only);
+- `${SERVER_DB_INIT_PATH}/01-databases.sql` (mode `644`, bundled only);
+- `${SERVER_COMPOSE_ENV_PATH}` (`compose.env`, mode `600`) with
+  `RAVENEST_IMAGE`, the pushed image digest when available,
+  `RAVENEST_ENV_FILE`, `RAVENEST_GAME_PATH`, `RAVENEST_UPLOADS_PATH`, and — for
+  bundled — `RAVENEST_DB_USER`, `RAVENEST_DB_PASSWORD`, and
+  `RAVENEST_DB_INIT_PATH`;
+- `${SERVER_ENV_PATH}` (the runtime env above).
+
+#### Publishing the image only
+
+Use `--image-only` to build and push the server image without mirroring game
+content, writing server config, or restarting anything:
+
+```bash
+./install.sh --image-only
+```
+
+It reads only the image/registry keys: `SERVER_IMAGE` is required;
+`SERVER_IMAGE_TAG` is derived when empty; `SERVER_REGISTRY`, the registry
+credentials, and `SERVER_PLATFORM` are optional/defaulted. It does not require
+`SERVER_HOST`, `SERVER_PATH`, a database mode, public origins, the client
+checkout, or `game/`.
+
+The image contains the compiled server only. Game content remains a separate
+mount: compose maps `${SERVER_PATH}/game` to `/app/game` read-only. To deploy
+content manually:
+
+```bash
+rsync -a game/ user@server:/srv/ravenest/game/
+```
+
+`--image-only` prints the pushed tag:
+
+```text
+SERVER_IMAGE_TAG=20261103T120000Z-a1b2c3d
+```
+
+A later full `install.sh` always rebuilds and repushes the image. Pinning the
+printed tag in `.deploy` keeps the generated `compose.env` on that tag; to use
+the image-only push without rebuilding, deploy manually with `docker compose`
+(or add a future `--skip-image` path).
+
+For GitHub Container Registry (GHCR):
+
+```bash
+SERVER_IMAGE=ghcr.io/<owner>/<lowercase-package>
+SERVER_REGISTRY=ghcr.io
+SERVER_REGISTRY_USERNAME=<github-username>
+SERVER_REGISTRY_TOKEN=<PAT with write:packages>
+```
+
+Image paths must be lowercase, so the package name does not have to match the
+GitHub repository name. The first push creates a **private** GHCR package by
+default. Set it public once in GitHub:
+
+> Package page → Package settings → Change visibility → Public
+
+Once public, the deploy host pulls anonymously; no server-side `docker login`
+is required. A private package needs a server-side login or a pre-authenticated
+Docker daemon.
+
+#### Bundled PostgreSQL
+
+The overlay runs `postgres:16-alpine` and an idempotent `db-init` one-shot
+service. `db-init` creates all four databases on every `up`, so it also handles
+an existing data volume. The app waits for `db-init` to complete successfully.
+
+The database is internal to the compose network; no host port is published. The
+app receives derived URLs:
+
+```bash
+postgresql://ravenest:<password>@postgres:5432/ravenest_game
+postgresql://ravenest:<password>@postgres:5432/ravenest_chat
+postgresql://ravenest:<password>@postgres:5432/ravenest_staff
+postgresql://ravenest:<password>@postgres:5432/ravenest_invites
+```
+
+`SERVER_DB_PASSWORD` must use URL-safe characters because the raw value is used
+by PostgreSQL and embedded in those URLs. `openssl rand -hex 24` is the
+recommended generator. `db-init` also resets the database role password to the
+current `.deploy` value on every `up`, so rotating the password does not strand
+the app.
+
+Data lives in the `ravenest_pgdata` Docker volume. Back it up with:
+
+```bash
+cd "$SERVER_PATH"
+docker compose --env-file compose.env \
+  -f docker-compose.yml -f docker-compose.bundled.yml \
+  exec -T postgres pg_dumpall -U ravenest > "backup-$(date -u +%Y%m%dT%H%M%SZ).sql"
+```
+
+Restore into an empty stack with:
+
+```bash
+docker compose --env-file compose.env \
+  -f docker-compose.yml -f docker-compose.bundled.yml \
+  exec -T postgres psql -U ravenest -d postgres < backup.sql
+```
+
+#### External PostgreSQL
+
+With `SERVER_DB_MODE=external`, only the app compose file is used. PostgreSQL
+must already have the four databases and a role with access. Supply all four
+`SERVER_*_DB_URL` values; credentials are embedded in the URLs and may be
+percent-encoded. For managed databases, include the provider's TLS setting, for
+example `?sslmode=require`.
+
+Do not point external Docker DB URLs at `127.0.0.1`: inside the bridge network
+that is the app container. Use the host's LAN address, a managed hostname, or a
+compose service name.
+
+#### Restart and rollback
+
+If `SERVER_RESTART_CMD` is empty, Docker mode defaults it to:
+
+```bash
+# bundled
+cd "$SERVER_PATH" && docker compose --env-file compose.env \
+  -f docker-compose.yml -f docker-compose.bundled.yml up -d --remove-orphans
+
+# external
+cd "$SERVER_PATH" && docker compose --env-file compose.env \
+  -f docker-compose.yml up -d --remove-orphans
+```
+
+The restart runs when the runtime env, either compose file, the database init
+SQL, or `compose.env` changes. A new image tag/digest in `compose.env`
+therefore redeploys even when the runtime env is byte-identical.
+
+The app container mounts `${SERVER_PATH}/game` read-only and
+`${SERVER_UPLOADS_PATH}` read-write. The image runs as `10001:10001`; if the SSH
+deploy user is root, `install.sh` chowns the uploads directory automatically.
+Otherwise set `SERVER_UPLOADS_OWNER=10001:10001` or chown it manually.
+
+Rollback: restore `${SERVER_COMPOSE_ENV_PATH}.previous`, then run the applicable
+compose command; or rerun `install.sh` with the previous `SERVER_IMAGE_TAG`.
+
+Switching `SERVER_DB_MODE` does **not** migrate data. Dump the old database and
+restore it into the new one before changing modes. When switching away from
+bundled, bring the old stack down first so `postgres` is not left running:
+
+```bash
+cd "$SERVER_PATH"
+docker compose --env-file compose.env \
+  -f docker-compose.yml -f docker-compose.bundled.yml down
+```
+
+`docker build` needs the server source context but not `game/`. The Dockerfile
+uses Ubuntu 24.04, so the build host must be able to reach the distro and CMake
+`FetchContent` sources during the image build.
+
 ### Preflight checks
 
 Before building, `install.sh`:
 
-- requires `client/SimpleGame/ui`;
+- requires `client/SimpleGame/ui` for a normal publish;
+- in `--image-only` mode, requires only the image/registry keys, rejects an
+  uppercase `SERVER_IMAGE`, and skips the client/public-origin checks;
 - refuses to run if `.deploy`, `backup.sh`, or `push_to_production.sh` is tracked
   by git;
 - refuses to run if `server/build*` or `game_balance_analyzer/build*` is tracked;
@@ -663,6 +898,17 @@ Before building, `install.sh`:
   build is missing the API or asset origin;
 - validates `SERVER_CORS_ORIGINS` (or `PUBLIC_SITE_ORIGIN`) and
   `SERVER_ENV_PATH` when the server stage is enabled;
+- resolves `SERVER_DB_MODE` (`bundled` default, `external`) and rejects
+  `systemd` + `bundled`;
+- for `external`, requires all four `SERVER_*_DB_URL` values, checks the
+  `postgresql://` / `postgres://` scheme, and rejects whitespace/quoting
+  characters;
+- for `bundled`, requires `SERVER_DB_USER`/`SERVER_DB_PASSWORD`, checks the
+  password is URL-safe, rejects any `SERVER_*_DB_URL`, and derives the four
+  URLs;
+- in Docker mode, validates `SERVER_IMAGE`, the image tag, the registry, the
+  compose paths, and the selected local compose files; warns when an external
+  DB URL points at loopback;
 - when `SERVER_AVATAR_STORAGE=r2`, validates the R2 endpoint/bucket/separate
   token, the public avatar base origin, and the object prefix;
 - warns about tracked files larger than 50 MiB and refuses to run if any tracked
@@ -692,8 +938,12 @@ Cache** on the affected URL or prefix if an asset must change immediately.
 - **Content target:** `${SERVER_PATH}/game/`, the server's `--content` directory.
 - **Excludes:** `*.db`, `*.xcf`, `.git/`, `uploads/`, `*.md`, `.gitkeep`.
 - **Runtime env:** `${SERVER_ENV_PATH}` (default `${SERVER_PATH}/ravenest.env`),
-  containing `RAVENEST_CORS_ORIGINS` and the avatar-storage variables above.
-- **Restart:** optional `SERVER_RESTART_CMD`.
+  containing the four `RAVENEST_*_DB_URL` values, `RAVENEST_CORS_ORIGINS`, and
+  the avatar-storage variables above.
+- **Compose env:** Docker mode also writes `${SERVER_COMPOSE_ENV_PATH}` with the
+  image tag and mount paths.
+- **Restart:** optional `SERVER_RESTART_CMD`; Docker mode defaults it to
+  `docker compose up -d`.
 
 Why the server still needs a full `game/` copy:
 
@@ -820,7 +1070,30 @@ ssh "$SERVER_HOST" ls -d \
   "$SERVER_PATH/game/images/retinue/headshots"
 
 ssh "$SERVER_HOST" cat "$SERVER_ENV_PATH"
+# RAVENEST_GAME_DB_URL=postgresql://...
+# RAVENEST_CHAT_DB_URL=postgresql://...
+# RAVENEST_STAFF_DB_URL=postgresql://...
+# RAVENEST_INVITES_DB_URL=postgresql://...
 # RAVENEST_CORS_ORIGINS=https://app.example.com
+```
+
+In Docker mode with `SERVER_DB_MODE=external`:
+
+```bash
+ssh "$SERVER_HOST" \
+  "cd '$SERVER_PATH' && docker compose --env-file compose.env -f docker-compose.yml ps"
+ssh "$SERVER_HOST" \
+  "cd '$SERVER_PATH' && docker compose --env-file compose.env -f docker-compose.yml logs --tail=100 ravenest"
+```
+
+With `SERVER_DB_MODE=bundled`, add `-f docker-compose.bundled.yml` and check
+that `postgres` is healthy and `db-init` exited `0`:
+
+```bash
+ssh "$SERVER_HOST" \
+  "cd '$SERVER_PATH' && docker compose --env-file compose.env -f docker-compose.yml -f docker-compose.bundled.yml ps"
+ssh "$SERVER_HOST" \
+  "cd '$SERVER_PATH' && docker compose --env-file compose.env -f docker-compose.yml -f docker-compose.bundled.yml logs --tail=100 postgres db-init ravenest"
 ```
 
 Removed art must be gone from the remote tree (the mirror uses `--delete`).
@@ -863,6 +1136,23 @@ stage. `--delete` makes the next publish authoritative.
 Restore `${SERVER_ENV_PATH}.previous` and restart the service. `install.sh`
 creates that backup before each env change.
 
+**Docker image**
+
+Rerun `install.sh` with the previous `SERVER_IMAGE_TAG`, or restore
+`${SERVER_COMPOSE_ENV_PATH}.previous` and run the applicable compose command:
+
+```bash
+cd "$SERVER_PATH"
+# external
+docker compose --env-file compose.env -f docker-compose.yml up -d --remove-orphans
+# bundled
+docker compose --env-file compose.env \
+  -f docker-compose.yml -f docker-compose.bundled.yml up -d --remove-orphans
+```
+
+The previous image tag must still exist in the registry (tags are immutable;
+do not overwrite them).
+
 **Client public origins**
 
 Changing `PUBLIC_API_ORIGIN`, `PUBLIC_ASSETS_ORIGIN`, or `PUBLIC_WS_ORIGIN`
@@ -888,7 +1178,21 @@ published site is always recoverable.
 | `install.sh` says `PUBLIC_API_ORIGIN is required` | Missing build origin | Add it to `.deploy`; this is intentional for split-host Pages |
 | `client/dist public origins do not match .deploy` | `--skip-build` reused a differently configured build | Re-run without `--skip-build` |
 | `SERVER_CORS_ORIGINS or PUBLIC_SITE_ORIGIN is required` | Server enabled without an allowlist | Set `SERVER_CORS_ORIGINS` or `PUBLIC_SITE_ORIGIN` |
-| `install.sh` says `no publish destination configured` | `.deploy` missing or has no primary key | Create `.deploy` from `.deploy.example` |
+| `SERVER_GAME_DB_URL is not set` | `SERVER_DB_MODE=external` without the four DB URLs | Add all four `SERVER_*_DB_URL` values to `.deploy` |
+| `SERVER_DB_PASSWORD is required` | Bundled mode without a password | Set `SERVER_DB_PASSWORD` (`openssl rand -hex 24`) |
+| `SERVER_*_DB_URL values are set while SERVER_DB_MODE=bundled` | Leftover external URLs | Set `SERVER_DB_MODE=external` or clear the URLs |
+| `SERVER_DB_MODE=bundled requires SERVER_DEPLOY_MODE=docker` | systemd app with bundled DB | Use `external`, or switch the app to Docker |
+| `db-init` exits non-zero | PostgreSQL not healthy, wrong password, or missing init SQL | Check `postgres`/`db-init` logs; confirm `SERVER_DB_INIT_PATH/01-databases.sql` exists |
+| Bundled app restarts before DB is ready | `db-init` dependency not merged | Confirm both `-f` compose files are used |
+| `SERVER_IMAGE must be a full repository path` | Docker mode without a registry/repository | Set `SERVER_IMAGE=ghcr.io/org/name` |
+| `SERVER_IMAGE must be lowercase` | GHCR/repository path contains uppercase | Use a lowercase package path, e.g. `ghcr.io/org/ravenest-server` |
+| `no image repository configured` | `--image-only` without `SERVER_IMAGE` | Set `SERVER_IMAGE` in `.deploy` |
+| `--image-only requires SERVER_DEPLOY_MODE=docker` | systemd mode selected | Remove `SERVER_DEPLOY_MODE=systemd` or use a full Docker deploy |
+| `docker login failed` | Missing/expired registry token | Set `SERVER_REGISTRY_USERNAME`/`SERVER_REGISTRY_TOKEN` or `.docker_creds` |
+| DB URL points at loopback in Docker mode | `127.0.0.1` is the app container, not the host | Use the host LAN address, managed hostname, or compose service name |
+| Container cannot write uploads | `${SERVER_UPLOADS_PATH}` is not owned by `10001:10001` | Set `SERVER_UPLOADS_OWNER=10001:10001` or chown it |
+| `docker compose up` cannot find `RAVENEST_IMAGE` | `compose.env` missing or wrong path | Check `SERVER_COMPOSE_ENV_PATH` and the `docker compose --env-file` argument |
+| `install.sh` says `no publish destination configured` | `.deploy` missing or has no primary key | Create `.deploy` from `.deploy.example`; `--image-only` requires `SERVER_IMAGE` |
 | `.deploy` not loaded | File missing, unreadable, or a shell syntax error | Confirm it is at the engine root; `chmod 600 .deploy`; check with `bash -n .deploy` |
 | `npm ci` fails | Missing lockfile or `client/SimpleGame` | Restore `client/package-lock.json`; clone SimpleGame into `client/SimpleGame` |
 | Site repo push fails | No remote, no credentials, or no permission | Add a remote / configure credentials; `install.sh` sets the upstream on the first push |
@@ -910,8 +1214,9 @@ published site is always recoverable.
   `assets.example.com` custom domain.
 - `api.example.com` is a public API entry point. CORS is a browser policy, not
   authentication; the API still requires explicit JSON/query credentials.
-- The server env file contains only a public origin allowlist, not secrets. It
-  is still written mode `600`.
+- The server env file contains the four database URLs (with credentials) and,
+  for bundled mode, the compose stack also stores the database password in
+  `compose.env`. Both files are written mode `600`.
 - The site repo is private; the engine repo contains no deployment values.
 - Rotate the R2 API token if it is exposed; update `.deploy` and re-run.
 - If `.deploy` was ever committed, rotate the exposed credentials and remove

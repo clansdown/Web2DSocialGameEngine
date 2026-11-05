@@ -42,6 +42,70 @@ PUBLIC_WS_ORIGIN="wss://api.example.com"
 SERVER_HOST=""
 SERVER_PATH=""
 
+# "docker" (default: build/push the server image, write compose files, restart
+# compose) or "systemd" (write the env file and run SERVER_RESTART_CMD).
+SERVER_DEPLOY_MODE="docker"
+
+# PostgreSQL topology:
+#   bundled  (default) - Docker Compose runs PostgreSQL with the server.
+#   external           - use the four SERVER_*_DB_URL values below.
+# bundled requires SERVER_DEPLOY_MODE=docker. For a host/systemd app with a
+# container or managed database, use external.
+SERVER_DB_MODE="bundled"
+SERVER_DB_USER="ravenest"
+# Required when SERVER_DB_MODE=bundled. Use URL-safe characters only, e.g.
+#   openssl rand -hex 24
+# The raw password is used by PostgreSQL and embedded in the generated URLs.
+SERVER_DB_PASSWORD=""
+# Defaults are relative to SERVER_PATH.
+SERVER_DB_INIT_PATH=""
+SERVER_COMPOSE_OVERLAY_PATH=""
+
+# External/managed PostgreSQL only (SERVER_DB_MODE=external). The four URLs are
+# written to SERVER_ENV_PATH; the server fails closed if any is missing.
+# Percent-encode special characters in the password. With a Docker app, do not
+# point these at 127.0.0.1: inside the bridge network that is the app container.
+# Example:
+#   postgresql://ravenest:change-me@db.example.net:5432/ravenest_game?sslmode=require
+SERVER_GAME_DB_URL=""
+SERVER_CHAT_DB_URL=""
+SERVER_STAFF_DB_URL=""
+SERVER_INVITES_DB_URL=""
+
+# --- Docker server image (SERVER_DEPLOY_MODE=docker) -----------------------
+# Full repository path, without a tag. install.sh builds and pushes
+# <SERVER_IMAGE>:<SERVER_IMAGE_TAG>, then writes the tag into compose.env.
+# The path must be lowercase. For GitHub Container Registry use
+#   ghcr.io/<owner>/<lowercase-package>
+# e.g. ghcr.io/example/ravenest-server (the package name does not have to match
+# the GitHub repository name). Publish only the image with:
+#   ./install.sh --image-only
+SERVER_IMAGE=""
+# Empty derives an immutable tag: <UTC timestamp>-<git sha>[-dirty].
+# Set it explicitly to make reruns idempotent or to roll back to a known tag.
+# --image-only prints the pushed tag as SERVER_IMAGE_TAG=<tag>; set it here to
+# keep a later full deploy on that tag (a full deploy still rebuilds/repushes)
+# or use it in a manual compose deployment.
+SERVER_IMAGE_TAG=""
+# Registry host used for docker login; defaults to the first path segment of
+# SERVER_IMAGE (e.g. ghcr.io).
+SERVER_REGISTRY=""
+# Push credentials. For GHCR, use your GitHub username and a PAT with
+# write:packages. Public image pulls need no credentials on the server.
+SERVER_REGISTRY_USERNAME=""
+SERVER_REGISTRY_TOKEN=""
+# Target architecture of the API host. Use linux/arm64 for ARM servers.
+SERVER_PLATFORM="linux/amd64"
+# Defaults are relative to SERVER_PATH.
+SERVER_COMPOSE_PATH=""
+SERVER_COMPOSE_ENV_PATH=""
+SERVER_UPLOADS_PATH=""
+# Optional owner for the uploads bind mount (the image runs as 10001:10001).
+# install.sh attempts this automatically when the SSH user is root.
+SERVER_UPLOADS_OWNER=""
+# Set to 1 to silence the loopback-DB-URL warning in Docker mode.
+SERVER_ALLOW_LOOPBACK_DB_URL="0"
+
 # Optional private key for the content mirror and env write. Use $HOME, not ~
 # (the value is used as a literal path).
 SERVER_SSH_KEY=""

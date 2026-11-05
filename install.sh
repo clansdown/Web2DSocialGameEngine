@@ -8,9 +8,12 @@
 #
 # Usage:
 #   ./install.sh [--dry-run] [--skip-build] [--skip-r2] [--skip-pages] [--skip-server]
+#   ./install.sh --image-only [--dry-run]
 #
 # Publish order is build -> R2 -> Pages -> API server. R2 goes before Pages so the
 # new shell never references an image that has not been uploaded yet.
+# --image-only stops after building and pushing the server image; it does not
+# require SERVER_HOST or any client/game configuration.
 #
 set -euo pipefail
 
@@ -35,12 +38,17 @@ Stages (run in this order):
   build   npm ci && npm run build -> client/dist
   r2      game/images, game/sounds, game/music -> R2 bucket
   pages   client/dist + overlay -> private Pages site repo, then commit and push
-  server  game/ -> API server content mirror (rsync --delete), then write
-          RAVENEST_CORS_ORIGINS + avatar-storage env and restart if configured
+  server  build/push the Docker image (when SERVER_DEPLOY_MODE=docker),
+          mirror game/ -> API server content, write the runtime env, then
+          write/refresh the compose files and restart if configured
 
 Options:
+  --image-only    Build and push SERVER_IMAGE:<tag>, then exit. Requires no
+                  SERVER_HOST, SERVER_PATH, database, CORS, client, or game
+                  configuration; only the image/registry keys.
   --dry-run       Print publish actions without writing to R2, the site repo,
-                  or the API server. The local client build still runs.
+                  the API server, or the registry. The local client build still
+                  runs unless --image-only or --skip-build is given.
   --skip-build    Reuse an existing client/dist (it must contain index.html).
   --skip-r2       Skip the R2 upload stage.
   --skip-pages    Skip the Pages site-repo stage.
@@ -51,9 +59,22 @@ Environment:
   DRY_RUN=1       Same as --dry-run.
 
 Destinations are enabled by setting their keys in .deploy: SITE_REPO (Pages),
-R2_BUCKET (R2), and SERVER_HOST (API server). Public origins and the server CORS
-allowlist also come from .deploy. Each enabled stage validates its own keys.
-R2 credentials are exported only for the aws commands and are never printed.
+R2_BUCKET (R2), and SERVER_HOST (API server). Public origins, the server CORS
+allowlist, and the database settings also come from .deploy. Each enabled stage
+validates its own keys. R2 and registry credentials are exported only for the
+relevant command and are never printed.
+
+SERVER_DEPLOY_MODE=docker (default) builds/pushes SERVER_IMAGE and writes
+SERVER_PATH/docker-compose.yml + compose.env. SERVER_DB_MODE=bundled (default)
+also writes docker-compose.bundled.yml and an idempotent db-init SQL, running
+PostgreSQL in the same compose stack. SERVER_DB_MODE=external uses the four
+SERVER_*_DB_URL values instead. The systemd mode only writes the runtime env and
+runs SERVER_RESTART_CMD; it requires SERVER_DB_MODE=external.
+
+--image-only is useful for publishing the server image to a registry (for
+example ghcr.io) before or independently of a server deployment. It prints the
+pushed tag as SERVER_IMAGE_TAG=<tag>; set it in .deploy so a later full deploy
+or manual compose deployment uses the same tag.
 EOF
 }
 
@@ -72,6 +93,7 @@ SKIP_BUILD=0
 SKIP_R2=0
 SKIP_PAGES=0
 SKIP_SERVER=0
+IMAGE_ONLY=0
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -111,6 +133,27 @@ default_config() {
     SERVER_CORS_ORIGINS="${SERVER_CORS_ORIGINS:-}"
     SERVER_ENV_PATH="${SERVER_ENV_PATH:-}"
     SERVER_RESTART_CMD="${SERVER_RESTART_CMD:-}"
+    SERVER_DEPLOY_MODE="${SERVER_DEPLOY_MODE:-}"
+    SERVER_DB_MODE="${SERVER_DB_MODE:-}"
+    SERVER_DB_USER="${SERVER_DB_USER:-ravenest}"
+    SERVER_DB_PASSWORD="${SERVER_DB_PASSWORD:-}"
+    SERVER_DB_INIT_PATH="${SERVER_DB_INIT_PATH:-}"
+    SERVER_COMPOSE_OVERLAY_PATH="${SERVER_COMPOSE_OVERLAY_PATH:-}"
+    SERVER_GAME_DB_URL="${SERVER_GAME_DB_URL:-}"
+    SERVER_CHAT_DB_URL="${SERVER_CHAT_DB_URL:-}"
+    SERVER_STAFF_DB_URL="${SERVER_STAFF_DB_URL:-}"
+    SERVER_INVITES_DB_URL="${SERVER_INVITES_DB_URL:-}"
+    SERVER_IMAGE="${SERVER_IMAGE:-}"
+    SERVER_IMAGE_TAG="${SERVER_IMAGE_TAG:-}"
+    SERVER_REGISTRY="${SERVER_REGISTRY:-}"
+    SERVER_REGISTRY_USERNAME="${SERVER_REGISTRY_USERNAME:-}"
+    SERVER_REGISTRY_TOKEN="${SERVER_REGISTRY_TOKEN:-}"
+    SERVER_PLATFORM="${SERVER_PLATFORM:-linux/amd64}"
+    SERVER_COMPOSE_PATH="${SERVER_COMPOSE_PATH:-}"
+    SERVER_COMPOSE_ENV_PATH="${SERVER_COMPOSE_ENV_PATH:-}"
+    SERVER_UPLOADS_PATH="${SERVER_UPLOADS_PATH:-}"
+    SERVER_UPLOADS_OWNER="${SERVER_UPLOADS_OWNER:-}"
+    SERVER_ALLOW_LOOPBACK_DB_URL="${SERVER_ALLOW_LOOPBACK_DB_URL:-0}"
     CF_API_TOKEN="${CF_API_TOKEN:-}"
     CF_ZONE_ID="${CF_ZONE_ID:-}"
     SERVER_AVATAR_STORAGE="${SERVER_AVATAR_STORAGE:-local}"
@@ -120,6 +163,28 @@ default_config() {
     AVATAR_PUBLIC_BASE_URL="${AVATAR_PUBLIC_BASE_URL:-$PUBLIC_ASSETS_ORIGIN}"
     AVATAR_CLOUDFLARE_ZONE_ID="${AVATAR_CLOUDFLARE_ZONE_ID:-$CF_ZONE_ID}"
     AVATAR_CLOUDFLARE_API_TOKEN="${AVATAR_CLOUDFLARE_API_TOKEN:-}"
+
+    load_docker_fallbacks
+}
+
+# Backwards compatibility with the legacy build_release.sh files. The .deploy
+# values always win; these files are only read when the corresponding keys are
+# empty.
+load_docker_fallbacks() {
+    if [ -z "$SERVER_IMAGE" ] && [ -f .docker_repo ]; then
+        SERVER_IMAGE="$(tr -d '[:space:]' < .docker_repo 2>/dev/null || true)"
+    fi
+    if [ -z "$SERVER_REGISTRY_USERNAME" ] && [ -z "$SERVER_REGISTRY_TOKEN" ] &&
+        [ -f .docker_creds ]; then
+        local creds
+        creds="$(tr -d '\r\n' < .docker_creds 2>/dev/null || true)"
+        case "$creds" in
+            *:*)
+                SERVER_REGISTRY_USERNAME="${creds%%:*}"
+                SERVER_REGISTRY_TOKEN="${creds#*:}"
+                ;;
+        esac
+    fi
 }
 
 # The local stamp records the public origins baked into client/dist, so
@@ -130,6 +195,7 @@ parse_args() {
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --dry-run) DRY_RUN=1 ;;
+            --image-only) IMAGE_ONLY=1 ;;
             --skip-build) SKIP_BUILD=1 ;;
             --skip-r2) SKIP_R2=1 ;;
             --skip-pages) SKIP_PAGES=1 ;;
@@ -254,34 +320,250 @@ preflight_public_origins() {
     fi
 
     if [ "$RUN_SERVER" = "1" ]; then
-        SERVER_PATH="${SERVER_PATH%/}"
-        [ -n "$SERVER_PATH" ] ||
-            die "SERVER_PATH must name the parent of the server's game/ directory"
-        SERVER_ENV_PATH="${SERVER_ENV_PATH:-${SERVER_PATH}/ravenest.env}"
+        preflight_server_runtime
+    fi
+}
 
-        case "$SERVER_ENV_PATH" in
-            /*) ;;
-            *) die "SERVER_ENV_PATH must be an absolute path: $SERVER_ENV_PATH" ;;
-        esac
-        case "$SERVER_ENV_PATH" in
-            */) die "SERVER_ENV_PATH must name a file, not a directory: $SERVER_ENV_PATH" ;;
-            *[[:space:]\'\"\\:]* | *..*)
-                die "SERVER_ENV_PATH contains unsupported characters: $SERVER_ENV_PATH"
-                ;;
-        esac
-        case "$SERVER_ENV_PATH/" in
-            "$SERVER_PATH/game/"*)
-                die "SERVER_ENV_PATH must be outside game/ (the content mirror uses --delete)"
-                ;;
-        esac
+# Resolve the server deployment mode. The default is the bundled Docker stack;
+# existing host-managed installs set systemd explicitly.
+resolve_server_deploy_mode() {
+    case "${SERVER_DEPLOY_MODE:-}" in
+        "") SERVER_DEPLOY_MODE=docker ;;
+        systemd | docker) ;;
+        *) die "SERVER_DEPLOY_MODE must be 'systemd' or 'docker'" ;;
+    esac
+}
 
-        if [ -z "$SERVER_CORS_ORIGINS" ]; then
-            SERVER_CORS_ORIGINS="$PUBLIC_SITE_ORIGIN"
+# Resolve the database topology. Bundled PostgreSQL lives in the same compose
+# stack as the app; external uses the four SERVER_*_DB_URL values.
+resolve_server_db_mode() {
+    case "${SERVER_DB_MODE:-}" in
+        "") SERVER_DB_MODE=bundled ;;
+        bundled | external) ;;
+        *) die "SERVER_DB_MODE must be 'bundled' or 'external'" ;;
+    esac
+
+    if [ "$SERVER_DB_MODE" = "bundled" ] && [ "$SERVER_DEPLOY_MODE" != "docker" ]; then
+        die "SERVER_DB_MODE=bundled requires SERVER_DEPLOY_MODE=docker; use SERVER_DB_MODE=external for a systemd app"
+    fi
+}
+
+# Every server-side path written over SSH must be absolute, safe to quote, and
+# outside game/ because the content mirror uses --delete.
+validate_remote_path() {
+    local name="$1"
+    local path="$2"
+
+    [ -n "$path" ] || die "$name is not set"
+    case "$path" in
+        /*) ;;
+        *) die "$name must be an absolute path: $path" ;;
+    esac
+    case "$path" in
+        */) die "$name must not end with /: $path" ;;
+        *[[:space:]\'\"\\:]* | *..*)
+            die "$name contains unsupported characters: $path"
+            ;;
+    esac
+    case "$path/" in
+        "$SERVER_PATH/game/"*)
+            die "$name must be outside game/ (the content mirror uses --delete)"
+            ;;
+    esac
+}
+
+# A DB URL is written verbatim to the runtime env file. Reject values that
+# would break the line-based env format, and flag loopback hosts because a
+# bridge-network container cannot reach the host through 127.0.0.1.
+validate_database_url() {
+    local name="$1"
+    local value="$2"
+
+    [ -n "$value" ] || die "$name is not set; add it to .deploy"
+    case "$value" in
+        postgresql://* | postgres://*) ;;
+        *) die "$name must start with postgresql:// or postgres://" ;;
+    esac
+    case "$value" in
+        *[[:space:]]* | *\'* | *\"* | *\\* | *'#'*)
+            die "$name contains whitespace, quoting, or comment characters; percent-encode the password"
+            ;;
+    esac
+
+    local host_part="${value#*://}"
+    host_part="${host_part#*@}"
+    host_part="${host_part%%/*}"
+    host_part="${host_part%%\?*}"
+    case "$host_part" in
+        localhost | localhost:* | 127.0.0.1 | 127.0.0.1:* | '[::1]' | '[::1]':*)
+            if [ "$SERVER_DEPLOY_MODE" = "docker" ] &&
+                [ "$SERVER_ALLOW_LOOPBACK_DB_URL" != "1" ]; then
+                warn "$name points at loopback; inside Docker that is the app container, not the host"
+                warn "  use the host's LAN address, a compose service name, or set SERVER_ALLOW_LOOPBACK_DB_URL=1"
+            fi
+            ;;
+    esac
+}
+
+# Validate bundled database credentials. The password is used raw by PostgreSQL
+# and embedded in libpq URLs, so restricting it to URL-safe characters avoids
+# double-encoding bugs between POSTGRES_PASSWORD and the URL userinfo.
+validate_bundled_db_credentials() {
+    [ -n "$SERVER_DB_USER" ] || die "SERVER_DB_USER is required when SERVER_DB_MODE=bundled"
+    case "$SERVER_DB_USER" in
+        [A-Za-z_]*)
+            case "$SERVER_DB_USER" in
+                *[!A-Za-z0-9_]*) die "SERVER_DB_USER must be a PostgreSQL identifier: $SERVER_DB_USER" ;;
+            esac
+            ;;
+        *) die "SERVER_DB_USER must be a PostgreSQL identifier: $SERVER_DB_USER" ;;
+    esac
+
+    [ -n "$SERVER_DB_PASSWORD" ] ||
+        die "SERVER_DB_PASSWORD is required when SERVER_DB_MODE=bundled (try: openssl rand -hex 24)"
+    case "$SERVER_DB_PASSWORD" in
+        *[!A-Za-z0-9._~-]*)
+            die "SERVER_DB_PASSWORD must be URL-safe for bundled mode (letters, digits, . _ ~ -); try: openssl rand -hex 24"
+            ;;
+    esac
+}
+
+derive_bundled_database_urls() {
+    SERVER_GAME_DB_URL="postgresql://${SERVER_DB_USER}:${SERVER_DB_PASSWORD}@postgres:5432/ravenest_game"
+    SERVER_CHAT_DB_URL="postgresql://${SERVER_DB_USER}:${SERVER_DB_PASSWORD}@postgres:5432/ravenest_chat"
+    SERVER_STAFF_DB_URL="postgresql://${SERVER_DB_USER}:${SERVER_DB_PASSWORD}@postgres:5432/ravenest_staff"
+    SERVER_INVITES_DB_URL="postgresql://${SERVER_DB_USER}:${SERVER_DB_PASSWORD}@postgres:5432/ravenest_invites"
+}
+
+preflight_server_db() {
+    resolve_server_db_mode
+
+    if [ "$SERVER_DB_MODE" = "bundled" ]; then
+        if [ -n "$SERVER_GAME_DB_URL$SERVER_CHAT_DB_URL$SERVER_STAFF_DB_URL$SERVER_INVITES_DB_URL" ]; then
+            die "SERVER_*_DB_URL values are set while SERVER_DB_MODE=bundled; use SERVER_DB_MODE=external or clear them"
         fi
-        [ -n "$SERVER_CORS_ORIGINS" ] ||
-            die "SERVER_CORS_ORIGINS or PUBLIC_SITE_ORIGIN is required when SERVER_HOST is set"
-        validate_origin_list "SERVER_CORS_ORIGINS" "$SERVER_CORS_ORIGINS"
-        preflight_avatar_storage
+        validate_bundled_db_credentials
+        derive_bundled_database_urls
+        log "server database: bundled PostgreSQL (service name postgres)"
+        return
+    fi
+
+    if [ -n "$SERVER_DB_PASSWORD" ]; then
+        warn "SERVER_DB_PASSWORD is ignored when SERVER_DB_MODE=external (credentials come from the four URLs)"
+    fi
+    validate_database_url "SERVER_GAME_DB_URL" "$SERVER_GAME_DB_URL"
+    validate_database_url "SERVER_CHAT_DB_URL" "$SERVER_CHAT_DB_URL"
+    validate_database_url "SERVER_STAFF_DB_URL" "$SERVER_STAFF_DB_URL"
+    validate_database_url "SERVER_INVITES_DB_URL" "$SERVER_INVITES_DB_URL"
+}
+
+preflight_server_runtime() {
+    resolve_server_deploy_mode
+    command -v ssh >/dev/null 2>&1 || die "ssh not found"
+    command -v rsync >/dev/null 2>&1 || die "rsync not found"
+    if [ -n "$SERVER_SSH_KEY" ] && [ ! -f "$SERVER_SSH_KEY" ]; then
+        die "SERVER_SSH_KEY does not exist: $SERVER_SSH_KEY"
+    fi
+
+    SERVER_PATH="${SERVER_PATH%/}"
+    [ -n "$SERVER_PATH" ] ||
+        die "SERVER_PATH must name the parent of the server's game/ directory"
+    SERVER_ENV_PATH="${SERVER_ENV_PATH:-${SERVER_PATH}/ravenest.env}"
+    validate_remote_path "SERVER_ENV_PATH" "$SERVER_ENV_PATH"
+
+    preflight_server_db
+
+    if [ -z "$SERVER_CORS_ORIGINS" ]; then
+        SERVER_CORS_ORIGINS="$PUBLIC_SITE_ORIGIN"
+    fi
+    [ -n "$SERVER_CORS_ORIGINS" ] ||
+        die "SERVER_CORS_ORIGINS or PUBLIC_SITE_ORIGIN is required when SERVER_HOST is set"
+    validate_origin_list "SERVER_CORS_ORIGINS" "$SERVER_CORS_ORIGINS"
+    preflight_avatar_storage
+
+    if [ "$SERVER_DEPLOY_MODE" = "docker" ]; then
+        preflight_server_docker
+    fi
+}
+
+# Validate the image/registry keys shared by a full Docker deploy and
+# --image-only. This deliberately does not require SERVER_PATH or SERVER_HOST.
+preflight_server_image() {
+    require_var SERVER_IMAGE
+    [ -n "$SERVER_IMAGE_TAG" ] ||
+        die "SERVER_IMAGE_TAG is empty; set it in .deploy or let install.sh derive one"
+
+    case "$SERVER_IMAGE" in
+        *://*) die "SERVER_IMAGE must be a registry/repository path without a scheme, e.g. ghcr.io/org/ravenest-server" ;;
+        *[!a-z0-9._:/-]*) die "SERVER_IMAGE must be lowercase and contain only repository characters: $SERVER_IMAGE" ;;
+        /* | */ | *//*) die "SERVER_IMAGE must not start/end with '/' or contain '//': $SERVER_IMAGE" ;;
+    esac
+    case "${SERVER_IMAGE#*/}" in
+        *:*) die "SERVER_IMAGE must not include a tag; put it in SERVER_IMAGE_TAG: $SERVER_IMAGE" ;;
+    esac
+    case "$SERVER_IMAGE" in
+        */*/*) ;;
+        */*)
+            case "${SERVER_IMAGE%%/*}" in
+                *:*) ;;
+                *) SERVER_REGISTRY="${SERVER_REGISTRY:-docker.io}" ;;
+            esac
+            ;;
+        *) die "SERVER_IMAGE must be a full repository path, e.g. ghcr.io/org/ravenest-server" ;;
+    esac
+    case "$SERVER_IMAGE_TAG" in
+        *[!A-Za-z0-9_.-]*) die "SERVER_IMAGE_TAG contains unsupported characters: $SERVER_IMAGE_TAG" ;;
+    esac
+    [ -n "$SERVER_PLATFORM" ] || die "SERVER_PLATFORM must not be empty"
+
+    SERVER_REGISTRY="${SERVER_REGISTRY:-${SERVER_IMAGE%%/*}}"
+    case "$SERVER_REGISTRY" in
+        "" | */*) die "SERVER_REGISTRY must be a registry hostname, e.g. ghcr.io" ;;
+    esac
+
+    if [ -n "$SERVER_REGISTRY_USERNAME" ] || [ -n "$SERVER_REGISTRY_TOKEN" ]; then
+        require_var SERVER_REGISTRY_USERNAME SERVER_REGISTRY_TOKEN
+    fi
+
+    [ -f server/Dockerfile ] || die "server/Dockerfile is missing"
+    [ -f tools/build_server_image.sh ] || die "tools/build_server_image.sh is missing"
+
+    if [ "$DRY_RUN" != "1" ]; then
+        command -v docker >/dev/null 2>&1 || die "docker not found (required to build/push SERVER_IMAGE)"
+    fi
+}
+
+preflight_server_docker() {
+    preflight_server_image
+
+    SERVER_COMPOSE_PATH="${SERVER_COMPOSE_PATH:-${SERVER_PATH}/docker-compose.yml}"
+    SERVER_COMPOSE_ENV_PATH="${SERVER_COMPOSE_ENV_PATH:-${SERVER_PATH}/compose.env}"
+    SERVER_COMPOSE_OVERLAY_PATH="${SERVER_COMPOSE_OVERLAY_PATH:-${SERVER_PATH}/docker-compose.bundled.yml}"
+    SERVER_UPLOADS_PATH="${SERVER_UPLOADS_PATH:-${SERVER_PATH}/uploads}"
+    validate_remote_path "SERVER_COMPOSE_PATH" "$SERVER_COMPOSE_PATH"
+    validate_remote_path "SERVER_COMPOSE_ENV_PATH" "$SERVER_COMPOSE_ENV_PATH"
+    validate_remote_path "SERVER_UPLOADS_PATH" "$SERVER_UPLOADS_PATH"
+    [ -f deploy/docker-compose.yml ] ||
+        die "deploy/docker-compose.yml is missing from the engine checkout"
+
+    if [ "$SERVER_DB_MODE" = "bundled" ]; then
+        SERVER_DB_INIT_PATH="${SERVER_DB_INIT_PATH:-${SERVER_PATH}/postgres/init}"
+        validate_remote_path "SERVER_DB_INIT_PATH" "$SERVER_DB_INIT_PATH"
+        validate_remote_path "SERVER_COMPOSE_OVERLAY_PATH" "$SERVER_COMPOSE_OVERLAY_PATH"
+        [ "$SERVER_COMPOSE_OVERLAY_PATH" != "$SERVER_COMPOSE_PATH" ] ||
+            die "SERVER_COMPOSE_OVERLAY_PATH must differ from SERVER_COMPOSE_PATH"
+        [ -f deploy/docker-compose.bundled.yml ] ||
+            die "deploy/docker-compose.bundled.yml is missing from the engine checkout"
+        [ -f tools/postgres/init/01-databases.sql ] ||
+            die "tools/postgres/init/01-databases.sql is missing from the engine checkout"
+    fi
+
+    if [ -z "$SERVER_RESTART_CMD" ]; then
+        if [ "$SERVER_DB_MODE" = "bundled" ]; then
+            SERVER_RESTART_CMD="cd '$SERVER_PATH' && docker compose --env-file '$SERVER_COMPOSE_ENV_PATH' -f '$SERVER_COMPOSE_PATH' -f '$SERVER_COMPOSE_OVERLAY_PATH' up -d --remove-orphans"
+        else
+            SERVER_RESTART_CMD="cd '$SERVER_PATH' && docker compose --env-file '$SERVER_COMPOSE_ENV_PATH' -f '$SERVER_COMPOSE_PATH' up -d --remove-orphans"
+        fi
     fi
 }
 
@@ -320,6 +602,59 @@ preflight_avatar_storage() {
     esac
 }
 
+# Set by install_remote_file so stage_server_restart knows whether the running
+# service needs a restart.
+REMOTE_FILE_CHANGED=0
+SERVER_ENV_CHANGED=0
+SERVER_COMPOSE_ENV_CHANGED=0
+SERVER_COMPOSE_FILE_CHANGED=0
+SERVER_COMPOSE_OVERLAY_CHANGED=0
+SERVER_DB_INIT_CHANGED=0
+SERVER_IMAGE_DIGEST=""
+
+# Atomically install one local file at an absolute remote path. Compares the
+# SHA-256 first; backs up the old file to <path>.previous; writes <path>.new and
+# moves it into place with the requested mode. Never prints file contents.
+install_remote_file() {
+    local source="$1"
+    local remote_path="$2"
+    local label="$3"
+    local mode="${4:-600}"
+
+    REMOTE_FILE_CHANGED=0
+    if [ "$DRY_RUN" = "1" ]; then
+        log "$label: would write $remote_path"
+        return 0
+    fi
+
+    local local_hash
+    local remote_hash
+    local_hash="$(sha256sum "$source" | awk '{print $1}')"
+    remote_hash="$(ssh_run "$SERVER_HOST" \
+        "sha256sum '$remote_path' 2>/dev/null | awk '{print \$1}'" 2>/dev/null || true)"
+
+    if [ "$local_hash" = "$remote_hash" ]; then
+        log "$label: unchanged ($remote_path)"
+        return 0
+    fi
+
+    local remote_dir
+    remote_dir="$(dirname -- "$remote_path")"
+    log "$label: writing $remote_path"
+    ssh_run "$SERVER_HOST" "mkdir -p '$remote_dir'"
+    ssh_run "$SERVER_HOST" \
+        "if [ -f '$remote_path' ]; then cp -p '$remote_path' '$remote_path.previous'; fi"
+
+    local -a ssh_opt=()
+    if [ -n "$SERVER_SSH_KEY" ]; then
+        ssh_opt=(-e "ssh -i $SERVER_SSH_KEY")
+    fi
+    rsync_run -a "${ssh_opt[@]}" "$source" "$SERVER_HOST:${remote_path}.new"
+    ssh_run "$SERVER_HOST" \
+        "chmod $mode '$remote_path.new' && mv '$remote_path.new' '$remote_path'"
+    REMOTE_FILE_CHANGED=1
+}
+
 # Refuse to reuse a client/dist built for different public origins.
 check_build_stamp() {
     local expected
@@ -340,14 +675,19 @@ check_build_stamp() {
 # ---------------------------------------------------------------------------
 
 preflight() {
-    [ -d client ] || die "client/ not found; run install.sh from the engine repository"
-
     local private_path
     for private_path in .deploy backup.sh push_to_production.sh; do
         if git -C "$SCRIPT_DIR" ls-files --error-unmatch "$private_path" >/dev/null 2>&1; then
             die "$private_path is tracked by git; remove it from the index and keep it private"
         fi
     done
+
+    if [ "$IMAGE_ONLY" = "1" ]; then
+        preflight_server_image
+        return 0
+    fi
+
+    [ -d client ] || die "client/ not found; run install.sh from the engine repository"
 
     preflight_git
     preflight_public_origins
@@ -608,7 +948,45 @@ stage_pages() {
 }
 
 # ---------------------------------------------------------------------------
-# Stage 4 — API server content mirror
+# Stage 4 — API server Docker image (optional)
+# ---------------------------------------------------------------------------
+
+stage_server_image() {
+    [ "$SERVER_DEPLOY_MODE" = "docker" ] || return 0
+
+    local image="${SERVER_IMAGE}:${SERVER_IMAGE_TAG}"
+    if [ "$DRY_RUN" = "1" ]; then
+        log "server image: would build $image (platform $SERVER_PLATFORM)"
+        log "server image: would push $image to $SERVER_REGISTRY"
+        return
+    fi
+
+    command -v docker >/dev/null 2>&1 || die "docker not found"
+    [ -f server/Dockerfile ] || die "server/Dockerfile is missing"
+
+    if [ -n "$SERVER_REGISTRY_USERNAME" ]; then
+        log "server image: logging in to $SERVER_REGISTRY"
+        if ! printf '%s' "$SERVER_REGISTRY_TOKEN" |
+            docker login "$SERVER_REGISTRY" --username "$SERVER_REGISTRY_USERNAME" \
+                --password-stdin >/dev/null; then
+            die "docker login failed for $SERVER_REGISTRY"
+        fi
+    fi
+
+    log "server image: building $image"
+    "$SCRIPT_DIR/tools/build_server_image.sh" "$image" --platform "$SERVER_PLATFORM"
+
+    log "server image: pushing $image"
+    docker push "$image"
+    SERVER_IMAGE_DIGEST="$(docker inspect --format '{{index .RepoDigests 0}}' "$image" 2>/dev/null || true)"
+    log "server image: published $image"
+    if [ -n "$SERVER_IMAGE_DIGEST" ]; then
+        log "server image: digest $SERVER_IMAGE_DIGEST"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Stage 5 — API server content mirror
 # ---------------------------------------------------------------------------
 
 stage_server_content() {
@@ -660,26 +1038,21 @@ stage_server_content() {
     fi
 }
 
-# Write RAVENEST_CORS_ORIGINS to the API server's env file. The file is
-# generated from .deploy (the single source) and installed atomically. A
-# restart is optional: without SERVER_RESTART_CMD the file is still updated, but
-# the running process keeps the old allowlist until it is restarted.
+# Write the API server runtime env. The file is generated from .deploy (the
+# single source) and installed atomically. Database URLs and secrets are never
+# printed.
 stage_server_runtime() {
     require_var SERVER_HOST SERVER_CORS_ORIGINS SERVER_ENV_PATH
-    command -v ssh >/dev/null 2>&1 || die "ssh not found"
-    command -v rsync >/dev/null 2>&1 || die "rsync not found"
-    if [ -n "$SERVER_SSH_KEY" ] && [ ! -f "$SERVER_SSH_KEY" ]; then
-        die "SERVER_SSH_KEY does not exist: $SERVER_SSH_KEY"
-    fi
-
-    local env_path="$SERVER_ENV_PATH"
-    local remote_dir
-    remote_dir="$(dirname -- "$env_path")"
+    require_var SERVER_GAME_DB_URL SERVER_CHAT_DB_URL SERVER_STAFF_DB_URL SERVER_INVITES_DB_URL
 
     local temp
     temp="$(mktemp "${TMPDIR:-/tmp}/ravenest-env.XXXXXX")"
     {
         printf '# Generated by install.sh from .deploy; do not edit.\n'
+        printf 'RAVENEST_GAME_DB_URL=%s\n' "$SERVER_GAME_DB_URL"
+        printf 'RAVENEST_CHAT_DB_URL=%s\n' "$SERVER_CHAT_DB_URL"
+        printf 'RAVENEST_STAFF_DB_URL=%s\n' "$SERVER_STAFF_DB_URL"
+        printf 'RAVENEST_INVITES_DB_URL=%s\n' "$SERVER_INVITES_DB_URL"
         printf 'RAVENEST_CORS_ORIGINS=%s\n' "$SERVER_CORS_ORIGINS"
         printf 'RAVENEST_AVATAR_STORAGE=%s\n' "$SERVER_AVATAR_STORAGE"
         if [ "$SERVER_AVATAR_STORAGE" = "r2" ]; then
@@ -699,59 +1072,155 @@ stage_server_runtime() {
     chmod 600 "$temp"
 
     if [ "$DRY_RUN" = "1" ]; then
-        log "server: would write $env_path"
+        log "server: database URLs configured (redacted)"
         log "server: RAVENEST_CORS_ORIGINS=$SERVER_CORS_ORIGINS"
         log "server: RAVENEST_AVATAR_STORAGE=$SERVER_AVATAR_STORAGE"
         if [ "$SERVER_AVATAR_STORAGE" = "r2" ]; then
             log "server: RAVENEST_AVATAR_PUBLIC_BASE_URL=$AVATAR_PUBLIC_BASE_URL"
             log "server: RAVENEST_AVATAR_R2_PREFIX=$AVATAR_R2_PREFIX"
         fi
+    fi
+
+    install_remote_file "$temp" "$SERVER_ENV_PATH" "server env" 600
+    SERVER_ENV_CHANGED="$REMOTE_FILE_CHANGED"
+    rm -f "$temp"
+}
+
+# Write the compose file and compose interpolation env. The image tag lives in
+# the interpolation env, so a new image triggers a restart even when the
+# runtime env is unchanged.
+stage_server_compose() {
+    [ "$SERVER_DEPLOY_MODE" = "docker" ] || return 0
+
+    if [ "$DRY_RUN" != "1" ]; then
+        ssh_run "$SERVER_HOST" "mkdir -p '$SERVER_UPLOADS_PATH'"
+        if [ -n "$SERVER_UPLOADS_OWNER" ]; then
+            if ! ssh_run "$SERVER_HOST" \
+                "chown -R '$SERVER_UPLOADS_OWNER' '$SERVER_UPLOADS_PATH'"; then
+                warn "server: could not chown $SERVER_UPLOADS_PATH to $SERVER_UPLOADS_OWNER"
+            fi
+        else
+            # Best effort: succeeds when the deploy user is root, silently
+            # no-ops otherwise. A mismatch is reported below.
+            ssh_run "$SERVER_HOST" \
+                "chown -R 10001:10001 '$SERVER_UPLOADS_PATH' 2>/dev/null || true"
+        fi
+        local uploads_owner
+        uploads_owner="$(ssh_run "$SERVER_HOST" \
+            "stat -c '%u:%g' '$SERVER_UPLOADS_PATH' 2>/dev/null" 2>/dev/null || true)"
+        if [ -n "$uploads_owner" ] && [ "$uploads_owner" != "10001:10001" ] &&
+            [ -z "$SERVER_UPLOADS_OWNER" ]; then
+            warn "server: $SERVER_UPLOADS_PATH is owned by $uploads_owner"
+            warn "  the container runs as 10001:10001; set SERVER_UPLOADS_OWNER=10001:10001"
+            warn "  (or chown it manually) if local avatar uploads must work"
+        fi
+    fi
+
+    local temp
+    temp="$(mktemp "${TMPDIR:-/tmp}/ravenest-compose-env.XXXXXX")"
+    {
+        printf '# Generated by install.sh from .deploy; do not edit.\n'
+        printf 'RAVENEST_IMAGE=%s:%s\n' "$SERVER_IMAGE" "$SERVER_IMAGE_TAG"
+        if [ -n "$SERVER_IMAGE_DIGEST" ]; then
+            printf 'RAVENEST_IMAGE_DIGEST=%s\n' "$SERVER_IMAGE_DIGEST"
+        fi
+        printf 'RAVENEST_ENV_FILE=%s\n' "$SERVER_ENV_PATH"
+        printf 'RAVENEST_GAME_PATH=%s\n' "${SERVER_PATH}/game"
+        printf 'RAVENEST_UPLOADS_PATH=%s\n' "$SERVER_UPLOADS_PATH"
+        if [ "$SERVER_DB_MODE" = "bundled" ]; then
+            printf 'RAVENEST_DB_USER=%s\n' "$SERVER_DB_USER"
+            printf 'RAVENEST_DB_PASSWORD=%s\n' "$SERVER_DB_PASSWORD"
+            printf 'RAVENEST_DB_INIT_PATH=%s\n' "$SERVER_DB_INIT_PATH"
+        fi
+    } > "$temp"
+    chmod 600 "$temp"
+
+    install_remote_file "deploy/docker-compose.yml" "$SERVER_COMPOSE_PATH" \
+        "server compose" 644
+    SERVER_COMPOSE_FILE_CHANGED="$REMOTE_FILE_CHANGED"
+
+    if [ "$SERVER_DB_MODE" = "bundled" ]; then
+        install_remote_file "deploy/docker-compose.bundled.yml" \
+            "$SERVER_COMPOSE_OVERLAY_PATH" "server compose bundled overlay" 644
+        SERVER_COMPOSE_OVERLAY_CHANGED="$REMOTE_FILE_CHANGED"
+        if [ "$SERVER_COMPOSE_OVERLAY_CHANGED" = "1" ]; then
+            SERVER_COMPOSE_FILE_CHANGED=1
+        fi
+        install_remote_file "tools/postgres/init/01-databases.sql" \
+            "${SERVER_DB_INIT_PATH}/01-databases.sql" "server db init" 644
+        SERVER_DB_INIT_CHANGED="$REMOTE_FILE_CHANGED"
+        if [ "$SERVER_DB_INIT_CHANGED" = "1" ]; then
+            SERVER_COMPOSE_FILE_CHANGED=1
+        fi
+    fi
+
+    install_remote_file "$temp" "$SERVER_COMPOSE_ENV_PATH" \
+        "server compose env" 600
+    SERVER_COMPOSE_ENV_CHANGED="$REMOTE_FILE_CHANGED"
+    rm -f "$temp"
+}
+
+# Restart only when something the running service reads changed. The compose
+# env contains the image tag, so a new release restarts even if the runtime env
+# is byte-identical.
+stage_server_restart() {
+    if [ "$DRY_RUN" = "1" ]; then
         if [ -n "$SERVER_RESTART_CMD" ]; then
             log "server: would restart: $SERVER_RESTART_CMD"
+        else
+            log "server: no restart command configured"
         fi
-        rm -f "$temp"
         return
     fi
 
-    local local_hash
-    local remote_hash=""
-    local_hash="$(sha256sum "$temp" | awk '{print $1}')"
-    remote_hash="$(ssh_run "$SERVER_HOST" \
-        "sha256sum '$env_path' 2>/dev/null | awk '{print \$1}'" 2>/dev/null || true)"
+    local should_restart=0
+    if [ "${SERVER_ENV_CHANGED:-0}" = "1" ]; then
+        should_restart=1
+    fi
+    if [ "$SERVER_DEPLOY_MODE" = "docker" ] &&
+        { [ "${SERVER_COMPOSE_ENV_CHANGED:-0}" = "1" ] ||
+            [ "${SERVER_COMPOSE_FILE_CHANGED:-0}" = "1" ]; }; then
+        should_restart=1
+    fi
 
-    if [ "$local_hash" = "$remote_hash" ]; then
-        log "server: env unchanged ($env_path)"
-        rm -f "$temp"
+    if [ "$should_restart" != "1" ]; then
+        log "server: no runtime changes; not restarting"
         return
     fi
 
-    local -a ssh_opt=()
-    if [ -n "$SERVER_SSH_KEY" ]; then
-        ssh_opt=(-e "ssh -i $SERVER_SSH_KEY")
-    fi
-
-    log "server: writing $env_path"
-    ssh_run "$SERVER_HOST" "mkdir -p '$remote_dir'"
-    ssh_run "$SERVER_HOST" \
-        "if [ -f '$env_path' ]; then cp -p '$env_path' '$env_path.previous'; fi"
-    rsync_run -a "${ssh_opt[@]}" "$temp" "$SERVER_HOST:${env_path}.new"
-    ssh_run "$SERVER_HOST" \
-        "chmod 600 '$env_path.new' && mv '$env_path.new' '$env_path'"
-    rm -f "$temp"
-
-    if [ -n "$SERVER_RESTART_CMD" ]; then
-        log "server: restarting API service"
-        if ! ssh_run "$SERVER_HOST" "$SERVER_RESTART_CMD"; then
-            warn "server: restart failed; restoring the previous environment"
-            ssh_run "$SERVER_HOST" \
-                "if [ -f '$env_path.previous' ]; then mv '$env_path.previous' '$env_path'; fi" || true
-            ssh_run "$SERVER_HOST" "$SERVER_RESTART_CMD" || true
-            die "server restart failed after writing $env_path"
-        fi
-    else
-        printf 'note: API server env was updated but the server was not restarted.\n' >&2
-        printf '      Restart it when convenient to apply RAVENEST_CORS_ORIGINS/avatar storage.\n' >&2
+    if [ -z "$SERVER_RESTART_CMD" ]; then
+        printf 'note: API server files were updated but the server was not restarted.\n' >&2
+        printf '      Restart it when convenient to apply the new env/image.\n' >&2
         printf '      Set SERVER_RESTART_CMD in .deploy to automate this.\n' >&2
+        return
+    fi
+
+    log "server: restarting API service"
+    if ! ssh_run "$SERVER_HOST" "$SERVER_RESTART_CMD"; then
+        warn "server: restart failed; restoring previous files"
+        local restore=""
+        if [ "${SERVER_ENV_CHANGED:-0}" = "1" ]; then
+            restore="${restore}if [ -f '$SERVER_ENV_PATH.previous' ]; then mv '$SERVER_ENV_PATH.previous' '$SERVER_ENV_PATH'; fi; "
+        fi
+        if [ "$SERVER_DEPLOY_MODE" = "docker" ]; then
+            if [ "${SERVER_COMPOSE_ENV_CHANGED:-0}" = "1" ]; then
+                restore="${restore}if [ -f '$SERVER_COMPOSE_ENV_PATH.previous' ]; then mv '$SERVER_COMPOSE_ENV_PATH.previous' '$SERVER_COMPOSE_ENV_PATH'; fi; "
+            fi
+            if [ "${SERVER_COMPOSE_FILE_CHANGED:-0}" = "1" ]; then
+                restore="${restore}if [ -f '$SERVER_COMPOSE_PATH.previous' ]; then mv '$SERVER_COMPOSE_PATH.previous' '$SERVER_COMPOSE_PATH'; fi; "
+            fi
+            if [ "${SERVER_COMPOSE_OVERLAY_CHANGED:-0}" = "1" ]; then
+                restore="${restore}if [ -f '$SERVER_COMPOSE_OVERLAY_PATH.previous' ]; then mv '$SERVER_COMPOSE_OVERLAY_PATH.previous' '$SERVER_COMPOSE_OVERLAY_PATH'; fi; "
+            fi
+            if [ "${SERVER_DB_INIT_CHANGED:-0}" = "1" ]; then
+                restore="${restore}if [ -f '${SERVER_DB_INIT_PATH}/01-databases.sql.previous' ]; then mv '${SERVER_DB_INIT_PATH}/01-databases.sql.previous' '${SERVER_DB_INIT_PATH}/01-databases.sql'; fi; "
+            fi
+        fi
+        if [ -n "$restore" ]; then
+            ssh_run "$SERVER_HOST" "$restore" || true
+        fi
+        ssh_run "$SERVER_HOST" "$SERVER_RESTART_CMD" || true
+        die "server restart failed after writing $SERVER_ENV_PATH"
     fi
 }
 
@@ -763,7 +1232,17 @@ load_deploy
 default_config
 parse_args "$@"
 
-if [ -z "$SITE_REPO" ] && [ -z "$R2_BUCKET" ] && [ -z "$SERVER_HOST" ]; then
+if [ "$IMAGE_ONLY" = "1" ]; then
+    resolve_server_deploy_mode
+    if [ "$SERVER_DEPLOY_MODE" != "docker" ]; then
+        die "--image-only requires SERVER_DEPLOY_MODE=docker"
+    fi
+fi
+
+if [ "$IMAGE_ONLY" = "1" ]; then
+    [ -n "$SERVER_IMAGE" ] ||
+        die "no image repository configured; set SERVER_IMAGE in .deploy"
+elif [ -z "$SITE_REPO" ] && [ -z "$R2_BUCKET" ] && [ -z "$SERVER_HOST" ]; then
     die "no publish destination configured; create .deploy or set SITE_REPO, R2_BUCKET, or SERVER_HOST"
 fi
 
@@ -771,6 +1250,12 @@ ENGINE_SHA="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo un
 ENGINE_DIRTY=""
 if [ -n "$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null || true)" ]; then
     ENGINE_DIRTY="-dirty"
+fi
+
+# Immutable per-release tag. Set SERVER_IMAGE_TAG in .deploy to make reruns
+# idempotent or to roll back to a known tag.
+if [ -z "$SERVER_IMAGE_TAG" ]; then
+    SERVER_IMAGE_TAG="$(date -u +%Y%m%dT%H%M%SZ)-${ENGINE_SHA}${ENGINE_DIRTY}"
 fi
 
 RUN_R2=1
@@ -782,15 +1267,27 @@ if [ -z "$SERVER_HOST" ]; then RUN_SERVER=0; fi
 if [ "$SKIP_R2" = "1" ]; then RUN_R2=0; fi
 if [ "$SKIP_PAGES" = "1" ]; then RUN_PAGES=0; fi
 if [ "$SKIP_SERVER" = "1" ]; then RUN_SERVER=0; fi
+if [ "$IMAGE_ONLY" = "1" ]; then
+    RUN_R2=0
+    RUN_PAGES=0
+    RUN_SERVER=0
+fi
 
 log "engine: $SCRIPT_DIR @ ${ENGINE_SHA}${ENGINE_DIRTY}"
 if [ "$DRY_RUN" = "1" ]; then
-    log "dry run: no writes to R2, the site repo, or the API server"
+    log "dry run: no writes to R2, the site repo, the API server, or the registry"
+fi
+if [ "$IMAGE_ONLY" = "1" ]; then
+    log "image-only: building and pushing the server image; no client, R2, Pages, game, or server deployment stages"
 fi
 
 preflight
 
-stage_build
+if [ "$IMAGE_ONLY" = "1" ]; then
+    log "build: skipped (--image-only)"
+else
+    stage_build
+fi
 
 if [ "$RUN_R2" = "1" ]; then
     stage_r2
@@ -804,9 +1301,15 @@ else
     log "pages: skipped (not configured or --skip-pages)"
 fi
 
-if [ "$RUN_SERVER" = "1" ]; then
+if [ "$IMAGE_ONLY" = "1" ]; then
+    stage_server_image
+    printf 'SERVER_IMAGE_TAG=%s\n' "$SERVER_IMAGE_TAG"
+elif [ "$RUN_SERVER" = "1" ]; then
+    stage_server_image
     stage_server_content
     stage_server_runtime
+    stage_server_compose
+    stage_server_restart
 else
     log "server: skipped (not configured or --skip-server)"
 fi

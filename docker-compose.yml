@@ -10,6 +10,7 @@ services:
       - "127.0.0.1:5432:5432"
     volumes:
       - ravenest_pgdata:/var/lib/postgresql/data
+      - ./tools/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ravenest -d ravenest_game"]
       interval: 5s
@@ -23,6 +24,35 @@ services:
       - max_connections=100
       - -c
       - log_min_duration_statement=250ms
+
+  # Optional local API server container. The default developer flow remains
+  # `./run_server.sh`; this profile exists so the production image can be
+  # exercised without a second compose project:
+  #
+  #   RAVENEST_DB_PASSWORD=... docker compose --profile app up -d --build
+  app:
+    profiles: ["app"]
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    image: ravenest-server:dev
+    restart: unless-stopped
+    environment:
+      RAVENEST_GAME_DB_URL: postgresql://ravenest:${RAVENEST_DB_PASSWORD:?set RAVENEST_DB_PASSWORD}@postgres:5432/ravenest_game
+      RAVENEST_CHAT_DB_URL: postgresql://ravenest:${RAVENEST_DB_PASSWORD:?set RAVENEST_DB_PASSWORD}@postgres:5432/ravenest_chat
+      RAVENEST_STAFF_DB_URL: postgresql://ravenest:${RAVENEST_DB_PASSWORD:?set RAVENEST_DB_PASSWORD}@postgres:5432/ravenest_staff
+      RAVENEST_INVITES_DB_URL: postgresql://ravenest:${RAVENEST_DB_PASSWORD:?set RAVENEST_DB_PASSWORD}@postgres:5432/ravenest_invites
+      RAVENEST_CORS_ORIGINS: ${RAVENEST_CORS_ORIGINS:-http://localhost:5173}
+      RAVENEST_AVATAR_STORAGE: local
+      RAVENEST_TRANSLATION_SIDECAR_URL: ${RAVENEST_TRANSLATION_SIDECAR_URL:-http://translation:8790}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:2290:2290"
+    volumes:
+      - ./game:/app/game:ro
+      - ravenest_dev_uploads:/app/uploads
 
   # Optional CPU MADLAD translation sidecar. It is CPU-only and binds to
   # localhost; keep it off the public network.
@@ -47,3 +77,4 @@ services:
 
 volumes:
   ravenest_pgdata:
+  ravenest_dev_uploads:

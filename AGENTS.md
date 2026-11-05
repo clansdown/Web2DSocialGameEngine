@@ -570,11 +570,40 @@ make
 
 ### Docker
 
+The production image is built from `server/` (the build context) by the
+multi-stage `server/Dockerfile`. It contains the server, `invite_admin`, and
+`staff_admin`; game content and uploads are mounted at runtime.
+
 ```bash
-cd server
-docker build -t ravenest-server .
-docker run -p 2290:2290 ravenest-server
+./tools/build_server_image.sh ravenest-server:dev
+docker run --rm -p 127.0.0.1:2290:2290 \
+  -v "$PWD/game:/app/game:ro" \
+  -v "$PWD/test_run/uploads:/app/uploads" \
+  --env-file test_run/ravenest.env \
+  ravenest-server:dev
 ```
+
+Local development can use the `app` profile in the root `docker-compose.yml`
+(PostgreSQL + optional API server):
+
+```bash
+RAVENEST_DB_PASSWORD=ravenest_dev docker compose --profile app up -d --build
+```
+
+Production deployment is Docker by default. `install.sh` builds/pushes the
+image and writes `deploy/docker-compose.yml` plus `compose.env`. With
+`SERVER_DB_MODE=bundled` (default), it also writes
+`deploy/docker-compose.bundled.yml` and the idempotent `db-init` SQL, so
+PostgreSQL runs in the same stack on the internal network. With
+`SERVER_DB_MODE=external`, only the app compose file is used and the four
+`SERVER_*_DB_URL` values point at managed/external PostgreSQL. `systemd` app
+deployments must use `external`.
+
+`./install.sh --image-only` builds and pushes only `SERVER_IMAGE:<tag>`; it needs
+no `SERVER_HOST`, `SERVER_PATH`, database, CORS, client, or game configuration.
+It prints the pushed tag so a later deploy can pin it. GHCR is supported via
+`ghcr.io/<owner>/<lowercase-package>`; image paths must be lowercase, and a
+public package needs no server-side `docker login`. See `docs/publishing.md`.
 
 ### Testing the Server
 

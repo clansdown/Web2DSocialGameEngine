@@ -1,4 +1,8 @@
 #!/bin/bash
+# Build the server image and push an immutable tag to the configured registry.
+# Legacy: prefer `./install.sh --image-only`, which reads the same .deploy
+# image/registry keys. This script remains for the .docker_repo/.docker_creds
+# workflow. For a full client/assets/server deploy use install.sh.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,15 +17,15 @@ else
 fi
 
 if [ -f .docker_repo ]; then
-    DOCKER_REPO=$(cat .docker_repo)
+    DOCKER_REPO=$(tr -d '[:space:]' < .docker_repo)
 else
     echo "Error: .docker_repo file not found"
-    echo "Create a .docker_repo file with your Docker registry URL"
+    echo "Create a .docker_repo file with the full repository path (e.g. ghcr.io/org/ravenest-server)"
     exit 1
 fi
 
 if [ -f .docker_creds ]; then
-    DOCKER_CREDS=$(cat .docker_creds)
+    DOCKER_CREDS=$(tr -d '\r\n' < .docker_creds)
     DOCKER_USER=$(echo "$DOCKER_CREDS" | cut -d':' -f1)
     DOCKER_TOKEN=$(echo "$DOCKER_CREDS" | cut -d':' -f2-)
 else
@@ -32,54 +36,27 @@ fi
 
 TAG="$1"
 if [ -z "$TAG" ]; then
-    TAG=$(date +%Y%m%dT%H%M%S)
+    TAG=$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 fi
 
+REGISTRY="${DOCKER_REPO%%/*}"
+if [ "$REGISTRY" = "$DOCKER_REPO" ]; then
+    echo "Error: .docker_repo must be a full repository path (registry/org/name)"
+    exit 1
+fi
+
+IMAGE="${DOCKER_REPO}:${TAG}"
 echo "Building $GAME_NAME release..."
 echo "Tag: $TAG"
 echo "Repository: $DOCKER_REPO"
 
-mkdir -p server/bin
+"$SCRIPT_DIR/tools/build_server_image.sh" "$IMAGE"
 
-cd server/build
+echo "Logging in to $REGISTRY..."
+echo "$DOCKER_TOKEN" | docker login "$REGISTRY" -u "$DOCKER_USER" --password-stdin
 
-if [ ! -f CMakeCache.txt ]; then
-    echo "Running cmake..."
-    cmake ..
-fi
-
-echo "Building server..."
-make -j$(nproc)
-
-if [ ! -f server ]; then
-    echo "Error: Server binary not found after build"
-    exit 1
-fi
-
-cd "$SCRIPT_DIR"
-
-echo "Building Docker image..."
-docker build -t "${GAME_NAME}-server:latest" server/
-
-echo "Tagging image as ${DOCKER_REPO}:$TAG..."
-docker tag "${GAME_NAME}-server:latest" "${DOCKER_REPO}:$TAG"
-
-echo "Tagging image as ${DOCKER_REPO}:latest..."
-docker tag "${GAME_NAME}-server:latest" "${DOCKER_REPO}:latest"
-
-echo "Logging in to Docker registry..."
-echo "$DOCKER_TOKEN" | docker login "$DOCKER_REPO" -u "$DOCKER_USER" --password-stdin
-
-if [ $? -ne 0 ]; then
-    echo "Error: Docker login failed"
-    exit 1
-fi
-
-echo "Pushing image to ${DOCKER_REPO}:$TAG..."
-docker push "${DOCKER_REPO}:$TAG"
-
-echo "Pushing image to ${DOCKER_REPO}:latest..."
-docker push "${DOCKER_REPO}:latest"
+echo "Pushing $IMAGE..."
+docker push "$IMAGE"
 
 echo ""
 echo "================================"
@@ -90,5 +67,5 @@ echo "Tag: $TAG"
 echo "Repository: $DOCKER_REPO"
 echo ""
 echo "To deploy this image:"
-echo "  docker pull ${DOCKER_REPO}:$TAG"
+echo "  docker pull $IMAGE"
 echo "================================"
