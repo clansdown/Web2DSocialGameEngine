@@ -49,7 +49,6 @@
 /server/build/
 /server/build-*/
 /server/bin/
-/server/images/
 /llm_image_creator/
 /game/
 /game_balance_analyzer/build/
