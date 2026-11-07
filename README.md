@@ -24,61 +24,73 @@ The SimpleGame repository is required for this project to function correctly.
 
 Create the following files in the root directory (these files are in `.gitignore`):
 
-#### `.game_name`
-Your game name used for Docker image naming.
+#### `.game_name` (legacy)
+Used by `build_release.sh` for legacy Docker image naming.
 ```
 Ravenest
 ```
 
-#### `.deploy` image keys (preferred)
+#### `.deploy` — deployment configuration
 
-For `install.sh` (including `--image-only`), set the repository and credentials
-in `.deploy`:
+Copy `.deploy.example` to `.deploy` and fill in the instance settings. A Docker
+deployment pulls an already-published image; it does not build or push one:
 
 ```bash
-SERVER_IMAGE=ghcr.io/yourusername/ravenest-server
-SERVER_REGISTRY=ghcr.io
-SERVER_REGISTRY_USERNAME=yourusername
-SERVER_REGISTRY_TOKEN=ghp_xxxxxxxxxxxxxxxx  # PAT with write:packages
+SERVER_IMAGE=ghcr.io/clansdown/web2dsocialgameengine
+SERVER_IMAGE_TAG=latest
 ```
 
-Image paths must be lowercase, so use a lowercase package name such as
-`ravenest-server` even if the GitHub repository uses capitals.
+No registry credentials are needed to deploy. Use `latest` for convenience, or
+pin the immutable tag printed by the publishing script for reproducible
+production deployments. Image paths must be lowercase.
 
-On GHCR, the first push creates a **private** package. Set it public once
-(package settings → Change visibility → Public) so the deploy host can pull
-anonymously.
+Game content is not in the image: compose mounts `${SERVER_PATH}/game`
+read-only at `/app/game`, so configs are copied separately.
+
+#### `.publish_engine` — developer image publishing
+
+Only developers publishing engine server images need this file. Copy
+`.publish_engine.example` to `.publish_engine`, `chmod 600` it, and set:
+
+```bash
+SERVER_IMAGE=ghcr.io/clansdown/web2dsocialgameengine
+SERVER_REGISTRY_USERNAME=clansdown
+SERVER_REGISTRY_TOKEN=ghp_xxxxxxxxxxxxxxxx  # PAT with write:packages
+SERVER_PLATFORM=linux/amd64
+```
+
+Then publish from a clean working tree:
+
+```bash
+./publish_engine_server_image.sh
+```
+
+The script pushes an immutable `<UTC timestamp>-<git sha>` tag and `latest`. It
+refuses dirty trees. On GHCR, the first push creates a **private** package; set
+it public once (package settings → Change visibility → Public) so deploy hosts
+can pull anonymously.
 
 #### Legacy `.docker_repo` / `.docker_creds`
 
-`build_release.sh` still reads these files:
+`build_release.sh` still reads these legacy files:
 
 ```text
 .docker_repo:  ghcr.io/yourusername/ravenest-server
 .docker_creds: yourusername:ghp_xxxxxxxxxxxxxxxx
 ```
 
-Prefer `./install.sh --image-only`; it uses the `.deploy` keys above.
+New publishing should use `.publish_engine` and
+`publish_engine_server_image.sh`.
 
-#### Tagging
+#### Image build helper
 
-`--image-only` derives an immutable `<UTC timestamp>-<git sha>[-dirty]` tag and
-prints it. Set `SERVER_IMAGE_TAG` explicitly to pin a tag across runs.
+`build_server.sh`, `build_release.sh`, and `publish_engine_server_image.sh`
+build the multi-stage `server/Dockerfile` through
+`tools/build_server_image.sh`. The production image runs as uid `10001`, expects
+game content at `/app/game`, and writes uploads to `/app/uploads`.
 
-Example usage:
-
-```bash
-./install.sh --image-only       # Pushes ghcr.io/yourusername/ravenest-server:<tag>
-./build_release.sh v1.0.0       # Legacy: pushes .docker_repo:v1.0.0
-```
-
-Both `build_server.sh` and `build_release.sh` build the multi-stage
-`server/Dockerfile` through `tools/build_server_image.sh`. The production image
-runs as uid `10001`, expects game content at `/app/game`, and writes uploads to
-`/app/uploads`.
-
-Production deployment is normally done with `install.sh`, which can build/push
-the image and write the compose files:
+Production deployment is done with `install.sh`, which pulls the configured
+prebuilt image and writes the compose files:
 
 ```bash
 # .deploy — bundled PostgreSQL (default)
@@ -86,22 +98,9 @@ SERVER_DEPLOY_MODE=docker
 SERVER_DB_MODE=bundled
 SERVER_DB_USER=ravenest
 SERVER_DB_PASSWORD=...       # generate once: openssl rand -hex 24
-SERVER_IMAGE=ghcr.io/yourusername/ravenest-server
-SERVER_REGISTRY_USERNAME=yourusername
-SERVER_REGISTRY_TOKEN=...    # PAT with write:packages
+SERVER_IMAGE=ghcr.io/clansdown/web2dsocialgameengine
+SERVER_IMAGE_TAG=latest
 ```
-
-To publish the server image without deploying content or configuration:
-
-```bash
-./install.sh --image-only
-```
-
-The image path must be lowercase. On GHCR, the first push creates a private
-package; set it public once (package settings → Change visibility → Public) so
-the deploy host can pull anonymously. Game content is not in the image: compose
-mounts `${SERVER_PATH}/game` read-only at `/app/game`, so configs can be copied
-separately.
 
 `deploy/docker-compose.yml` is the app-only base. With
 `SERVER_DB_MODE=bundled`, `install.sh` also writes
@@ -211,13 +210,19 @@ origins; the client bakes their addresses in at build time from `.deploy`.
 See [`docs/publishing.md`](docs/publishing.md) for setup, the `.deploy`
 reference, CORS, cache policy, verification, and rollback.
 
-### Build and Push Release
+### Publish the Engine Server Image
 
 ```bash
-./build_release.sh v1.0.0       # Custom tag
-./build_release.sh              # Timestamp tag
+./publish_engine_server_image.sh              # Immutable tag + latest
+./publish_engine_server_image.sh --no-latest  # Immutable tag only
+./publish_engine_server_image.sh --tag v1.0.0 # Explicit immutable tag
 ```
-Builds server, creates Docker image, tags with version, and pushes to registry using `.docker_repo` and `.docker_creds`.
+
+Publishes from a clean git tree using `.publish_engine`, then prints the
+immutable tag for pinning in `.deploy`.
+
+Legacy `build_release.sh` still builds and pushes using `.docker_repo` and
+`.docker_creds`; prefer `publish_engine_server_image.sh`.
 
 ## Local Testing
 

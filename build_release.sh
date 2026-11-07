@@ -1,8 +1,9 @@
 #!/bin/bash
 # Build the server image and push an immutable tag to the configured registry.
-# Legacy: prefer `./install.sh --image-only`, which reads the same .deploy
-# image/registry keys. This script remains for the .docker_repo/.docker_creds
-# workflow. For a full client/assets/server deploy use install.sh.
+# Legacy: prefer `./publish_engine_server_image.sh`, which reads .publish_engine,
+# refuses dirty trees, and publishes an immutable tag plus latest. This script
+# remains for the .docker_repo/.docker_creds workflow. For deployment use
+# install.sh, which pulls an already-published image.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -590,20 +590,28 @@ Local development can use the `app` profile in the root `docker-compose.yml`
 RAVENEST_DB_PASSWORD=ravenest_dev docker compose --profile app up -d --build
 ```
 
-Production deployment is Docker by default. `install.sh` builds/pushes the
-image and writes `deploy/docker-compose.yml` plus `compose.env`. With
-`SERVER_DB_MODE=bundled` (default), it also writes
-`deploy/docker-compose.bundled.yml` and the idempotent `db-init` SQL, so
-PostgreSQL runs in the same stack on the internal network. With
-`SERVER_DB_MODE=external`, only the app compose file is used and the four
-`SERVER_*_DB_URL` values point at managed/external PostgreSQL. `systemd` app
-deployments must use `external`.
+Production deployment is Docker by default. `install.sh` deploys a prebuilt,
+already-published `SERVER_IMAGE:SERVER_IMAGE_TAG`; it never builds or pushes the
+server image and needs no registry credentials or local Docker. It writes
+`deploy/docker-compose.yml` plus `compose.env` and pulls the image on the API
+server first (`SERVER_PULL_CMD` overrides the default `docker pull`).
+`SERVER_IMAGE_TAG` must be explicit (`latest` or a pinned immutable tag);
+`install.sh` never derives one. With `SERVER_DB_MODE=bundled`
+(default), it also writes `deploy/docker-compose.bundled.yml` and the
+idempotent `db-init` SQL, so PostgreSQL runs in the same stack on the internal
+network. With `SERVER_DB_MODE=external`, only the app compose file is used and
+the four `SERVER_*_DB_URL` values point at managed/external PostgreSQL.
+`systemd` app deployments must use `external`.
 
-`./install.sh --image-only` builds and pushes only `SERVER_IMAGE:<tag>`; it needs
-no `SERVER_HOST`, `SERVER_PATH`, database, CORS, client, or game configuration.
-It prints the pushed tag so a later deploy can pin it. GHCR is supported via
+Publishing the engine server image is a separate developer-only workflow:
+`./publish_engine_server_image.sh` reads `.publish_engine`, refuses a dirty git
+tree, builds `linux/amd64` by default, and pushes an immutable
+`<UTC timestamp>-<sha>` tag plus `latest`. It prints the immutable tag for
+pinning in `.deploy`. GHCR is supported via
 `ghcr.io/<owner>/<lowercase-package>`; image paths must be lowercase, and a
-public package needs no server-side `docker login`. See `docs/publishing.md`.
+public package needs no server-side `docker login`. If a push is denied, run
+`tools/diagnose_ghcr_push.sh` (add `--push-test` for a real throwaway push).
+See `docs/publishing.md`.
 
 ### Testing the Server
 
@@ -1244,6 +1252,10 @@ Build the full game progression and content system with a working tower defense 
 - **Combat maps are lenient**: `CombatMapCache` preserves unknown fields; the linter warns (not errors) on them so the format can evolve (see `docs/combat_maps.md`).
 
 ### Relevant Files
+- `install.sh` - deployment only: builds the client, uploads R2/Pages, mirrors game content, pulls the prebuilt server image, writes compose/env, restarts
+- `publish_engine_server_image.sh` - developer-only image publishing: clean-tree check, build, immutable tag + `latest`, print tag/digest
+- `.deploy.example` / `.publish_engine.example` - deployment config vs developer publishing credentials templates
+- `tools/diagnose_ghcr_push.sh` - GHCR token/package/repository diagnostic (reads `.publish_engine`)
 - `game/config/tower_defense/projectiles.json` - Projectile config (width, height, speed, image_file, forward_vector)
 - `game/config/tower_defense/mobs.json` - Mob config with forward_vector per mob
 - `game/config/tower_defense/units.json` - Soldier/unit config with width/height

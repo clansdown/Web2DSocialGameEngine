@@ -1,4 +1,4 @@
-# .deploy.example — template for the private publishing configuration.
+# .deploy.example — template for the private deployment configuration.
 #
 # Copy this file to .deploy, fill in the values for your deployment, then:
 #
@@ -7,6 +7,10 @@
 # .deploy is gitignored and must never be committed. The values are sourced as
 # a shell fragment by install.sh, so keep it to simple assignments. See
 # docs/publishing.md for the full setup and verification procedure.
+#
+# Publishing the server image is a separate developer workflow controlled by
+# .publish_engine and publish_engine_server_image.sh. Deployers do not need
+# registry credentials.
 
 # --- Pages site repo ---------------------------------------------------------
 # Private repository whose root is the generated Pages site (index.html at the
@@ -42,8 +46,8 @@ PUBLIC_WS_ORIGIN="wss://api.example.com"
 SERVER_HOST=""
 SERVER_PATH=""
 
-# "docker" (default: build/push the server image, write compose files, restart
-# compose) or "systemd" (write the env file and run SERVER_RESTART_CMD).
+# "docker" (default: pull the prebuilt server image, write compose files,
+# restart compose) or "systemd" (write the env file and run SERVER_RESTART_CMD).
 SERVER_DEPLOY_MODE="docker"
 
 # PostgreSQL topology:
@@ -73,29 +77,20 @@ SERVER_STAFF_DB_URL=""
 SERVER_INVITES_DB_URL=""
 
 # --- Docker server image (SERVER_DEPLOY_MODE=docker) -----------------------
-# Full repository path, without a tag. install.sh builds and pushes
-# <SERVER_IMAGE>:<SERVER_IMAGE_TAG>, then writes the tag into compose.env.
-# The path must be lowercase. For GitHub Container Registry use
-#   ghcr.io/<owner>/<lowercase-package>
-# e.g. ghcr.io/example/ravenest-server (the package name does not have to match
-# the GitHub repository name). Publish only the image with:
-#   ./install.sh --image-only
-SERVER_IMAGE=""
-# Empty derives an immutable tag: <UTC timestamp>-<git sha>[-dirty].
-# Set it explicitly to make reruns idempotent or to roll back to a known tag.
-# --image-only prints the pushed tag as SERVER_IMAGE_TAG=<tag>; set it here to
-# keep a later full deploy on that tag (a full deploy still rebuilds/repushes)
-# or use it in a manual compose deployment.
-SERVER_IMAGE_TAG=""
-# Registry host used for docker login; defaults to the first path segment of
-# SERVER_IMAGE (e.g. ghcr.io).
-SERVER_REGISTRY=""
-# Push credentials. For GHCR, use your GitHub username and a PAT with
-# write:packages. Public image pulls need no credentials on the server.
-SERVER_REGISTRY_USERNAME=""
-SERVER_REGISTRY_TOKEN=""
-# Target architecture of the API host. Use linux/arm64 for ARM servers.
-SERVER_PLATFORM="linux/amd64"
+# Prebuilt image to deploy. install.sh never builds or pushes it; developers
+# publish it separately with ./publish_engine_server_image.sh. A deployer only
+# needs these two image values and no registry credentials.
+#
+# The official public image is:
+SERVER_IMAGE="ghcr.io/clansdown/web2dsocialgameengine"
+# Use latest for convenience, or pin the immutable tag printed by the publish
+# script for reproducible production deployments. install.sh never derives this
+# value: it must name an image that already exists in the registry.
+SERVER_IMAGE_TAG="latest"
+# Optional remote pull command. Defaults to:
+#   docker pull 'SERVER_IMAGE:SERVER_IMAGE_TAG'
+# Override when the remote Docker command needs sudo or another wrapper.
+SERVER_PULL_CMD=""
 # Defaults are relative to SERVER_PATH.
 SERVER_COMPOSE_PATH=""
 SERVER_COMPOSE_ENV_PATH=""

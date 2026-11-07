@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 #
-# install.sh — build and publish the client, public game assets, and server content.
+# install.sh — deploy the client, public game assets, and server content.
 #
 # The engine is generic: site-specific values (site repo, R2 bucket, API server)
 # come from a gitignored .deploy file. See docs/publishing.md for setup, the
 # .deploy reference, cache policy, and verification.
 #
+# The server image is not built or pushed here. Developers publish it with
+# ./publish_engine_server_image.sh; deployments pull the already-published
+# SERVER_IMAGE:SERVER_IMAGE_TAG from the registry.
+#
 # Usage:
 #   ./install.sh [--dry-run] [--skip-build] [--skip-r2] [--skip-pages] [--skip-server]
-#   ./install.sh --image-only [--dry-run]
 #
-# Publish order is build -> R2 -> Pages -> API server. R2 goes before Pages so the
+# Deploy order is build -> R2 -> Pages -> API server. R2 goes before Pages so the
 # new shell never references an image that has not been uploaded yet.
-# --image-only stops after building and pushing the server image; it does not
-# require SERVER_HOST or any client/game configuration.
 #
 set -euo pipefail
 
@@ -31,24 +32,21 @@ usage() {
     cat <<'EOF'
 Usage: ./install.sh [options]
 
-Builds the client and publishes to every destination configured in .deploy.
-With no destinations configured, the script fails before publishing.
+Builds the client and deploys to every destination configured in .deploy.
+With no destinations configured, the script fails before deploying.
 
 Stages (run in this order):
   build   npm ci && npm run build -> client/dist
   r2      game/images, game/sounds, game/music -> R2 bucket
   pages   client/dist + overlay -> private Pages site repo, then commit and push
-  server  build/push the Docker image (when SERVER_DEPLOY_MODE=docker),
+  server  pull SERVER_IMAGE:<tag> (when SERVER_DEPLOY_MODE=docker),
           mirror game/ -> API server content, write the runtime env, then
           write/refresh the compose files and restart if configured
 
 Options:
-  --image-only    Build and push SERVER_IMAGE:<tag>, then exit. Requires no
-                  SERVER_HOST, SERVER_PATH, database, CORS, client, or game
-                  configuration; only the image/registry keys.
-  --dry-run       Print publish actions without writing to R2, the site repo,
-                  the API server, or the registry. The local client build still
-                  runs unless --image-only or --skip-build is given.
+  --dry-run       Print deploy actions without writing to R2, the site repo,
+                  or the API server. The local client build still runs unless
+                  --skip-build is given.
   --skip-build    Reuse an existing client/dist (it must contain index.html).
   --skip-r2       Skip the R2 upload stage.
   --skip-pages    Skip the Pages site-repo stage.
@@ -60,21 +58,23 @@ Environment:
 
 Destinations are enabled by setting their keys in .deploy: SITE_REPO (Pages),
 R2_BUCKET (R2), and SERVER_HOST (API server). Public origins, the server CORS
-allowlist, and the database settings also come from .deploy. Each enabled stage
-validates its own keys. R2 and registry credentials are exported only for the
-relevant command and are never printed.
+allowlist, database settings, and the prebuilt server image also come from
+.deploy. Each enabled stage validates its own keys. R2 credentials are exported
+only for the relevant command and are never printed.
 
-SERVER_DEPLOY_MODE=docker (default) builds/pushes SERVER_IMAGE and writes
-SERVER_PATH/docker-compose.yml + compose.env. SERVER_DB_MODE=bundled (default)
-also writes docker-compose.bundled.yml and an idempotent db-init SQL, running
-PostgreSQL in the same compose stack. SERVER_DB_MODE=external uses the four
-SERVER_*_DB_URL values instead. The systemd mode only writes the runtime env and
-runs SERVER_RESTART_CMD; it requires SERVER_DB_MODE=external.
+SERVER_DEPLOY_MODE=docker (default) deploys the already-published
+SERVER_IMAGE:<SERVER_IMAGE_TAG> and writes SERVER_PATH/docker-compose.yml +
+compose.env. SERVER_DB_MODE=bundled (default) also writes
+docker-compose.bundled.yml and an idempotent db-init SQL, running PostgreSQL in
+the same compose stack. SERVER_DB_MODE=external uses the four SERVER_*_DB_URL
+values instead. The systemd mode only writes the runtime env and runs
+SERVER_RESTART_CMD; it requires SERVER_DB_MODE=external.
 
---image-only is useful for publishing the server image to a registry (for
-example ghcr.io) before or independently of a server deployment. It prints the
-pushed tag as SERVER_IMAGE_TAG=<tag>; set it in .deploy so a later full deploy
-or manual compose deployment uses the same tag.
+Publishing the server image is a separate developer workflow:
+  ./publish_engine_server_image.sh
+It reads .publish_engine, builds the image, pushes an immutable tag plus latest,
+and prints the tag to pin in .deploy. install.sh never needs registry
+credentials or a local Docker build.
 EOF
 }
 
@@ -93,7 +93,6 @@ SKIP_BUILD=0
 SKIP_R2=0
 SKIP_PAGES=0
 SKIP_SERVER=0
-IMAGE_ONLY=0
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -145,10 +144,7 @@ default_config() {
     SERVER_INVITES_DB_URL="${SERVER_INVITES_DB_URL:-}"
     SERVER_IMAGE="${SERVER_IMAGE:-}"
     SERVER_IMAGE_TAG="${SERVER_IMAGE_TAG:-}"
-    SERVER_REGISTRY="${SERVER_REGISTRY:-}"
-    SERVER_REGISTRY_USERNAME="${SERVER_REGISTRY_USERNAME:-}"
-    SERVER_REGISTRY_TOKEN="${SERVER_REGISTRY_TOKEN:-}"
-    SERVER_PLATFORM="${SERVER_PLATFORM:-linux/amd64}"
+    SERVER_PULL_CMD="${SERVER_PULL_CMD:-}"
     SERVER_COMPOSE_PATH="${SERVER_COMPOSE_PATH:-}"
     SERVER_COMPOSE_ENV_PATH="${SERVER_COMPOSE_ENV_PATH:-}"
     SERVER_UPLOADS_PATH="${SERVER_UPLOADS_PATH:-}"
@@ -163,28 +159,6 @@ default_config() {
     AVATAR_PUBLIC_BASE_URL="${AVATAR_PUBLIC_BASE_URL:-$PUBLIC_ASSETS_ORIGIN}"
     AVATAR_CLOUDFLARE_ZONE_ID="${AVATAR_CLOUDFLARE_ZONE_ID:-$CF_ZONE_ID}"
     AVATAR_CLOUDFLARE_API_TOKEN="${AVATAR_CLOUDFLARE_API_TOKEN:-}"
-
-    load_docker_fallbacks
-}
-
-# Backwards compatibility with the legacy build_release.sh files. The .deploy
-# values always win; these files are only read when the corresponding keys are
-# empty.
-load_docker_fallbacks() {
-    if [ -z "$SERVER_IMAGE" ] && [ -f .docker_repo ]; then
-        SERVER_IMAGE="$(tr -d '[:space:]' < .docker_repo 2>/dev/null || true)"
-    fi
-    if [ -z "$SERVER_REGISTRY_USERNAME" ] && [ -z "$SERVER_REGISTRY_TOKEN" ] &&
-        [ -f .docker_creds ]; then
-        local creds
-        creds="$(tr -d '\r\n' < .docker_creds 2>/dev/null || true)"
-        case "$creds" in
-            *:*)
-                SERVER_REGISTRY_USERNAME="${creds%%:*}"
-                SERVER_REGISTRY_TOKEN="${creds#*:}"
-                ;;
-        esac
-    fi
 }
 
 # The local stamp records the public origins baked into client/dist, so
@@ -195,7 +169,6 @@ parse_args() {
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --dry-run) DRY_RUN=1 ;;
-            --image-only) IMAGE_ONLY=1 ;;
             --skip-build) SKIP_BUILD=1 ;;
             --skip-r2) SKIP_R2=1 ;;
             --skip-pages) SKIP_PAGES=1 ;;
@@ -486,12 +459,13 @@ preflight_server_runtime() {
     fi
 }
 
-# Validate the image/registry keys shared by a full Docker deploy and
-# --image-only. This deliberately does not require SERVER_PATH or SERVER_HOST.
-preflight_server_image() {
+# Validate the prebuilt image a Docker deployment will pull. This deliberately
+# does not require registry credentials, a local Docker daemon, server/Dockerfile,
+# or the image build helper: deployers only need a published image reference.
+preflight_server_image_deploy() {
     require_var SERVER_IMAGE
     [ -n "$SERVER_IMAGE_TAG" ] ||
-        die "SERVER_IMAGE_TAG is empty; set it in .deploy or let install.sh derive one"
+        die "SERVER_IMAGE_TAG is not set; use latest or the immutable tag printed by publish_engine_server_image.sh"
 
     case "$SERVER_IMAGE" in
         *://*) die "SERVER_IMAGE must be a registry/repository path without a scheme, e.g. ghcr.io/org/ravenest-server" ;;
@@ -503,38 +477,20 @@ preflight_server_image() {
     esac
     case "$SERVER_IMAGE" in
         */*/*) ;;
-        */*)
-            case "${SERVER_IMAGE%%/*}" in
-                *:*) ;;
-                *) SERVER_REGISTRY="${SERVER_REGISTRY:-docker.io}" ;;
-            esac
-            ;;
+        */*) ;;
         *) die "SERVER_IMAGE must be a full repository path, e.g. ghcr.io/org/ravenest-server" ;;
     esac
     case "$SERVER_IMAGE_TAG" in
         *[!A-Za-z0-9_.-]*) die "SERVER_IMAGE_TAG contains unsupported characters: $SERVER_IMAGE_TAG" ;;
     esac
-    [ -n "$SERVER_PLATFORM" ] || die "SERVER_PLATFORM must not be empty"
-
-    SERVER_REGISTRY="${SERVER_REGISTRY:-${SERVER_IMAGE%%/*}}"
-    case "$SERVER_REGISTRY" in
-        "" | */*) die "SERVER_REGISTRY must be a registry hostname, e.g. ghcr.io" ;;
-    esac
-
-    if [ -n "$SERVER_REGISTRY_USERNAME" ] || [ -n "$SERVER_REGISTRY_TOKEN" ]; then
-        require_var SERVER_REGISTRY_USERNAME SERVER_REGISTRY_TOKEN
-    fi
-
-    [ -f server/Dockerfile ] || die "server/Dockerfile is missing"
-    [ -f tools/build_server_image.sh ] || die "tools/build_server_image.sh is missing"
-
-    if [ "$DRY_RUN" != "1" ]; then
-        command -v docker >/dev/null 2>&1 || die "docker not found (required to build/push SERVER_IMAGE)"
-    fi
 }
 
 preflight_server_docker() {
-    preflight_server_image
+    preflight_server_image_deploy
+
+    if [ -z "$SERVER_PULL_CMD" ]; then
+        SERVER_PULL_CMD="docker pull '$SERVER_IMAGE:$SERVER_IMAGE_TAG'"
+    fi
 
     SERVER_COMPOSE_PATH="${SERVER_COMPOSE_PATH:-${SERVER_PATH}/docker-compose.yml}"
     SERVER_COMPOSE_ENV_PATH="${SERVER_COMPOSE_ENV_PATH:-${SERVER_PATH}/compose.env}"
@@ -610,7 +566,7 @@ SERVER_COMPOSE_ENV_CHANGED=0
 SERVER_COMPOSE_FILE_CHANGED=0
 SERVER_COMPOSE_OVERLAY_CHANGED=0
 SERVER_DB_INIT_CHANGED=0
-SERVER_IMAGE_DIGEST=""
+SERVER_IMAGE_PULLED=0
 
 # Atomically install one local file at an absolute remote path. Compares the
 # SHA-256 first; backs up the old file to <path>.previous; writes <path>.new and
@@ -676,16 +632,11 @@ check_build_stamp() {
 
 preflight() {
     local private_path
-    for private_path in .deploy backup.sh push_to_production.sh; do
+    for private_path in .deploy .publish_engine backup.sh push_to_production.sh; do
         if git -C "$SCRIPT_DIR" ls-files --error-unmatch "$private_path" >/dev/null 2>&1; then
             die "$private_path is tracked by git; remove it from the index and keep it private"
         fi
     done
-
-    if [ "$IMAGE_ONLY" = "1" ]; then
-        preflight_server_image
-        return 0
-    fi
 
     [ -d client ] || die "client/ not found; run install.sh from the engine repository"
 
@@ -948,41 +899,21 @@ stage_pages() {
 }
 
 # ---------------------------------------------------------------------------
-# Stage 4 — API server Docker image (optional)
+# Stage 4 — pull the prebuilt server image (Docker deployments)
 # ---------------------------------------------------------------------------
 
-stage_server_image() {
+stage_server_pull() {
     [ "$SERVER_DEPLOY_MODE" = "docker" ] || return 0
+    [ -n "$SERVER_PULL_CMD" ] || return 0
 
-    local image="${SERVER_IMAGE}:${SERVER_IMAGE_TAG}"
     if [ "$DRY_RUN" = "1" ]; then
-        log "server image: would build $image (platform $SERVER_PLATFORM)"
-        log "server image: would push $image to $SERVER_REGISTRY"
+        log "server image: would pull ${SERVER_IMAGE}:${SERVER_IMAGE_TAG}"
         return
     fi
 
-    command -v docker >/dev/null 2>&1 || die "docker not found"
-    [ -f server/Dockerfile ] || die "server/Dockerfile is missing"
-
-    if [ -n "$SERVER_REGISTRY_USERNAME" ]; then
-        log "server image: logging in to $SERVER_REGISTRY"
-        if ! printf '%s' "$SERVER_REGISTRY_TOKEN" |
-            docker login "$SERVER_REGISTRY" --username "$SERVER_REGISTRY_USERNAME" \
-                --password-stdin >/dev/null; then
-            die "docker login failed for $SERVER_REGISTRY"
-        fi
-    fi
-
-    log "server image: building $image"
-    "$SCRIPT_DIR/tools/build_server_image.sh" "$image" --platform "$SERVER_PLATFORM"
-
-    log "server image: pushing $image"
-    docker push "$image"
-    SERVER_IMAGE_DIGEST="$(docker inspect --format '{{index .RepoDigests 0}}' "$image" 2>/dev/null || true)"
-    log "server image: published $image"
-    if [ -n "$SERVER_IMAGE_DIGEST" ]; then
-        log "server image: digest $SERVER_IMAGE_DIGEST"
-    fi
+    log "server image: pulling ${SERVER_IMAGE}:${SERVER_IMAGE_TAG}"
+    ssh_run "$SERVER_HOST" "$SERVER_PULL_CMD"
+    SERVER_IMAGE_PULLED=1
 }
 
 # ---------------------------------------------------------------------------
@@ -1121,9 +1052,6 @@ stage_server_compose() {
     {
         printf '# Generated by install.sh from .deploy; do not edit.\n'
         printf 'RAVENEST_IMAGE=%s:%s\n' "$SERVER_IMAGE" "$SERVER_IMAGE_TAG"
-        if [ -n "$SERVER_IMAGE_DIGEST" ]; then
-            printf 'RAVENEST_IMAGE_DIGEST=%s\n' "$SERVER_IMAGE_DIGEST"
-        fi
         printf 'RAVENEST_ENV_FILE=%s\n' "$SERVER_ENV_PATH"
         printf 'RAVENEST_GAME_PATH=%s\n' "${SERVER_PATH}/game"
         printf 'RAVENEST_UPLOADS_PATH=%s\n' "$SERVER_UPLOADS_PATH"
@@ -1174,6 +1102,9 @@ stage_server_restart() {
     fi
 
     local should_restart=0
+    if [ "${SERVER_IMAGE_PULLED:-0}" = "1" ]; then
+        should_restart=1
+    fi
     if [ "${SERVER_ENV_CHANGED:-0}" = "1" ]; then
         should_restart=1
     fi
@@ -1232,17 +1163,7 @@ load_deploy
 default_config
 parse_args "$@"
 
-if [ "$IMAGE_ONLY" = "1" ]; then
-    resolve_server_deploy_mode
-    if [ "$SERVER_DEPLOY_MODE" != "docker" ]; then
-        die "--image-only requires SERVER_DEPLOY_MODE=docker"
-    fi
-fi
-
-if [ "$IMAGE_ONLY" = "1" ]; then
-    [ -n "$SERVER_IMAGE" ] ||
-        die "no image repository configured; set SERVER_IMAGE in .deploy"
-elif [ -z "$SITE_REPO" ] && [ -z "$R2_BUCKET" ] && [ -z "$SERVER_HOST" ]; then
+if [ -z "$SITE_REPO" ] && [ -z "$R2_BUCKET" ] && [ -z "$SERVER_HOST" ]; then
     die "no publish destination configured; create .deploy or set SITE_REPO, R2_BUCKET, or SERVER_HOST"
 fi
 
@@ -1250,12 +1171,6 @@ ENGINE_SHA="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo un
 ENGINE_DIRTY=""
 if [ -n "$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null || true)" ]; then
     ENGINE_DIRTY="-dirty"
-fi
-
-# Immutable per-release tag. Set SERVER_IMAGE_TAG in .deploy to make reruns
-# idempotent or to roll back to a known tag.
-if [ -z "$SERVER_IMAGE_TAG" ]; then
-    SERVER_IMAGE_TAG="$(date -u +%Y%m%dT%H%M%SZ)-${ENGINE_SHA}${ENGINE_DIRTY}"
 fi
 
 RUN_R2=1
@@ -1267,27 +1182,15 @@ if [ -z "$SERVER_HOST" ]; then RUN_SERVER=0; fi
 if [ "$SKIP_R2" = "1" ]; then RUN_R2=0; fi
 if [ "$SKIP_PAGES" = "1" ]; then RUN_PAGES=0; fi
 if [ "$SKIP_SERVER" = "1" ]; then RUN_SERVER=0; fi
-if [ "$IMAGE_ONLY" = "1" ]; then
-    RUN_R2=0
-    RUN_PAGES=0
-    RUN_SERVER=0
-fi
 
 log "engine: $SCRIPT_DIR @ ${ENGINE_SHA}${ENGINE_DIRTY}"
 if [ "$DRY_RUN" = "1" ]; then
-    log "dry run: no writes to R2, the site repo, the API server, or the registry"
-fi
-if [ "$IMAGE_ONLY" = "1" ]; then
-    log "image-only: building and pushing the server image; no client, R2, Pages, game, or server deployment stages"
+    log "dry run: no writes to R2, the site repo, or the API server"
 fi
 
 preflight
 
-if [ "$IMAGE_ONLY" = "1" ]; then
-    log "build: skipped (--image-only)"
-else
-    stage_build
-fi
+stage_build
 
 if [ "$RUN_R2" = "1" ]; then
     stage_r2
@@ -1301,11 +1204,8 @@ else
     log "pages: skipped (not configured or --skip-pages)"
 fi
 
-if [ "$IMAGE_ONLY" = "1" ]; then
-    stage_server_image
-    printf 'SERVER_IMAGE_TAG=%s\n' "$SERVER_IMAGE_TAG"
-elif [ "$RUN_SERVER" = "1" ]; then
-    stage_server_image
+if [ "$RUN_SERVER" = "1" ]; then
+    stage_server_pull
     stage_server_content
     stage_server_runtime
     stage_server_compose

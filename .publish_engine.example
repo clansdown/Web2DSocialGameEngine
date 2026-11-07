@@ -1,0 +1,36 @@
+# .publish_engine.example — template for developer-only image publishing.
+#
+# Copy this file to .publish_engine, fill in the values, then:
+#
+#     chmod 600 .publish_engine
+#
+# .publish_engine is gitignored and must never be committed. It is sourced as a
+# shell fragment by publish_engine_server_image.sh, so keep it to simple
+# assignments. Deployments use .deploy and do not read this file.
+#
+# Publish the server image from a clean git working tree:
+#
+#     ./publish_engine_server_image.sh
+#
+# The script refuses dirty trees, builds <UTC timestamp>-<git sha>, pushes that
+# immutable tag and :latest, and prints SERVER_IMAGE_TAG=<tag> for pinning in
+# .deploy. Use --no-latest to skip the moving tag, --tag to override the
+# immutable tag, and --dry-run to preview the actions.
+
+# Full repository path, without a tag, lowercase. This is the image developers
+# push; deployers put the same repository in .deploy.
+SERVER_IMAGE="ghcr.io/clansdown/web2dsocialgameengine"
+
+# Registry credentials for docker login. For GHCR, use the GitHub account that
+# owns the PAT and a classic PAT with write:packages. Leave both empty to use an
+# existing docker login. Never put these in .deploy.
+SERVER_REGISTRY_USERNAME="clansdown"
+SERVER_REGISTRY_TOKEN="ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# Target architecture of the image. Use linux/arm64 for ARM hosts. The image is
+# built locally and pushed to the registry.
+SERVER_PLATFORM="linux/amd64"
+
+# Optional immutable tag override. Leave empty to derive <UTC timestamp>-<sha>.
+# Do not set this to latest; latest is published alongside the immutable tag.
+SERVER_IMAGE_TAG=""

@@ -11,10 +11,13 @@ This document describes how the game is published:
   pools, and the server's `/images` fallback);
 - the API server's CORS allowlist is written to an env file from `.deploy`.
 
-One command, `./install.sh`, performs the build and all configured publishing
-stages. The engine stays generic: deployment values live in a gitignored
-`.deploy` file. The site repo, ops overlay, and `.deploy` are **private** and
-are not part of this repository.
+One command, `./install.sh`, performs the build and all configured deployment
+stages. It pulls the prebuilt server image configured in `.deploy`; it never
+builds or pushes that image. Publishing the engine server image is a separate
+developer workflow (`publish_engine_server_image.sh`, configured by
+`.publish_engine`). The engine stays generic: deployment values live in a
+gitignored `.deploy` file. The site repo, ops overlay, `.deploy`, and
+`.publish_engine` are **private** and are not part of this repository.
 
 > The hostnames below (`app.example.com`, `api.example.com`,
 > `assets.example.com`) are placeholders. Replace `example.com` with your
@@ -24,11 +27,22 @@ are not part of this repository.
 >
 > ```bash
 > cp .deploy.example .deploy
-> $EDITOR .deploy          # fill in the destinations and public origins
+> $EDITOR .deploy          # fill in the destinations, origins, image, and tag
 > chmod 600 .deploy
 > chmod +x install.sh      # once, if your checkout lacks the executable bit
-> DRY_RUN=1 ./install.sh   # prints the publish plan, writes nothing remote
+> DRY_RUN=1 ./install.sh   # prints the deploy plan, writes nothing remote
 > ./install.sh             # build -> R2 -> Pages -> server content/env
+> ```
+>
+> Deployers do not need registry credentials or a local Docker build.
+> `install.sh` pulls the already-published `SERVER_IMAGE:SERVER_IMAGE_TAG`.
+>
+> Developers publishing the engine image use `.publish_engine`:
+>
+> ```bash
+> cp .publish_engine.example .publish_engine
+> chmod 600 .publish_engine
+> ./publish_engine_server_image.sh
 > ```
 >
 > `bash install.sh` works too if the executable bit is not set.
@@ -91,7 +105,9 @@ On the build host:
 - a complete working tree including the gitignored `client/SimpleGame` (the
   `file:./SimpleGame/ui` dependency) and the `game/` content tree (configs,
   text, images; only a few placeholders are tracked in the public engine);
-- SSH access to the API server, if the server stages are enabled.
+- SSH access to the API server, if the server stages are enabled;
+- Docker **only for developers publishing the server image**; deployment does
+  not require a local Docker daemon or registry credentials.
 
 Cloudflare:
 
@@ -113,10 +129,11 @@ Cloudflare:
 
 | Role | Visibility | Contents |
 |---|---|---|
-| Engine repo (this repository) | public | source, configs, `install.sh`, `docs/publishing.md`, `.deploy.example` |
+| Engine repo (this repository) | public | source, configs, `install.sh`, `publish_engine_server_image.sh`, `docs/publishing.md`, `.deploy.example`, `.publish_engine.example` |
 | Site repo | **private** | generated Pages site only: `index.html`, `assets/`, `_headers`, `robots.txt`, favicon |
 | Ops overlay | **private** | files copied into the site repo after the build sync (`_headers`, `robots.txt`, favicon, optional `_redirects`) |
-| `.deploy` | **private** | real site repo path, R2 credentials, public origins, API server host/path/CORS/restart command |
+| `.deploy` | **private** | deployment image/tag, site repo path, R2 credentials, public origins, API server host/path/CORS/restart command |
+| `.publish_engine` | **private** | developer-only image repository, registry credentials, and platform |
 | `push_to_production.sh` / `backup.sh` | local only | legacy manual server rsync fallback |
 
 Do not commit the site repo, the overlay, `.deploy`, or real deployment values
@@ -168,12 +185,9 @@ values are later used as literal paths.
 | `SERVER_CHAT_DB_URL` | server | external | **yes** | `postgresql://…/ravenest_chat` |
 | `SERVER_STAFF_DB_URL` | server | external | **yes** | `postgresql://…/ravenest_staff` |
 | `SERVER_INVITES_DB_URL` | server | external | **yes** | `postgresql://…/ravenest_invites` |
-| `SERVER_IMAGE` | server | Docker mode | **yes** | lowercase full repository path, e.g. `ghcr.io/org/ravenest-server` |
-| `SERVER_IMAGE_TAG` | server | optional | no | default `<UTC timestamp>-<git sha>[-dirty]`; `--image-only` prints the pushed value |
-| `SERVER_REGISTRY` | server | optional | no | defaults to the first segment of `SERVER_IMAGE` |
-| `SERVER_REGISTRY_USERNAME` | server | Docker push | if logging in | falls back to `.docker_creds`; omit to use an existing `docker login` |
-| `SERVER_REGISTRY_TOKEN` | server | Docker push | if logging in | falls back to `.docker_creds`; PAT with `write:packages` for GHCR |
-| `SERVER_PLATFORM` | server | optional | no | `linux/amd64` (default) or `linux/arm64` |
+| `SERVER_IMAGE` | server | Docker mode | **yes** | prebuilt lowercase repository path, e.g. `ghcr.io/org/ravenest-server` |
+| `SERVER_IMAGE_TAG` | server | Docker mode | **yes** | `latest` or the immutable tag printed by `publish_engine_server_image.sh`; never derived by `install.sh` |
+| `SERVER_PULL_CMD` | server | optional | no | remote pull command; default `docker pull 'SERVER_IMAGE:SERVER_IMAGE_TAG'` |
 | `SERVER_COMPOSE_PATH` | server | optional | no | default `${SERVER_PATH}/docker-compose.yml` |
 | `SERVER_COMPOSE_ENV_PATH` | server | optional | no | default `${SERVER_PATH}/compose.env` |
 | `SERVER_UPLOADS_PATH` | server | optional | no | default `${SERVER_PATH}/uploads` |
@@ -188,6 +202,35 @@ values are later used as literal paths.
 | `AVATAR_CLOUDFLARE_API_TOKEN` | server | optional | **yes** | Cache Purge-only token; both zone+token required together |
 | `CF_API_TOKEN` | deferred | optional | **yes** | reserved for future purge-on-deploy |
 | `CF_ZONE_ID` | deferred | optional | no | default for `AVATAR_CLOUDFLARE_ZONE_ID`; reserved for purge-on-deploy |
+
+### 4.1 `.publish_engine` reference
+
+`.publish_engine` is only for developers publishing the engine server image.
+It is sourced by `publish_engine_server_image.sh`, is gitignored, and must never
+be committed. Deployers do not need it. Copy `.publish_engine.example`, set
+mode `600`, and fill in:
+
+| Key | Required | Secret | Example / notes |
+|---|---|---|---|
+| `SERVER_IMAGE` | yes | no | lowercase repository path, e.g. `ghcr.io/clansdown/web2dsocialgameengine`; no tag |
+| `SERVER_REGISTRY_USERNAME` | with token | no | registry account, e.g. `clansdown` |
+| `SERVER_REGISTRY_TOKEN` | with username | **yes** | classic PAT with `write:packages` for GHCR |
+| `SERVER_PLATFORM` | no | no | `linux/amd64` (default) or `linux/arm64` |
+| `SERVER_IMAGE_TAG` | no | no | immutable tag override; empty derives `<UTC timestamp>-<sha>`; never `latest` |
+
+The publishing script refuses a dirty git tree, builds the image, pushes the
+immutable tag first and `latest` second, and prints the immutable tag:
+
+```text
+SERVER_IMAGE=ghcr.io/clansdown/web2dsocialgameengine
+SERVER_IMAGE_TAG=20261106T120000Z-a1b2c3d
+SERVER_IMAGE_LATEST=latest
+SERVER_IMAGE_DIGEST=ghcr.io/...@sha256:...
+```
+
+Use `--no-latest` to skip the moving tag, `--tag` to override the immutable
+tag, `--platform` to override the platform, `--config FILE` to select another
+config file, and `--dry-run` to preview.
 
 A stage is enabled by setting its primary key:
 
@@ -208,7 +251,8 @@ Security notes:
 - `chmod 600 .deploy`; `install.sh` warns if the mode is looser.
 - `.deploy` is sourced, so it must contain assignments, not arbitrary commands.
 - `install.sh` never uses `set -x` and never prints credential values. The four
-  `SERVER_*_DB_URL` values and registry tokens are secrets.
+  `SERVER_*_DB_URL` values are secrets. Registry tokens live only in
+  `.publish_engine`, never in `.deploy`.
 - The generated runtime env file is mode `600`; `compose.env` is mode `600`;
   the compose file itself is mode `644` and contains no secrets.
 - Do not put `.deploy` in the site repo or the ops overlay.
@@ -224,7 +268,8 @@ Checklist:
 - [ ] `cloudflared` tunnel + `api.example.com` public hostname;
 - [ ] API service reads `SERVER_ENV_PATH`, including all four
       `RAVENEST_*_DB_URL` values, and allows `RAVENEST_CORS_ORIGINS`;
-- [ ] for Docker mode: registry access, `SERVER_IMAGE`, and a writable
+- [ ] for Docker mode: a published `SERVER_IMAGE:SERVER_IMAGE_TAG` (public
+      package, or a server-side Docker login for a private one) and a writable
       `${SERVER_UPLOADS_PATH}` owned by `10001:10001`;
 - [ ] choose `SERVER_DB_MODE`: `bundled` (generate `SERVER_DB_PASSWORD`) or
       `external` (create the four databases and URLs);
@@ -481,8 +526,8 @@ The order is fixed:
 2. **R2** — public art is uploaded before the shell that references it.
 3. **Pages** — `client/dist` is synced to the site repo, the overlay is copied,
    then the site repo is committed and pushed.
-4. **server image** — in Docker mode, `server/Dockerfile` is built and the
-   immutable image tag is pushed to the registry.
+4. **server image** — in Docker mode, the prebuilt
+   `SERVER_IMAGE:SERVER_IMAGE_TAG` is pulled on the API server.
 5. **server content** — `game/` is mirrored to the API server.
 6. **server env** — the four `RAVENEST_*_DB_URL` values (supplied or derived),
    CORS, and avatar variables are written to the server env file.
@@ -501,8 +546,10 @@ The order is fixed:
 | `--skip-r2` | Skip the R2 stage even if `R2_BUCKET` is set. |
 | `--skip-pages` | Skip the Pages stage even if `SITE_REPO` is set. |
 | `--skip-server` | Skip the server content, env, and restart stages even if `SERVER_HOST` is set. |
-| `--image-only` | Build and push `SERVER_IMAGE:<tag>`, then exit. Requires no `SERVER_HOST`, `SERVER_PATH`, database, CORS, client, or game configuration. |
 | `--help` | Show usage. |
+
+Publishing the server image is a separate command; see
+`publish_engine_server_image.sh` and the `.publish_engine` reference above.
 
 ### Build stage
 
@@ -641,8 +688,8 @@ file, and skips the write/restart when unchanged. On a change it:
 If the restart fails, it restores `.previous` and retries the restart. If no
 restart command is configured, it writes the file and prints a gentle reminder.
 
-This stage does **not** deploy the server binary. In Docker mode the image and
-compose stages below do; otherwise binary rollout is separate.
+This stage does **not** deploy the server binary. In Docker mode the prebuilt
+image pull and compose stages below do; otherwise binary rollout is separate.
 
 ### Avatar storage
 
@@ -695,8 +742,8 @@ do not enable `SERVER_AVATAR_STORAGE=r2` in production before that sign-off.
 
 ### Docker server deployment
 
-`SERVER_DEPLOY_MODE=docker` is the default. It adds an image stage and a compose
-stage. `SERVER_DB_MODE` selects the database topology:
+`SERVER_DEPLOY_MODE=docker` is the default. It pulls the prebuilt image and
+adds a compose stage. `SERVER_DB_MODE` selects the database topology:
 
 - `bundled` (default) — PostgreSQL runs in the same compose stack.
 - `external` — the app runs in compose but PostgreSQL is managed elsewhere.
@@ -710,46 +757,34 @@ SERVER_DEPLOY_MODE=docker
 SERVER_DB_MODE=bundled
 SERVER_DB_USER=ravenest
 SERVER_DB_PASSWORD=...       # openssl rand -hex 24
-SERVER_IMAGE=ghcr.io/example/ravenest-server
-SERVER_IMAGE_TAG=            # empty: <UTC timestamp>-<git sha>[-dirty]
-SERVER_REGISTRY=ghcr.io
-SERVER_REGISTRY_USERNAME=...
-SERVER_REGISTRY_TOKEN=...
-SERVER_PLATFORM=linux/amd64
+SERVER_IMAGE=ghcr.io/clansdown/web2dsocialgameengine
+SERVER_IMAGE_TAG=latest      # or the immutable tag printed by the publish script
 ```
 
-For compatibility, an empty `SERVER_IMAGE` falls back to `.docker_repo`, and
-empty `SERVER_REGISTRY_USERNAME`/`SERVER_REGISTRY_TOKEN` fall back to
-`.docker_creds` (`username:token`). The `.deploy` values always win.
+`install.sh` requires an explicit tag; it never derives one. Use `latest` for
+convenience or pin the immutable tag for reproducible production deployments.
+It pulls the image on the API server before switching the compose files:
 
-The image is built from `server/Dockerfile` (multi-stage, non-root uid `10001`)
-and pushed as `<SERVER_IMAGE>:<SERVER_IMAGE_TAG>`. `install.sh` writes:
+```text
+docker pull 'SERVER_IMAGE:SERVER_IMAGE_TAG'
+```
+
+Override `SERVER_PULL_CMD` when the remote Docker command needs `sudo` or a
+wrapper. Deployment does not require registry credentials or a local Docker
+build. If the image is private, the API server needs its own Docker login; a
+public package needs none.
+
+`install.sh` writes:
 
 - `${SERVER_COMPOSE_PATH}` (`docker-compose.yml`, mode `644`, app only);
 - `${SERVER_COMPOSE_OVERLAY_PATH}` (`docker-compose.bundled.yml`, mode `644`,
   bundled only);
 - `${SERVER_DB_INIT_PATH}/01-databases.sql` (mode `644`, bundled only);
 - `${SERVER_COMPOSE_ENV_PATH}` (`compose.env`, mode `600`) with
-  `RAVENEST_IMAGE`, the pushed image digest when available,
-  `RAVENEST_ENV_FILE`, `RAVENEST_GAME_PATH`, `RAVENEST_UPLOADS_PATH`, and — for
-  bundled — `RAVENEST_DB_USER`, `RAVENEST_DB_PASSWORD`, and
-  `RAVENEST_DB_INIT_PATH`;
+  `RAVENEST_IMAGE`, `RAVENEST_ENV_FILE`, `RAVENEST_GAME_PATH`,
+  `RAVENEST_UPLOADS_PATH`, and — for bundled — `RAVENEST_DB_USER`,
+  `RAVENEST_DB_PASSWORD`, and `RAVENEST_DB_INIT_PATH`;
 - `${SERVER_ENV_PATH}` (the runtime env above).
-
-#### Publishing the image only
-
-Use `--image-only` to build and push the server image without mirroring game
-content, writing server config, or restarting anything:
-
-```bash
-./install.sh --image-only
-```
-
-It reads only the image/registry keys: `SERVER_IMAGE` is required;
-`SERVER_IMAGE_TAG` is derived when empty; `SERVER_REGISTRY`, the registry
-credentials, and `SERVER_PLATFORM` are optional/defaulted. It does not require
-`SERVER_HOST`, `SERVER_PATH`, a database mode, public origins, the client
-checkout, or `game/`.
 
 The image contains the compiled server only. Game content remains a separate
 mount: compose maps `${SERVER_PATH}/game` to `/app/game` read-only. To deploy
@@ -759,25 +794,34 @@ content manually:
 rsync -a game/ user@server:/srv/ravenest/game/
 ```
 
-`--image-only` prints the pushed tag:
+#### Publishing the engine server image
 
-```text
-SERVER_IMAGE_TAG=20261103T120000Z-a1b2c3d
-```
-
-A later full `install.sh` always rebuilds and repushes the image. Pinning the
-printed tag in `.deploy` keeps the generated `compose.env` on that tag; to use
-the image-only push without rebuilding, deploy manually with `docker compose`
-(or add a future `--skip-image` path).
-
-For GitHub Container Registry (GHCR):
+Publishing is developer-only and separate from deployment:
 
 ```bash
-SERVER_IMAGE=ghcr.io/<owner>/<lowercase-package>
-SERVER_REGISTRY=ghcr.io
-SERVER_REGISTRY_USERNAME=<github-username>
-SERVER_REGISTRY_TOKEN=<PAT with write:packages>
+./publish_engine_server_image.sh
 ```
+
+It reads `.publish_engine`, refuses a dirty git tree, builds
+`server/Dockerfile` through `tools/build_server_image.sh`, and pushes:
+
+```text
+<SERVER_IMAGE>:<UTC timestamp>-<git sha>
+<SERVER_IMAGE>:latest
+```
+
+The immutable tag is pushed first, then `latest`; `--no-latest` skips the
+moving tag. It prints the immutable tag and digest:
+
+```text
+SERVER_IMAGE=ghcr.io/clansdown/web2dsocialgameengine
+SERVER_IMAGE_TAG=20261106T120000Z-a1b2c3d
+SERVER_IMAGE_LATEST=latest
+SERVER_IMAGE_DIGEST=ghcr.io/...@sha256:...
+```
+
+Set the printed immutable tag in `.deploy` for production. The image is built
+from a clean commit; `-dirty` tags are never published.
 
 Image paths must be lowercase, so the package name does not have to match the
 GitHub repository name. The first push creates a **private** GHCR package by
@@ -788,6 +832,27 @@ default. Set it public once in GitHub:
 Once public, the deploy host pulls anonymously; no server-side `docker login`
 is required. A private package needs a server-side login or a pre-authenticated
 Docker daemon.
+
+#### Diagnosing a denied GHCR push
+
+`tools/diagnose_ghcr_push.sh` reads `.publish_engine` and inspects the token
+identity, scopes, namespace, existing package, and linked-repository access. It
+is read-only by default, never prints the token, and accepts
+`--publish-config FILE` for a different file:
+
+```bash
+./tools/diagnose_ghcr_push.sh
+```
+
+To verify actual write access with a throwaway package:
+
+```bash
+./tools/diagnose_ghcr_push.sh --push-test
+```
+
+The push test creates `ghcr.io/<owner>/ravenest-ghcr-diagnostic`; remove it from
+GitHub Packages afterwards. The script exits non-zero when it finds a blocking
+configuration, authentication, package, or Docker problem.
 
 #### Bundled PostgreSQL
 
@@ -855,8 +920,9 @@ cd "$SERVER_PATH" && docker compose --env-file compose.env \
 ```
 
 The restart runs when the runtime env, either compose file, the database init
-SQL, or `compose.env` changes. A new image tag/digest in `compose.env`
-therefore redeploys even when the runtime env is byte-identical.
+SQL, or `compose.env` changes. A successful image pull also forces the compose
+`up`, so a moving `latest` tag takes effect even when `compose.env` is
+byte-identical; Compose only recreates containers whose image or config changed.
 
 The app container mounts `${SERVER_PATH}/game` read-only and
 `${SERVER_UPLOADS_PATH}` read-write. The image runs as `10001:10001`; if the SSH
@@ -877,18 +943,17 @@ docker compose --env-file compose.env \
 ```
 
 `docker build` needs the server source context but not `game/`. The Dockerfile
-uses Ubuntu 24.04, so the build host must be able to reach the distro and CMake
-`FetchContent` sources during the image build.
+uses Ubuntu 24.04, so a developer publishing an image must be able to reach the
+distro and CMake `FetchContent` sources during the build. Deployment hosts only
+pull the finished image.
 
 ### Preflight checks
 
-Before building, `install.sh`:
+Before deploying, `install.sh`:
 
 - requires `client/SimpleGame/ui` for a normal publish;
-- in `--image-only` mode, requires only the image/registry keys, rejects an
-  uppercase `SERVER_IMAGE`, and skips the client/public-origin checks;
-- refuses to run if `.deploy`, `backup.sh`, or `push_to_production.sh` is tracked
-  by git;
+- refuses to run if `.deploy`, `.publish_engine`, `backup.sh`, or
+  `push_to_production.sh` is tracked by git;
 - refuses to run if `server/build*` or `game_balance_analyzer/build*` is tracked;
 - refuses to publish into `/`, your home directory, a directory that looks like
   a source repo, a non-empty site repo without `index.html`, or a site repo
@@ -906,9 +971,10 @@ Before building, `install.sh`:
 - for `bundled`, requires `SERVER_DB_USER`/`SERVER_DB_PASSWORD`, checks the
   password is URL-safe, rejects any `SERVER_*_DB_URL`, and derives the four
   URLs;
-- in Docker mode, validates `SERVER_IMAGE`, the image tag, the registry, the
-  compose paths, and the selected local compose files; warns when an external
-  DB URL points at loopback;
+- in Docker mode, requires an explicit `SERVER_IMAGE_TAG`, validates
+  `SERVER_IMAGE` and the tag, and validates the compose paths and selected local
+  compose files; it does not require registry credentials or local Docker;
+  warns when an external DB URL points at loopback;
 - when `SERVER_AVATAR_STORAGE=r2`, validates the R2 endpoint/bucket/separate
   token, the public avatar base origin, and the object prefix;
 - warns about tracked files larger than 50 MiB and refuses to run if any tracked
@@ -942,6 +1008,8 @@ Cache** on the affected URL or prefix if an asset must change immediately.
   the avatar-storage variables above.
 - **Compose env:** Docker mode also writes `${SERVER_COMPOSE_ENV_PATH}` with the
   image tag and mount paths.
+- **Image pull:** Docker mode pulls `SERVER_IMAGE:SERVER_IMAGE_TAG` on the API
+  server before switching compose files (`SERVER_PULL_CMD` overrides the command).
 - **Restart:** optional `SERVER_RESTART_CMD`; Docker mode defaults it to
   `docker compose up -d`.
 
@@ -1186,13 +1254,14 @@ published site is always recoverable.
 | Bundled app restarts before DB is ready | `db-init` dependency not merged | Confirm both `-f` compose files are used |
 | `SERVER_IMAGE must be a full repository path` | Docker mode without a registry/repository | Set `SERVER_IMAGE=ghcr.io/org/name` |
 | `SERVER_IMAGE must be lowercase` | GHCR/repository path contains uppercase | Use a lowercase package path, e.g. `ghcr.io/org/ravenest-server` |
-| `no image repository configured` | `--image-only` without `SERVER_IMAGE` | Set `SERVER_IMAGE` in `.deploy` |
-| `--image-only requires SERVER_DEPLOY_MODE=docker` | systemd mode selected | Remove `SERVER_DEPLOY_MODE=systemd` or use a full Docker deploy |
-| `docker login failed` | Missing/expired registry token | Set `SERVER_REGISTRY_USERNAME`/`SERVER_REGISTRY_TOKEN` or `.docker_creds` |
+| `SERVER_IMAGE_TAG is not set` | Docker deploy without a pinned tag | Set `latest` or the immutable tag printed by `publish_engine_server_image.sh` |
+| `docker login failed` | Publishing with bad registry credentials | Fix `SERVER_REGISTRY_USERNAME`/`SERVER_REGISTRY_TOKEN` in `.publish_engine` |
+| `docker push` returns `denied` | GHCR token, package, or namespace permission | Run `./tools/diagnose_ghcr_push.sh --push-test` |
+| `publish_engine_server_image.sh` refuses to run | Working tree is dirty | Commit or stash changes; publishing always uses a clean commit |
 | DB URL points at loopback in Docker mode | `127.0.0.1` is the app container, not the host | Use the host LAN address, managed hostname, or compose service name |
 | Container cannot write uploads | `${SERVER_UPLOADS_PATH}` is not owned by `10001:10001` | Set `SERVER_UPLOADS_OWNER=10001:10001` or chown it |
 | `docker compose up` cannot find `RAVENEST_IMAGE` | `compose.env` missing or wrong path | Check `SERVER_COMPOSE_ENV_PATH` and the `docker compose --env-file` argument |
-| `install.sh` says `no publish destination configured` | `.deploy` missing or has no primary key | Create `.deploy` from `.deploy.example`; `--image-only` requires `SERVER_IMAGE` |
+| `install.sh` says `no publish destination configured` | `.deploy` missing or has no primary key | Create `.deploy` from `.deploy.example` |
 | `.deploy` not loaded | File missing, unreadable, or a shell syntax error | Confirm it is at the engine root; `chmod 600 .deploy`; check with `bash -n .deploy` |
 | `npm ci` fails | Missing lockfile or `client/SimpleGame` | Restore `client/package-lock.json`; clone SimpleGame into `client/SimpleGame` |
 | Site repo push fails | No remote, no credentials, or no permission | Add a remote / configure credentials; `install.sh` sets the upstream on the first push |
@@ -1206,8 +1275,12 @@ published site is always recoverable.
 ## 12. Security
 
 - `.deploy` is private, mode `600`, gitignored, and backed up outside the repo.
+- `.publish_engine` is private, mode `600`, gitignored, and contains the registry
+  token. Deployment never reads it; only `publish_engine_server_image.sh` does.
 - `install.sh` never enables shell tracing and never prints credential values.
   R2 credentials are exported only for the AWS CLI commands.
+- `publish_engine_server_image.sh` passes the registry token to `docker login`
+  through stdin and never prints it.
 - Use SSH or a Git credential helper for the site repo. A token embedded in the
   remote URL can appear in Git error output.
 - The R2 bucket is private. Public reads happen only through the
@@ -1230,11 +1303,11 @@ published site is always recoverable.
 
 | In the engine (tracked) | Private (not tracked) |
 |---|---|
-| `install.sh` | `.deploy` |
+| `install.sh`, `publish_engine_server_image.sh` | `.deploy`, `.publish_engine` |
 | `docs/publishing.md` | site repo |
-| `.deploy.example` | ops overlay |
+| `.deploy.example`, `.publish_engine.example` | ops overlay |
 | client/server source | R2 bucket, token, custom domain |
-| game configs and text | tunnel credentials and hostname |
+| game configs and text | tunnel credentials, hostname, registry token |
 | `.gitignore` entries | `backup.sh` / `push_to_production.sh` |
 | `client/.env.example` | `client/.env.development.local` |
 
