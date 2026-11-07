@@ -49,6 +49,8 @@
 /server/build/
 /server/build-*/
 /server/bin/
+# Generated uWebSockets header symlinks (CMake recreates both layouts)
+/server/uWebSockets-include/
 /llm_image_creator/
 /game/
 /game_balance_analyzer/build/
@@ -67,8 +69,11 @@ push_to_production.sh
 /.docker_repo
 /.docker_creds
 
-# Private publishing configuration (never commit)
+# Private deployment configuration (never commit)
 /.deploy
+
+# Private developer image-publishing configuration (never commit)
+/.publish_engine
 
 # Real runtime env created from ravenest.env.example (contains DB URLs)
 /ravenest.env

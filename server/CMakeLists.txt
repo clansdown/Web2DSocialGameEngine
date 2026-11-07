@@ -57,12 +57,17 @@ if(NOT EXISTS "${UWS_SRC_DIR}/uSockets/uSockets.a")
     endif()
 endif()
 
-# Symlink headers into include directory
+# Symlink headers into the generated include directory. Both layouts are
+# required: the top-level headers and the uWebSockets/ namespace used by
+# #include <uWebSockets/App.h>. This tree is build output, not source: it is
+# gitignored and excluded from the Docker context, then recreated here.
 file(MAKE_DIRECTORY "${UWS_INCLUDE_DIR}")
+file(MAKE_DIRECTORY "${UWS_INCLUDE_DIR}/uWebSockets")
 file(GLOB UWS_HEADERS "${UWS_SRC_DIR}/src/*.h")
 foreach(header IN LISTS UWS_HEADERS)
     get_filename_component(header_name "${header}" NAME)
     execute_process(COMMAND ln -sf "${UWS_SRC_DIR}/src/${header_name}" "${UWS_INCLUDE_DIR}/${header_name}" OUTPUT_QUIET ERROR_QUIET)
+    execute_process(COMMAND ln -sf "${UWS_SRC_DIR}/src/${header_name}" "${UWS_INCLUDE_DIR}/uWebSockets/${header_name}" OUTPUT_QUIET ERROR_QUIET)
 endforeach()
 
 add_executable(server main.cpp ImageReader.cpp SafeNameGenerator.cpp init_db.cpp FiefdomFetcher.cpp combatants.cpp heroes.cpp fiefdom_officials.cpp GameConfigCache.cpp MoraleCalculator.cpp WaterNetwork.cpp ActionHandlers.cpp game_logic.cpp DigitalCredentialsVerifier.cpp images/ImageCache.cpp PlayerStateDB.cpp Letters.cpp Progression.cpp TowerDefenseMapCache.cpp TextManager.cpp GridCollision.cpp UnitUnlockCalculator.cpp TDPlacementValidator.cpp TDGoldCalculator.cpp mini_games/tower_defense_handler.cpp WeedingGameLogic.cpp OngoingRewards.cpp Money.cpp RetinueDB.cpp RetinueMarket.cpp RetinueStrength.cpp MissionGenerator.cpp MissionOfferings.cpp AvatarPool.cpp AvatarUrl.cpp Visibility.cpp Hash.cpp Base64.cpp ThreadPool.cpp avatars/AvatarKey.cpp avatars/AvatarValidation.cpp avatars/AvatarStore.cpp avatars/R2Client.cpp avatars/AvatarUploadManager.cpp avatars/CloudflarePurge.cpp combat/CombatCodecJson.cpp combat/CombatCodecBinary.cpp combat/CombatMatch.cpp combat/CombatantStats.cpp combat/CombatMatchManager.cpp combat/CombatMapCache.cpp combat/CombatPathfinding.cpp CosmeticsDB.cpp MonthlyPass.cpp ReeveConfig.cpp ReeveAdvisor.cpp ReevePlacement.cpp ReeveHandlers.cpp chat/ChatDB.cpp chat/ChatService.cpp chat/ChatHandlers.cpp chat/MadladTranslationEngine.cpp chat/TranslationQueue.cpp chat/Presence.cpp chat/PushSender.cpp staff/StaffStore.cpp staff/StaffAuth.cpp staff/StaffActionEngine.cpp staff/StaffHandlers.cpp registration/RegistrationSettings.cpp registration/InvitationStore.cpp registration/InvitationService.cpp registration/RegistrationRateLimiter.cpp registration/InvitationHandlers.cpp db/Schema.cpp auth/Argon2.cpp auth/SessionManager.cpp runtime/LoopDispatcher.cpp db/PostgresConnection.cpp http/StaticAssets.cpp)
