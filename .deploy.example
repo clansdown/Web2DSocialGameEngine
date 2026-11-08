@@ -96,7 +96,8 @@ SERVER_COMPOSE_PATH=""
 SERVER_COMPOSE_ENV_PATH=""
 SERVER_UPLOADS_PATH=""
 # Optional owner for the uploads bind mount (the image runs as 10001:10001).
-# install.sh attempts this automatically when the SSH user is root.
+# install.sh tries a direct chown, then a Docker root-helper container; if both
+# fail, chown the directory manually.
 SERVER_UPLOADS_OWNER=""
 # Set to 1 to silence the loopback-DB-URL warning in Docker mode.
 SERVER_ALLOW_LOOPBACK_DB_URL="0"

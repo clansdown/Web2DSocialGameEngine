@@ -102,6 +102,17 @@ SERVER_IMAGE=ghcr.io/clansdown/web2dsocialgameengine
 SERVER_IMAGE_TAG=latest
 ```
 
+In Docker mode, `install.sh` also copies the read-only deployment verifier to
+`${SERVER_PATH}/verify_deployment.sh`:
+
+```bash
+ssh user@server /srv/ravenest/verify_deployment.sh
+```
+
+It checks the image/tag, content and uploads mounts, container health, port
+binding, HTTP response, and bundled PostgreSQL volume/databases. It does not run
+automatically. Run it as a user in the `docker` group, or with `sudo`.
+
 `deploy/docker-compose.yml` is the app-only base. With
 `SERVER_DB_MODE=bundled`, `install.sh` also writes
 `deploy/docker-compose.bundled.yml` and a `db-init` service that creates the four

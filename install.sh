@@ -40,8 +40,9 @@ Stages (run in this order):
   r2      game/images, game/sounds, game/music -> R2 bucket
   pages   client/dist + overlay -> private Pages site repo, then commit and push
   server  pull SERVER_IMAGE:<tag> (when SERVER_DEPLOY_MODE=docker),
-          mirror game/ -> API server content, write the runtime env, then
-          write/refresh the compose files and restart if configured
+          mirror game/ -> API server content, write the runtime env,
+          write/refresh the compose files, install the deployment verifier,
+          then restart if configured
 
 Options:
   --dry-run       Print deploy actions without writing to R2, the site repo,
@@ -499,8 +500,14 @@ preflight_server_docker() {
     validate_remote_path "SERVER_COMPOSE_PATH" "$SERVER_COMPOSE_PATH"
     validate_remote_path "SERVER_COMPOSE_ENV_PATH" "$SERVER_COMPOSE_ENV_PATH"
     validate_remote_path "SERVER_UPLOADS_PATH" "$SERVER_UPLOADS_PATH"
+    if [ -n "${SERVER_UPLOADS_OWNER:-}" ] &&
+        [[ ! "$SERVER_UPLOADS_OWNER" =~ ^[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+$ ]]; then
+        die "SERVER_UPLOADS_OWNER must be USER:GROUP: $SERVER_UPLOADS_OWNER"
+    fi
     [ -f deploy/docker-compose.yml ] ||
         die "deploy/docker-compose.yml is missing from the engine checkout"
+    [ -f tools/verify_deployment.sh ] ||
+        die "tools/verify_deployment.sh is missing from the engine checkout"
 
     if [ "$SERVER_DB_MODE" = "bundled" ]; then
         SERVER_DB_INIT_PATH="${SERVER_DB_INIT_PATH:-${SERVER_PATH}/postgres/init}"
@@ -1025,24 +1032,38 @@ stage_server_compose() {
 
     if [ "$DRY_RUN" != "1" ]; then
         ssh_run "$SERVER_HOST" "mkdir -p '$SERVER_UPLOADS_PATH'"
-        if [ -n "$SERVER_UPLOADS_OWNER" ]; then
-            if ! ssh_run "$SERVER_HOST" \
-                "chown -R '$SERVER_UPLOADS_OWNER' '$SERVER_UPLOADS_PATH'"; then
-                warn "server: could not chown $SERVER_UPLOADS_PATH to $SERVER_UPLOADS_OWNER"
-            fi
-        else
-            # Best effort: succeeds when the deploy user is root, silently
-            # no-ops otherwise. A mismatch is reported below.
-            ssh_run "$SERVER_HOST" \
-                "chown -R 10001:10001 '$SERVER_UPLOADS_PATH' 2>/dev/null || true"
+
+        local uploads_target="${SERVER_UPLOADS_OWNER:-10001:10001}"
+        local uploads_chowned=0
+
+        # Direct chown works when the SSH user is root or otherwise permitted.
+        if ssh_run "$SERVER_HOST" \
+            "chown -R '$uploads_target' '$SERVER_UPLOADS_PATH' 2>/dev/null"; then
+            uploads_chowned=1
         fi
+
+        # Docker deployments can use the already-pulled app image as a root
+        # helper to chown the bind mount without requiring sudo on the host.
+        if [ "$uploads_chowned" != "1" ] && [ "$SERVER_DEPLOY_MODE" = "docker" ]; then
+            log "server: setting uploads ownership with a helper container"
+            if ssh_run "$SERVER_HOST" \
+                "docker run --rm --user 0 --entrypoint /bin/sh -v '$SERVER_UPLOADS_PATH:/uploads' '$SERVER_IMAGE:$SERVER_IMAGE_TAG' -c 'chown -R \"\$1\" /uploads' sh '$uploads_target'"; then
+                uploads_chowned=1
+            fi
+        fi
+
+        if [ "$uploads_chowned" != "1" ]; then
+            warn "server: could not chown $SERVER_UPLOADS_PATH to $uploads_target"
+            warn "  run: sudo chown -R $uploads_target $SERVER_UPLOADS_PATH"
+            warn "  (or set SERVER_UPLOADS_OWNER if the container uid differs)"
+        fi
+
         local uploads_owner
         uploads_owner="$(ssh_run "$SERVER_HOST" \
             "stat -c '%u:%g' '$SERVER_UPLOADS_PATH' 2>/dev/null" 2>/dev/null || true)"
-        if [ -n "$uploads_owner" ] && [ "$uploads_owner" != "10001:10001" ] &&
+        if [ -n "$uploads_owner" ] && [ "$uploads_owner" != "$uploads_target" ] &&
             [ -z "$SERVER_UPLOADS_OWNER" ]; then
-            warn "server: $SERVER_UPLOADS_PATH is owned by $uploads_owner"
-            warn "  the container runs as 10001:10001; set SERVER_UPLOADS_OWNER=10001:10001"
+            warn "server: $SERVER_UPLOADS_PATH is owned by $uploads_owner; expected $uploads_target"
             warn "  (or chown it manually) if local avatar uploads must work"
         fi
     fi
@@ -1086,6 +1107,18 @@ stage_server_compose() {
         "server compose env" 600
     SERVER_COMPOSE_ENV_CHANGED="$REMOTE_FILE_CHANGED"
     rm -f "$temp"
+}
+
+# Install the read-only deployment verifier next to compose.env. It is not run
+# automatically; it is available on the host after the deploy:
+#   ${SERVER_PATH}/verify_deployment.sh
+stage_server_verify_script() {
+    [ "$SERVER_DEPLOY_MODE" = "docker" ] || return 0
+
+    install_remote_file "tools/verify_deployment.sh" \
+        "${SERVER_PATH}/verify_deployment.sh" \
+        "server verify script" 755
+    log "server verify: ${SERVER_PATH}/verify_deployment.sh"
 }
 
 # Restart only when something the running service reads changed. The compose
@@ -1209,6 +1242,7 @@ if [ "$RUN_SERVER" = "1" ]; then
     stage_server_content
     stage_server_runtime
     stage_server_compose
+    stage_server_verify_script
     stage_server_restart
 else
     log "server: skipped (not configured or --skip-server)"

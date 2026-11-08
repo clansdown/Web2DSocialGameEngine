@@ -596,7 +596,10 @@ server image and needs no registry credentials or local Docker. It writes
 `deploy/docker-compose.yml` plus `compose.env` and pulls the image on the API
 server first (`SERVER_PULL_CMD` overrides the default `docker pull`).
 `SERVER_IMAGE_TAG` must be explicit (`latest` or a pinned immutable tag);
-`install.sh` never derives one. With `SERVER_DB_MODE=bundled`
+`install.sh` never derives one. In Docker mode it also copies the read-only
+`tools/verify_deployment.sh` to `${SERVER_PATH}/verify_deployment.sh` (mode
+`755`) without running it; run it on the host to verify image/content mounts,
+health, port 2290, and bundled PostgreSQL. With `SERVER_DB_MODE=bundled`
 (default), it also writes `deploy/docker-compose.bundled.yml` and the
 idempotent `db-init` SQL, so PostgreSQL runs in the same stack on the internal
 network. With `SERVER_DB_MODE=external`, only the app compose file is used and
@@ -1255,6 +1258,7 @@ Build the full game progression and content system with a working tower defense 
 - `install.sh` - deployment only: builds the client, uploads R2/Pages, mirrors game content, pulls the prebuilt server image, writes compose/env, restarts
 - `publish_engine_server_image.sh` - developer-only image publishing: clean-tree check, build, immutable tag + `latest`, print tag/digest
 - `.deploy.example` / `.publish_engine.example` - deployment config vs developer publishing credentials templates
+- `tools/verify_deployment.sh` - read-only Docker deployment verifier (mounted content, uploads, health, port, bundled PostgreSQL); copied to `${SERVER_PATH}/` by `install.sh`
 - `tools/diagnose_ghcr_push.sh` - GHCR token/package/repository diagnostic (reads `.publish_engine`)
 - `game/config/tower_defense/projectiles.json` - Projectile config (width, height, speed, image_file, forward_vector)
 - `game/config/tower_defense/mobs.json` - Mob config with forward_vector per mob

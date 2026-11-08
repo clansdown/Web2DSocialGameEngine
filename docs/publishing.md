@@ -534,7 +534,10 @@ The order is fixed:
 7. **compose files** — in Docker mode, `docker-compose.yml`, the bundled
    Postgres overlay/init SQL when selected, and `compose.env` are written next
    to the content.
-8. **restart** — `SERVER_RESTART_CMD` runs after a change, if configured. In
+8. **deployment verifier** — in Docker mode,
+   `${SERVER_PATH}/verify_deployment.sh` is installed with mode `755`. It is not
+   run automatically.
+9. **restart** — `SERVER_RESTART_CMD` runs after a change, if configured. In
    Docker mode it defaults to `docker compose up -d`.
 
 ### Options
@@ -786,6 +789,28 @@ public package needs none.
   `RAVENEST_DB_PASSWORD`, and `RAVENEST_DB_INIT_PATH`;
 - `${SERVER_ENV_PATH}` (the runtime env above).
 
+#### Verifying the deployment
+
+In Docker mode, `install.sh` also copies the read-only verifier to:
+
+```text
+${SERVER_PATH}/verify_deployment.sh
+```
+
+It is mode `755` and is not run automatically. Run it on the Docker host:
+
+```bash
+ssh user@server /srv/ravenest/verify_deployment.sh
+```
+
+It checks the image/tag, the app command (`--content /app/game`), the game and
+uploads bind mounts, host/container content inode identity, uploads
+writability, the loopback `127.0.0.1:2290` binding, container health, the public
+registration endpoint, and — for bundled PostgreSQL — the data volume, `PGDATA`,
+all four databases, and the `db-init` `/init` mount. It never prints database
+passwords or database URLs. Run it as a user in the `docker` group, or with
+`sudo`.
+
 The image contains the compiled server only. Game content remains a separate
 mount: compose maps `${SERVER_PATH}/game` to `/app/game` read-only. To deploy
 content manually:
@@ -925,9 +950,12 @@ SQL, or `compose.env` changes. A successful image pull also forces the compose
 byte-identical; Compose only recreates containers whose image or config changed.
 
 The app container mounts `${SERVER_PATH}/game` read-only and
-`${SERVER_UPLOADS_PATH}` read-write. The image runs as `10001:10001`; if the SSH
-deploy user is root, `install.sh` chowns the uploads directory automatically.
-Otherwise set `SERVER_UPLOADS_OWNER=10001:10001` or chown it manually.
+`${SERVER_UPLOADS_PATH}` read-write. The image runs as `10001:10001`. In Docker
+mode `install.sh` first tries a direct `chown`; if the SSH deploy user is not
+root, it falls back to running the already-pulled app image as a root helper
+container to chown the bind mount. If that also fails, set
+`SERVER_UPLOADS_OWNER=10001:10001` and chown it manually, or run the printed
+`sudo chown -R` command.
 
 Rollback: restore `${SERVER_COMPOSE_ENV_PATH}.previous`, then run the applicable
 compose command; or rerun `install.sh` with the previous `SERVER_IMAGE_TAG`.
@@ -1259,7 +1287,7 @@ published site is always recoverable.
 | `docker push` returns `denied` | GHCR token, package, or namespace permission | Run `./tools/diagnose_ghcr_push.sh --push-test` |
 | `publish_engine_server_image.sh` refuses to run | Working tree is dirty | Commit or stash changes; publishing always uses a clean commit |
 | DB URL points at loopback in Docker mode | `127.0.0.1` is the app container, not the host | Use the host LAN address, managed hostname, or compose service name |
-| Container cannot write uploads | `${SERVER_UPLOADS_PATH}` is not owned by `10001:10001` | Set `SERVER_UPLOADS_OWNER=10001:10001` or chown it |
+| Container cannot write uploads | `${SERVER_UPLOADS_PATH}` is not owned by `10001:10001` | `install.sh` direct chown/helper failed; set `SERVER_UPLOADS_OWNER=10001:10001` or `sudo chown -R 10001:10001` it |
 | `docker compose up` cannot find `RAVENEST_IMAGE` | `compose.env` missing or wrong path | Check `SERVER_COMPOSE_ENV_PATH` and the `docker compose --env-file` argument |
 | `install.sh` says `no publish destination configured` | `.deploy` missing or has no primary key | Create `.deploy` from `.deploy.example` |
 | `.deploy` not loaded | File missing, unreadable, or a shell syntax error | Confirm it is at the engine root; `chmod 600 .deploy`; check with `bash -n .deploy` |
@@ -1281,6 +1309,8 @@ published site is always recoverable.
   R2 credentials are exported only for the AWS CLI commands.
 - `publish_engine_server_image.sh` passes the registry token to `docker login`
   through stdin and never prints it.
+- `${SERVER_PATH}/verify_deployment.sh` is read-only and prints no database
+  passwords or database URLs.
 - Use SSH or a Git credential helper for the site repo. A token embedded in the
   remote URL can appear in Git error output.
 - The R2 bucket is private. Public reads happen only through the
