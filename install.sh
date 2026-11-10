@@ -41,8 +41,8 @@ Stages (run in this order):
   pages   client/dist + overlay -> private Pages site repo, then commit and push
   server  pull SERVER_IMAGE:<tag> (when SERVER_DEPLOY_MODE=docker),
           mirror game/ -> API server content, write the runtime env,
-          write/refresh the compose files, install the deployment verifier,
-          then restart if configured
+          write/refresh the compose files, install server tools under
+          ${SERVER_PATH}/tools/, then restart if configured
 
 Options:
   --dry-run       Print deploy actions without writing to R2, the site repo,
@@ -508,6 +508,14 @@ preflight_server_docker() {
         die "deploy/docker-compose.yml is missing from the engine checkout"
     [ -f tools/verify_deployment.sh ] ||
         die "tools/verify_deployment.sh is missing from the engine checkout"
+    [ -f tools/restart_deployment.sh ] ||
+        die "tools/restart_deployment.sh is missing from the engine checkout"
+    [ -f tools/_admin_common.sh ] ||
+        die "tools/_admin_common.sh is missing from the engine checkout"
+    [ -f tools/staff_admin.sh ] ||
+        die "tools/staff_admin.sh is missing from the engine checkout"
+    [ -f tools/invite_admin.sh ] ||
+        die "tools/invite_admin.sh is missing from the engine checkout"
 
     if [ "$SERVER_DB_MODE" = "bundled" ]; then
         SERVER_DB_INIT_PATH="${SERVER_DB_INIT_PATH:-${SERVER_PATH}/postgres/init}"
@@ -522,11 +530,7 @@ preflight_server_docker() {
     fi
 
     if [ -z "$SERVER_RESTART_CMD" ]; then
-        if [ "$SERVER_DB_MODE" = "bundled" ]; then
-            SERVER_RESTART_CMD="cd '$SERVER_PATH' && docker compose --env-file '$SERVER_COMPOSE_ENV_PATH' -f '$SERVER_COMPOSE_PATH' -f '$SERVER_COMPOSE_OVERLAY_PATH' up -d --remove-orphans"
-        else
-            SERVER_RESTART_CMD="cd '$SERVER_PATH' && docker compose --env-file '$SERVER_COMPOSE_ENV_PATH' -f '$SERVER_COMPOSE_PATH' up -d --remove-orphans"
-        fi
+        SERVER_RESTART_CMD="'${SERVER_PATH}/tools/restart_deployment.sh' --compose-env '${SERVER_COMPOSE_ENV_PATH}'"
     fi
 }
 
@@ -1076,10 +1080,12 @@ stage_server_compose() {
         printf 'RAVENEST_ENV_FILE=%s\n' "$SERVER_ENV_PATH"
         printf 'RAVENEST_GAME_PATH=%s\n' "${SERVER_PATH}/game"
         printf 'RAVENEST_UPLOADS_PATH=%s\n' "$SERVER_UPLOADS_PATH"
+        printf 'RAVENEST_COMPOSE_PATH=%s\n' "$SERVER_COMPOSE_PATH"
         if [ "$SERVER_DB_MODE" = "bundled" ]; then
             printf 'RAVENEST_DB_USER=%s\n' "$SERVER_DB_USER"
             printf 'RAVENEST_DB_PASSWORD=%s\n' "$SERVER_DB_PASSWORD"
             printf 'RAVENEST_DB_INIT_PATH=%s\n' "$SERVER_DB_INIT_PATH"
+            printf 'RAVENEST_COMPOSE_OVERLAY_PATH=%s\n' "$SERVER_COMPOSE_OVERLAY_PATH"
         fi
     } > "$temp"
     chmod 600 "$temp"
@@ -1109,16 +1115,29 @@ stage_server_compose() {
     rm -f "$temp"
 }
 
-# Install the read-only deployment verifier next to compose.env. It is not run
-# automatically; it is available on the host after the deploy:
-#   ${SERVER_PATH}/verify_deployment.sh
-stage_server_verify_script() {
+# Install host-side operational tools under ${SERVER_PATH}/tools/:
+#   - read-only deployment verifier (not run automatically)
+#   - compose/restart helper (used as the default SERVER_RESTART_CMD)
+#   - staff_admin / invite_admin wrappers that exec the image binaries
+stage_server_tools() {
     [ "$SERVER_DEPLOY_MODE" = "docker" ] || return 0
 
     install_remote_file "tools/verify_deployment.sh" \
-        "${SERVER_PATH}/verify_deployment.sh" \
+        "${SERVER_PATH}/tools/verify_deployment.sh" \
         "server verify script" 755
-    log "server verify: ${SERVER_PATH}/verify_deployment.sh"
+    install_remote_file "tools/restart_deployment.sh" \
+        "${SERVER_PATH}/tools/restart_deployment.sh" \
+        "server restart script" 755
+    install_remote_file "tools/_admin_common.sh" \
+        "${SERVER_PATH}/tools/_admin_common.sh" \
+        "server admin helper" 755
+    install_remote_file "tools/staff_admin.sh" \
+        "${SERVER_PATH}/tools/staff_admin.sh" \
+        "server staff admin wrapper" 755
+    install_remote_file "tools/invite_admin.sh" \
+        "${SERVER_PATH}/tools/invite_admin.sh" \
+        "server invite admin wrapper" 755
+    log "server tools: ${SERVER_PATH}/tools/"
 }
 
 # Restart only when something the running service reads changed. The compose
@@ -1242,7 +1261,7 @@ if [ "$RUN_SERVER" = "1" ]; then
     stage_server_content
     stage_server_runtime
     stage_server_compose
-    stage_server_verify_script
+    stage_server_tools
     stage_server_restart
 else
     log "server: skipped (not configured or --skip-server)"

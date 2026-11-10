@@ -107,12 +107,13 @@ The server applies the baseline schema on startup. `--init-db`, `--create-tables
 `game/config/registration.json` is set to `invite_only`. Generate codes before opening the client:
 
 ```bash
-./invite_admin create --count 20
-./invite_admin list
-./invite_admin revoke <invitation-id>
+./tools/invite_admin.sh create --count 20
+./tools/invite_admin.sh list
+./tools/invite_admin.sh revoke <invitation-id>
 ```
 
-`invite_admin` reads `RAVENEST_INVITES_DB_URL` (default `dbname=ravenest_invites`).
+On a Docker deployment the installed wrapper runs `/app/invite_admin` inside the
+running `ravenest` container, which already has `RAVENEST_INVITES_DB_URL`.
 
 ## Backups
 

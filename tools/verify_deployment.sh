@@ -2,10 +2,10 @@
 #
 # verify_deployment.sh — read-only verification of a Ravenest Docker deployment.
 #
-# install.sh copies this script to ${SERVER_PATH}/verify_deployment.sh on the
-# Docker host. Run it there:
+# install.sh copies this script to ${SERVER_PATH}/tools/verify_deployment.sh
+# on the Docker host. Run it there:
 #
-#     ssh user@server /srv/ravenest/verify_deployment.sh
+#     ssh user@server /srv/ravenest/tools/verify_deployment.sh
 #
 # It checks the app image/tag, the --content path, bind mounts, uploads,
 # loopback port binding, health, the public registration endpoint, and — for
@@ -35,7 +35,7 @@ Usage: verify_deployment.sh [options]
 Read-only verification of the running Ravenest Docker deployment.
 
 Options:
-  --server-path PATH   Deployment directory (default: script directory)
+  --server-path PATH   Deployment directory (default: script parent directory)
   --compose-env PATH   compose.env path (default: SERVER_PATH/compose.env)
   --app-container NAME App container name (default: ravenest)
   --db-mode MODE       auto, bundled, or external (default: auto)
@@ -44,7 +44,7 @@ Options:
   -h, --help           Show this help
 
 Run this on the Docker host. install.sh copies it to
-${SERVER_PATH}/verify_deployment.sh with mode 755.
+${SERVER_PATH}/tools/verify_deployment.sh with mode 755.
 
 Checks:
   - compose.env mode and safe image/path values
@@ -143,6 +143,8 @@ parse_args() {
     if [ -z "$SERVER_PATH" ]; then
         if [ -f "$SCRIPT_DIR/compose.env" ]; then
             SERVER_PATH="$SCRIPT_DIR"
+        elif [ -f "$SCRIPT_DIR/../compose.env" ]; then
+            SERVER_PATH="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
         elif [ -f "$PWD/compose.env" ]; then
             SERVER_PATH="$PWD"
         else

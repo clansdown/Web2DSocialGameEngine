@@ -65,6 +65,15 @@ never projected into public chat, barony, combat, or notification surfaces; only
 the ticket owner and authorized staff can read it. Notifications generated for
 support replies contain the ticket subject and a link, not the free-text body.
 
+## Adult verification requests
+
+Non-adult accounts see an optional **18+ status** section on the Profile
+activity. It creates a private `account`-category support ticket with a required
+free-text note and opens the thread immediately. The section can be hidden in
+the browser for a chosen number of calendar months or years; that dismissal is
+local to the browser/account and does not change account status. Automatic
+digital-credential verification remains the future preferred path.
+
 ## Baronies
 
 - `baronies.safe_name_id` and `safe_tag_ids` are mandatory.

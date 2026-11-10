@@ -16,7 +16,7 @@
    * @param onBack - Returns to the hub
    */
   import { onMount, onDestroy } from 'svelte';
-  import { currentCharacter } from '../lib/stores';
+  import { currentCharacter, user } from '../lib/stores';
   import {
     getAvatarPoolRequest,
     setCharacterAvatarRequest,
@@ -26,6 +26,8 @@
     type avatar_update_dto
   } from '../lib/api';
   import { loadTexts } from '../lib/text';
+  import { navigate } from '../lib/router';
+  import { createSupportTicketRequest } from '../support/support_api';
   import {
     file_to_avatar_payload,
     avatar_cooldown_remaining
@@ -59,6 +61,21 @@
     'ui_profile_err_source_too_large',
     'ui_profile_err_canvas',
     'ui_profile_err_decode',
+    'ui_profile_adult_status_title',
+    'ui_profile_adult_status_body',
+    'ui_profile_adult_status_note',
+    'ui_profile_adult_status_note_placeholder',
+    'ui_profile_adult_status_note_required',
+    'ui_profile_adult_status_request',
+    'ui_profile_adult_status_help',
+    'ui_profile_adult_status_subject',
+    'ui_profile_adult_status_message',
+    'ui_profile_adult_status_hide_for',
+    'ui_profile_adult_status_hide',
+    'ui_profile_adult_status_months',
+    'ui_profile_adult_status_years',
+    'ui_support_locked',
+    'ui_auth_server_unavailable',
     'ui_confirm',
     'ui_loading'
   ];
@@ -75,6 +92,14 @@
   let upload_preview = $state<string | null>(null);
   let now_seconds = $state(Math.floor(Date.now() / 1000));
   let cooldown_timer: ReturnType<typeof setInterval> | null = null;
+
+  const ADULT_PROMPT_KEY_PREFIX = 'adult_status_prompt_hidden_until:';
+  let adult_status_note = $state('');
+  let adult_status_error = $state('');
+  let adult_status_submitting = $state(false);
+  let adult_status_hidden = $state(false);
+  let adult_status_dismiss_value = $state(6);
+  let adult_status_dismiss_unit = $state<'months' | 'years'>('months');
 
   let character = $derived($currentCharacter);
   let has_custom = $derived(!!character?.has_custom_avatar);
@@ -106,8 +131,98 @@
     return value;
   }
 
+  /**
+   * Builds the per-account localStorage key for the dismissed 18+ prompt.
+   *
+   * @returns Storage key for the current account
+   */
+  function adult_prompt_storage_key(): string {
+    return `${ADULT_PROMPT_KEY_PREFIX}${$user?.id ?? 0}`;
+  }
+
+  /**
+   * Reads the local dismissal timestamp for the 18+ prompt.
+   *
+   * @returns Unix milliseconds, or 0 when absent/unreadable
+   */
+  function adult_prompt_hidden_until(): number {
+    try {
+      const value = Number(localStorage.getItem(adult_prompt_storage_key()) ?? 0);
+      return Number.isFinite(value) ? value : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Adds calendar months, clamping to the last day of the target month.
+   *
+   * @param date - Starting date
+   * @param months - Number of calendar months to add
+   * @returns New date
+   */
+  function add_calendar_months(date: Date, months: number): Date {
+    const result = new Date(date.getTime());
+    const day = result.getDate();
+    result.setDate(1);
+    result.setMonth(result.getMonth() + months);
+    const last_day = new Date(result.getFullYear(), result.getMonth() + 1, 0).getDate();
+    result.setDate(Math.min(day, last_day));
+    return result;
+  }
+
+  /** Hides the 18+ prompt for the chosen number of months/years. */
+  function dismiss_adult_status(): void {
+    const raw_value = Number(adult_status_dismiss_value);
+    if (!Number.isFinite(raw_value) || raw_value <= 0) return;
+    const count = Math.max(1, Math.floor(raw_value));
+    const months = adult_status_dismiss_unit === 'years' ? count * 12 : count;
+    const until = add_calendar_months(new Date(), months).getTime();
+    try {
+      localStorage.setItem(adult_prompt_storage_key(), String(until));
+    } catch {
+      // Storage may be unavailable in private/restricted contexts.
+    }
+    adult_status_hidden = true;
+  }
+
+  /**
+   * Creates a prefilled account support ticket requesting 18+ verification.
+   */
+  async function request_adult_status(): Promise<void> {
+    const note = adult_status_note.trim();
+    if (!note) {
+      adult_status_error = t('ui_profile_adult_status_note_required');
+      return;
+    }
+    adult_status_submitting = true;
+    adult_status_error = '';
+    try {
+      const result = await createSupportTicketRequest(
+        t('ui_profile_adult_status_subject'),
+        `${t('ui_profile_adult_status_message')}\n\n${note}`,
+        'account',
+        $currentCharacter?.id
+      );
+      navigate({ type: 'activity', id: 'support', rest: [result.ticket.id] });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      if (message === 'support_locked') {
+        adult_status_error = t('ui_support_locked');
+      } else if (message === 'refresh_unavailable') {
+        adult_status_error = t('ui_auth_server_unavailable');
+      } else {
+        adult_status_error = message;
+      }
+    } finally {
+      adult_status_submitting = false;
+    }
+  }
+
   onMount(async () => {
     texts = await loadTexts(TEXT_IDS);
+    adult_status_hidden = ($user?.id ?? 0) > 0 &&
+      adult_prompt_hidden_until() > Date.now();
     try {
       // The safe pool is gender-split; request the character's own pool.
       const gender = character?.sex === 'female' ? 'female' : 'male';
@@ -334,6 +449,61 @@
                 {t('ui_profile_remove')}
               </button>
             {/if}
+          </div>
+        {/if}
+
+        {#if !adult && !adult_status_hidden}
+          <hr class="my-4" />
+
+          <h5>{t('ui_profile_adult_status_title')}</h5>
+          <p class="text-muted small">{t('ui_profile_adult_status_body')}</p>
+
+          <label class="form-label small" for="adult-status-note">
+            {t('ui_profile_adult_status_note')}
+          </label>
+          <textarea
+            id="adult-status-note"
+            class="form-control form-control-sm"
+            rows="4"
+            bind:value={adult_status_note}
+            placeholder={t('ui_profile_adult_status_note_placeholder')}
+            oninput={() => { adult_status_error = ''; }}
+            disabled={adult_status_submitting}
+            required
+          ></textarea>
+
+          {#if adult_status_error}
+            <div class="alert alert-danger small py-1 mt-2">{adult_status_error}</div>
+          {/if}
+
+          <div class="d-flex align-items-center gap-3 flex-wrap mt-3">
+            <button
+              class="btn btn-outline-primary btn-sm"
+              disabled={adult_status_submitting || !adult_status_note.trim()}
+              onclick={request_adult_status}
+            >
+              {t('ui_profile_adult_status_request')}
+            </button>
+          </div>
+          <p class="text-muted small mt-2 mb-0">{t('ui_profile_adult_status_help')}</p>
+
+          <div class="d-flex align-items-center gap-2 flex-wrap mt-3 small">
+            <span>{t('ui_profile_adult_status_hide_for')}</span>
+            <input
+              class="form-control form-control-sm"
+              style="width: 5rem;"
+              type="number"
+              min="1"
+              max="120"
+              bind:value={adult_status_dismiss_value}
+            />
+            <select class="form-select form-select-sm" style="width: auto;" bind:value={adult_status_dismiss_unit}>
+              <option value="months">{t('ui_profile_adult_status_months')}</option>
+              <option value="years">{t('ui_profile_adult_status_years')}</option>
+            </select>
+            <button class="btn btn-sm btn-link text-secondary p-0" onclick={dismiss_adult_status}>
+              {t('ui_profile_adult_status_hide')}
+            </button>
           </div>
         {/if}
       </div>

@@ -102,16 +102,39 @@ SERVER_IMAGE=ghcr.io/clansdown/web2dsocialgameengine
 SERVER_IMAGE_TAG=latest
 ```
 
-In Docker mode, `install.sh` also copies the read-only deployment verifier to
-`${SERVER_PATH}/verify_deployment.sh`:
+In Docker mode, `install.sh` copies operational tools to
+`${SERVER_PATH}/tools/`:
 
 ```bash
-ssh user@server /srv/ravenest/verify_deployment.sh
+ssh user@server /srv/ravenest/tools/verify_deployment.sh
+ssh user@server /srv/ravenest/tools/restart_deployment.sh
 ```
 
-It checks the image/tag, content and uploads mounts, container health, port
-binding, HTTP response, and bundled PostgreSQL volume/databases. It does not run
-automatically. Run it as a user in the `docker` group, or with `sudo`.
+The verifier checks the image/tag, content and uploads mounts, container health,
+port binding, HTTP response, and bundled PostgreSQL volume/databases. It does
+not run automatically.
+
+The restart helper runs `docker compose up -d` and then restarts the app, which
+is currently required for config changes. Use `--pull` after an image tag change
+and `--verify` to run the verifier afterward. A safe config-reload design that
+avoids restarting is tracked in `docs/TODO_config_reload.md`.
+
+The same directory contains `staff_admin.sh` and `invite_admin.sh` wrappers:
+
+```bash
+# Owner / superuser:
+ssh user@server /srv/ravenest/tools/staff_admin.sh grant <username> superadmin
+
+# Standard staff admin:
+ssh user@server /srv/ravenest/tools/staff_admin.sh grant <username> customer_service
+
+ssh user@server /srv/ravenest/tools/invite_admin.sh create --count 5
+```
+
+They run the corresponding CLI inside the running `ravenest` container, so no
+local build or host copy of the binaries is needed. Run `staff_admin.sh roles`
+to list presets; aliases `superuser` and `staff` map to `superadmin` and
+`customer_service`.
 
 `deploy/docker-compose.yml` is the app-only base. With
 `SERVER_DB_MODE=bundled`, `install.sh` also writes

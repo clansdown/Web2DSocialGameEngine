@@ -17,7 +17,7 @@
   import MiniGameContainer from './minigames/MiniGameContainer.svelte';
   import * as auth from './lib/auth';
   import { user, characters, currentCharacter, authLoading, playerGameState, language, isAuthenticated } from './lib/stores';
-  import { refreshAccessToken, setCharacterArchetypeRequest, setCharacterSexRequest, acknowledgeLandPatentRequest } from './lib/api';
+  import { RefreshUnavailableError, refreshAccessToken, setCharacterArchetypeRequest, setCharacterSexRequest, acknowledgeLandPatentRequest } from './lib/api';
   import { loadTexts, loadText } from './lib/text';
   import { asset_url } from './lib/public_urls';
   import { fetchPlayerState } from './lib/game_state';
@@ -27,6 +27,9 @@
 
   let needsAuth = $state(false);
   let initialized = $state(false);
+  let auth_unavailable = $state(false);
+  let auth_unavailable_text = $state('');
+  let auth_retry_text = $state('');
 
   // Mini-game launch is driven by the hash route (#/game/<game>/<level>)
   let gameRoute = $derived($route_store.type === 'game' ? $route_store : null);
@@ -39,6 +42,9 @@
   let showIntroOverlay = $state(false);
   let introTitle = $state('');
   let introBody = $state('');
+  let introMarkdown = $derived(
+    introTitle ? `# ${introTitle}\n\n${introBody}` : introBody
+  );
 
   // Character-creation avatar step: complete once a pick is confirmed OR the
   // safe pool is empty (skip). The flag matters for the skip path, where no
@@ -91,10 +97,28 @@
   }
 
   /**
-   * Attempts to automatically log in using stored credentials.
+   * Shows a retry screen instead of the login form when the refresh request
+   * failed because the server was temporarily unavailable.
+   */
+  async function show_auth_unavailable(): Promise<void> {
+    try {
+      const texts = await loadTexts(['ui_auth_server_unavailable', 'ui_auth_retry']);
+      auth_unavailable_text = texts['ui_auth_server_unavailable'] || '';
+      auth_retry_text = texts['ui_auth_retry'] || '';
+    } catch {
+      auth_unavailable_text = '';
+      auth_retry_text = '';
+    }
+    auth_unavailable = true;
+    needsAuth = false;
+  }
+
+  /**
+   * Attempts to automatically log in using the refresh cookie.
    */
   async function attemptAutoLogin() {
     authLoading.set(true);
+    auth_unavailable = false;
     try {
       const response = await refreshAccessToken();
       if (response?.token) {
@@ -121,12 +145,24 @@
         needsAuth = false;
         return;
       }
-    } catch {
-      // No refresh cookie or it was revoked; fall through to login.
+    } catch (error) {
+      if (error instanceof RefreshUnavailableError) {
+        await show_auth_unavailable();
+        return;
+      }
+      // Definitive auth failure; fall through to login.
     } finally {
       authLoading.set(false);
     }
     needsAuth = true;
+  }
+
+  /**
+   * Retries the startup refresh after a transient server outage.
+   */
+  async function retryAutoLogin(): Promise<void> {
+    auth_unavailable = false;
+    await attemptAutoLogin();
   }
 
   /**
@@ -136,8 +172,12 @@
     try {
       const refreshed = await refreshAccessToken();
       if (refreshed?.token) return true;
-    } catch {
-      // fall through
+    } catch (error) {
+      if (error instanceof RefreshUnavailableError) {
+        await show_auth_unavailable();
+        return false;
+      }
+      // Definitive auth failure; fall through.
     }
     auth.clearInMemoryCredentials();
     needsAuth = true;
@@ -396,10 +436,13 @@
 
 {#if showIntroOverlay && $currentCharacter?.archetype}
   <DialogOverlay
-    title={introTitle}
-    body={introBody}
+    title=""
+    size="xlg"
+    noPadding
     onDismiss={handleIntroDismiss}
-  />
+  >
+    <StoryText text={introMarkdown} />
+  </DialogOverlay>
 {/if}
 
 {#if showLandPatent}
@@ -440,6 +483,17 @@
   <div class="container d-flex justify-content-center align-items-center min-vh-100">
     <div class="spinner-border" role="status">
       <span class="visually-hidden">Loading...</span>
+    </div>
+  </div>
+{:else if auth_unavailable}
+  <div class="container d-flex justify-content-center align-items-center min-vh-100">
+    <div class="card p-4 text-center" style="max-width: 32rem;">
+      {#if auth_unavailable_text}
+        <p class="mb-4">{auth_unavailable_text}</p>
+      {/if}
+      <button class="btn btn-primary" onclick={retryAutoLogin}>
+        {auth_retry_text || 'Retry'}
+      </button>
     </div>
   </div>
 {:else if !$isAuthenticated}

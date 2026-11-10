@@ -90,6 +90,9 @@ The old body `auth:{username,token}` form is accepted for transitional clients. 
 
 - Access token exists only in JS memory.
 - Refresh uses `fetch(..., {credentials:'include'})` against `/api/auth/refresh`.
+- Transient refresh failures (network/5xx/429) retry with backoff; only a
+  definitive `401 invalid_refresh_token` clears the local session and returns
+  the player to login.
 - Startup restores the session by refreshing, not by replaying a stored password.
 - Legacy OPFS password keys are deleted; no credential is written to disk.
 - `with_avatar_auth` only appends query credentials for the legacy bare

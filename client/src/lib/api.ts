@@ -60,6 +60,43 @@ interface RequestOptions {
   password?: string;
 }
 
+/** Raised when the refresh endpoint is temporarily unreachable. */
+export class RefreshUnavailableError extends Error {
+  constructor() {
+    super('refresh_unavailable');
+    this.name = 'RefreshUnavailableError';
+  }
+}
+
+const REFRESH_RETRY_DELAYS_MS: number[] = [500, 1500, 3000];
+const REFRESH_RETRY_AFTER_CAP_MS = 5000;
+let refresh_in_flight: Promise<AuthResponse | null> | null = null;
+
+/**
+ * Waits for the requested number of milliseconds.
+ *
+ * @param milliseconds - Delay duration
+ * @returns Promise that resolves after the delay
+ */
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, milliseconds));
+}
+
+/**
+ * Reads a bounded Retry-After delay from a response.
+ *
+ * @param response - Failed refresh response
+ * @param fallback_ms - Delay to use when the header is absent or invalid
+ * @returns Delay in milliseconds
+ */
+function retry_after_delay_ms(response: Response, fallback_ms: number): number {
+  const header = response.headers.get('Retry-After');
+  if (!header) return fallback_ms;
+  const seconds = Number(header);
+  if (!Number.isFinite(seconds) || seconds < 0) return fallback_ms;
+  return Math.min(seconds * 1000, REFRESH_RETRY_AFTER_CAP_MS);
+}
+
 /**
  * Response fields that carry a public URL. Rebasing is key-scoped so ordinary
  * text (chat bodies, letters, Markdown) is never rewritten even if a user
@@ -162,34 +199,105 @@ export async function apiPost<T = unknown>(
 }
 
 /**
- * Calls the refresh-cookie endpoint and installs the new short-lived access
- * token. Returns the login payload (user, characters, token) on success.
+ * Performs one refresh attempt sequence. Invalid refresh tokens are definitive
+ * and clear the session; transient failures are retried and preserve it.
  *
- * @returns Promise<AuthResponse | null> - Refreshed identity or null
+ * @returns Refreshed identity, or null for a definitive invalid token
  */
-export async function refreshAccessToken(): Promise<AuthResponse | null> {
-  try {
-    const response = await fetch(api_url('/api/auth/refresh'), {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: '{}'
-    });
-    const parsed = await response.json() as ApiResponse<AuthResponse>;
+async function perform_refresh_access_token(): Promise<AuthResponse | null> {
+  for (let attempt = 0; ; attempt += 1) {
+    let response: Response;
+    try {
+      response = await fetch(api_url('/api/auth/refresh'), {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}'
+      });
+    } catch {
+      if (attempt >= REFRESH_RETRY_DELAYS_MS.length) {
+        throw new RefreshUnavailableError();
+      }
+      await sleep(REFRESH_RETRY_DELAYS_MS[attempt]);
+      continue;
+    }
+
+    if (response.status === 401) {
+      let parsed: ApiResponse<AuthResponse> | null = null;
+      try {
+        parsed = await response.json() as ApiResponse<AuthResponse>;
+      } catch {
+        parsed = null;
+      }
+      if (parsed?.error === 'invalid_refresh_token') {
+        auth.setSessionToken(null);
+        auth.clearInMemoryCredentials();
+        return null;
+      }
+      if (attempt < REFRESH_RETRY_DELAYS_MS.length) {
+        await sleep(REFRESH_RETRY_DELAYS_MS[attempt]);
+        continue;
+      }
+      throw new RefreshUnavailableError();
+    }
+
+    if (!response.ok) {
+      if (attempt < REFRESH_RETRY_DELAYS_MS.length) {
+        const fallback = REFRESH_RETRY_DELAYS_MS[attempt];
+        const delay = response.status === 429 || response.status === 503
+          ? retry_after_delay_ms(response, fallback)
+          : fallback;
+        await sleep(delay);
+        continue;
+      }
+      throw new RefreshUnavailableError();
+    }
+
+    let parsed: ApiResponse<AuthResponse>;
+    try {
+      parsed = await response.json() as ApiResponse<AuthResponse>;
+    } catch {
+      if (attempt < REFRESH_RETRY_DELAYS_MS.length) {
+        await sleep(REFRESH_RETRY_DELAYS_MS[attempt]);
+        continue;
+      }
+      throw new RefreshUnavailableError();
+    }
+
     const data = parsed.data as AuthResponse | undefined;
-    if (parsed.error || !data?.token) {
+    if (parsed.error === 'invalid_refresh_token') {
       auth.setSessionToken(null);
       auth.clearInMemoryCredentials();
       return null;
     }
+    if (parsed.error || !data?.token) {
+      if (attempt < REFRESH_RETRY_DELAYS_MS.length) {
+        await sleep(REFRESH_RETRY_DELAYS_MS[attempt]);
+        continue;
+      }
+      throw new RefreshUnavailableError();
+    }
+
     auth.setSessionToken(data.token);
     auth.setStoredUsername(data.username);
     return data;
-  } catch {
-    auth.setSessionToken(null);
-    auth.clearInMemoryCredentials();
-    return null;
   }
+}
+
+/**
+ * Calls the refresh-cookie endpoint with retry and single-flight protection.
+ * Returns null only when the server says the refresh token itself is invalid;
+ * transient failures throw RefreshUnavailableError without clearing the session.
+ *
+ * @returns Promise<AuthResponse | null> - Refreshed identity or null
+ */
+export async function refreshAccessToken(): Promise<AuthResponse | null> {
+  if (!refresh_in_flight) {
+    refresh_in_flight = perform_refresh_access_token().finally(() => {
+      refresh_in_flight = null;
+    });
+  }
+  return refresh_in_flight;
 }
 
 /**

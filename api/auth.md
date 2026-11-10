@@ -12,6 +12,8 @@ Success: the same payload as `/api/login`, including a fresh `data.token`.
 Sets a re-issued sliding `ravenest_refresh` cookie.
 
 Failure (401): `{"error":"invalid_refresh_token"}` and clears the cookie.
+Transient failures (network errors, 429, 5xx) should be retried; clients must
+not treat them as a revoked session.
 
 ## POST /api/auth/logout
 

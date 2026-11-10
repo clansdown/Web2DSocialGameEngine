@@ -45,15 +45,10 @@
   let unreadNotifications = $state($playerGameState?.unread_notifications ?? 0);
   let unreadSupport = $state($playerGameState?.unread_support ?? 0);
 
-  // Hub-card subtitle text ids (never hardcode user-facing strings).
-  const BLURB_IDS: string[] = [
-    'ui_activity_tasks_blurb',
+  // Shared utility/fallback text ids. Per-card blurbs are derived from the
+  // available activity ids so every subtitle comes from the text system.
+  const COMMON_BLURB_IDS: string[] = [
     'ui_activity_coming_soon',
-    'ui_activity_profile_blurb',
-    'ui_activity_letters_blurb',
-    'ui_activity_honor_blurb',
-    'ui_activity_barony_blurb',
-    'ui_activity_staff_blurb',
     'ui_support_link',
     'ui_staff_badge',
     'activity_invitations',
@@ -74,13 +69,9 @@
    * @returns string - Localized subtitle
    */
   function activityBlurb(id: string): string {
-    if (id === 'tasks') return blurbTexts['ui_activity_tasks_blurb'] ?? '';
-    if (id === 'profile') return blurbTexts['ui_activity_profile_blurb'] ?? '';
-    if (id === 'letters') return blurbTexts['ui_activity_letters_blurb'] ?? '';
-    if (id === 'honor') return blurbTexts['ui_activity_honor_blurb'] ?? '';
-    if (id === 'barony') return blurbTexts['ui_activity_barony_blurb'] ?? '';
-    if (id === 'staff') return blurbTexts['ui_activity_staff_blurb'] ?? '';
-    return blurbTexts['ui_activity_coming_soon'] ?? '';
+    return blurbTexts[`ui_activity_${id}_blurb`] ??
+      blurbTexts['ui_activity_coming_soon'] ??
+      '';
   }
 
   // The open activity comes from the hash route (#/activity/<id>). A route
@@ -105,22 +96,18 @@
    * Loads display names for all available activities from the text system.
    */
   async function loadActivityNames() {
-    const keys = gridActivities.map(id => `activity_${id}`);
+    const name_keys = gridActivities.map(id => `activity_${id}`);
+    const blurb_keys = gridActivities.map(id => `ui_activity_${id}_blurb`);
     try {
-      const texts = await loadTexts([...keys, ...BLURB_IDS]);
+      const texts = await loadTexts([...name_keys, ...blurb_keys, ...COMMON_BLURB_IDS]);
       const names: Record<string, string> = {};
       for (const id of gridActivities) {
-        names[id] = texts[`activity_${id}`] || id.charAt(0).toUpperCase() + id.slice(1);
+        names[id] = texts[`activity_${id}`] ?? '';
       }
       displayNames = names;
       blurbTexts = texts;
     } catch {
-      // Fallback to capitalized IDs
-      const names: Record<string, string> = {};
-      for (const id of gridActivities) {
-        names[id] = id.charAt(0).toUpperCase() + id.slice(1);
-      }
-      displayNames = names;
+      displayNames = {};
     }
   }
 
@@ -166,10 +153,6 @@
           {blurbTexts['activity_invitations'] ?? ''}
         </button>
       {/if}
-      <button class="btn btn-sm btn-link text-secondary p-0" onclick={() => selectActivity('support')}>
-        {blurbTexts['ui_support_link'] ?? ''}
-        {#if unreadSupport > 0}<span class="badge text-bg-secondary ms-1">{unreadSupport}</span>{/if}
-      </button>
       <button class="btn btn-sm btn-outline-secondary position-relative" onclick={() => (showNotifications = !showNotifications)}>
         🔔
         {#if unreadNotifications > 0}
@@ -212,7 +195,7 @@
           >
             <div class="card-body text-center p-5">
               <h3 class="card-title mb-3">
-                {displayNames[id] || id}
+                {displayNames[id] ?? ''}
                 {#if id === 'staff'}<span class="badge text-bg-warning ms-2">{blurbTexts['ui_staff_badge'] ?? ''}</span>{/if}
               </h3>
               <span class="text-muted">{activityBlurb(id)}</span>
@@ -220,6 +203,13 @@
           </div>
         </div>
       {/each}
+    </div>
+
+    <div class="text-center mt-5">
+      <button class="btn btn-sm btn-link text-secondary p-0" onclick={() => selectActivity('support')}>
+        {blurbTexts['ui_support_link'] ?? ''}
+        {#if unreadSupport > 0}<span class="badge text-bg-secondary ms-1">{unreadSupport}</span>{/if}
+      </button>
     </div>
   </div>
 {:else if activity === 'tasks'}

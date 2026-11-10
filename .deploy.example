@@ -129,8 +129,9 @@ AVATAR_CLOUDFLARE_API_TOKEN=""
 # (systemd EnvironmentFile or Docker env_file). Keep it outside game/.
 SERVER_ENV_PATH=""
 
-# Optional. Run after the env file changes; if empty, install.sh writes the
-# file and prints a reminder to restart the API server manually.
+# Optional. Docker mode defaults to ${SERVER_PATH}/tools/restart_deployment.sh, which
+# converges the compose stack and restarts the app so mounted config is reread.
+# For systemd, set an explicit command; an empty value prints a restart reminder.
 # SERVER_RESTART_CMD="sudo systemctl restart ravenest"
 
 # --- Cloudflare API (reserved for purge-on-deploy) --------------------------

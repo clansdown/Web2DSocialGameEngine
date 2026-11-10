@@ -174,7 +174,7 @@ values are later used as literal paths.
 | `SERVER_SSH_KEY` | server | optional | no | private key path; omit to use the SSH agent/config |
 | `SERVER_CORS_ORIGINS` | server | optional override | no | comma-separated browser origins; empty uses `PUBLIC_SITE_ORIGIN` |
 | `SERVER_ENV_PATH` | server | optional | no | default `${SERVER_PATH}/ravenest.env`; must be outside `game/` |
-| `SERVER_RESTART_CMD` | server | optional | no | e.g. `sudo systemctl restart ravenest`; Docker mode defaults to `docker compose up -d` |
+| `SERVER_RESTART_CMD` | server | optional | no | e.g. `sudo systemctl restart ravenest`; Docker mode defaults to `${SERVER_PATH}/tools/restart_deployment.sh` |
 | `SERVER_DEPLOY_MODE` | server | optional | no | `docker` (default) or `systemd` |
 | `SERVER_DB_MODE` | server | optional | no | `bundled` (default) or `external` |
 | `SERVER_DB_USER` | server | bundled | no | default `ravenest`; PostgreSQL identifier |
@@ -464,9 +464,11 @@ Vary: Origin
 
 `GET /api/avatar/<id>` also sends `Cache-Control: private, no-store`.
 
-`SERVER_RESTART_CMD` is optional. When it is empty and the env file changes,
+`SERVER_RESTART_CMD` is optional. In Docker mode it defaults to
+`${SERVER_PATH}/tools/restart_deployment.sh`, so env changes are applied during
+publishing. In systemd mode, when it is empty and the env file changes,
 `install.sh` writes the file and prints a reminder to restart the API server;
-the publish still succeeds. Set it to apply the change during publishing.
+the publish still succeeds.
 
 ### 5.5 Cache Rules
 
@@ -534,11 +536,11 @@ The order is fixed:
 7. **compose files** — in Docker mode, `docker-compose.yml`, the bundled
    Postgres overlay/init SQL when selected, and `compose.env` are written next
    to the content.
-8. **deployment verifier** — in Docker mode,
-   `${SERVER_PATH}/verify_deployment.sh` is installed with mode `755`. It is not
-   run automatically.
+8. **server tools** — in Docker mode, `${SERVER_PATH}/tools/` receives the
+   deployment verifier, restart helper, and the `staff_admin`/`invite_admin`
+   wrappers with mode `755`. The verifier is not run automatically.
 9. **restart** — `SERVER_RESTART_CMD` runs after a change, if configured. In
-   Docker mode it defaults to `docker compose up -d`.
+   Docker mode it defaults to `${SERVER_PATH}/tools/restart_deployment.sh`.
 
 ### Options
 
@@ -686,10 +688,11 @@ file, and skips the write/restart when unchanged. On a change it:
 1. backs up the remote file to `${SERVER_ENV_PATH}.previous`;
 2. copies the new file to `${SERVER_ENV_PATH}.new`;
 3. atomically moves it into place and sets mode `600`;
-4. runs `SERVER_RESTART_CMD` if configured.
+4. runs `SERVER_RESTART_CMD` (Docker mode defaults to the restart helper).
 
-If the restart fails, it restores `.previous` and retries the restart. If no
-restart command is configured, it writes the file and prints a gentle reminder.
+If the restart fails, it restores `.previous` and retries the restart. In
+systemd mode, if no restart command is configured, it writes the file and prints
+a gentle reminder.
 
 This stage does **not** deploy the server binary. In Docker mode the prebuilt
 image pull and compose stages below do; otherwise binary rollout is separate.
@@ -794,13 +797,13 @@ public package needs none.
 In Docker mode, `install.sh` also copies the read-only verifier to:
 
 ```text
-${SERVER_PATH}/verify_deployment.sh
+${SERVER_PATH}/tools/verify_deployment.sh
 ```
 
 It is mode `755` and is not run automatically. Run it on the Docker host:
 
 ```bash
-ssh user@server /srv/ravenest/verify_deployment.sh
+ssh user@server /srv/ravenest/tools/verify_deployment.sh
 ```
 
 It checks the image/tag, the app command (`--content /app/game`), the game and
@@ -810,6 +813,69 @@ registration endpoint, and — for bundled PostgreSQL — the data volume, `PGDA
 all four databases, and the `db-init` `/init` mount. It never prints database
 passwords or database URLs. Run it as a user in the `docker` group, or with
 `sudo`.
+
+#### Restarting the deployment
+
+`install.sh` also copies the restart helper:
+
+```text
+${SERVER_PATH}/tools/restart_deployment.sh
+```
+
+Run it on the Docker host:
+
+```bash
+ssh user@server /srv/ravenest/tools/restart_deployment.sh
+```
+
+It reads `compose.env`, detects `bundled` versus `external`, runs:
+
+```bash
+docker compose ... up -d --remove-orphans
+docker compose ... restart ravenest
+```
+
+then waits for the app to become healthy. The `up` applies image, env, and
+compose changes; the `restart` makes the server reread mounted config files.
+
+Options:
+
+- `--pull` pulls the app image first.
+- `--verify` runs `verify_deployment.sh` after the health check.
+- `--db-mode auto|bundled|external` overrides detection.
+- `--timeout SECONDS` changes the health wait.
+
+Safe in-place config reload is not implemented yet; it is tracked in
+`docs/TODO_config_reload.md`.
+
+#### Admin CLI wrappers
+
+`install.sh` also installs host-side wrappers:
+
+```text
+${SERVER_PATH}/tools/staff_admin.sh
+${SERVER_PATH}/tools/invite_admin.sh
+```
+
+They execute the binaries already present in the running image:
+
+```bash
+# Owner / superuser:
+ssh user@server /srv/ravenest/tools/staff_admin.sh grant alice superadmin
+
+# Standard staff admin:
+ssh user@server /srv/ravenest/tools/staff_admin.sh grant bob customer_service
+
+ssh user@server /srv/ravenest/tools/invite_admin.sh create --count 5
+```
+
+`staff_admin.sh roles` lists the presets; `superuser` and `staff` are accepted
+as aliases for `superadmin` and `customer_service`.
+
+This avoids needing a local server build or a host copy of the binaries. The
+wrappers read `compose.env`, select the bundled overlay when configured, and
+fail clearly if the `ravenest` container is not running. They require Docker
+permissions but do not print database URLs or passwords.
 
 The image contains the compiled server only. Game content remains a separate
 mount: compose maps `${SERVER_PATH}/game` to `/app/game` read-only. To deploy
@@ -935,14 +1001,12 @@ compose service name.
 If `SERVER_RESTART_CMD` is empty, Docker mode defaults it to:
 
 ```bash
-# bundled
-cd "$SERVER_PATH" && docker compose --env-file compose.env \
-  -f docker-compose.yml -f docker-compose.bundled.yml up -d --remove-orphans
-
-# external
-cd "$SERVER_PATH" && docker compose --env-file compose.env \
-  -f docker-compose.yml up -d --remove-orphans
+"${SERVER_PATH}/tools/restart_deployment.sh"
 ```
+
+The helper reads `compose.env`, selects the bundled overlay when configured,
+runs `docker compose up -d --remove-orphans`, and restarts the `ravenest`
+service so mounted config is reread.
 
 The restart runs when the runtime env, either compose file, the database init
 SQL, or `compose.env` changes. A successful image pull also forces the compose
@@ -1035,11 +1099,13 @@ Cache** on the affected URL or prefix if an asset must change immediately.
   containing the four `RAVENEST_*_DB_URL` values, `RAVENEST_CORS_ORIGINS`, and
   the avatar-storage variables above.
 - **Compose env:** Docker mode also writes `${SERVER_COMPOSE_ENV_PATH}` with the
-  image tag and mount paths.
+  image tag, mount paths, and compose file paths used by the restart helper.
 - **Image pull:** Docker mode pulls `SERVER_IMAGE:SERVER_IMAGE_TAG` on the API
   server before switching compose files (`SERVER_PULL_CMD` overrides the command).
+- **Server tools:** Docker mode writes the verifier, restart helper, and
+  `staff_admin`/`invite_admin` wrappers under `${SERVER_PATH}/tools/`.
 - **Restart:** optional `SERVER_RESTART_CMD`; Docker mode defaults it to
-  `docker compose up -d`.
+  `${SERVER_PATH}/tools/restart_deployment.sh`.
 
 Why the server still needs a full `game/` copy:
 
@@ -1309,7 +1375,7 @@ published site is always recoverable.
   R2 credentials are exported only for the AWS CLI commands.
 - `publish_engine_server_image.sh` passes the registry token to `docker login`
   through stdin and never prints it.
-- `${SERVER_PATH}/verify_deployment.sh` is read-only and prints no database
+- `${SERVER_PATH}/tools/verify_deployment.sh` is read-only and prints no database
   passwords or database URLs.
 - Use SSH or a Git credential helper for the site repo. A token embedded in the
   remote URL can appear in Git error output.

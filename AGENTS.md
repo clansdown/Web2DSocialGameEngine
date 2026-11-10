@@ -597,9 +597,15 @@ server image and needs no registry credentials or local Docker. It writes
 server first (`SERVER_PULL_CMD` overrides the default `docker pull`).
 `SERVER_IMAGE_TAG` must be explicit (`latest` or a pinned immutable tag);
 `install.sh` never derives one. In Docker mode it also copies the read-only
-`tools/verify_deployment.sh` to `${SERVER_PATH}/verify_deployment.sh` (mode
-`755`) without running it; run it on the host to verify image/content mounts,
-health, port 2290, and bundled PostgreSQL. With `SERVER_DB_MODE=bundled`
+`tools/verify_deployment.sh` to `${SERVER_PATH}/tools/verify_deployment.sh`
+(mode `755`) without running it; run it on the host to verify image/content
+mounts, health, port 2290, and bundled PostgreSQL. It installs the restart
+helper as `${SERVER_PATH}/tools/restart_deployment.sh` and uses it as the
+default `SERVER_RESTART_CMD`; it converges the compose stack and restarts the
+app so mounted config is reread. It also installs `staff_admin.sh` and
+`invite_admin.sh` wrappers under `${SERVER_PATH}/tools/`; they execute the
+image binaries via `docker compose exec`. Safe in-place config reload is
+tracked in `docs/TODO_config_reload.md`. With `SERVER_DB_MODE=bundled`
 (default), it also writes `deploy/docker-compose.bundled.yml` and the
 idempotent `db-init` SQL, so PostgreSQL runs in the same stack on the internal
 network. With `SERVER_DB_MODE=external`, only the app compose file is used and
@@ -1095,6 +1101,8 @@ Build the full game progression and content system with a working tower defense 
 ### Progress
 
 #### Done
+- **Staff CLI role presets**: `staff_admin roles` prints a concise preset table, `role <id>` / `roles --verbose` show capabilities, `superuser` and `staff` aliases map to `superadmin` and `customer_service`, and schema-init `NOTICE` spam is suppressed.
+- **Resilient auth refresh + hub/profile polish + server tools**: the client retries transient `/api/auth/refresh` failures with backoff, preserves the session on network/5xx/429, and clears it only on `401 invalid_refresh_token`; Hub Support moved to a footer and every activity blurb is text-system driven; Profile has a required-note 18+ verification support request plus a browser-local months/years dismissal; `install.sh` installs `verify_deployment.sh`, `restart_deployment.sh`, and `staff_admin`/`invite_admin` wrappers under `${SERVER_PATH}/tools/`.
 - **PostgreSQL + threading rewrite (Phase 1)**: SQLite is gone. Four PostgreSQL databases (`ravenest_game/chat/staff/invites`) use the baseline in `server/db/BaselineSchema.hpp`; the legacy streaming SQL adapter and the typed `db::` layer (`value/result/row/connection_like/transaction`, `postgres_connection`, bounded per-DB executors) are in place. API handlers run on an 8-thread pool and return through `loop_dispatcher`; the refresh-cookie auth flow uses Argon2id + `user_sessions`; invite-only pre-alpha has `invite_admin`; local avatars use content-addressed capability URLs; voice is STUN-only with explicit failure text. Ops/docs: `docker-compose.yml`, `ravenest.env.example`, `tools/init_postgres.sh`, `tools/backup_postgres.sh`, `docs/database.md`, `docs/threading.md`, `docs/auth.md`, `docs/postgres_operations.md`, `docs/translation_sidecar.md`. Runtime verification awaits a host with PostgreSQL; compile + client/text checks pass.
 - **Reeve advisor**: a manor HUD panel backed by `/api/getReeveReport` (text ids only). The endpoint runs a lazy real tick, then projects one full day through the economy engine in a rolled-back transaction so advice never advances the fiefdom. Reports cover treasury, stores, production, land, water, morale, retinue, and trade with card/panel drill-downs, plus exactly one style-weighted recommendation (build/upgrade/convert/road link/set reserve/set import/set output rate) or an informational hold. Placement avoids reserved road corridors, prefers road-connected sites, and anchors speculative roads via dangling road ends. `economy_report.building_status` feeds both the Reeve and the building card; `demand` distinguishes consumed from unsupplied. Config: `game/config/reeve.json`; engine: `server/Reeve*.{hpp,cpp}`; client: `ReevePanel.svelte`, `ReeveText.svelte`, `reeve_text.ts`, `reeve_actions.ts`; docs: `api/getReeveReport.md`, `server/docs/reeve.md`; smoke: `tools/reeve_smoke.sh`.
 - **Offline translation context + localized retinue names**: free-form English
@@ -1258,7 +1266,11 @@ Build the full game progression and content system with a working tower defense 
 - `install.sh` - deployment only: builds the client, uploads R2/Pages, mirrors game content, pulls the prebuilt server image, writes compose/env, restarts
 - `publish_engine_server_image.sh` - developer-only image publishing: clean-tree check, build, immutable tag + `latest`, print tag/digest
 - `.deploy.example` / `.publish_engine.example` - deployment config vs developer publishing credentials templates
-- `tools/verify_deployment.sh` - read-only Docker deployment verifier (mounted content, uploads, health, port, bundled PostgreSQL); copied to `${SERVER_PATH}/` by `install.sh`
+- `tools/verify_deployment.sh` - read-only Docker deployment verifier (mounted content, uploads, health, port, bundled PostgreSQL); copied to `${SERVER_PATH}/tools/` by `install.sh`
+- `tools/restart_deployment.sh` - Docker compose converge + app restart helper; copied to `${SERVER_PATH}/tools/` by `install.sh` and used as the default `SERVER_RESTART_CMD`
+- `tools/staff_admin.sh` / `tools/invite_admin.sh` - host wrappers that execute the image's admin CLIs via `docker compose exec`; installed under `${SERVER_PATH}/tools/`
+- `tools/_admin_common.sh` - shared compose/env discovery for the host-side admin wrappers
+- `docs/TODO_config_reload.md` - deferred safe snapshot-based config reload design (no restart)
 - `tools/diagnose_ghcr_push.sh` - GHCR token/package/repository diagnostic (reads `.publish_engine`)
 - `game/config/tower_defense/projectiles.json` - Projectile config (width, height, speed, image_file, forward_vector)
 - `game/config/tower_defense/mobs.json` - Mob config with forward_vector per mob

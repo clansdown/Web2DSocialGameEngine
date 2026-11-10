@@ -39,6 +39,18 @@
   }
 
   /**
+   * Selects a random word from a safe-word list so new accounts do not all
+   * start with the same suggested character name.
+   *
+   * @param words - Safe words to choose from
+   * @returns A random word, or an empty string when the list is empty
+   */
+  function pick_random_safe_word(words: string[]): string {
+    if (words.length === 0) return '';
+    return words[Math.floor(Math.random() * words.length)];
+  }
+
+  /**
    * Updates the safe display name preview when word selections change.
    * Currently a placeholder for future preview functionality.
    * 
@@ -58,8 +70,8 @@
       const data = await response.json();
       safeWords1 = data.safe_words_1;
       safeWords2 = data.safe_words_2;
-      word1 = safeWords1[0];
-      word2 = safeWords2[0];
+      word1 = pick_random_safe_word(safeWords1);
+      word2 = pick_random_safe_word(safeWords2);
     } catch (err) {
       console.error('Failed to load safe words:', err);
       handleError('Failed to load safe words data', err, { category: 'general', context: 'loadSafeWords' });

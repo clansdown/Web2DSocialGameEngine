@@ -60,6 +60,10 @@ bool initialize_schema(const std::string& conninfo,
     }
 
     PQsetClientEncoding(conn, "UTF8");
+    // `CREATE TABLE IF NOT EXISTS` emits a NOTICE for every already-migrated
+    // database. Keep CLI output clean; warnings and errors still surface.
+    std::string notice_error;
+    run(conn, "SET client_min_messages = 'warning'", notice_error);
     run(conn, "SET statement_timeout = '30s'", error);
     run(conn, "SET lock_timeout = '10s'", error);
 

@@ -20,17 +20,21 @@ console is read-only for staff membership: a staff member cannot self-demote.
 
 ## Roles and capabilities
 
-Starter roles are seeded in `staff.db`:
+Starter roles are seeded in `staff.db`. Grant a **preset**, never individual
+capabilities:
 
-- `superadmin`
-- `customer_service`
-- `moderator`
-- `avatar_moderator`
-- `support_agent`
+| Role | Alias | Use |
+| --- | --- | --- |
+| `superadmin` | `superuser` | Owner / full access. |
+| `customer_service` | `staff` | Standard staff admin: accounts, support, moderation, invites. |
+| `moderator` | — | Chat, barony, identity, and support-ticket moderation. |
+| `support_agent` | `support` | Support queue and unstick tools. |
+| `avatar_moderator` | `avatar` | Avatar and identity moderation. |
 
-For v1 every starter role carries every capability. The capability checks are
-already enforced server-side, so roles can be tightened later without a schema
-change.
+In v1 `superadmin` and `customer_service` have the same capability set; use
+`superadmin` for the owner and `customer_service` for day-to-day staff. The
+other presets are narrower. Capability checks are enforced server-side, so
+roles can be tightened later without a schema change.
 
 Capabilities:
 
@@ -87,14 +91,33 @@ monthly-pass content are deferred.
 
 ## CLI
 
+On a Docker deployment, use the installed host wrapper:
+
 ```bash
-# Requires RAVENEST_GAME_DB_URL, RAVENEST_CHAT_DB_URL, RAVENEST_STAFF_DB_URL,
-# RAVENEST_INVITES_DB_URL.
-staff_admin grant <username|account_id> <role>
-staff_admin revoke <username|account_id>
-staff_admin list
-staff_admin roles
+# Inspect presets (capabilities only with --verbose or `role`):
+./tools/staff_admin.sh roles
+./tools/staff_admin.sh role superadmin
+./tools/staff_admin.sh roles --verbose
+
+# Owner / superuser:
+./tools/staff_admin.sh grant <username|account_id> superadmin
+./tools/staff_admin.sh grant <username|account_id> superuser
+
+# Standard staff admin:
+./tools/staff_admin.sh grant <username|account_id> customer_service
+./tools/staff_admin.sh grant <username|account_id> staff
+
+# Support only:
+./tools/staff_admin.sh grant <username|account_id> support
+
+./tools/staff_admin.sh list
+./tools/staff_admin.sh revoke <username|account_id>
 ```
+
+`grant` replaces the account's current staff role with the named preset. The
+wrapper runs `/app/staff_admin` inside the running `ravenest` container, which
+already has `RAVENEST_GAME_DB_URL`, `RAVENEST_CHAT_DB_URL`,
+`RAVENEST_STAFF_DB_URL`, and `RAVENEST_INVITES_DB_URL`.
 
 `--db-dir` is accepted but ignored for compatibility.
 

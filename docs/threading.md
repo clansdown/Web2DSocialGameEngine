@@ -40,7 +40,7 @@ uWS loop
 
 ## Game config
 
-`GameConfigCache` is read-only by default. Hot reload is **off** unless `RAVENEST_CONFIG_HOT_RELOAD=1`; enabling it with multiple worker threads still permits a reader/writer race on cached JSON, so it is intended for single-threaded debugging only. All config access is serialized by `reload_mutex_` during lookup/insert.
+`GameConfigCache` is read-only by default. Hot reload is **off** unless `RAVENEST_CONFIG_HOT_RELOAD=1`; enabling it with multiple worker threads still permits a reader/writer race on cached JSON, so it is intended for single-threaded debugging only. All config access is serialized by `reload_mutex_` during lookup/insert. In Docker deployments, use `${SERVER_PATH}/tools/restart_deployment.sh` for config changes until the safe snapshot reload in `docs/TODO_config_reload.md` is implemented.
 
 ## Shutdown order
 

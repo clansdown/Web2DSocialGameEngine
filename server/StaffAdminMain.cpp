@@ -2,15 +2,17 @@
 // editable from the staff console in v1: a staff member cannot self-demote.
 //
 // Usage:
-//   staff_admin --db-dir <dir> grant <username|account_id> <role>
-//   staff_admin --db-dir <dir> revoke <username|account_id>
-//   staff_admin --db-dir <dir> list
-//   staff_admin --db-dir <dir> roles
+//   staff_admin grant <username|account_id> <role|alias>
+//   staff_admin revoke <username|account_id>
+//   staff_admin list
+//   staff_admin roles [--verbose]
+//   staff_admin role <role|alias>
 
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <iomanip>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -22,6 +24,92 @@
 #include "staff/StaffStore.hpp"
 
 namespace {
+
+struct role_preset {
+    std::string id;
+    std::string alias;
+    std::string summary;
+};
+
+const std::vector<role_preset>& role_presets() {
+    static const std::vector<role_preset> presets = {
+        {"superadmin", "superuser", "Full access; use for the owner/superuser."},
+        {"customer_service", "staff",
+         "Standard staff admin; accounts, support, moderation, invites."},
+        {"moderator", "", "Chat, barony, identity, and support-ticket moderation."},
+        {"support_agent", "support", "Support queue and unstick tools."},
+        {"avatar_moderator", "avatar", "Avatar and identity moderation."},
+    };
+    return presets;
+}
+
+std::string lowercase(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+std::string normalize_role_id(const std::string& value) {
+    const std::string lowered = lowercase(value);
+    for (const auto& preset : role_presets()) {
+        if (lowered == preset.id || (!preset.alias.empty() && lowered == preset.alias)) {
+            return preset.id;
+        }
+    }
+    return lowered;
+}
+
+std::string role_alias(const std::string& role_id) {
+    for (const auto& preset : role_presets()) {
+        if (preset.id == role_id) return preset.alias;
+    }
+    return std::string();
+}
+
+std::string role_summary(const staff::staff_role& role) {
+    for (const auto& preset : role_presets()) {
+        if (preset.id == role.id) return preset.summary;
+    }
+    return role.description.empty() ? "No description." : role.description;
+}
+
+int role_rank(const std::string& role_id) {
+    const auto& presets = role_presets();
+    for (size_t i = 0; i < presets.size(); ++i) {
+        if (presets[i].id == role_id) return static_cast<int>(i);
+    }
+    return static_cast<int>(presets.size());
+}
+
+std::vector<staff::staff_role> sorted_roles() {
+    std::vector<staff::staff_role> roles = staff::StaffStore::instance().list_roles();
+    std::sort(roles.begin(), roles.end(), [](const staff::staff_role& a,
+                                              const staff::staff_role& b) {
+        const int a_rank = role_rank(a.id);
+        const int b_rank = role_rank(b.id);
+        if (a_rank != b_rank) return a_rank < b_rank;
+        return a.id < b.id;
+    });
+    return roles;
+}
+
+const staff::staff_role* find_role(const std::vector<staff::staff_role>& roles,
+                                   const std::string& role_id) {
+    for (const auto& role : roles) {
+        if (role.id == role_id) return &role;
+    }
+    return nullptr;
+}
+
+std::string join_values(const std::vector<std::string>& values, const std::string& separator) {
+    std::string joined;
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) joined += separator;
+        joined += values[i];
+    }
+    return joined;
+}
 
 std::optional<int64_t> resolve_target(const std::string& value) {
     if (value.empty()) return std::nullopt;
@@ -67,11 +155,95 @@ void journal_cli(const std::string& action_type, int64_t account_id, const std::
 
 void print_usage() {
     std::cout << "Usage: staff_admin [--db-dir PATH] <command>\n\n"
-              << "Commands:\n"
-              << "  grant <username|account_id> <role>\n"
-              << "  revoke <username|account_id>\n"
+              << "Common commands:\n"
+              << "  grant <username|account_id> superadmin          # superuser / full access\n"
+              << "  grant <username|account_id> customer_service    # standard staff admin\n"
+              << "  grant <username|account_id> support_agent       # support queue only\n"
+              << "  revoke <username|account_id>\n\n"
+              << "Other commands:\n"
               << "  list\n"
-              << "  roles\n";
+              << "  roles\n"
+              << "  role <role_id|alias>\n"
+              << "  roles --verbose\n\n"
+              << "Role aliases: superuser=superadmin, staff=customer_service,\n"
+              << "              support=support_agent, avatar=avatar_moderator\n\n"
+              << "`grant` replaces the account's current staff role.\n"
+              << "Run `staff_admin roles` for the preset summary.\n";
+}
+
+void print_role_detail(const staff::staff_role& role) {
+    std::cout << role.id << " (" << role.name << ")\n";
+    std::cout << "  " << role_summary(role) << "\n";
+    const std::string alias = role_alias(role.id);
+    if (!alias.empty()) {
+        std::cout << "  alias: " << alias << "\n";
+    }
+    std::cout << "  capabilities (" << role.capabilities.size() << "):\n";
+    for (const auto& capability : role.capabilities) {
+        std::cout << "    " << capability << "\n";
+    }
+    std::cout << "  grant: staff_admin grant <username|account_id> " << role.id << "\n";
+}
+
+void print_roles_table(const std::vector<staff::staff_role>& roles) {
+    std::cout << "Staff role presets\n\n";
+    std::cout << "  " << std::left << std::setw(20) << "ROLE"
+              << std::setw(20) << "NAME"
+              << "SUMMARY\n";
+    for (const auto& role : roles) {
+        std::string summary = role_summary(role);
+        const std::string alias = role_alias(role.id);
+        if (!alias.empty()) {
+            summary += " (alias: " + alias + ")";
+        }
+        std::cout << "  " << std::left << std::setw(20) << role.id
+                  << std::setw(20) << role.name
+                  << summary << "\n";
+    }
+    std::cout << "\nCommon commands\n"
+              << "  staff_admin grant <username|account_id> superadmin\n"
+              << "  staff_admin grant <username|account_id> customer_service\n"
+              << "  staff_admin grant <username|account_id> support_agent\n"
+              << "  staff_admin revoke <username|account_id>\n\n"
+              << "`grant` replaces the account's current staff role with the named preset.\n"
+              << "Run `staff_admin role <role_id>` to see that preset's capabilities.\n";
+
+    const staff::staff_role* superadmin = find_role(roles, "superadmin");
+    const staff::staff_role* customer_service = find_role(roles, "customer_service");
+    if (superadmin && customer_service &&
+        superadmin->capabilities == customer_service->capabilities) {
+        std::cout << "\nNote: superadmin and customer_service currently have the same "
+                     "capabilities.\n"
+                  << "Use superadmin for the owner and customer_service for day-to-day "
+                     "staff.\n";
+    }
+}
+
+void print_roles_verbose(const std::vector<staff::staff_role>& roles) {
+    std::cout << "Staff role presets (verbose)\n";
+    for (const auto& role : roles) {
+        std::cout << "\n";
+        print_role_detail(role);
+    }
+}
+
+void print_staff_list(const std::vector<staff::staff_account_summary>& accounts) {
+    if (accounts.empty()) {
+        std::cout << "No staff accounts.\n";
+        return;
+    }
+    std::cout << std::left << std::setw(12) << "ACCOUNT"
+              << std::setw(24) << "USERNAME"
+              << std::setw(24) << "ROLE"
+              << "STATUS\n";
+    for (const auto& account : accounts) {
+        std::string roles = join_values(account.roles, ", ");
+        if (roles.empty()) roles = "-";
+        std::cout << std::left << std::setw(12) << account.account_id
+                  << std::setw(24) << account.username
+                  << std::setw(24) << roles
+                  << (account.revoked_at > 0 ? "revoked" : "active") << "\n";
+    }
 }
 
 }  // namespace
@@ -107,24 +279,36 @@ int main(int argc, char** argv) {
 
     const std::string command = args[0];
     if (command == "roles") {
-        for (const auto& role : staff::StaffStore::instance().list_roles()) {
-            std::cout << role.id << "\t" << role.name << "\t" << role.description << "\n";
-            for (const auto& capability : role.capabilities) {
-                std::cout << "  - " << capability << "\n";
-            }
+        if (args.size() > 2 || (args.size() == 2 && args[1] != "--verbose" &&
+                                args[1] != "-v")) {
+            print_usage();
+            return 1;
+        }
+        const std::vector<staff::staff_role> roles = sorted_roles();
+        if (args.size() == 2) {
+            print_roles_verbose(roles);
+        } else {
+            print_roles_table(roles);
         }
         return 0;
     }
-    if (command == "list") {
-        for (const auto& account : staff::StaffStore::instance().list_staff()) {
-            std::cout << account.account_id << "\t" << account.username << "\t";
-            for (size_t i = 0; i < account.roles.size(); ++i) {
-                if (i > 0) std::cout << ",";
-                std::cout << account.roles[i];
-            }
-            if (account.revoked_at > 0) std::cout << "\t(revoked)";
-            std::cout << "\n";
+    if (command == "role") {
+        if (args.size() != 2) {
+            print_usage();
+            return 1;
         }
+        const std::vector<staff::staff_role> roles = sorted_roles();
+        const staff::staff_role* role = find_role(roles, normalize_role_id(args[1]));
+        if (!role) {
+            std::cerr << "unknown role preset: " << args[1] << "\n"
+                      << "Run `staff_admin roles` to list presets." << std::endl;
+            return 1;
+        }
+        print_role_detail(*role);
+        return 0;
+    }
+    if (command == "list") {
+        print_staff_list(staff::StaffStore::instance().list_staff());
         return 0;
     }
     if (command == "grant") {
@@ -137,14 +321,23 @@ int main(int argc, char** argv) {
             std::cerr << "unknown account: " << args[1] << std::endl;
             return 1;
         }
+        const std::vector<staff::staff_role> roles = sorted_roles();
+        const staff::staff_role* role = find_role(roles, normalize_role_id(args[2]));
+        if (!role) {
+            std::cerr << "unknown role preset: " << args[2] << "\n"
+                      << "Run `staff_admin roles` to list presets." << std::endl;
+            return 1;
+        }
         std::string error;
-        if (!staff::StaffStore::instance().grant_staff(*account_id, args[2], operator_label(),
-                                                       error)) {
+        if (!staff::StaffStore::instance().grant_staff(*account_id, role->id,
+                                                       operator_label(), error)) {
             std::cerr << "grant failed: " << error << std::endl;
             return 1;
         }
-        journal_cli("system.staff_grant", *account_id, args[2], true);
-        std::cout << "granted staff role '" << args[2] << "' to account " << *account_id << "\n";
+        journal_cli("system.staff_grant", *account_id, role->id, true);
+        std::cout << "Granted " << role->id << " (" << role->name << ") to account "
+                  << *account_id << ".\n"
+                  << "This replaced any previous staff role.\n";
         return 0;
     }
     if (command == "revoke") {
@@ -163,7 +356,7 @@ int main(int argc, char** argv) {
             return 1;
         }
         journal_cli("system.staff_revoke", *account_id, std::string(), false);
-        std::cout << "revoked staff from account " << *account_id << "\n";
+        std::cout << "Revoked staff access from account " << *account_id << ".\n";
         return 0;
     }
 

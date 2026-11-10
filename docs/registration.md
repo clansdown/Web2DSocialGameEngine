@@ -23,9 +23,11 @@ first account without a code, so use the CLI against the test/ops database:
 ./invite_admin create --count 1
 ```
 
-Then create the staff account and grant `staff_admin`. The server can also be
-temporarily started in `off`/`global_code` mode for the first account, then
-switched back to `invite_only`.
+On a Docker deployment use `./tools/invite_admin.sh create --count 1` instead.
+Then create the staff account and grant `superadmin` (owner) or
+`customer_service` (standard staff admin). The server can also be temporarily
+started in `off`/`global_code` mode for the first account, then switched back to
+`invite_only`.
 
 ## Code format
 
