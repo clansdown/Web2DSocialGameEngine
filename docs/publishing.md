@@ -537,8 +537,9 @@ The order is fixed:
    Postgres overlay/init SQL when selected, and `compose.env` are written next
    to the content.
 8. **server tools** — in Docker mode, `${SERVER_PATH}/tools/` receives the
-   deployment verifier, restart helper, and the `staff_admin`/`invite_admin`
-   wrappers with mode `755`. The verifier is not run automatically.
+   deployment verifier, restart helper, log fetcher, auth diagnostic,
+   deployment status, and the `staff_admin`/`invite_admin` wrappers with mode
+   `755`. The verifier is not run automatically.
 9. **restart** — `SERVER_RESTART_CMD` runs after a change, if configured. In
    Docker mode it defaults to `${SERVER_PATH}/tools/restart_deployment.sh`.
 
@@ -877,6 +878,47 @@ wrappers read `compose.env`, select the bundled overlay when configured, and
 fail clearly if the `ravenest` container is not running. They require Docker
 permissions but do not print database URLs or passwords.
 
+#### Operational diagnostics
+
+`install.sh` also installs:
+
+```text
+${SERVER_PATH}/tools/deployment_status.sh
+${SERVER_PATH}/tools/fetch_logs.sh
+${SERVER_PATH}/tools/diagnose_auth.sh
+```
+
+`deployment_status.sh` is a fast read-only check of the app container, health,
+image, HTTP endpoint, bundled PostgreSQL databases, disk space, and recent
+error-like logs. Use `verify_deployment.sh` when you need the full mount/inode
+verification.
+
+`fetch_logs.sh` is the shared log fetcher for any compose service or Docker
+container. It defaults to `ravenest`, the last 15 minutes, 200 lines, and
+redacts database URLs and refresh/access tokens:
+
+```bash
+./tools/fetch_logs.sh
+./tools/fetch_logs.sh --since 1h --grep 'authRefresh|refresh failed'
+./tools/fetch_logs.sh --service postgres --since 30m
+./tools/fetch_logs.sh --container ravenest-postgres-1
+./tools/fetch_logs.sh --output /tmp/ravenest.log
+```
+
+`diagnose_auth.sh` tests `/api/auth/refresh` for one session and classifies the
+result as refresh success, invalid session, server-side refresh failure, or
+transport failure. Supply the refresh token through `RAVENEST_REFRESH_COOKIE`,
+`--cookie-file`, or `--cookie-stdin`; it is never sent as a command-line
+argument and never printed:
+
+```bash
+RAVENEST_REFRESH_COOKIE='rvs_rt_...' ./tools/diagnose_auth.sh
+./tools/diagnose_auth.sh --cookie-file /tmp/refresh.cookie
+./tools/diagnose_auth.sh --dry-run
+```
+
+The scripts do not print database URLs or passwords.
+
 The image contains the compiled server only. Game content remains a separate
 mount: compose maps `${SERVER_PATH}/game` to `/app/game` read-only. To deploy
 content manually:
@@ -1102,7 +1144,8 @@ Cache** on the affected URL or prefix if an asset must change immediately.
   image tag, mount paths, and compose file paths used by the restart helper.
 - **Image pull:** Docker mode pulls `SERVER_IMAGE:SERVER_IMAGE_TAG` on the API
   server before switching compose files (`SERVER_PULL_CMD` overrides the command).
-- **Server tools:** Docker mode writes the verifier, restart helper, and
+- **Server tools:** Docker mode writes the verifier, restart helper, log
+  fetcher, auth diagnostic, deployment status, and
   `staff_admin`/`invite_admin` wrappers under `${SERVER_PATH}/tools/`.
 - **Restart:** optional `SERVER_RESTART_CMD`; Docker mode defaults it to
   `${SERVER_PATH}/tools/restart_deployment.sh`.

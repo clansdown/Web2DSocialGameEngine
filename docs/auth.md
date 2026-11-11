@@ -55,6 +55,11 @@ GET  /api/auth/sessions         Bearer
 POST /api/auth/revokeSession    Bearer
 ```
 
+The server normalizes the documented `/api/auth/<action>` paths to the internal
+`auth<Action>` endpoint names before routing. Keep the slash paths in clients:
+the refresh cookie is scoped to `Path=/api/auth` (and is therefore also sent to
+`/api/auth/logout`).
+
 Normal endpoints use:
 
 ```http
@@ -70,6 +75,7 @@ The old body `auth:{username,token}` form is accepted for transitional clients. 
 401 token_expired
 401 token_invalid
 401 invalid_credentials
+401 invalid_refresh_token
 403 origin_not_allowed
 429 rate_limited
 503 server_busy
@@ -93,12 +99,54 @@ The old body `auth:{username,token}` form is accepted for transitional clients. 
 - Transient refresh failures (network/5xx/429) retry with backoff; only a
   definitive `401 invalid_refresh_token` clears the local session and returns
   the player to login.
+- Refresh attempts and failures log to the browser console under `[auth]`:
+  attempt number/URL, HTTP status, error code, retry delay, and terminal
+  unavailability. Tokens and cookies are never logged.
 - Startup restores the session by refreshing, not by replaying a stored password.
 - Legacy OPFS password keys are deleted; no credential is written to disk.
 - `with_avatar_auth` only appends query credentials for the legacy bare
   `/api/avatar/<id>` route. New local avatars use an unguessable
   `/api/avatar/<id>/<content-key>` capability URL; R2 avatars are capability
   URLs too.
+
+## Diagnosing refresh failures
+
+Use the installed host-side diagnostic:
+
+```bash
+RAVENEST_REFRESH_COOKIE='rvs_rt_...' ./tools/diagnose_auth.sh
+./tools/diagnose_auth.sh --cookie-file /tmp/refresh.cookie
+./tools/diagnose_auth.sh --dry-run
+```
+
+It calls `/api/auth/refresh`, prints the status and safe response fields, and
+classifies the result as refresh success, invalid session, server/API failure,
+or transport failure. It never prints the refresh token or access token.
+
+Use the generic log fetcher for the related server logs:
+
+```bash
+./tools/fetch_logs.sh --since 30m \
+  --grep 'authRefresh|refresh failed|could not load session|what='
+```
+
+The diagnostic sends the cookie through a temporary mode-600 curl config, not
+through command-line arguments. Prefer `RAVENEST_REFRESH_COOKIE` or
+`--cookie-file` over pasting tokens into a shell history.
+
+Exit codes: `0` refresh works, `1` the session is invalid (sign in again), `2`
+server/API failure, `3` usage/config/cookie problem.
+
+The server logs refresh attempts under `[authRefresh]` with the client IP,
+cookie/token presence, outcome, account/session ids, and duration. It never logs
+the cookie or either token. Unrouted `auth/*` paths log a warning instead of
+silently falling through to the generic `token_missing` response.
+
+Regression test:
+
+```bash
+bash tools/auth_refresh_smoke.sh [PORT]
+```
 
 ## Deployment note
 

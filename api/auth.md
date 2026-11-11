@@ -2,6 +2,10 @@
 
 All routes are `POST` except `GET /api/auth/sessions`.
 
+The server accepts the documented `/api/auth/<action>` paths and normalizes them
+to the internal `auth<Action>` endpoint names. Clients must use the slash paths
+because the refresh cookie is scoped to `Path=/api/auth`.
+
 ## POST /api/auth/refresh
 
 Public; authenticates with the `ravenest_refresh` cookie only.
@@ -11,7 +15,8 @@ Request body: `{}` (credentials are the cookie).
 Success: the same payload as `/api/login`, including a fresh `data.token`.
 Sets a re-issued sliding `ravenest_refresh` cookie.
 
-Failure (401): `{"error":"invalid_refresh_token"}` and clears the cookie.
+Failure (401): `{"error":"invalid_refresh_token"}` and clears the cookie,
+including when the cookie is missing. This route never returns `token_missing`.
 Transient failures (network errors, 429, 5xx) should be retried; clients must
 not treat them as a revoked session.
 

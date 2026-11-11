@@ -512,6 +512,14 @@ preflight_server_docker() {
         die "tools/restart_deployment.sh is missing from the engine checkout"
     [ -f tools/_admin_common.sh ] ||
         die "tools/_admin_common.sh is missing from the engine checkout"
+    [ -f tools/_deploy_common.sh ] ||
+        die "tools/_deploy_common.sh is missing from the engine checkout"
+    [ -f tools/fetch_logs.sh ] ||
+        die "tools/fetch_logs.sh is missing from the engine checkout"
+    [ -f tools/diagnose_auth.sh ] ||
+        die "tools/diagnose_auth.sh is missing from the engine checkout"
+    [ -f tools/deployment_status.sh ] ||
+        die "tools/deployment_status.sh is missing from the engine checkout"
     [ -f tools/staff_admin.sh ] ||
         die "tools/staff_admin.sh is missing from the engine checkout"
     [ -f tools/invite_admin.sh ] ||
@@ -1118,6 +1126,7 @@ stage_server_compose() {
 # Install host-side operational tools under ${SERVER_PATH}/tools/:
 #   - read-only deployment verifier (not run automatically)
 #   - compose/restart helper (used as the default SERVER_RESTART_CMD)
+#   - log fetcher, auth diagnostic, and deployment status
 #   - staff_admin / invite_admin wrappers that exec the image binaries
 stage_server_tools() {
     [ "$SERVER_DEPLOY_MODE" = "docker" ] || return 0
@@ -1131,6 +1140,18 @@ stage_server_tools() {
     install_remote_file "tools/_admin_common.sh" \
         "${SERVER_PATH}/tools/_admin_common.sh" \
         "server admin helper" 755
+    install_remote_file "tools/_deploy_common.sh" \
+        "${SERVER_PATH}/tools/_deploy_common.sh" \
+        "server deployment helper" 755
+    install_remote_file "tools/fetch_logs.sh" \
+        "${SERVER_PATH}/tools/fetch_logs.sh" \
+        "server log fetcher" 755
+    install_remote_file "tools/diagnose_auth.sh" \
+        "${SERVER_PATH}/tools/diagnose_auth.sh" \
+        "server auth diagnostic" 755
+    install_remote_file "tools/deployment_status.sh" \
+        "${SERVER_PATH}/tools/deployment_status.sh" \
+        "server deployment status" 755
     install_remote_file "tools/staff_admin.sh" \
         "${SERVER_PATH}/tools/staff_admin.sh" \
         "server staff admin wrapper" 755

@@ -136,6 +136,26 @@ local build or host copy of the binaries is needed. Run `staff_admin.sh roles`
 to list presets; aliases `superuser` and `staff` map to `superadmin` and
 `customer_service`.
 
+Operational diagnostics are also installed there:
+
+```bash
+# Fast app/database/HTTP/status check
+ssh user@server /srv/ravenest/tools/deployment_status.sh
+
+# Generic filtered logs (read-only, redacted)
+ssh user@server /srv/ravenest/tools/fetch_logs.sh --since 30m
+ssh user@server /srv/ravenest/tools/fetch_logs.sh \
+  --grep 'authRefresh|refresh failed|could not load session'
+
+# Diagnose a refresh-cookie failure for one session
+ssh user@server /srv/ravenest/tools/diagnose_auth.sh \
+  --cookie-file /tmp/ravenest-refresh.cookie
+```
+
+`diagnose_auth.sh` never prints the refresh or access token. Prefer
+`RAVENEST_REFRESH_COOKIE` or `--cookie-file`; `--cookie-stdin` is also
+available. Use `--dry-run` to check the refresh endpoint without a cookie.
+
 `deploy/docker-compose.yml` is the app-only base. With
 `SERVER_DB_MODE=bundled`, `install.sh` also writes
 `deploy/docker-compose.bundled.yml` and a `db-init` service that creates the four

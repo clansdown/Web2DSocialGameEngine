@@ -119,7 +119,7 @@ The game-side redemption ledger is `users.invitation_code_id` (partial unique in
 
 ## API endpoints
 
-Every endpoint has a file in `api/`. Authenticated endpoints use the Bearer header; `createAccount`, `getRegistrationConfig`, `getTexts`, and `getUITextures` are public. `authRefresh`/`authLogout` use the refresh cookie.
+Every endpoint has a file in `api/`. Authenticated endpoints use the Bearer header; `createAccount`, `getRegistrationConfig`, `getTexts`, and `getUITextures` are public. The documented `/api/auth/<action>` paths are normalized to the internal `auth<Action>` names; `/api/auth/refresh` and `/api/auth/logout` use the refresh cookie.
 
 ## Realtime Combat (WebSocket)
 

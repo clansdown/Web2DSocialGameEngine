@@ -205,20 +205,27 @@ export async function apiPost<T = unknown>(
  * @returns Refreshed identity, or null for a definitive invalid token
  */
 async function perform_refresh_access_token(): Promise<AuthResponse | null> {
+  const refresh_url = api_url('/api/auth/refresh');
+  const max_attempts = REFRESH_RETRY_DELAYS_MS.length + 1;
   for (let attempt = 0; ; attempt += 1) {
+    console.debug(`[auth] refresh attempt ${attempt + 1}/${max_attempts} ${refresh_url}`);
     let response: Response;
     try {
-      response = await fetch(api_url('/api/auth/refresh'), {
+      response = await fetch(refresh_url, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: '{}'
       });
-    } catch {
+    } catch (error) {
+      console.warn('[auth] refresh network error', error);
       if (attempt >= REFRESH_RETRY_DELAYS_MS.length) {
+        console.error(`[auth] refresh unavailable after ${attempt + 1} attempt(s)`);
         throw new RefreshUnavailableError();
       }
-      await sleep(REFRESH_RETRY_DELAYS_MS[attempt]);
+      const delay = REFRESH_RETRY_DELAYS_MS[attempt];
+      console.debug(`[auth] refresh retry in ${delay}ms`);
+      await sleep(delay);
       continue;
     }
 
@@ -230,26 +237,37 @@ async function perform_refresh_access_token(): Promise<AuthResponse | null> {
         parsed = null;
       }
       if (parsed?.error === 'invalid_refresh_token') {
+        console.warn('[auth] refresh token invalid; clearing session');
         auth.setSessionToken(null);
         auth.clearInMemoryCredentials();
         return null;
       }
+      console.warn('[auth] refresh rejected', {
+        status: response.status,
+        error: parsed?.error ?? '<no body>'
+      });
       if (attempt < REFRESH_RETRY_DELAYS_MS.length) {
-        await sleep(REFRESH_RETRY_DELAYS_MS[attempt]);
+        const delay = REFRESH_RETRY_DELAYS_MS[attempt];
+        console.debug(`[auth] refresh retry in ${delay}ms`);
+        await sleep(delay);
         continue;
       }
+      console.error(`[auth] refresh unavailable after ${attempt + 1} attempt(s)`);
       throw new RefreshUnavailableError();
     }
 
     if (!response.ok) {
+      console.warn(`[auth] refresh HTTP ${response.status}`);
       if (attempt < REFRESH_RETRY_DELAYS_MS.length) {
         const fallback = REFRESH_RETRY_DELAYS_MS[attempt];
         const delay = response.status === 429 || response.status === 503
           ? retry_after_delay_ms(response, fallback)
           : fallback;
+        console.debug(`[auth] refresh retry in ${delay}ms`);
         await sleep(delay);
         continue;
       }
+      console.error(`[auth] refresh unavailable after ${attempt + 1} attempt(s)`);
       throw new RefreshUnavailableError();
     }
 
@@ -257,27 +275,37 @@ async function perform_refresh_access_token(): Promise<AuthResponse | null> {
     try {
       parsed = await response.json() as ApiResponse<AuthResponse>;
     } catch {
+      console.warn('[auth] refresh response was not JSON');
       if (attempt < REFRESH_RETRY_DELAYS_MS.length) {
-        await sleep(REFRESH_RETRY_DELAYS_MS[attempt]);
+        const delay = REFRESH_RETRY_DELAYS_MS[attempt];
+        console.debug(`[auth] refresh retry in ${delay}ms`);
+        await sleep(delay);
         continue;
       }
+      console.error(`[auth] refresh unavailable after ${attempt + 1} attempt(s)`);
       throw new RefreshUnavailableError();
     }
 
     const data = parsed.data as AuthResponse | undefined;
     if (parsed.error === 'invalid_refresh_token') {
+      console.warn('[auth] refresh token invalid; clearing session');
       auth.setSessionToken(null);
       auth.clearInMemoryCredentials();
       return null;
     }
     if (parsed.error || !data?.token) {
+      console.warn('[auth] refresh response error', parsed.error ?? 'missing token');
       if (attempt < REFRESH_RETRY_DELAYS_MS.length) {
-        await sleep(REFRESH_RETRY_DELAYS_MS[attempt]);
+        const delay = REFRESH_RETRY_DELAYS_MS[attempt];
+        console.debug(`[auth] refresh retry in ${delay}ms`);
+        await sleep(delay);
         continue;
       }
+      console.error(`[auth] refresh unavailable after ${attempt + 1} attempt(s)`);
       throw new RefreshUnavailableError();
     }
 
+    console.debug('[auth] refresh succeeded');
     auth.setSessionToken(data.token);
     auth.setStoredUsername(data.username);
     return data;

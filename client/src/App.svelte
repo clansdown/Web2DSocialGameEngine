@@ -147,10 +147,12 @@
       }
     } catch (error) {
       if (error instanceof RefreshUnavailableError) {
+        console.error('[auth] refresh unavailable', error);
         await show_auth_unavailable();
         return;
       }
       // Definitive auth failure; fall through to login.
+      console.warn('[auth] refresh definitively failed', error);
     } finally {
       authLoading.set(false);
     }
@@ -174,10 +176,12 @@
       if (refreshed?.token) return true;
     } catch (error) {
       if (error instanceof RefreshUnavailableError) {
+        console.error('[auth] refresh unavailable', error);
         await show_auth_unavailable();
         return false;
       }
       // Definitive auth failure; fall through.
+      console.warn('[auth] refresh definitively failed', error);
     }
     auth.clearInMemoryCredentials();
     needsAuth = true;

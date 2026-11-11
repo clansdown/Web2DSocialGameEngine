@@ -705,6 +705,12 @@ invalid-format errors. Defaults to the local backend; exporting
 `RAVENEST_AVATAR_STORAGE=r2` plus the R2 env runs the same flow against a test
 bucket. Exits 0 on pass, 2 on failure; isolated per-port scratch DB.
 
+**Auth refresh smoke test** (`bash tools/auth_refresh_smoke.sh [PORT]`):
+createAccount → login → `/api/auth/refresh` with no cookie (`invalid_refresh_token`,
+never `token_missing`) → bogus cookie → valid cookie (200 + new access token +
+re-issued cookie) → `/api/auth/logout` (clearing `Set-Cookie`) → old cookie
+rejected. Exits 0 on pass, 2 on failure; isolated per-port scratch DB.
+
 **Combat determinism / replay** (`tools/replay_combat.sh [SEED] [PORT]`):
 records a scripted match with `--combat-replay-dir` + `--combat-seed`, then
 re-runs the tick-exact command/ready log through `--combat-replay` and asserts
@@ -1101,6 +1107,8 @@ Build the full game progression and content system with a working tower defense 
 ### Progress
 
 #### Done
+- **Auth refresh route + logging**: `/api/auth/<action>` is normalized to `auth<Action>`, so `/api/auth/refresh` and `/api/auth/logout` reach their handlers instead of falling through to `token_missing`. Server logs `[authRefresh]` start/rejected/ok lines (IP, cookie/token presence, reason, account/session, duration; tokens never logged) and warns on unrouted auth paths; the client logs `[auth]` refresh attempts, statuses, retry delays, and terminal failures. Regression: `tools/auth_refresh_smoke.sh`.
+- **Operational diagnostics**: `fetch_logs.sh` (generic filtered/redacted compose/container logs), `diagnose_auth.sh` (refresh-cookie classification), and `deployment_status.sh` (fast app/DB/HTTP/log status) are installed under `${SERVER_PATH}/tools/`; they share `_deploy_common.sh`.
 - **Staff CLI role presets**: `staff_admin roles` prints a concise preset table, `role <id>` / `roles --verbose` show capabilities, `superuser` and `staff` aliases map to `superadmin` and `customer_service`, and schema-init `NOTICE` spam is suppressed.
 - **Resilient auth refresh + hub/profile polish + server tools**: the client retries transient `/api/auth/refresh` failures with backoff, preserves the session on network/5xx/429, and clears it only on `401 invalid_refresh_token`; Hub Support moved to a footer and every activity blurb is text-system driven; Profile has a required-note 18+ verification support request plus a browser-local months/years dismissal; `install.sh` installs `verify_deployment.sh`, `restart_deployment.sh`, and `staff_admin`/`invite_admin` wrappers under `${SERVER_PATH}/tools/`.
 - **PostgreSQL + threading rewrite (Phase 1)**: SQLite is gone. Four PostgreSQL databases (`ravenest_game/chat/staff/invites`) use the baseline in `server/db/BaselineSchema.hpp`; the legacy streaming SQL adapter and the typed `db::` layer (`value/result/row/connection_like/transaction`, `postgres_connection`, bounded per-DB executors) are in place. API handlers run on an 8-thread pool and return through `loop_dispatcher`; the refresh-cookie auth flow uses Argon2id + `user_sessions`; invite-only pre-alpha has `invite_admin`; local avatars use content-addressed capability URLs; voice is STUN-only with explicit failure text. Ops/docs: `docker-compose.yml`, `ravenest.env.example`, `tools/init_postgres.sh`, `tools/backup_postgres.sh`, `docs/database.md`, `docs/threading.md`, `docs/auth.md`, `docs/postgres_operations.md`, `docs/translation_sidecar.md`. Runtime verification awaits a host with PostgreSQL; compile + client/text checks pass.
@@ -1270,6 +1278,10 @@ Build the full game progression and content system with a working tower defense 
 - `tools/restart_deployment.sh` - Docker compose converge + app restart helper; copied to `${SERVER_PATH}/tools/` by `install.sh` and used as the default `SERVER_RESTART_CMD`
 - `tools/staff_admin.sh` / `tools/invite_admin.sh` - host wrappers that execute the image's admin CLIs via `docker compose exec`; installed under `${SERVER_PATH}/tools/`
 - `tools/_admin_common.sh` - shared compose/env discovery for the host-side admin wrappers
+- `tools/_deploy_common.sh` - shared compose/env/container discovery for operational scripts
+- `tools/fetch_logs.sh` - generic filtered/redacted compose or container log fetcher
+- `tools/diagnose_auth.sh` - refresh-cookie diagnostic (`/api/auth/refresh` classification + recent logs)
+- `tools/deployment_status.sh` - fast app/database/HTTP/log status check
 - `docs/TODO_config_reload.md` - deferred safe snapshot-based config reload design (no restart)
 - `tools/diagnose_ghcr_push.sh` - GHCR token/package/repository diagnostic (reads `.publish_engine`)
 - `game/config/tower_defense/projectiles.json` - Projectile config (width, height, speed, image_file, forward_vector)
@@ -1298,6 +1310,7 @@ Build the full game progression and content system with a working tower defense 
 - `server/avatars/` - Avatar storage abstraction, SigV4 R2 client, upload manager, purge
 - `server/ThreadPool.hpp/.cpp` - Bounded worker pool for avatar upload/maintenance
 - `tools/avatar_smoke.sh` / `tools/avatar_smoke.mjs` - Local/R2 avatar smoke test
+- `tools/auth_refresh_smoke.sh` / `.mjs` - Refresh/logout route + cookie smoke test
 - `game/config/fiefdom_building_types.json` - Building types incl. stage chains (`built_from`), level-indexed production arrays, production-resource build costs
 - `server/ActionHandlers.cpp` - Convert action, chain-aware counting, cost-system extension (charcoal/iron/ironwork/fancy_ironwork)
 - `server/docs/fiefdom_building_types.md` - Stage chains, level-scaled production, money-object amounts

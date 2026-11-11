@@ -1,11 +1,12 @@
 #include <iostream>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <algorithm>
 #include <cctype>
 #include <chrono>
-#include <chrono>
+#include <ctime>
 #include <iomanip>
 #include <typeinfo>
 #include <thread>
@@ -124,16 +125,48 @@ static void handle_shutdown_signal(int) {
     g_shutdown_requested.store(true, std::memory_order_relaxed);
 }
 
-void log_error(const std::string& context, const std::string& message) {
+enum class log_level { info, warning, error };
+
+static std::mutex g_log_mutex;
+
+void log_line(log_level level, const std::string& context, const std::string& message) {
+    const char* tag = level == log_level::info
+                          ? "[INFO]"
+                          : (level == log_level::warning ? "[WARN]" : "[ERROR]");
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    std::cerr << "[" << std::put_time(std::localtime(&now), "%Y-%m-%d %H:%M:%S") << "] "
-              << "[ERROR] " << context << ": " << message << std::endl;
+    std::tm local_time{};
+    localtime_r(&now, &local_time);
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    std::ostream& stream = level == log_level::info ? std::cout : std::cerr;
+    stream << "[" << std::put_time(&local_time, "%Y-%m-%d %H:%M:%S") << "] "
+           << tag << " " << context << ": " << message << std::endl;
+}
+
+void log_info(const std::string& context, const std::string& message) {
+    log_line(log_level::info, context, message);
+}
+
+void log_warn(const std::string& context, const std::string& message) {
+    log_line(log_level::warning, context, message);
+}
+
+void log_error(const std::string& context, const std::string& message) {
+    log_line(log_level::error, context, message);
+}
+
+static std::string single_line_log_value(std::string value) {
+    std::replace(value.begin(), value.end(), '\n', ' ');
+    std::replace(value.begin(), value.end(), '\r', ' ');
+    return value;
 }
 
 void log_sql(const std::string& context, const std::string& sql) {
     if (true) { // Always log SQL for now; could gate on g_verbose later
         auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-        std::cout << "[" << std::put_time(std::localtime(&now), "%Y-%m-%d %H:%M:%S") << "] "
+        std::tm local_time{};
+        localtime_r(&now, &local_time);
+        std::lock_guard<std::mutex> lock(g_log_mutex);
+        std::cout << "[" << std::put_time(&local_time, "%Y-%m-%d %H:%M:%S") << "] "
                   << "[SQL] " << context << ": " << sql << std::endl;
     }
 }
@@ -364,6 +397,17 @@ const std::unordered_set<std::string> PUBLIC_ENDPOINTS = {
     "getUITextures"
 };
 
+// Internal names for the documented /api/auth/* routes. Used to warn when an
+// auth path reaches the generic bearer-token fallback instead of its handler.
+const std::unordered_set<std::string> AUTH_ENDPOINTS = {
+    "authRefresh",
+    "authLogout",
+    "authLogoutAll",
+    "authChangePassword",
+    "authSessions",
+    "authRevokeSession"
+};
+
 void check_test_limits() {
     if (g_test_num_requests > 0 || g_test_timeout_seconds > 0) {
         std::thread([]() {
@@ -503,11 +547,37 @@ static void set_cors_headers(Res* res, Req* req) {
     res->writeHeader("Access-Control-Max-Age", "86400");
 }
 
-std::string extractEndpointName(std::string_view path) {
-    if (path.size() > 5 && path.substr(0, 5) == "/api/") {
-        return std::string(path.substr(5));
+/**
+ * Normalizes the documented `/api/auth/<action>` paths to the internal
+ * `auth<Action>` endpoint names. The client and api/auth.md use slash paths,
+ * while the router and older request bodies use camelCase names; accepting both
+ * keeps the cookie Path=/api/auth working for refresh and logout.
+ */
+std::string normalize_auth_endpoint(std::string endpoint) {
+    const std::string prefix = "auth/";
+    if (endpoint.size() <= prefix.size() || endpoint.rfind(prefix, 0) != 0) {
+        return endpoint;
     }
-    return std::string(path);
+    const std::size_t action_index = prefix.size() - 1;
+    endpoint.erase(action_index, 1);
+    endpoint[action_index] = static_cast<char>(
+        std::toupper(static_cast<unsigned char>(endpoint[action_index])));
+    return endpoint;
+}
+
+std::string extractEndpointName(std::string_view path) {
+    std::string endpoint = path.size() > 5 && path.substr(0, 5) == "/api/"
+                               ? std::string(path.substr(5))
+                               : std::string(path);
+    const std::size_t query = endpoint.find('?');
+    if (query != std::string::npos) {
+        endpoint.erase(query);
+    }
+    const std::string normalized = normalize_auth_endpoint(endpoint);
+    if (normalized != endpoint) {
+        log_info("routing", "normalized endpoint '" + endpoint + "' -> '" + normalized + "'");
+    }
+    return normalized;
 }
 
 struct AuthResult {
@@ -564,6 +634,11 @@ AuthResult handleAuth(const std::string& endpoint,
 {
     (void)cookie_header;
     AuthResult result;
+
+    if (endpoint.rfind("auth", 0) == 0 && AUTH_ENDPOINTS.count(endpoint) == 0) {
+        log_warn("handleAuth",
+                 "unrouted auth endpoint '" + endpoint + "' -> returning token_missing");
+    }
 
     if (endpoint == "login") {
         const std::string username = auth_object.value("username", "");
@@ -699,13 +774,29 @@ ApiResponse handleLogin(GameConfigCache& config_cache, const json& body,
 ApiResponse handleAuthRefresh(GameConfigCache& config_cache, const json&,
                               const ClientInfo& client,
                               const std::string& cookie_header) {
-    ApiResponse response;
+    const auto started = std::chrono::steady_clock::now();
+    const auto duration_ms = [&started]() {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now() - started)
+            .count();
+    };
+    const std::string ip = client.real_ip.empty() ? "-" : client.real_ip;
+    const bool cookie_present = cookie_header.find("ravenest_refresh=") != std::string::npos;
     const std::string refresh_token = extract_refresh_cookie(cookie_header);
+
+    log_info("authRefresh",
+             "start ip=" + ip + " cookie=" + (cookie_present ? "present" : "missing") +
+                 " token=" + (refresh_token.empty() ? "missing" : "present"));
+
+    ApiResponse response;
     if (refresh_token.empty()) {
         response.error = "invalid_refresh_token";
         response.clear_refresh_cookie = true;
         response.http_status = 401;
         response.no_store = true;
+        log_warn("authRefresh",
+                 "rejected ip=" + ip + " reason=missing_refresh_cookie duration_ms=" +
+                     std::to_string(duration_ms()));
         return response;
     }
     std::string error;
@@ -716,13 +807,29 @@ ApiResponse handleAuthRefresh(GameConfigCache& config_cache, const json&,
         response.clear_refresh_cookie = true;
         response.http_status = 401;
         response.no_store = true;
+        log_warn("authRefresh",
+                 "rejected ip=" + ip + " reason=" +
+                     single_line_log_value(response.error.value_or("")) + " duration_ms=" +
+                     std::to_string(duration_ms()));
         return response;
     }
     ApiResponse refreshed = handleLogin(config_cache, json::object(),
                                         std::optional<std::string>(issued->snapshot.username),
                                         client, issued->access_token);
+    if (refreshed.error) {
+        log_warn("authRefresh",
+                 "projection failed ip=" + ip + " account_id=" +
+                     std::to_string(issued->snapshot.account_id) + " reason=" +
+                     single_line_log_value(refreshed.error.value_or("")) + " duration_ms=" +
+                     std::to_string(duration_ms()));
+        return refreshed;
+    }
     refreshed.refresh_token = refresh_token;
     refreshed.no_store = true;
+    log_info("authRefresh",
+             "ok ip=" + ip + " account_id=" + std::to_string(issued->snapshot.account_id) +
+                 " session_id=" + issued->snapshot.session_id + " duration_ms=" +
+                 std::to_string(duration_ms()));
     return refreshed;
 }
 
