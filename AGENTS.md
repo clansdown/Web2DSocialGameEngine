@@ -687,9 +687,10 @@ on pass, 2 on failure; isolated per-port scratch DB.
 **Staff/support smoke test** (`tools/staff_smoke.sh [PORT]`): creates a staff and
 player account, grants staff with `staff_admin`, then verifies staffGetContext,
 non-staff denial, social/support restrictions, staff-created support tickets +
-player notifications, the shared journal, preflight + undo, and chat moderation
-delete → journal → undo (message restored). Exits 0 on pass, 2 on failure;
-isolated per-port scratch DB.
+player notifications, the shared journal, preflight + undo, chat moderation
+delete → journal → undo (message restored), and account search by mixed-case
+username and character display name. Exits 0 on pass, 2 on failure; isolated
+per-port scratch DB.
 
 **Invitation smoke test** (`bash tools/invites_smoke.sh [PORT]`): uses a temporary
 content root to exercise `off` (no invitation input/`ravenest_invites` is not
@@ -1107,6 +1108,7 @@ Build the full game progression and content system with a working tower defense 
 ### Progress
 
 #### Done
+- **PostgreSQL portability audit fixes**: staff account search uses `EXISTS` instead of `LEFT JOIN + DISTINCT` (PostgreSQL rejects `DISTINCT` with an unselected `ORDER BY` column); chat relation/read counters use `GREATEST` instead of SQLite scalar `MAX(a,b)`; platinum transaction IDs are read back by idempotency key instead of `LASTVAL()` after `INSERT OR IGNORE`; user-facing staff/chat searches use `ILIKE`; invitation generation takes a transaction-scoped advisory lock so count-then-insert limits remain serialized, and invitation insertion retries use `ON CONFLICT DO NOTHING` because a PostgreSQL unique violation aborts the transaction. Documented in `docs/database.md`; staff smoke covers mixed-case and character-name search.
 - **Auth refresh route + logging**: `/api/auth/<action>` is normalized to `auth<Action>`, so `/api/auth/refresh` and `/api/auth/logout` reach their handlers instead of falling through to `token_missing`. Server logs `[authRefresh]` start/rejected/ok lines (IP, cookie/token presence, reason, account/session, duration; tokens never logged) and warns on unrouted auth paths; the client logs `[auth]` refresh attempts, statuses, retry delays, and terminal failures. Regression: `tools/auth_refresh_smoke.sh`.
 - **Operational diagnostics**: `fetch_logs.sh` (generic filtered/redacted compose/container logs), `diagnose_auth.sh` (refresh-cookie classification), and `deployment_status.sh` (fast app/DB/HTTP/log status) are installed under `${SERVER_PATH}/tools/`; they share `_deploy_common.sh`.
 - **Staff CLI role presets**: `staff_admin roles` prints a concise preset table, `role <id>` / `roles --verbose` show capabilities, `superuser` and `staff` aliases map to `superadmin` and `customer_service`, and schema-init `NOTICE` spam is suppressed.

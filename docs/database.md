@@ -48,6 +48,15 @@ The game has ~60 modules with embedded SQL. `server/db/postgres_sqlite_compat.hp
 
 New code should use native PostgreSQL SQL with `$n` placeholders. The adapter exists so the rewrite can land as one PostgreSQL backend without a mixed SQLite/PostgreSQL runtime.
 
+### PostgreSQL portability notes
+
+- SQLite scalar `MAX(a, b)` / `MIN(a, b)` do not exist in PostgreSQL; use `GREATEST` / `LEAST`.
+- `SELECT DISTINCT` requires every `ORDER BY` expression to appear in the select list; prefer `EXISTS` over `LEFT JOIN + DISTINCT` for search filters.
+- `LIKE` is case-sensitive; user-facing searches use `ILIKE` (or `LOWER(col) LIKE LOWER(?)`).
+- Do not call `last_insert_rowid()` after `INSERT OR IGNORE`: `LASTVAL()` is session-wide and stale when the insert is ignored. Read the row back by its unique key, or use `RETURNING`.
+- `BEGIN IMMEDIATE` becomes plain `BEGIN`, which does not take a write lock. Count-then-insert invariants need a transaction-scoped advisory lock (see invitation generation).
+- A raised unique violation aborts the whole PostgreSQL transaction. Collision retry loops must use `ON CONFLICT DO NOTHING` (or a savepoint), not `try/catch + continue`.
+
 ### Typed layer
 
 `server/db/Database.hpp` defines the backend-neutral primitives:
@@ -70,6 +79,7 @@ new repositories should target `db::connection_like` / `db::query_executor`.
 - `db::initialize_schema` wraps the baseline in `BEGIN`/`COMMIT`.
 - Game modules use `BEGIN`/`COMMIT`/`ROLLBACK` through the adapter.
 - Read-modify-write paths that must be atomic use `SELECT ... FOR UPDATE` (session creation, invitation redemption).
+- Invitation generation uses `pg_advisory_xact_lock` because it counts rows before inserting and therefore cannot lock a row that does not exist yet.
 - No transaction spans a network call.
 
 ## Session and invitation tables

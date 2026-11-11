@@ -386,7 +386,7 @@ std::vector<staff_action_journal_entry> StaffStore::list_actions(const staff_jou
           "AND (? = '' OR target_id = ?) "
           "AND (? = '' OR status = ?) "
           "AND (? = '' OR operation = ?) "
-          "AND (? = '' OR action_type LIKE ? OR target_id LIKE ? OR reason LIKE ?) "
+          "AND (? = '' OR action_type ILIKE ? OR target_id ILIKE ? OR reason ILIKE ?) "
           "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?;"
        << action_type << action_type
        << actor << actor
@@ -638,7 +638,7 @@ std::vector<support_ticket> StaffStore::list_tickets_for_account(
     db << "SELECT " + std::string(ticket_columns()) +
               " FROM support_tickets WHERE account_id = ? "
               "AND (? = '' OR status = ?) AND (? = '' OR category = ?) "
-              "AND (? = '' OR subject LIKE ?) ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?;"
+              "AND (? = '' OR subject ILIKE ?) ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?;"
        << account_id << filter.status << filter.status << filter.category << filter.category
        << filter.query << like << limit << offset
        >> [&](std::string id, int64_t account, int64_t character, std::string category,
@@ -674,7 +674,7 @@ std::vector<support_ticket> StaffStore::list_staff_tickets(const support_ticket_
     db << "SELECT " + std::string(ticket_columns()) +
               " FROM support_tickets WHERE "
               "(? = '' OR status = ?) AND (? = '' OR category = ?) "
-              "AND (? = '' OR subject LIKE ?) ORDER BY "
+              "AND (? = '' OR subject ILIKE ?) ORDER BY "
               "CASE status WHEN 'open' THEN 0 WHEN 'awaiting_staff' THEN 1 "
               "WHEN 'awaiting_player' THEN 2 WHEN 'resolved' THEN 3 ELSE 4 END, "
               "updated_at DESC, id DESC LIMIT ? OFFSET ?;"

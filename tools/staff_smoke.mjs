@@ -65,9 +65,17 @@ async function create(name) {
   if (created.error || !created.data?.token) fail(`createAccount ${name}: ${JSON.stringify(created)}`);
   const login = await post('login', { auth: { username, password } });
   const token = login.data?.token;
-  const character_id = login.data?.characters?.[0]?.id;
+  const character = login.data?.characters?.[0];
+  const character_id = character?.id;
   if (!token || !character_id) fail(`login ${name}: ${JSON.stringify(login)}`);
-  return { username, password, token, character_id, auth: { username, token } };
+  return {
+    username,
+    password,
+    token,
+    character_id,
+    character_display_name: character.display_name ?? '',
+    auth: { username, token }
+  };
 }
 
 const staff_account = await create('staff');
@@ -92,6 +100,28 @@ console.log('non-staff staff endpoint denied');
 const search = data(await post('staffSearchAccounts', { auth: staff_account.auth, query: player.username }));
 const player_row = (search.accounts ?? []).find((entry) => entry.username === player.username);
 if (!player_row) fail(`staffSearchAccounts did not find ${player.username}`);
+
+// PostgreSQL LIKE is case-sensitive; staff search uses ILIKE.
+const mixed_case = data(await post('staffSearchAccounts', {
+  auth: staff_account.auth,
+  query: player.username.toUpperCase()
+}));
+if (!(mixed_case.accounts ?? []).some((entry) => entry.username === player.username)) {
+  fail(`staffSearchAccounts mixed-case search did not find ${player.username}`);
+}
+
+// A character-name match must return the owning account exactly once (the old
+// LEFT JOIN + DISTINCT query duplicated rows before PostgreSQL rejected it).
+if (!player.character_display_name) fail('player character display name missing');
+const character_search = data(await post('staffSearchAccounts', {
+  auth: staff_account.auth,
+  query: player.character_display_name.toUpperCase()
+}));
+const character_matches = (character_search.accounts ?? [])
+  .filter((entry) => entry.username === player.username);
+if (character_matches.length !== 1) {
+  fail(`staffSearchAccounts character search returned ${character_matches.length} matches for ${player.username}`);
+}
 
 const social = data(await post('staffSetSocialRestriction', {
   auth: staff_account.auth,

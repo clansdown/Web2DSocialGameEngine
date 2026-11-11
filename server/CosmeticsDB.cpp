@@ -62,7 +62,13 @@ int64_t record_transaction(sqlite::database& db, int64_t character_id,
           "(character_id, product_id, platinum, status, idempotency_key, created_at) "
           "VALUES (?, ?, ?, ?, ?, ?);"
        << character_id << product_id << platinum << status << idempotency_key << now;
-    return db.last_insert_rowid();
+    // LASTVAL() is session-wide and stale when the INSERT was ignored, so read
+    // the row back by its unique idempotency key instead.
+    int64_t transaction_id = 0;
+    db << "SELECT id FROM platinum_transactions WHERE idempotency_key = ?;"
+       << idempotency_key
+       >> [&](int64_t id) { transaction_id = id; };
+    return transaction_id;
 }
 
 std::pair<int64_t, int64_t> settle_transaction(sqlite::database& db,

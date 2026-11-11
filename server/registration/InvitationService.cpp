@@ -176,6 +176,11 @@ std::optional<invitation_code_record> generate_for_player(
 
     try {
         db << "BEGIN IMMEDIATE;";
+        // The SQLite adapter translates BEGIN IMMEDIATE to plain BEGIN, which
+        // does not serialize the count-then-insert limit check. Hold a
+        // transaction-scoped advisory lock for this account instead.
+        db << "SELECT pg_advisory_xact_lock(hashtext(?));"
+           << ("ravenest:invite:" + std::to_string(account_id));
         std::int64_t today = 0;
         std::int64_t total = 0;
         store.count_created_for_account(account_id, day_start, today, total);
@@ -193,7 +198,8 @@ std::optional<invitation_code_record> generate_for_player(
         for (int attempt = 0; attempt < 10; ++attempt) {
             const invitation_code_draft draft = store.make_code_draft();
             if (!store.insert_code(draft, account_id, "player", now, error)) {
-                if (error.find("UNIQUE") != std::string::npos ||
+                if (error == "invitation_code_collision" ||
+                    error.find("UNIQUE") != std::string::npos ||
                     error.find("duplicate key") != std::string::npos) {
                     continue;
                 }

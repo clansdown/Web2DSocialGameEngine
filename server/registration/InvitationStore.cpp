@@ -132,10 +132,20 @@ bool InvitationStore::insert_code(const invitation_code_draft& draft,
     }
     try {
         auto& db = Database::getInstance().invitesDB();
+        bool inserted = false;
+        // ON CONFLICT DO NOTHING keeps the enclosing transaction usable on a
+        // code/id collision. Catching a raised unique violation would abort the
+        // PostgreSQL transaction and break the caller's retry loop.
         db << "INSERT INTO invitation_codes "
               "(id, code, created_by_account_id, created_by_kind, created_at) "
-              "VALUES (?, ?, ?, ?, ?);"
-           << draft.id << draft.code << account_id << created_by_kind << created_at;
+              "VALUES (?, ?, ?, ?, ?) "
+              "ON CONFLICT DO NOTHING RETURNING id;"
+           << draft.id << draft.code << account_id << created_by_kind << created_at
+           >> [&](std::string) { inserted = true; };
+        if (!inserted) {
+            error = "invitation_code_collision";
+            return false;
+        }
         error.clear();
         return true;
     } catch (const std::exception& e) {
@@ -149,7 +159,8 @@ std::optional<invitation_code_record> InvitationStore::create_code(
     for (int attempt = 0; attempt < 10; ++attempt) {
         const invitation_code_draft draft = make_code_draft();
         if (!insert_code(draft, account_id, created_by_kind, now_seconds_utc(), error)) {
-            if (error.find("UNIQUE") != std::string::npos ||
+            if (error == "invitation_code_collision" ||
+                error.find("UNIQUE") != std::string::npos ||
                 error.find("duplicate key") != std::string::npos) {
                 continue;  // extremely unlikely 12-char collision; try again
             }

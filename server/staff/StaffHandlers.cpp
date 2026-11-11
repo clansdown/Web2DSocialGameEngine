@@ -698,8 +698,11 @@ ApiResponse handleStaffSearchAccounts(GameConfigCache& config_cache, const json&
     const std::string like = "%" + query + "%";
     auto& db = Database::getInstance().gameDB();
     json accounts = json::array();
-    db << "SELECT DISTINCT u.id FROM users u LEFT JOIN characters c ON c.user_id = u.id "
-          "WHERE (? = '' OR u.username LIKE ? OR c.display_name LIKE ? OR c.safe_display_name LIKE ?) "
+    db << "SELECT u.id FROM users u "
+          "WHERE (? = '' OR u.username ILIKE ? OR EXISTS ("
+          "  SELECT 1 FROM characters c WHERE c.user_id = u.id "
+          "  AND (c.display_name ILIKE ? OR c.safe_display_name ILIKE ?)"
+          ")) "
           "ORDER BY u.username LIMIT 50;"
        << query << like << like << like
        >> [&](int64_t account_id) {
@@ -1116,7 +1119,7 @@ ApiResponse handleStaffSearchBaronies(GameConfigCache& config_cache, const json&
           "b.accepts_minors, b.owner_character_id, COALESCE(b.baron_character_id, 0), "
           "COALESCE(c.safe_display_name, ''), COALESCE(b.defunct_at, 0) "
           "FROM baronies b LEFT JOIN characters c ON c.id = b.owner_character_id "
-          "WHERE (? = '' OR b.name LIKE ? OR c.display_name LIKE ? OR c.safe_display_name LIKE ?) "
+          "WHERE (? = '' OR b.name ILIKE ? OR c.display_name ILIKE ? OR c.safe_display_name ILIKE ?) "
           "ORDER BY b.id DESC LIMIT 100;"
        << query << like << like << like
        >> [&](int64_t id, std::string name, std::string safe_name, std::string safe_tags,
@@ -1756,7 +1759,7 @@ ApiResponse handleStaffSearchChats(GameConfigCache& config_cache, const json& bo
     json chats = json::array();
     db << "SELECT id, type, COALESCE(name, ''), COALESCE(owner_character_id, 0), "
           "COALESCE(direct_key, ''), created_at FROM chats "
-          "WHERE (? = '' OR name LIKE ? OR id = ?) ORDER BY created_at DESC LIMIT 100;"
+          "WHERE (? = '' OR name ILIKE ? OR id = ?) ORDER BY created_at DESC LIMIT 100;"
        << query << like << query
        >> [&](std::string id, std::string type, std::string name, int64_t owner,
               std::string direct_key, int64_t created_at) {

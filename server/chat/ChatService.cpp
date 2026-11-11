@@ -122,7 +122,7 @@ void bump_relation_count(int64_t character_id, int delta) {
     auto& db = ChatDB::instance().db();
     db << "INSERT OR IGNORE INTO character_relation_counts (character_id, relation_count) VALUES (?, 0);"
        << character_id;
-    db << "UPDATE character_relation_counts SET relation_count = MAX(0, relation_count + ?) WHERE character_id = ?;"
+    db << "UPDATE character_relation_counts SET relation_count = GREATEST(0, relation_count + ?) WHERE character_id = ?;"
        << delta << character_id;
 }
 
@@ -1559,7 +1559,7 @@ json ChatService::mark_read(int64_t character_id, const std::string& chat_id, in
     }
     int64_t change_id = ChatDB::instance().allocate_change_id();
     ChatDB::instance().db()
-        << "UPDATE chat_members SET last_read_seq = MAX(last_read_seq, ?), unread_count = 0, "
+        << "UPDATE chat_members SET last_read_seq = GREATEST(last_read_seq, ?), unread_count = 0, "
            "change_id = ? WHERE chat_id = ? AND character_id = ?;"
        << seq << change_id << chat_id << character_id;
     json result;
@@ -1624,11 +1624,11 @@ json ChatService::search_characters(int64_t character_id, const std::string& que
     std::vector<int64_t> ids;
     auto& gdb = Database::getInstance().gameDB();
     if (viewer_is_adult) {
-        gdb << "SELECT id FROM characters WHERE (display_name LIKE ? OR safe_display_name LIKE ?) "
+        gdb << "SELECT id FROM characters WHERE (display_name ILIKE ? OR safe_display_name ILIKE ?) "
                "AND id != ? LIMIT 20;"
             << like << like << character_id >> [&](int64_t id) { ids.push_back(id); };
     } else {
-        gdb << "SELECT id FROM characters WHERE safe_display_name LIKE ? AND id != ? LIMIT 20;"
+        gdb << "SELECT id FROM characters WHERE safe_display_name ILIKE ? AND id != ? LIMIT 20;"
             << like << character_id >> [&](int64_t id) { ids.push_back(id); };
     }
     visibility::viewer_context viewer;
