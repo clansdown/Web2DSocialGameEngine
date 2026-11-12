@@ -6,7 +6,6 @@
    */
   import TowerDefense from './tower_defense/TowerDefense.svelte';
   import WeedingGame from './weeding/WeedingGame.svelte';
-  import DialogOverlay from '../components/DialogOverlay.svelte';
   import GameText from '../components/GameText.svelte';
   import StoryText from '../components/StoryText.svelte';
   import { startMiniGame, endMiniGame } from '../lib/game_state';
@@ -335,13 +334,9 @@
       <div class="alert alert-danger">{startError}</div>
     </div>
   {:else if showKingsMessage && unlockQueue.length > 0}
-    <DialogOverlay title="" size="xlg" noPadding onDismiss={dismissKingsMessage}>
-      <StoryText text={currentFullText()} />
-    </DialogOverlay>
+    <StoryText overlay on_dismiss={dismissKingsMessage} text={currentFullText()} />
   {:else if showLandPatent}
-    <DialogOverlay title="" size="xlg" noPadding onDismiss={dismissLandPatent}>
-      <StoryText text={landPatentText} />
-    </DialogOverlay>
+    <StoryText overlay on_dismiss={dismissLandPatent} text={landPatentText} />
   {:else if showResults && gameResults}
     <div class="container py-5">
       <div class="card">
@@ -394,13 +389,9 @@
       </div>
     </div>
   {:else if showTDIntro}
-    <DialogOverlay title="" size="xlg" noPadding onDismiss={dismissTDIntro}>
-      <GameText text={tdIntroText} />
-    </DialogOverlay>
+    <GameText overlay on_dismiss={dismissTDIntro} text={tdIntroText} />
   {:else if showWeedingIntro}
-    <DialogOverlay title="" size="xlg" noPadding onDismiss={dismissWeedingIntro}>
-      <GameText text={weedingIntroText} />
-    </DialogOverlay>
+    <GameText overlay on_dismiss={dismissWeedingIntro} text={weedingIntroText} />
   {:else if tdStarted && !gameFinished && $currentCharacter}
     <TowerDefense
       characterId={$currentCharacter.id}

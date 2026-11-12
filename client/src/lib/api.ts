@@ -30,6 +30,8 @@ export interface Character {
   avatar_url?: string;
   /** Viewer/account age state for this character (self projection only). */
   is_adult?: boolean;
+  /** Staff identity lock: both safe and custom names are frozen. */
+  name_locked?: boolean;
   can_set_custom_display_name?: boolean;
   can_upload_custom_avatar?: boolean;
   can_use_voice?: boolean;
@@ -400,28 +402,26 @@ export async function loginRequest(
 
 /**
  * Creates a new user account with character.
- * Validates credentials, optional adult verification, and character naming words.
+ * New accounts always start non-adult; self-service 18+ verification is a
+ * deferred post-creation Profile action (see docs/adult_verification.md).
  * Returns user data, character list, and session token on success.
- * 
+ *
  * @param username - Desired username for the new account
  * @param password - Password for the new account (min 8 characters)
- * @param adult - Boolean flag indicating if user verified as 18+
  * @param word1 - First word for safe character display name
  * @param word2 - Second word for safe character display name
- * @param displayName - Optional custom display name (requires adult verification)
- * @param digitalCredential - Optional digital credential proof for age verification
+ * @param sex - Optional character sex: "male" or "female"
+ * @param language - Optional interface / display language
+ * @param invitationCode - Optional invitation code when registration requires one
  * @returns Promise<AuthResponse> - New user data, character, and token
- * 
+ *
  * Usage: Called from CreateAccountPage when creating new account
  */
 export async function createAccountRequest(
   username: string,
   password: string,
-  adult: boolean,
   word1: string,
   word2: string,
-  displayName?: string,
-  digitalCredential?: { protocol: string; data: unknown },
   sex?: string,
   language?: string,
   invitationCode?: string
@@ -429,16 +429,9 @@ export async function createAccountRequest(
   const body: Record<string, unknown> = {
     username,
     password,
-    adult,
     word1,
     word2
   };
-  if (displayName) {
-    body.displayName = displayName;
-  }
-  if (digitalCredential) {
-    body.digitalCredential = digitalCredential;
-  }
   if (sex) {
     body.sex = sex;
   }
@@ -509,37 +502,37 @@ export async function getCharacterRequest(
   return res.data as Character;
 }
 
+/** Partial character-name update used by the Profile activity. */
+export interface character_profile_update {
+  display_name?: string;
+  clear_display_name?: boolean;
+  word1?: string;
+  word2?: string;
+}
+
 /**
  * Updates character profile including display name and safe name words.
  * Requires authentication and only works for characters owned by the user.
- * 
+ *
  * @param characterId - Unique identifier of the character to update
- * @param displayName - New custom display name (may require adult verification)
- * @param word1 - New first word for safe display name
- * @param word2 - New second word for safe display name
- * @param auth - Authentication object with username and token
+ * @param update - Name fields to change; omitted fields are left untouched
  * @returns Promise<CharacterProfileResponse> - Updated character data and new token
- * 
+ *
  * Usage: Called when user wants to change character name
  */
 export async function updateCharacterProfileRequest(
   characterId: number,
-  displayName: string,
-  word1: string,
-  word2: string,
-  auth: { username: string; token: string }
+  update: character_profile_update
 ): Promise<CharacterProfileResponse> {
-  const res = await apiPost<CharacterProfileResponse>('updateCharacterProfile', {
-    character_id: characterId,
-    display_name: displayName,
-    word1,
-    word2
-  }, { username: auth.username, token: auth.token });
-
-  if (res.error) {
-    throw new Error(res.error);
+  const body: Record<string, unknown> = { character_id: characterId };
+  if (update.display_name !== undefined) body.display_name = update.display_name;
+  if (update.clear_display_name !== undefined) {
+    body.clear_display_name = update.clear_display_name;
   }
-  return res.data as CharacterProfileResponse;
+  if (update.word1 !== undefined) body.word1 = update.word1;
+  if (update.word2 !== undefined) body.word2 = update.word2;
+
+  return await authenticatedPost<CharacterProfileResponse>('updateCharacterProfile', body);
 }
 
 /**
@@ -893,10 +886,23 @@ export interface UITexture {
   height: number;
 }
 
+/** Optional image/styling for a text-overlay dismiss button. */
+export interface UITextureButton {
+  /** Image URL, or a bare filename under images/ui. */
+  image?: string;
+  /** When > 0, use CSS border-image 9-slice instead of stretching the image. */
+  image_slice_px?: number;
+  text_color?: string;
+  min_width_px?: number;
+  min_height_px?: number;
+  padding?: string;
+}
+
 export interface UITexturesResponse {
   textures: UITexture[];
   padding_vertical_px: number;
   padding_horizontal_px: number;
+  button?: UITextureButton;
 }
 
 /**

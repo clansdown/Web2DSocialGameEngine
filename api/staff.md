@@ -34,7 +34,9 @@ Request `{ enabled }`; requires `chat.moderate_any`. Response
 - `/api/staffGetAccount` — `{ account_id | username }` → account record with
   characters. Logs `read.account`.
 - `/api/staffSetAdultStatus` — `{ account_id | username, adult, method?, reason }`.
-  Setting `adult=false` runs the demotion scrub and is not undoable.
+  Setting `adult=false` runs the demotion scrub and is not undoable. This is the
+  current grant path; see `docs/adult_verification.md` for the deferred
+  self-service flow.
 - `/api/staffSetSocialRestriction` — `{ account_id, restricted, reason }`.
 - `/api/staffSetSupportLock` — `{ account_id, locked, reason }`.
 - `/api/staffGrantMonthlyPass` — `{ character_id, months?, permanent?, reason }`.

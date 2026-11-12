@@ -139,6 +139,7 @@
   <DialogOverlay
     title={texts['ui_barony_leave'] || 'Leave the Barony'}
     onDismiss={() => (showConfirm = false)}
+    scrollable
     hideContinue
   >
     <p style="font-size: 1.05rem; line-height: 1.6; font-family: serif;">

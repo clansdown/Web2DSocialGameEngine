@@ -50,7 +50,8 @@ bool SafeNameGenerator::isValidWord(const std::string& word, int listNumber) {
 std::optional<std::string> SafeNameGenerator::generateSafeDisplayName(
     const std::string& word1,
     const std::string& word2,
-    const std::string& username)
+    const std::string& username,
+    int64_t exclude_character_id)
 {
     if (!initialized) {
         return std::nullopt;
@@ -72,8 +73,11 @@ std::optional<std::string> SafeNameGenerator::generateSafeDisplayName(
     int suffix = 1;
     while (true) {
         bool taken = false;
-        db << "SELECT 1 FROM characters WHERE LOWER(safe_display_name) = LOWER(?) LIMIT 1;"
-           << candidate
+        // `exclude_character_id` lets an existing character keep its own safe
+        // name when re-saving the same word pair from the Profile editor.
+        db << "SELECT 1 FROM characters WHERE LOWER(safe_display_name) = LOWER(?) "
+              "AND id != ? LIMIT 1;"
+           << candidate << exclude_character_id
            >> [&](int) { taken = true; };
         if (!taken) return candidate;
         candidate = baseName + std::to_string(suffix++);

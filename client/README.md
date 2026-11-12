@@ -52,9 +52,11 @@ client/
 │   ├── components/           # Shared UI + manor board
 │   │   ├── ManorMenu.svelte      # Manor board (roads, water power, construction)
 │   │   ├── LandPatentPanel.svelte # Baron-track patent/create UI
-│   │   ├── DialogOverlay.svelte  # Modal overlay shell
+│   │   ├── DialogOverlay.svelte  # Form-dialog shell (not for story/game text)
 │   │   ├── GameText.svelte       # Text-system markdown (vellum)
-│   │   └── StoryText.svelte      # Narrative markdown (silk)
+│   │   ├── StoryText.svelte      # Narrative markdown (silk)
+│   │   ├── TextOverlayFrame.svelte # Dark backdrop for textured text overlays
+│   │   └── TextOverlayButton.svelte # Optional image-backed dismiss button
 │   ├── minigames/            # Mini-game screens
 │   │   ├── tower_defense/
 │   │   └── weeding/
@@ -358,15 +360,20 @@ The client provides three reusable display components for showing text and conte
 
 | Component | File | Role |
 |-----------|------|------|
-| **`DialogOverlay`** | `src/components/DialogOverlay.svelte` | Modal shell — dark backdrop, centered panel, title, Continue button. Use for any full-screen overlay that needs a dismiss action. Content via `children` snippet (preferred) or legacy `body` prop. |
+| **`DialogOverlay`** | `src/components/DialogOverlay.svelte` | Form-dialog shell — dark backdrop, solid panel, title, Continue button. Use for forms and confirmations, **not** for story/game text. |
 | **`StoryText`** | `src/components/StoryText.svelte` | Silk-texture background. Use for narrative/story text (king's messages, intro lore). Supports markdown via `text` prop or arbitrary content via `children` snippet. |
 | **`GameText`** | `src/components/GameText.svelte` | Vellum-texture background. Use for game text (descriptions, tooltips, UI text). Supports markdown via `text` prop or arbitrary content via `children` snippet. |
+| **`TextOverlayFrame`** | `src/components/TextOverlayFrame.svelte` | Internal dark backdrop for `StoryText`/`GameText` overlay mode. Paints no panel of its own. |
+| **`TextOverlayButton`** | `src/components/TextOverlayButton.svelte` | Dismiss button rendered inside the texture; optional image plaque / 9-slice. |
 
 **Usage guidelines:**
-- For narrative overlays (king's messages, story reveals): nest `StoryText` inside `DialogOverlay`
+- For narrative overlays (king's messages, story reveals): `<StoryText overlay on_dismiss={...} text={...} />`
+- For game-text overlays (mission intros): `<GameText overlay on_dismiss={...} text={...} />`
 - For inline story text on a page: use `StoryText` alone
 - For game descriptions and tooltips: use `GameText`
 - Pass markdown content via the `text` prop, or use `children` for custom HTML/Svelte content
+- The overlay's background, text, and Continue button scroll together as one textured panel. Do not put `max-height`/`overflow` on the texture container.
+- Optional button images come from `ui_textures.json` `button.image` (bare filename under `images/ui`) or the `button` prop. Set `button.image_slice_px` to use a 9-slice plaque.
 
 ## Text System
 

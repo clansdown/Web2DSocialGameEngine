@@ -218,6 +218,7 @@
   <DialogOverlay
     title={texts['ui_patent_honor_title'] || 'Name Your Future Honor'}
     onDismiss={closeHonorDialog}
+    scrollable
     hideContinue
   >
     <p style="font-size: 1.05rem; line-height: 1.6; font-family: serif;">

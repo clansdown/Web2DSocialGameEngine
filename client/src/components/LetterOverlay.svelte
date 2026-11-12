@@ -9,7 +9,6 @@
   import { asset_url } from '../lib/public_urls';
   import * as auth from '../lib/auth';
   import StoryText from './StoryText.svelte';
-  import DialogOverlay from './DialogOverlay.svelte';
 
   interface Props {
     letter: UnreadLetter;
@@ -42,6 +41,9 @@
   }
 </script>
 
-<DialogOverlay title="" size="xlg" noPadding onDismiss={dismiss}>
-  <StoryText id={letter.letter_key} tokens={{ seal: SEAL_TOKEN }} />
-</DialogOverlay>
+<StoryText
+  overlay
+  on_dismiss={dismiss}
+  id={letter.letter_key}
+  tokens={{ seal: SEAL_TOKEN }}
+/>

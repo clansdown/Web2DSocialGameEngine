@@ -5,8 +5,7 @@
   import { loadTexts } from '../lib/text';
   import { handleError } from '../lib/errors';
   import * as auth from '../lib/auth';
-  import { checkDigitalCredentialsSupport, requestAgeVerification, isBraveBrowser } from '../lib/digitalCredentials';
-  import { user, characters, currentCharacter, authLoading, language } from '../lib/stores';
+  import { user, characters, currentCharacter, language } from '../lib/stores';
   import { get } from 'svelte/store';
 
   const dispatch = createEventDispatcher<{
@@ -16,17 +15,14 @@
   let formUsername = $state('');
   let formPassword = $state('');
   let formConfirmPassword = $state('');
-  let adult = $state(false);
-  let displayName = $state('');
   let word1 = $state('');
   let word2 = $state('');
   let safeWords1: string[] = $state([]);
   let safeWords2: string[] = $state([]);
-  let dcApiSupported = $state(false);
-  let isBrave = $state(false);
-  let ageVerificationPending = $state(false);
-  let ageVerified = $state(false);
 
+  // Account creation always starts non-adult. The removed creation-time 18+
+  // Digital Credentials flow is preserved for a future self-service Profile
+  // action in docs/adult_verification.md.
   let sex = $state('');
   let submitting = $state(false);
   let reg_mode = $state<registration_mode>('off');
@@ -76,9 +72,6 @@
       console.error('Failed to load safe words:', err);
       handleError('Failed to load safe words data', err, { category: 'general', context: 'loadSafeWords' });
     }
-
-    dcApiSupported = await checkDigitalCredentialsSupport();
-    isBrave = await isBraveBrowser();
 
     try {
       const registration = await getRegistrationConfigRequest();
@@ -134,62 +127,6 @@
   }
 
   /**
-   * Handles the adult flag checkbox change with digital credentials verification.
-   * If checking the box, requests age verification via Digital Credentials API.
-   * If unchecking, simply clears adult and ageVerified flags.
-   * 
-   * @param event - ChangeEvent from the checkbox input
-   * @returns Promise<void>
-   * 
-   * Usage: Attached to adult checkbox onchange event
-   */
-  async function handleAdultToggle(event: Event): Promise<void> {
-    const target = event.target as HTMLInputElement;
-    const checked = target.checked;
-
-    if (!checked) {
-      adult = false;
-      ageVerified = false;
-      return;
-    }
-
-    if (!dcApiSupported) {
-      const msg = isBrave
-        ? 'WARNING: Brave ships with the Digital Credentials API disabled by default. Enable it for access to this feature.'
-        : 'Digital Credentials API not supported in this browser. Adult verification unavailable.';
-      handleError(msg, new Error('DC API not available'), { category: 'general', context: 'handleAdultToggle' });
-      target.checked = false;
-      return;
-    }
-
-    ageVerificationPending = true;
-
-    try {
-      const credential = await requestAgeVerification('create-account');
-      if (!credential) {
-        handleError(
-          'Age verification cancelled or failed. Adult flag will not be set.',
-          new Error('Verification cancelled'),
-          { category: 'validation', context: 'handleAdultToggle' }
-        );
-        target.checked = false;
-        adult = false;
-        ageVerified = false;
-      } else {
-        adult = true;
-        ageVerified = true;
-      }
-    } catch (err) {
-      handleError('Age verification failed. Adult flag will not be set.', err, { category: 'validation', context: 'handleAdultToggle' });
-      target.checked = false;
-      adult = false;
-      ageVerified = false;
-    } finally {
-      ageVerificationPending = false;
-    }
-  }
-
-  /**
    * Handles the account creation form submission.
    * Validates passwords match and meet length requirements.
    * Calls API to create account and sets up session on success.
@@ -235,11 +172,8 @@
       const response = await createAccountRequest(
         formUsername,
         formPassword,
-        adult,
         word1,
         word2,
-        displayName || undefined,
-        undefined,
         sex || undefined,
         get(language),
         invitation_code.trim() || undefined
@@ -306,7 +240,7 @@
               name="sex"
               value="male"
               bind:group={sex}
-              disabled={submitting || ageVerificationPending}
+              disabled={submitting}
             />
             <label class="form-check-label" for="sexMale">♂ Male</label>
           </div>
@@ -318,7 +252,7 @@
               name="sex"
               value="female"
               bind:group={sex}
-              disabled={submitting || ageVerificationPending}
+              disabled={submitting}
             />
             <label class="form-check-label" for="sexFemale">♀ Female</label>
           </div>
@@ -332,7 +266,7 @@
           class="form-control"
           id="username"
           bind:value={formUsername}
-          disabled={submitting || ageVerificationPending}
+          disabled={submitting}
           required
         />
       </div>
@@ -344,7 +278,7 @@
           class="form-control"
           id="password"
           bind:value={formPassword}
-          disabled={submitting || ageVerificationPending}
+          disabled={submitting}
           required
           minlength="8"
         />
@@ -357,7 +291,7 @@
           class="form-control"
           id="confirmPassword"
           bind:value={formConfirmPassword}
-          disabled={submitting || ageVerificationPending}
+          disabled={submitting}
           required
         />
       </div>
@@ -369,7 +303,7 @@
           id="word1"
           bind:value={word1}
           onchange={handleWord1Change}
-          disabled={submitting || ageVerificationPending}
+          disabled={submitting}
           required
         >
           {#each safeWords1 as word}
@@ -385,7 +319,7 @@
           id="word2"
           bind:value={word2}
           onchange={handleWord2Change}
-          disabled={submitting || ageVerificationPending}
+          disabled={submitting}
           required
         >
           {#each safeWords2 as word}
@@ -400,59 +334,6 @@
         </div>
       </div>
 
-      <div class="mb-3 form-check">
-        <input
-          type="checkbox"
-          class="form-check-input"
-          id="adult"
-          bind:checked={adult}
-          onchange={handleAdultToggle}
-          disabled={$authLoading || ageVerificationPending}
-        />
-        <label class="form-check-label" for="adult">
-          I am 18 or older (enable custom display name)
-        </label>
-        {#if !dcApiSupported}
-          {#if isBrave}
-            <div class="form-text text-warning">
-              WARNING: Brave ships with the Digital Credentials API disabled by default.
-              Enable it at <span class="fw-bold user-select-all">brave://flags/#web-digital-credentials</span>.
-            </div>
-          {:else}
-            <div class="form-text text-warning">
-              Digital Credentials API not available in this browser
-            </div>
-          {/if}
-        {/if}
-        {#if ageVerificationPending}
-          <div class="form-text text-info">
-            Verifying age with digital credential...
-          </div>
-        {/if}
-        {#if ageVerified}
-          <div class="form-text text-success">
-            Age verified successfully
-          </div>
-        {/if}
-      </div>
-
-      {#if adult}
-        <div class="mb-3">
-          <label for="displayName" class="form-label">Custom Display Name</label>
-          <input
-            type="text"
-            class="form-control"
-            id="displayName"
-            bind:value={displayName}
-            disabled={submitting || ageVerificationPending}
-            placeholder="Enter custom display name"
-          />
-          <div class="form-text">
-            Only available for verified adults. Leave blank to use safe name.
-          </div>
-        </div>
-      {/if}
-
       {#if reg_mode !== 'off'}
         <div class="mb-3">
           <label for="invitationCode" class="form-label">
@@ -463,7 +344,7 @@
             class="form-control text-uppercase"
             id="invitationCode"
             bind:value={invitation_code}
-            disabled={submitting || ageVerificationPending}
+            disabled={submitting}
             required={invitation_required}
             autocomplete="off"
             spellcheck="false"
@@ -476,7 +357,7 @@
         type="button"
         class="btn btn-primary w-100"
         onclick={handleCreateAccount}
-        disabled={submitting || ageVerificationPending}
+        disabled={submitting}
       >
         {#if submitting}
           <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>

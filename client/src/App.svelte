@@ -10,7 +10,6 @@
   import AvatarPicker from './components/AvatarPicker.svelte';
   import BaronyJoin from './components/BaronyJoin.svelte';
   import BaronyCreate from './components/BaronyCreate.svelte';
-  import DialogOverlay from './components/DialogOverlay.svelte';
   import StoryText from './components/StoryText.svelte';
   import LetterOverlay from './components/LetterOverlay.svelte';
   // MiniGameSelect is used internally by HubScreen
@@ -439,36 +438,15 @@
 <ErrorDisplay />
 
 {#if showIntroOverlay && $currentCharacter?.archetype}
-  <DialogOverlay
-    title=""
-    size="xlg"
-    noPadding
-    onDismiss={handleIntroDismiss}
-  >
-    <StoryText text={introMarkdown} />
-  </DialogOverlay>
+  <StoryText overlay on_dismiss={handleIntroDismiss} text={introMarkdown} />
 {/if}
 
 {#if showLandPatent}
-  <DialogOverlay
-    title=""
-    size="xlg"
-    noPadding
-    onDismiss={dismissLandPatent}
-  >
-    <StoryText text={landPatentText} />
-  </DialogOverlay>
+  <StoryText overlay on_dismiss={dismissLandPatent} text={landPatentText} />
 {/if}
 
 {#if showBaronyPatent}
-  <DialogOverlay
-    title=""
-    size="xlg"
-    noPadding
-    onDismiss={dismissBaronyPatent}
-  >
-    <StoryText text={baronyPatentText} />
-  </DialogOverlay>
+  <StoryText overlay on_dismiss={dismissBaronyPatent} text={baronyPatentText} />
 {/if}
 
 {#if activeLetter}

@@ -186,13 +186,13 @@ std::optional<character_identity> load_character_identity(int64_t character_id) 
         << "SELECT c.id, c.user_id, c.safe_display_name, c.display_name, "
            "COALESCE(c.avatar_safe_id, ''), COALESCE(c.avatar_custom_id, ''), "
            "COALESCE(c.avatar_storage, 'local'), c.avatar_changed_at, c.level, "
-           "COALESCE(c.archetype, ''), COALESCE(c.sex, ''), u.adult "
+           "COALESCE(c.archetype, ''), COALESCE(c.sex, ''), u.adult, c.name_locked "
            "FROM characters c JOIN users u ON u.id = c.user_id WHERE c.id = ?;"
         << character_id
         >> [&](int64_t id, int64_t account_id, std::string safe_name, std::string custom_name,
                std::string safe_avatar, std::string custom_avatar, std::string storage,
                int64_t changed_at, int level, std::string archetype, std::string sex,
-               bool owner_adult) {
+               bool owner_adult, bool name_locked) {
                out.character_id = id;
                out.account_id = account_id;
                out.safe_display_name = std::move(safe_name);
@@ -205,6 +205,7 @@ std::optional<character_identity> load_character_identity(int64_t character_id) 
                out.archetype = std::move(archetype);
                out.sex = std::move(sex);
                out.owner_is_adult = owner_adult;
+               out.name_locked = name_locked;
                found = true;
            };
     if (!found) return std::nullopt;
@@ -256,7 +257,8 @@ json project_character_identity_for_self(const viewer_context& viewer,
     out["has_custom_avatar"] = !identity.custom_avatar_id.empty();
     out["avatar_changed_at"] = identity.avatar_changed_at;
     out["is_adult"] = viewer.is_adult;
-    out["can_set_custom_display_name"] = viewer.is_adult;
+    out["name_locked"] = identity.name_locked;
+    out["can_set_custom_display_name"] = viewer.is_adult && !identity.name_locked;
     out["can_upload_custom_avatar"] = viewer.is_adult;
     out["can_use_voice"] = viewer.is_adult;
     return out;

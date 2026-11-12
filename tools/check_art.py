@@ -146,6 +146,7 @@ CATEGORIES: list[art_category] = [
     art_category("portrait_frames", "Portrait frames", "configuration"),
     art_category("campaign_images", "Campaign images", "configuration"),
     art_category("ui_vellum", "UI text textures", "configuration"),
+    art_category("ui_buttons", "UI text overlay buttons", "configuration"),
     art_category("td_mobs", "Tower defense — mobs", "configuration"),
     art_category("td_towers", "Tower defense — towers", "configuration"),
     art_category("td_units", "Tower defense — units", "configuration"),
@@ -555,6 +556,20 @@ class art_collector:
                     f"ui_textures.json: {component_id}.texture_prefix",
                     prefix,
                 )
+            button: Any = component.get("button")
+            if isinstance(button, dict):
+                image: Any = button.get("image")
+                if isinstance(image, str) and image:
+                    image_path: Path = (
+                        served_path_to_disk(image, self.images_dir)
+                        if image.startswith("/images/")
+                        else self.images_dir / "ui" / image
+                    )
+                    self._add(
+                        "ui_buttons", f'"{image}" button image', "file",
+                        image_path,
+                        f"ui_textures.json: {component_id}.button.image",
+                    )
 
     def _collect_tower_defense(self) -> None:
         """Tower defense mobs, towers, units, projectiles, and map backgrounds."""

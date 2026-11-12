@@ -1,3 +1,5 @@
+// Retained for the deferred self-service 18+ verification flow. Account
+// creation no longer calls this verifier. See docs/adult_verification.md.
 #ifndef DIGITAL_CREDENTIALS_VERIFIER_HPP
 #define DIGITAL_CREDENTIALS_VERIFIER_HPP
 

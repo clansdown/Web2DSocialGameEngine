@@ -1,3 +1,7 @@
+// Retained for the deferred self-service 18+ verification flow. Account
+// creation no longer uses this module. See docs/adult_verification.md for the
+// Brave flag, protocol list, request shape, and preserved UI copy.
+//
 // Global DigitalCredential interface from the W3C Digital Credentials API spec
 // Not yet in TypeScript lib types; declare here for type safety.
 interface DigitalCredentialConstructor {
@@ -236,10 +240,10 @@ export function getVerifierMetadata(sessionId: string): VerifierMetadata {
    * Prompts user to present a credential proving they are 18+.
  * Returns null if API unavailable, cancelled, or fails.
  * 
- * @param sessionId - Optional session identifier (defaults to 'create-account')
+ * @param sessionId - Optional session identifier (defaults to 'profile')
  * @returns Promise<DigitalCredentialResponse | null> - Credential response or null
- * 
- * Usage: Called when user checks adult flag on account creation
+ *
+ * Usage: Deferred self-service 18+ verification from the Profile activity
  */
 export async function requestAgeVerification(
   sessionId?: string
@@ -251,7 +255,7 @@ export async function requestAgeVerification(
   }
 
   const protocol = supportedProtocols[0];
-  const verifierMetadata = getVerifierMetadata(sessionId || 'create-account');
+  const verifierMetadata = getVerifierMetadata(sessionId || 'profile');
 
   try {
     const credential = await navigator.credentials.get({

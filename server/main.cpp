@@ -39,7 +39,6 @@
 #include "GridCollision.hpp"
 #include "MoraleCalculator.hpp"
 #include "WaterNetwork.hpp"
-#include "DigitalCredentialsVerifier.hpp"
 #include "game_logic.hpp"
 #include "PlayerStateDB.hpp"
 #include "Letters.hpp"
@@ -1364,6 +1363,25 @@ ApiResponse handleHunt(GameConfigCache& config_cache, const json& body,
 // Defined later in this file; used by the safe-name allocator below.
 static std::string lower_ascii(std::string value);
 
+// True when `safe_name` is `base` or `base` plus an allocator suffix
+// (`base1`, `base-2`, ...). Used to keep an existing safe name when the player
+// saves the same word pair from Profile.
+static bool safe_name_has_word_base(const std::string& safe_name, const std::string& base) {
+    const std::string safe = lower_ascii(safe_name);
+    const std::string wanted = lower_ascii(base);
+    if (safe == wanted) return true;
+    if (safe.size() <= wanted.size() || safe.compare(0, wanted.size(), wanted) != 0) {
+        return false;
+    }
+    std::string suffix = safe.substr(wanted.size());
+    if (!suffix.empty() && suffix.front() == '-') suffix.erase(suffix.begin());
+    if (suffix.empty()) return false;
+    for (unsigned char c : suffix) {
+        if (!std::isdigit(c)) return false;
+    }
+    return true;
+}
+
 // Atomically allocates a case-insensitively unique safe display name. The
 // registry row is the lock; suffix 1 is the base name, suffix N > 1 is
 // "<base>-N". The character unique index remains the final guard.
@@ -1390,10 +1408,8 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
 
     std::string new_username = body.value("username", "");
     std::string password = body.value("password", "");
-    bool adult_request = body.value("adult", false);
     std::string word1 = body.value("word1", "");
     std::string word2 = body.value("word2", "");
-    std::string displayName = body.value("displayName", "");
     std::string invitation_code = body.value("invitation_code", "");
 
     // The account-creation rate limiter is config-driven and in-memory. It
@@ -1443,34 +1459,20 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
         return response;
     }
 
-    bool has_digital_credential = body.contains("digitalCredential");
+    // Account creation always starts non-adult. Self-service 18+ verification is
+    // a deferred post-creation Profile action; the removed creation-time Digital
+    // Credentials design is preserved in docs/adult_verification.md.
+    //
     // Test-harness-only escape hatch. It is enabled only when the server is in
     // bounded test mode AND the environment explicitly opts in. It is never
     // available on a normal server start, so no client can self-assert adulthood
     // in production.
+    const bool test_adult_request = body.value("adult", false);
     const char* test_adult_env = std::getenv("RAVENEST_TEST_ADULT_ACCOUNTS");
     const bool test_adult_allowed =
         (g_test_num_requests > 0 || g_test_timeout_seconds > 0) &&
         test_adult_env != nullptr && std::string(test_adult_env) == "1";
-    const bool test_adult = adult_request && !has_digital_credential && test_adult_allowed;
-
-    if (adult_request && !has_digital_credential && !test_adult) {
-        std::cout << "[DEBUG] handleCreateAccount: digital_cred_required" << std::endl;
-        response.error = "digital_cred_required";
-        return response;
-    }
-
-    if (!adult_request && has_digital_credential) {
-        std::cout << "[DEBUG] handleCreateAccount: digital_cred_not_allowed" << std::endl;
-        response.error = "digital_cred_not_allowed";
-        return response;
-    }
-
-    if (!adult_request && !displayName.empty()) {
-        std::cout << "[DEBUG] handleCreateAccount: displayName without adult" << std::endl;
-        response.error = "displayName can only be set if adult is true";
-        return response;
-    }
+    const bool adult = test_adult_request && test_adult_allowed;
 
     std::cout << "[DEBUG] handleCreateAccount: passed validation checks" << std::endl;
 
@@ -1526,36 +1528,8 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
 
     std::string safe_display_name = *safeDisplayNameOpt;
 
-    bool adult = false;
-    std::string display_name = safe_display_name;
-
-    if (adult_request && has_digital_credential) {
-        std::cout << "[DEBUG] handleCreateAccount: verifying digital credential..." << std::endl;
-        auto digitalCredential = body["digitalCredential"];
-        std::string protocol = digitalCredential.value("protocol", "");
-        auto credential_data = digitalCredential.value("data", json{});
-
-        auto verifier_result = DigitalCredentialsVerifier::getInstance().verifyDigitalCredential(
-            protocol, credential_data);
-
-        if (!verifier_result.success) {
-            adult = false;
-        } else {
-            adult = verifier_result.is_adult;
-        }
-
-        if (adult && !displayName.empty()) {
-            display_name = displayName;
-        }
-        std::cout << "[DEBUG] handleCreateAccount: digital credential adult=" << adult << std::endl;
-    }
-
-    if (test_adult) {
-        adult = true;
-        if (!displayName.empty()) display_name = displayName;
-    }
-
-    std::cout << "[DEBUG] handleCreateAccount: adult=" << adult << " display_name=" << display_name << std::endl;
+    std::cout << "[DEBUG] handleCreateAccount: adult=" << adult
+              << " display_name=" << safe_display_name << std::endl;
 
     std::string password_hash;
     try {
@@ -1606,11 +1580,8 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
             try {
                 db << sql << new_username << password_hash << now << (adult ? 1 : 0)
                    << (adult ? now : 0)
-                   << (adult
-                           ? (test_adult
-                                  ? std::optional<std::string>("test_only")
-                                  : std::optional<std::string>("digital_credential"))
-                           : std::optional<std::string>())
+                   << (adult ? std::optional<std::string>("test_only")
+                             : std::optional<std::string>())
                    << language << invitation_code_id;
                 std::cout << "[DEBUG] handleCreateAccount: Step 1 done" << std::endl;
             } catch (const std::exception& e) {
@@ -1636,13 +1607,12 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
         user_id = db.last_insert_rowid();
         std::cout << "[DEBUG] handleCreateAccount: user_id=" << user_id << std::endl;
 
-        // Allocate a case-insensitively unique safe name. When the player did
-        // not choose an adult custom display name, the visible name follows the
-        // allocated safe name (including the -2/-3 suffix).
+        // Allocate a case-insensitively unique safe name. The visible name of a
+        // new account always follows the allocated safe name; a custom display
+        // name can be set later from the Profile activity.
         {
             const std::string original_safe = safe_display_name;
             safe_display_name = allocate_safe_display_name(db, original_safe);
-            if (display_name == original_safe) display_name = safe_display_name;
         }
 
         // Step 2: insert character
@@ -1657,7 +1627,7 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
             std::cout << "[DEBUG] handleCreateAccount: Step 2 - INSERT character" << std::endl;
             log_sql("handleCreateAccount", sql);
             try {
-                db << sql << user_id << display_name << safe_display_name << sex_ptr;
+                db << sql << user_id << safe_display_name << safe_display_name << sex_ptr;
                 std::cout << "[DEBUG] handleCreateAccount: Step 2 done" << std::endl;
             } catch (const std::exception& e) {
                 rollback();
@@ -1730,7 +1700,7 @@ ApiResponse handleCreateAccount(GameConfigCache& config_cache, const json& body,
             character = visibility::project_character_identity_for_self(viewer, *identity);
         } else {
             character["id"] = character_id;
-            character["display_name"] = display_name;
+            character["display_name"] = safe_display_name;
             character["level"] = 1;
         }
 
@@ -1825,21 +1795,30 @@ ApiResponse handleUpdateCharacterProfile(GameConfigCache& config_cache, const js
         return response;
     }
 
-    std::string display_name = body.value("display_name", "");
-    std::string safe_display_name = body.value("safe_display_name", "");
-    std::string word1 = body.value("word1", "");
-    std::string word2 = body.value("word2", "");
+    std::string custom_display_name = trim_ascii(body.value("display_name", std::string()));
+    std::string word1 = trim_ascii(body.value("word1", std::string()));
+    std::string word2 = trim_ascii(body.value("word2", std::string()));
+    const bool clear_custom_display_name = body.value("clear_display_name", false);
+    const bool word1_present = !word1.empty();
+    const bool word2_present = !word2.empty();
+    const bool regenerate_safe_name = word1_present && word2_present;
 
-    bool regenerateSafeName = !word1.empty() && !word2.empty();
+    if (word1_present != word2_present) {
+        response.error = "word1 and word2 required to change safe name";
+        return response;
+    }
+    if (!custom_display_name.empty() && clear_custom_display_name) {
+        response.error = "display_name and clear_display_name are mutually exclusive";
+        return response;
+    }
+    if (custom_display_name.size() > 64) {
+        response.error = "display_name_too_long";
+        return response;
+    }
 
     auto& db = Database::getInstance().gameDB();
-
-    int character_user_id = 0;
-    db << "SELECT user_id FROM characters WHERE id = ?;"
-       << character_id
-       >> [&](int uid) { character_user_id = uid; };
-
-    if (character_user_id == 0) {
+    auto identity = visibility::load_character_identity(character_id);
+    if (!identity) {
         response.error = "character not found";
         return response;
     }
@@ -1847,60 +1826,100 @@ ApiResponse handleUpdateCharacterProfile(GameConfigCache& config_cache, const js
     int authenticated_user_id = 0;
     db << "SELECT id FROM users WHERE LOWER(username) = LOWER(?);" << *username
        >> [&](int id) { authenticated_user_id = id; };
-    if (authenticated_user_id == 0 || authenticated_user_id != character_user_id) {
+    if (authenticated_user_id == 0 || authenticated_user_id != identity->account_id) {
         response.error = "Character does not belong to this user";
         return response;
     }
 
-    const bool adult = visibility::character_is_adult(character_id);
-
-    if (!display_name.empty() && !adult) {
+    if (!identity->owner_is_adult &&
+        (!custom_display_name.empty() || clear_custom_display_name)) {
         response.error = "display_name can only be set if account is adult";
         return response;
     }
 
-    // Admin identity lock: a locked display name may only be changed by an admin.
-    bool name_locked = false;
-    db << "SELECT name_locked FROM characters WHERE id = ?;" << character_id
-       >> [&](int v) { name_locked = v; };
-    if (!display_name.empty() && name_locked) {
+    const bool any_name_change = regenerate_safe_name || !custom_display_name.empty() ||
+                                 clear_custom_display_name;
+    if (any_name_change && identity->name_locked) {
         response.error = "name_locked";
         return response;
     }
 
-    if (regenerateSafeName) {
-        std::optional<std::string> safeNameOpt = SafeNameGenerator::getInstance().generateSafeDisplayName(
-            word1, word2, *username);
+    if (any_name_change) {
+        try {
+            db << "BEGIN;";
 
-        if (!safeNameOpt) {
-            response.error = "Invalid word1 or word2 - words must exist in safe word lists";
+            std::string new_safe = identity->safe_display_name;
+            const bool follows_safe_name =
+                identity->custom_display_name == identity->safe_display_name;
+
+            if (regenerate_safe_name) {
+                auto& safe_names = SafeNameGenerator::getInstance();
+                if (!safe_names.isValidWord(word1, 1) || !safe_names.isValidWord(word2, 2)) {
+                    db << "ROLLBACK;";
+                    response.error =
+                        "Invalid word1 or word2 - words must exist in safe word lists";
+                    return response;
+                }
+                const std::string word_base = word1 + word2;
+                if (!safe_name_has_word_base(identity->safe_display_name, word_base)) {
+                    std::optional<std::string> safe_name_opt =
+                        safe_names.generateSafeDisplayName(
+                            word1, word2, *username, character_id);
+                    if (!safe_name_opt) {
+                        db << "ROLLBACK;";
+                        response.error =
+                            "Invalid word1 or word2 - words must exist in safe word lists";
+                        return response;
+                    }
+                    new_safe = *safe_name_opt;
+                    if (lower_ascii(new_safe) != lower_ascii(identity->safe_display_name)) {
+                        new_safe = allocate_safe_display_name(db, new_safe);
+                    }
+                }
+                if (new_safe != identity->safe_display_name) {
+                    db << "UPDATE characters SET safe_display_name = ? WHERE id = ?;"
+                       << new_safe << character_id;
+                }
+            }
+
+            std::string target_display_name = identity->custom_display_name;
+            if (!custom_display_name.empty()) {
+                target_display_name = custom_display_name;
+            } else if (clear_custom_display_name) {
+                target_display_name = new_safe;
+            } else if (regenerate_safe_name && follows_safe_name) {
+                target_display_name = new_safe;
+            }
+
+            if (target_display_name != identity->custom_display_name) {
+                // Record the prior name so an admin can force a revert later.
+                db << "INSERT INTO character_identity_history "
+                      "(character_id, kind, value, changed_at) VALUES (?, 'name', ?, ?);"
+                   << character_id << identity->custom_display_name
+                   << static_cast<long long>(std::time(nullptr));
+                db << "UPDATE characters SET display_name = ? WHERE id = ?;"
+                   << target_display_name << character_id;
+            }
+
+            db << "COMMIT;";
+        } catch (const std::exception& e) {
+            try {
+                db << "ROLLBACK;";
+            } catch (const std::exception&) {
+            }
+            response.error = std::string("Character profile update failed: ") + e.what();
             return response;
         }
-        safe_display_name = *safeNameOpt;
-
-        db << "UPDATE characters SET safe_display_name = ? WHERE id = ?;"
-           << safe_display_name << character_id;
     }
 
-    if (!display_name.empty()) {
-        // Record the prior name so an admin can force a revert later.
-        std::string prior_name;
-        db << "SELECT display_name FROM characters WHERE id = ?;" << character_id >> prior_name;
-        db << "INSERT INTO character_identity_history (character_id, kind, value, changed_at) "
-              "VALUES (?, 'name', ?, ?);"
-           << character_id << prior_name << static_cast<long long>(std::time(nullptr));
-        db << "UPDATE characters SET display_name = ? WHERE id = ?;"
-           << display_name << character_id;
-    }
-
-    auto identity = visibility::load_character_identity(character_id);
-    if (!identity) {
+    auto updated_identity = visibility::load_character_identity(character_id);
+    if (!updated_identity) {
         response.error = "character not found";
         return response;
     }
     visibility::viewer_context viewer = visibility::load_viewer_context(*username);
     viewer.character_id = character_id;
-    response.data = visibility::project_character_identity_for_self(viewer, *identity);
+    response.data = visibility::project_character_identity_for_self(viewer, *updated_identity);
 
     if (new_token) {
         response.data["token"] = *new_token;
@@ -4499,6 +4518,7 @@ ApiResponse handleGetUITextures(GameConfigCache& config_cache, const json& body,
     }
 
     json textures = json::array();
+    json button = json::object();
 
     std::string texture_prefix = "text_silk_";
     int padding_vertical_px = 60;
@@ -4520,6 +4540,42 @@ ApiResponse handleGetUITextures(GameConfigCache& config_cache, const json& body,
                 if (cfg[component_id].contains("padding_horizontal_px")
                     && cfg[component_id]["padding_horizontal_px"].is_number_integer()) {
                     padding_horizontal_px = cfg[component_id]["padding_horizontal_px"].get<int>();
+                }
+                if (cfg[component_id].contains("button")
+                    && cfg[component_id]["button"].is_object()) {
+                    const json& button_cfg = cfg[component_id]["button"];
+                    if (button_cfg.contains("image") && button_cfg["image"].is_string()) {
+                        std::string image = button_cfg["image"].get<std::string>();
+                        if (!image.empty()) {
+                            if (image.front() != '/') {
+                                image = "/images/ui/" + image;
+                            }
+                            button["image"] = image;
+                        }
+                    }
+                    if (button_cfg.contains("image_slice_px")
+                        && button_cfg["image_slice_px"].is_number_integer()) {
+                        int slice = button_cfg["image_slice_px"].get<int>();
+                        if (slice > 0) button["image_slice_px"] = slice;
+                    }
+                    if (button_cfg.contains("text_color")
+                        && button_cfg["text_color"].is_string()) {
+                        button["text_color"] = button_cfg["text_color"].get<std::string>();
+                    }
+                    if (button_cfg.contains("min_width_px")
+                        && button_cfg["min_width_px"].is_number_integer()) {
+                        int min_width = button_cfg["min_width_px"].get<int>();
+                        if (min_width > 0) button["min_width_px"] = min_width;
+                    }
+                    if (button_cfg.contains("min_height_px")
+                        && button_cfg["min_height_px"].is_number_integer()) {
+                        int min_height = button_cfg["min_height_px"].get<int>();
+                        if (min_height > 0) button["min_height_px"] = min_height;
+                    }
+                    if (button_cfg.contains("padding")
+                        && button_cfg["padding"].is_string()) {
+                        button["padding"] = button_cfg["padding"].get<std::string>();
+                    }
                 }
             }
         }
@@ -4554,6 +4610,9 @@ ApiResponse handleGetUITextures(GameConfigCache& config_cache, const json& body,
     response.data["textures"] = textures;
     response.data["padding_vertical_px"] = padding_vertical_px;
     response.data["padding_horizontal_px"] = padding_horizontal_px;
+    if (!button.empty()) {
+        response.data["button"] = button;
+    }
 
     if (new_token) {
         response.data["token"] = *new_token;

@@ -1,8 +1,9 @@
 # POST /api/updateUserProfile
 
 Update non-age account settings. **Adult status cannot be changed here.** It is
-account-level and set only by Digital Credentials verification or an
-admin/customer-service action (`/api/adminSetAdultStatus`). Sending `adult`
+account-level and set only by a staff/customer-service action
+(`/api/staffSetAdultStatus`) today; self-service Digital Credentials
+verification is deferred (see `docs/adult_verification.md`). Sending `adult`
 returns `adult_status_managed`.
 
 ## Request

@@ -328,6 +328,7 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - See `api/tdRound.md` for `/api/tdRound` documentation
 - See `api/getTexts.md` for `/api/getTexts` documentation
 - See `api/getCharacterTexts.md` for `/api/getCharacterTexts` documentation
+- See `api/getUITextures.md` for `/api/getUITextures` documentation
 - See `api/setFiefdomReserve.md` for `/api/setFiefdomReserve` documentation
 - See `api/setBuildingOutputRate.md` for `/api/setBuildingOutputRate` documentation
 - See `api/combatCreate.md` for `/api/combatCreate` documentation
@@ -377,13 +378,13 @@ All endpoints accept POST requests with JSON bodies and respond with:
 #### Endpoint Overview
 
 - **/api/login**: Authenticate user and return all characters
-- **/api/createAccount**: Create an account; in `global_code`/`invite_only` registration modes requires `invitation_code`
+- **/api/createAccount**: Create an account; in `global_code`/`invite_only` registration modes requires `invitation_code`. Accounts always start non-adult (`docs/adult_verification.md`).
 - **/api/getRegistrationConfig**: Public registration mode/flags (never returns the global code)
 - **/api/getInvitationStatus**: Player invitation allowance + own codes
 - **/api/createInvitationCode**: Player generates a single-use invitation code (config-limited)
 - **/api/getCharacter**: Retrieve character information
 - **/api/updateUserProfile**: Update non-age account settings; adult status is rejected here (CS/DC only via `staffSetAdultStatus`)
-- **/api/updateCharacterProfile**: Update character profile (display names)
+- **/api/updateCharacterProfile**: Update custom/safe display names from Profile (`display_name`, `clear_display_name`, `word1` + `word2`; adult-only custom names, `name_locked` respected)
 - **/api/Build**: Building construction/management (actions: `build`/`create`, `demolish`, `move`, `upgrade`, `upgrade_pond_type`; buildings may never overlap river cells)
 - **/api/getWorld**: Get world state (STUB - TODO: implement)
 - **/api/getFiefdom**: Get fiefdom information (buildings, economy report, `building_status`, `river_cells`, `water_power`, `road_morale`, `arable_land`)
@@ -683,6 +684,12 @@ purchase rejected → `purchasePlatinum` (pending → duplicate) → `settlePlat
 `already_owned`, one debit only) → equip/deassign → `getCosmetics` →
 `refundPremiumItem` (revokes + clears the loadout, replay `not_owned`). Exits 0
 on pass, 2 on failure; isolated per-port scratch DB.
+
+**Profile smoke test** (`bash tools/profile_smoke.sh [PORT]`): creates an adult
+test account and a minor account, then verifies safe-name regeneration, custom
+name set/clear, safe-name-follows-visible behavior, mutual-exclusion and
+word-pair validation, and minor custom-name rejection. Exits 0 on pass, 2 on
+failure; isolated per-port scratch DB.
 
 **Staff/support smoke test** (`tools/staff_smoke.sh [PORT]`): creates a staff and
 player account, grants staff with `staff_admin`, then verifies staffGetContext,
@@ -1108,6 +1115,8 @@ Build the full game progression and content system with a working tower defense 
 ### Progress
 
 #### Done
+- **Standalone textured text overlays**: `StoryText`/`GameText` gained `overlay` mode (`on_dismiss`, `continue_label`, `button`) and now render inside `TextOverlayFrame` instead of `DialogOverlay`. The Continue button lives inside the silk/vellum texture and can use an optional image plaque (`ui_textures.json` `button`, with `image_slice_px` for a CSS `border-image` 9-slice) or the `button` prop. The backdrop scrolls the whole textured panel so background, text, and button stay in sync. `DialogOverlay` remains for form dialogs; unused `ParchmentOverlay` removed.
+- **Non-adult account creation + Profile identity editors**: `/api/createAccount` no longer accepts `adult`, `displayName`, or `digitalCredential`; new accounts always start non-adult with their safe name. The removed creation-time Digital Credentials design (including the Brave `brave://flags/#web-digital-credentials` caveat, protocol list, request/verifier shapes, error codes, and UI copy) is preserved in `docs/adult_verification.md`. Profile now hosts adult custom-name and safe-name editors alongside custom/safe portraits; custom sections appear first for adults and are hidden for minors. `updateCharacterProfile` supports `clear_display_name`, unique safe-name regeneration without self-renaming, `name_locked`, and keeps the visible name following the safe name when no custom name is set. New `tools/profile_smoke.sh`/`.mjs`.
 - **PostgreSQL portability audit fixes**: staff account search uses `EXISTS` instead of `LEFT JOIN + DISTINCT` (PostgreSQL rejects `DISTINCT` with an unselected `ORDER BY` column); chat relation/read counters use `GREATEST` instead of SQLite scalar `MAX(a,b)`; platinum transaction IDs are read back by idempotency key instead of `LASTVAL()` after `INSERT OR IGNORE`; user-facing staff/chat searches use `ILIKE`; invitation generation takes a transaction-scoped advisory lock so count-then-insert limits remain serialized, and invitation insertion retries use `ON CONFLICT DO NOTHING` because a PostgreSQL unique violation aborts the transaction. Documented in `docs/database.md`; staff smoke covers mixed-case and character-name search.
 - **Auth refresh route + logging**: `/api/auth/<action>` is normalized to `auth<Action>`, so `/api/auth/refresh` and `/api/auth/logout` reach their handlers instead of falling through to `token_missing`. Server logs `[authRefresh]` start/rejected/ok lines (IP, cookie/token presence, reason, account/session, duration; tokens never logged) and warns on unrouted auth paths; the client logs `[auth]` refresh attempts, statuses, retry delays, and terminal failures. Regression: `tools/auth_refresh_smoke.sh`.
 - **Operational diagnostics**: `fetch_logs.sh` (generic filtered/redacted compose/container logs), `diagnose_auth.sh` (refresh-cookie classification), and `deployment_status.sh` (fast app/DB/HTTP/log status) are installed under `${SERVER_PATH}/tools/`; they share `_deploy_common.sh`.
@@ -1236,6 +1245,7 @@ Build the full game progression and content system with a working tower defense 
 - (none)
 
 ### Key Decisions
+- **Textured text overlays are standalone**: `StoryText`/`GameText` have an `overlay` mode that renders their silk/vellum panel inside `TextOverlayFrame` (a dark backdrop with no panel of its own) and puts `TextOverlayButton` inside the texture. `DialogOverlay` is for form dialogs/confirmations only. The backdrop scrolls the whole textured panel so the background, text, and button stay in sync. Optional button images come from `ui_textures.json` `button.image` (with `image_slice_px` for a CSS `border-image` 9-slice) or the `button` prop.
 - **SimpleGame collision system**: Using `onCollisionWithEnemy()` for projectile-enemy hit detection. Fires every tick bounding boxes overlap, but `p.destroy()` in the callback prevents re-triggering. This is more accurate than manual `dist < 12` and follows engine patterns.
 - **Engine movement for projectiles**: `doMovement()` handles position updates via `direction_x/direction_y * velocity * delta_t`. `projTick()` only updates homing direction each frame (1-frame lag, standard).
 - **Speed from config**: Projectile speed in `projectiles.json`, set via `p.setSpeed(cfg.speed)` at spawn. No hardcoded 400 anymore.
@@ -1273,6 +1283,9 @@ Build the full game progression and content system with a working tower defense 
 - **Combat maps are lenient**: `CombatMapCache` preserves unknown fields; the linter warns (not errors) on them so the format can evolve (see `docs/combat_maps.md`).
 
 ### Relevant Files
+- `client/src/components/StoryText.svelte` / `GameText.svelte` - textured text (inline + standalone `overlay` mode)
+- `client/src/components/TextOverlayFrame.svelte` / `TextOverlayButton.svelte` - text-overlay backdrop and optional image-backed dismiss button
+- `game/config/ui_textures.json` / `api/getUITextures.md` - texture padding + optional `button` plaque config
 - `install.sh` - deployment only: builds the client, uploads R2/Pages, mirrors game content, pulls the prebuilt server image, writes compose/env, restarts
 - `publish_engine_server_image.sh` - developer-only image publishing: clean-tree check, build, immutable tag + `latest`, print tag/digest
 - `.deploy.example` / `.publish_engine.example` - deployment config vs developer publishing credentials templates

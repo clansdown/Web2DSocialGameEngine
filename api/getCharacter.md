@@ -41,6 +41,7 @@ exists.
 | archetype | string \| null | Starting path; null until chosen |
 | sex | string \| null | `"male"` / `"female"`; null until chosen |
 | avatar_url | string | Viewer-relative PFP URL; may be `""` |
+| name_locked | boolean | Self projection only: staff identity lock blocks name changes |
 
 ### Error (400 Bad Request)
 

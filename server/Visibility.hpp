@@ -79,6 +79,7 @@ struct character_identity {
     std::string archetype;
     std::string sex;
     bool owner_is_adult = false;
+    bool name_locked = false;
 };
 
 std::optional<character_identity> load_character_identity(int64_t character_id);

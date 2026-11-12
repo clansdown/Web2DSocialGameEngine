@@ -35,12 +35,12 @@ accounts.
 |-------|------|-------------|---------|
 | id | INTEGER | PRIMARY KEY | Unique user identifier |
 | username | TEXT | UNIQUE NOT NULL | Login username (must be unique) |
-| password_hash | TEXT | NOT NULL | Hashed password (yescrypt) |
+| password_hash | TEXT | NOT NULL | Hashed password (Argon2id) |
 | created_at | INTEGER | NOT NULL | Unix timestamp of account creation |
-| adult | INTEGER | NOT NULL DEFAULT 0 | Account-level adult status (1=true, 0=false/unknown). Set only by Digital Credentials or admin/CS. |
+| adult | INTEGER | NOT NULL DEFAULT 0 | Account-level adult status (1=true, 0=false/unknown). New accounts always start 0; set only by staff/CS today (automatic Digital Credentials is deferred). See `docs/adult_verification.md`. |
 | adult_verified_at | INTEGER | NOT NULL DEFAULT 0 | Unix ts of the last adult-status verification/change |
-| adult_verified_by | INTEGER | NULLABLE | Admin account id that made the change (NULL for self-service Digital Credentials) |
-| adult_verification_method | TEXT | NULLABLE | `digital_credential`, `customer_service`, or similar audit value |
+| adult_verified_by | INTEGER | NULLABLE | Admin account id that made the change (NULL for self-service verification) |
+| adult_verification_method | TEXT | NULLABLE | `digital_credential`, `customer_service`, `test_only`, or a future self-service value |
 | language | TEXT | NOT NULL DEFAULT 'en' | Chosen interface / display language (also the default chat translation target) |
 | social_restricted | INTEGER | NOT NULL DEFAULT 0 | Staff-set social restriction: blocks chat/DMs/friends/groups/barony joins; solo play remains |
 | support_locked | INTEGER | NOT NULL DEFAULT 0 | Staff-set support lock: read tickets/notifications only; staff can still send a final message |

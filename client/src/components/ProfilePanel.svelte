@@ -1,17 +1,18 @@
 <script lang="ts">
   /**
    * ProfilePanel is the hub "Profile" activity. It shows the player's current
-   * portrait and manages both identity layers of the layered model:
+   * portrait/name and manages both identity layers:
    *
-   *   - The safe pick: always present, shown to minors and used as the fallback
-   *     for every viewer. Edited through the safe grid.
-   *   - The custom upload: an optional 18+ image layered ON TOP for adult
-   *     viewers of adult owners. Uploaded / removed here.
+   *   - Safe identity: the safe name and safe avatar pick. Always present,
+   *     shown to minors, and used as the fallback for every viewer.
+   *   - Custom identity: an optional adult custom display name and custom
+   *     avatar layered ON TOP for adult viewers of adult owners.
    *
-   * Any avatar change is rate-limited to once per 24h per character (the
-   * creation pick is exempt), so mutation controls are disabled while the
-   * cooldown is active. Custom uploads are currently adult-gated only — there
-   * is no content review yet (documented TODO).
+   * For adults the custom sections appear first, above the safe sections.
+   * Minors see only the safe sections plus the 18+ status request; custom
+   * sections are hidden. Any avatar change is rate-limited to once per 24h per
+   * character (the creation pick is exempt), so avatar mutation controls are
+   * disabled while the cooldown is active.
    *
    * @param onBack - Returns to the hub
    */
@@ -22,8 +23,10 @@
     setCharacterAvatarRequest,
     uploadCharacterAvatarRequest,
     removeCustomAvatarRequest,
+    updateCharacterProfileRequest,
     type safe_avatar_dto,
-    type avatar_update_dto
+    type avatar_update_dto,
+    type CharacterProfileResponse
   } from '../lib/api';
   import { loadTexts } from '../lib/text';
   import { navigate } from '../lib/router';
@@ -46,10 +49,28 @@
     'ui_profile_title',
     'ui_profile_current',
     'ui_profile_custom_badge',
+    'ui_profile_custom_name',
+    'ui_profile_custom_name_note',
+    'ui_profile_custom_name_placeholder',
+    'ui_profile_custom_name_save',
+    'ui_profile_custom_name_clear',
+    'ui_profile_custom_name_saved',
+    'ui_profile_custom_name_cleared',
+    'ui_profile_custom_name_adult_only',
+    'ui_profile_safe_name',
+    'ui_profile_safe_name_note',
+    'ui_profile_safe_name_current',
+    'ui_profile_safe_name_word1',
+    'ui_profile_safe_name_word2',
+    'ui_profile_safe_name_save',
+    'ui_profile_safe_name_saved',
+    'ui_profile_safe_name_words_required',
+    'ui_profile_name_locked',
+    'ui_profile_name_too_long',
+    'ui_profile_safe_words_error',
     'ui_profile_safe',
     'ui_profile_safe_note',
     'ui_profile_custom',
-    'ui_profile_adult_only',
     'ui_profile_upload_hint',
     'ui_profile_upload_btn',
     'ui_profile_remove',
@@ -83,6 +104,12 @@
   let texts = $state<Record<string, string>>({});
   let pool = $state<safe_avatar_dto[]>([]);
   let adult = $state(false);
+  let safe_words_1 = $state<string[]>([]);
+  let safe_words_2 = $state<string[]>([]);
+  let safe_word_1 = $state('');
+  let safe_word_2 = $state('');
+  let custom_name_input = $state('');
+  let name_submitting = $state(false);
   let loading = $state(true);
   let submitting = $state(false);
   let error_msg = $state('');
@@ -113,6 +140,21 @@
     !!selected_safe && selected_safe !== character?.avatar_safe_id && !submitting && !cooldown_active
   );
   let can_upload = $derived(!!upload_file && !submitting && !cooldown_active);
+  let has_custom_name = $derived(
+    !!character && character.display_name !== character.safe_display_name
+  );
+  let name_locked = $derived(character?.name_locked === true);
+  let can_save_custom_name = $derived(
+    adult && !name_locked && !name_submitting &&
+      custom_name_input.trim().length > 0 &&
+      custom_name_input.trim() !== character?.display_name
+  );
+  let can_clear_custom_name = $derived(
+    adult && !name_locked && !name_submitting && has_custom_name
+  );
+  let can_save_safe_name = $derived(
+    !name_locked && !name_submitting && !!safe_word_1 && !!safe_word_2
+  );
 
   /**
    * Looks up a text id and substitutes `{key}` tokens.
@@ -187,7 +229,180 @@
   }
 
   /**
+   * Picks a random safe word so the selects are never empty on first load.
+   *
+   * @param words - Safe-word list
+   * @returns string - Random word, or "" for an empty list
+   */
+  function pick_random_safe_word(words: string[]): string {
+    if (words.length === 0) return '';
+    return words[Math.floor(Math.random() * words.length)];
+  }
+
+  /**
+   * Best-effort split of the current safe display name back into its two words.
+   *
+   * @param safe_name - Current `safe_display_name`
+   * @returns The matching word pair, or null
+   */
+  function find_safe_name_words(safe_name: string): { word1: string; word2: string } | null {
+    const candidates: string[] = [safe_name];
+    const without_dash_suffix = safe_name.replace(/-\d+$/, '');
+    if (without_dash_suffix !== safe_name) candidates.push(without_dash_suffix);
+    const without_digit_suffix = safe_name.replace(/\d+$/, '');
+    if (without_digit_suffix !== safe_name && !candidates.includes(without_digit_suffix)) {
+      candidates.push(without_digit_suffix);
+    }
+
+    for (const candidate of candidates) {
+      for (const first of safe_words_1) {
+        if (!candidate.startsWith(first)) continue;
+        const second = candidate.slice(first.length);
+        if (safe_words_2.includes(second)) return { word1: first, word2: second };
+      }
+    }
+    return null;
+  }
+
+  /** Re-selects the current safe words, falling back to random words. */
+  function sync_safe_word_selection(): void {
+    const c = $currentCharacter;
+    if (!c) return;
+    const found = find_safe_name_words(c.safe_display_name);
+    safe_word_1 = found?.word1 ?? pick_random_safe_word(safe_words_1);
+    safe_word_2 = found?.word2 ?? pick_random_safe_word(safe_words_2);
+  }
+
+  /** Keeps the custom-name input in sync with the current character. */
+  function sync_custom_name_input(): void {
+    const c = $currentCharacter;
+    custom_name_input =
+      c && c.display_name !== c.safe_display_name ? c.display_name : '';
+  }
+
+  /**
+   * Loads the safe-word catalogs used by the safe-name editor.
+   */
+  async function load_safe_words(): Promise<void> {
+    try {
+      const response = await fetch('/safe_words.json');
+      const data = await response.json() as {
+        safe_words_1: string[];
+        safe_words_2: string[];
+      };
+      safe_words_1 = Array.isArray(data.safe_words_1) ? data.safe_words_1 : [];
+      safe_words_2 = Array.isArray(data.safe_words_2) ? data.safe_words_2 : [];
+      sync_safe_word_selection();
+    } catch (e) {
+      console.error('Failed to load safe words:', e);
+      error_msg = t('ui_profile_safe_words_error');
+    }
+  }
+
+  /**
+   * Maps a profile-update error to a localized message.
+   *
+   * @param error - Thrown error
+   * @returns string - Localized message or raw server error
+   */
+  function profile_error_text(error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === 'name_locked') return t('ui_profile_name_locked');
+    if (message === 'display_name_too_long') return t('ui_profile_name_too_long');
+    if (message === 'word1 and word2 required to change safe name') {
+      return t('ui_profile_safe_name_words_required');
+    }
+    if (message === 'Invalid word1 or word2 - words must exist in safe word lists') {
+      return t('ui_profile_safe_name_words_required');
+    }
+    if (message === 'display_name can only be set if account is adult') {
+      return t('ui_profile_custom_name_adult_only');
+    }
+    return message;
+  }
+
+  /**
+   * Merges a profile-name update into the current-character store.
+   *
+   * @param update - Updated self projection from the server
+   */
+  function apply_profile_update(update: CharacterProfileResponse): void {
+    const c = $currentCharacter;
+    if (!c) return;
+    currentCharacter.set({
+      ...c,
+      display_name: update.display_name,
+      safe_display_name: update.safe_display_name,
+      is_adult: update.is_adult ?? c.is_adult,
+      name_locked: update.name_locked ?? c.name_locked
+    });
+    sync_custom_name_input();
+    sync_safe_word_selection();
+  }
+
+  /** Saves the adult custom display name. */
+  async function save_custom_name(): Promise<void> {
+    const c = $currentCharacter;
+    const name = custom_name_input.trim();
+    if (!c || !name || name_locked) return;
+    name_submitting = true;
+    error_msg = '';
+    info_msg = '';
+    try {
+      const update = await updateCharacterProfileRequest(c.id, { display_name: name });
+      apply_profile_update(update);
+      info_msg = t('ui_profile_custom_name_saved');
+    } catch (e) {
+      error_msg = profile_error_text(e);
+    } finally {
+      name_submitting = false;
+    }
+  }
+
+  /** Clears the custom display name, reverting to the safe name. */
+  async function clear_custom_name(): Promise<void> {
+    const c = $currentCharacter;
+    if (!c || name_locked || !has_custom_name) return;
+    name_submitting = true;
+    error_msg = '';
+    info_msg = '';
+    try {
+      const update = await updateCharacterProfileRequest(c.id, { clear_display_name: true });
+      apply_profile_update(update);
+      info_msg = t('ui_profile_custom_name_cleared');
+    } catch (e) {
+      error_msg = profile_error_text(e);
+    } finally {
+      name_submitting = false;
+    }
+  }
+
+  /** Regenerates the safe display name from the selected word pair. */
+  async function save_safe_name(): Promise<void> {
+    const c = $currentCharacter;
+    if (!c || name_locked || !safe_word_1 || !safe_word_2) return;
+    name_submitting = true;
+    error_msg = '';
+    info_msg = '';
+    try {
+      const update = await updateCharacterProfileRequest(c.id, {
+        word1: safe_word_1,
+        word2: safe_word_2
+      });
+      apply_profile_update(update);
+      info_msg = t('ui_profile_safe_name_saved');
+    } catch (e) {
+      error_msg = profile_error_text(e);
+    } finally {
+      name_submitting = false;
+    }
+  }
+
+  /**
    * Creates a prefilled account support ticket requesting 18+ verification.
+   *
+   * Staff review is the current path. The deferred automatic Digital
+   * Credentials flow is documented in docs/adult_verification.md.
    */
   async function request_adult_status(): Promise<void> {
     const note = adult_status_note.trim();
@@ -223,12 +438,14 @@
     texts = await loadTexts(TEXT_IDS);
     adult_status_hidden = ($user?.id ?? 0) > 0 &&
       adult_prompt_hidden_until() > Date.now();
+    sync_custom_name_input();
+    await load_safe_words();
     try {
       // The safe pool is gender-split; request the character's own pool.
       const gender = character?.sex === 'female' ? 'female' : 'male';
       const data = await getAvatarPoolRequest(gender);
       pool = data.safe;
-      adult = data.adult;
+      adult = data.adult || character?.is_adult === true;
       selected_safe = character?.avatar_safe_id ?? null;
     } catch (e) {
       error_msg = e instanceof Error ? e.message : String(e);
@@ -390,6 +607,7 @@
             </span>
           {/if}
         </div>
+        <div class="fw-semibold mt-2">{character?.display_name ?? ''}</div>
       </div>
 
       <div class="col-12 col-md-8">
@@ -402,25 +620,38 @@
           </div>
         {/if}
 
-        <h5>{t('ui_profile_safe')}</h5>
-        <p class="text-muted small">{t('ui_profile_safe_note')}</p>
-        <SafeAvatarGrid
-          avatars={pool}
-          selected={selected_safe}
-          onSelect={(id) => { selected_safe = id; }}
-        />
-        <div class="mt-3">
-          <button class="btn btn-primary" disabled={!can_save_safe} onclick={save_safe}>
-            {t('ui_confirm')}
-          </button>
-        </div>
+        {#if adult}
+          <h5>{t('ui_profile_custom_name')}</h5>
+          <p class="text-muted small">{t('ui_profile_custom_name_note')}</p>
+          <div class="d-flex align-items-center gap-3 flex-wrap">
+            <input
+              class="form-control form-control-sm"
+              style="max-width: 20rem;"
+              type="text"
+              maxlength="64"
+              bind:value={custom_name_input}
+              placeholder={t('ui_profile_custom_name_placeholder')}
+              disabled={name_submitting || name_locked}
+            />
+            <button
+              class="btn btn-outline-primary btn-sm"
+              disabled={!can_save_custom_name}
+              onclick={save_custom_name}
+            >
+              {t('ui_profile_custom_name_save')}
+            </button>
+            {#if has_custom_name}
+              <button
+                class="btn btn-outline-secondary btn-sm"
+                disabled={!can_clear_custom_name}
+                onclick={clear_custom_name}
+              >
+                {t('ui_profile_custom_name_clear')}
+              </button>
+            {/if}
+          </div>
 
-        <hr class="my-4" />
-
-        <h5>{t('ui_profile_custom')}</h5>
-        {#if !adult}
-          <p class="text-muted small mb-0">{t('ui_profile_adult_only')}</p>
-        {:else}
+          <h5 class="mt-4">{t('ui_profile_custom')}</h5>
           <p class="text-muted small">{t('ui_profile_upload_hint')}</p>
           <div class="d-flex align-items-center gap-3 flex-wrap">
             <input
@@ -450,7 +681,76 @@
               </button>
             {/if}
           </div>
+
+          <hr class="my-4" />
         {/if}
+
+        <h5>{t('ui_profile_safe_name')}</h5>
+        <p class="text-muted small">{t('ui_profile_safe_name_note')}</p>
+        {#if name_locked}
+          <p class="text-muted small mb-2">{t('ui_profile_name_locked')}</p>
+        {/if}
+        <p class="text-muted small">
+          {t('ui_profile_safe_name_current', { name: character?.safe_display_name ?? '' })}
+        </p>
+        {#if safe_words_1.length === 0 || safe_words_2.length === 0}
+          <p class="text-muted small mb-0">{t('ui_profile_safe_words_error')}</p>
+        {:else}
+          <div class="row g-2">
+            <div class="col-12 col-sm-6">
+              <label class="form-label small" for="safe-name-word-1">
+                {t('ui_profile_safe_name_word1')}
+              </label>
+              <select
+                id="safe-name-word-1"
+                class="form-select form-select-sm"
+                bind:value={safe_word_1}
+                disabled={name_submitting || name_locked}
+              >
+                {#each safe_words_1 as word}
+                  <option value={word}>{word}</option>
+                {/each}
+              </select>
+            </div>
+            <div class="col-12 col-sm-6">
+              <label class="form-label small" for="safe-name-word-2">
+                {t('ui_profile_safe_name_word2')}
+              </label>
+              <select
+                id="safe-name-word-2"
+                class="form-select form-select-sm"
+                bind:value={safe_word_2}
+                disabled={name_submitting || name_locked}
+              >
+                {#each safe_words_2 as word}
+                  <option value={word}>{word}</option>
+                {/each}
+              </select>
+            </div>
+          </div>
+          <div class="mt-3">
+            <button
+              class="btn btn-outline-primary btn-sm"
+              disabled={!can_save_safe_name}
+              onclick={save_safe_name}
+            >
+              {t('ui_profile_safe_name_save')}
+            </button>
+          </div>
+        {/if}
+
+        <h5 class="mt-4">{t('ui_profile_safe')}</h5>
+        <p class="text-muted small">{t('ui_profile_safe_note')}</p>
+        <SafeAvatarGrid
+          avatars={pool}
+          selected={selected_safe}
+          onSelect={(id) => { selected_safe = id; }}
+        />
+        <div class="mt-3">
+          <button class="btn btn-primary" disabled={!can_save_safe} onclick={save_safe}>
+            {t('ui_confirm')}
+          </button>
+        </div>
 
         {#if !adult && !adult_status_hidden}
           <hr class="my-4" />

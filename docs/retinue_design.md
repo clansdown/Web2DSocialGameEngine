@@ -206,7 +206,7 @@ analyzer tech-tree transparency (economic sim unaffected).
 | 7 Client Retinue panel + recruit UI | ✅ (Manor Retinue panel: management grid + recruit market) |
 | 7b Priority reorder | ✅ (`/api/setRetinuePriority` + ↑/↓ controls in the member detail) |
 | 7c Member identity (name + headshot) | ✅ (`headshot_id`, deterministic re-rolls, portrait rendering) |
-| 7d Player PFP (safe picker + 18+ upload) | ✅ (safe picker in creation; Profile activity for safe/custom change + 18+ upload; age-gated serving) |
+| 7d Player PFP (safe picker + 18+ upload) | ✅ (safe picker in creation; Profile activity for safe/custom name and portrait change + 18+ upload; age-gated serving; account creation always starts non-adult) |
 | 8 Tests (linter + endpoint smoke) | ⏳ |
 
 ## 13. Identity Portraits & Player PFP — ✅ implemented

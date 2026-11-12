@@ -19,7 +19,9 @@
   import { getUITexturesRequest } from '../lib/api';
   import { loadText } from '../lib/text';
   import { rewrite_asset_urls } from '../lib/public_urls';
-  import type { UITexture, UITexturesResponse } from '../lib/api';
+  import TextOverlayFrame from './TextOverlayFrame.svelte';
+  import TextOverlayButton from './TextOverlayButton.svelte';
+  import type { UITexture, UITexturesResponse, UITextureButton } from '../lib/api';
 
   interface Props {
     text?: string;
@@ -27,9 +29,23 @@
     tokens?: Record<string, string>;
     children?: Snippet;
     class?: string;
+    overlay?: boolean;
+    on_dismiss?: () => void;
+    continue_label?: string;
+    button?: UITextureButton;
   }
 
-  let { text, id, tokens, children, class: className = '' }: Props = $props();
+  let {
+    text,
+    id,
+    tokens,
+    children,
+    class: className = '',
+    overlay = false,
+    on_dismiss,
+    continue_label,
+    button
+  }: Props = $props();
 
   let fetchedText = $state('');
   let htmlContent = $derived(
@@ -44,6 +60,20 @@
   let paddingHorizontal = $state(60);
   let bgImage = $state('');
   let currentTexture: UITexture | null = $state(null);
+  let button_config = $state<UITextureButton>({});
+
+  let effective_button = $derived.by(() => {
+    const merged: UITextureButton = { ...button_config };
+    if (button) {
+      if (button.image !== undefined) merged.image = button.image;
+      if (button.image_slice_px !== undefined) merged.image_slice_px = button.image_slice_px;
+      if (button.text_color !== undefined) merged.text_color = button.text_color;
+      if (button.min_width_px !== undefined) merged.min_width_px = button.min_width_px;
+      if (button.min_height_px !== undefined) merged.min_height_px = button.min_height_px;
+      if (button.padding !== undefined) merged.padding = button.padding;
+    }
+    return merged;
+  });
 
   const MAX_STRETCH = 1.3;
   const MIN_STRETCH = 0.7;
@@ -126,6 +156,7 @@
         if (textures.length > 0) {
           minHeight = textures[0].height * MIN_STRETCH;
         }
+        button_config = response.button ?? {};
       }
       texturesLoaded = true;
     }
@@ -178,42 +209,67 @@
   });
 </script>
 
-<div
-  class="game-text-container rounded-3 shadow-sm {className}"
-  bind:this={containerEl}
-  style="
-    background-image: {bgImage ? 'url(' + bgImage + ')' : 'none'};
-    background-size: 100% 100%;
-    padding: {paddingVertical}px {paddingHorizontal}px;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    min-height: {minHeight}px;
-  "
->
+{#snippet textured_panel()}
   <div
-    class="game-text"
+    class="game-text-container rounded-3 shadow-sm {className}"
+    bind:this={containerEl}
     style="
-      color: #3a3025;
-      font-family: 'Georgia', 'Palatino', serif;
-      line-height: 1.65;
-      mix-blend-mode: multiply;
-      opacity: 0.8;
-      text-align: justify;
+      background-image: {bgImage ? 'url(' + bgImage + ')' : 'none'};
+      background-size: 100% 100%;
+      padding: {paddingVertical}px {paddingHorizontal}px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-height: {minHeight}px;
     "
   >
-    {#if text}
-      {@html htmlContent}
-    {:else if children}
-      {@render children()}
+    <div
+      class="game-text"
+      style="
+        color: #3a3025;
+        font-family: 'Georgia', 'Palatino', serif;
+        line-height: 1.65;
+        mix-blend-mode: multiply;
+        opacity: 0.8;
+        text-align: justify;
+      "
+    >
+      {#if text}
+        {@html htmlContent}
+      {:else if children}
+        {@render children()}
+      {/if}
+    </div>
+    {#if overlay && on_dismiss}
+      <div class="text-overlay-actions">
+        <TextOverlayButton
+          on_click={on_dismiss}
+          label={continue_label}
+          button={effective_button}
+        />
+      </div>
     {/if}
   </div>
-</div>
+{/snippet}
+
+{#if overlay}
+  <TextOverlayFrame on_dismiss={on_dismiss ?? (() => {})}>
+    {@render textured_panel()}
+  </TextOverlayFrame>
+{:else}
+  {@render textured_panel()}
+{/if}
 
 <style>
 .game-text {
 text-shadow: 
     0 0 0.4px rgba(26, 26, 26, 0.6),      /* Soft edge bleed */
     0.3px 0.3px 0.5px rgba(90, 70, 50, 0.3); /* Faint, warm micro-shadow for depth */
+}
+
+.text-overlay-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 1.5rem;
 }
 </style>

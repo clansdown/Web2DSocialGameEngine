@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <optional>
@@ -15,7 +16,8 @@ public:
     std::optional<std::string> generateSafeDisplayName(
         const std::string& word1,
         const std::string& word2,
-        const std::string& username);
+        const std::string& username,
+        int64_t exclude_character_id = 0);
 
     bool isValidWord(const std::string& word, int listNumber);
 
