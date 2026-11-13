@@ -3,7 +3,7 @@
 # publish_engine_server_image.sh — build and push the engine server image.
 #
 # This is the developer-only publishing path. It never touches a deployment,
-# the client, R2, Pages, or game content. Deployments use install.sh and pull
+# the client, R2, Pages, or game content. Deployments use tools/install.sh and pull
 # the already-published SERVER_IMAGE:SERVER_IMAGE_TAG.
 #
 # Configuration defaults to .publish_engine (gitignored), with environment and

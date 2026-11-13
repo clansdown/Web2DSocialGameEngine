@@ -3,7 +3,7 @@
 # Legacy: prefer `./publish_engine_server_image.sh`, which reads .publish_engine,
 # refuses dirty trees, and publishes an immutable tag plus latest. This script
 # remains for the .docker_repo/.docker_creds workflow. For deployment use
-# install.sh, which pulls an already-published image.
+# tools/install.sh, which pulls an already-published image.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

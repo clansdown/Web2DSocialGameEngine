@@ -5,7 +5,7 @@
 #     chmod 600 .deploy
 #
 # .deploy is gitignored and must never be committed. The values are sourced as
-# a shell fragment by install.sh, so keep it to simple assignments. See
+# a shell fragment by tools/install.sh, so keep it to simple assignments. See
 # docs/publishing.md for the full setup and verification procedure.
 #
 # Publishing the server image is a separate developer workflow controlled by
@@ -14,7 +14,7 @@
 
 # --- Pages site repo ---------------------------------------------------------
 # Private repository whose root is the generated Pages site (index.html at the
-# root). install.sh rsyncs client/dist here and then commits and pushes.
+# root). tools/install.sh rsyncs client/dist here and then commits and pushes.
 # SITE_REPO="$HOME/src/example-site"
 
 # Private directory copied into the site repo after the build sync. It holds
@@ -77,14 +77,14 @@ SERVER_STAFF_DB_URL=""
 SERVER_INVITES_DB_URL=""
 
 # --- Docker server image (SERVER_DEPLOY_MODE=docker) -----------------------
-# Prebuilt image to deploy. install.sh never builds or pushes it; developers
+# Prebuilt image to deploy. tools/install.sh never builds or pushes it; developers
 # publish it separately with ./publish_engine_server_image.sh. A deployer only
 # needs these two image values and no registry credentials.
 #
 # The official public image is:
 SERVER_IMAGE="ghcr.io/clansdown/web2dsocialgameengine"
 # Use latest for convenience, or pin the immutable tag printed by the publish
-# script for reproducible production deployments. install.sh never derives this
+# script for reproducible production deployments. tools/install.sh never derives this
 # value: it must name an image that already exists in the registry.
 SERVER_IMAGE_TAG="latest"
 # Optional remote pull command. Defaults to:
@@ -96,7 +96,7 @@ SERVER_COMPOSE_PATH=""
 SERVER_COMPOSE_ENV_PATH=""
 SERVER_UPLOADS_PATH=""
 # Optional owner for the uploads bind mount (the image runs as 10001:10001).
-# install.sh tries a direct chown, then a Docker root-helper container; if both
+# tools/install.sh tries a direct chown, then a Docker root-helper container; if both
 # fail, chown the directory manually.
 SERVER_UPLOADS_OWNER=""
 # Set to 1 to silence the loopback-DB-URL warning in Docker mode.
@@ -107,7 +107,7 @@ SERVER_ALLOW_LOOPBACK_DB_URL="0"
 SERVER_SSH_KEY=""
 
 # Browser origins allowed by the API's CORS layer. Comma-separated. Defaults
-# to PUBLIC_SITE_ORIGIN when empty. install.sh writes the value to
+# to PUBLIC_SITE_ORIGIN when empty. tools/install.sh writes the value to
 # SERVER_ENV_PATH as RAVENEST_CORS_ORIGINS.
 SERVER_CORS_ORIGINS=""
 

@@ -1,7 +1,10 @@
 #include "TowerDefenseMapCache.hpp"
+#include "GameConfigCache.hpp"
 #include <fstream>
 #include <iostream>
 #include <cstring>
+#include <set>
+#include <filesystem>
 #include <sys/stat.h>
 
 /** Rename a field in a JSON object if it exists. */
@@ -21,7 +24,6 @@ static void normalize_map_metadata(nlohmann::json& map) {
     rename_field(map, "exclusionZones", "exclusion_zones");
     rename_field(map, "endPoints", "end_points");
 
-    // spawn_points
     if (map.contains("spawn_points") && map["spawn_points"].is_array()) {
         for (auto& sp : map["spawn_points"]) {
             rename_field(sp, "intervalMs", "interval_ms");
@@ -30,19 +32,15 @@ static void normalize_map_metadata(nlohmann::json& map) {
         }
     }
 
-    // paths
     if (map.contains("paths") && map["paths"].is_array()) {
         for (auto& path : map["paths"]) {
             rename_field(path, "endAtIntersectionId", "end_at_intersection_id");
             rename_field(path, "endAtEndPointId", "end_at_end_point_id");
-            // waypoint x and y are already in snake_case, passed through as-is
         }
     }
 
-    // intersections
     if (map.contains("intersections") && map["intersections"].is_array()) {
         for (auto& ints : map["intersections"]) {
-            // branches
             if (ints.contains("branches") && ints["branches"].is_array()) {
                 for (auto& br : ints["branches"]) {
                     rename_field(br, "pathId", "path_id");
@@ -51,23 +49,10 @@ static void normalize_map_metadata(nlohmann::json& map) {
         }
     }
 
-    // exclusion_zones
     if (map.contains("exclusion_zones") && map["exclusion_zones"].is_array()) {
         for (auto& zone : map["exclusion_zones"]) {
             rename_field(zone, "centerX", "center_x");
             rename_field(zone, "centerY", "center_y");
-            if (zone.contains("vertices") && zone["vertices"].is_array()) {
-                for (auto& v : zone["vertices"]) {
-                    (void)v; // x and y stay
-                }
-            }
-        }
-    }
-
-    // end_points
-    if (map.contains("end_points") && map["end_points"].is_array()) {
-        for (auto& ep : map["end_points"]) {
-            (void)ep; // id, label, x, y stay
         }
     }
 }
@@ -80,120 +65,251 @@ TowerDefenseMapCache& TowerDefenseMapCache::get_instance() {
 void TowerDefenseMapCache::set_maps_directory(const std::string& path) {
     std::lock_guard<std::mutex> lock(mutex_);
     maps_dir_ = path;
-    last_scan_time_ = 0;
+    state_.reset();
+}
+
+bool TowerDefenseMapCache::read_map_file(const std::string& path,
+                                         nlohmann::json& out,
+                                         std::string& error) const {
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        error = "cannot open " + path;
+        return false;
+    }
+    try {
+        out = nlohmann::json::parse(
+            std::string((std::istreambuf_iterator<char>(file)),
+                        std::istreambuf_iterator<char>()),
+            nullptr, true, true, true);
+        return true;
+    } catch (const std::exception& e) {
+        error = e.what();
+        return false;
+    }
+}
+
+std::shared_ptr<const TowerDefenseMapCache::td_map_state>
+TowerDefenseMapCache::prepareReload(config_reload_result& result) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (maps_dir_.empty()) {
+        return state_;
+    }
+
+    struct stat dir_st {};
+    if (stat(maps_dir_.c_str(), &dir_st) != 0 || !(dir_st.st_mode & S_IFDIR)) {
+        result.error = "maps directory not found: " + maps_dir_;
+        return nullptr;
+    }
+
+    auto next = std::make_shared<td_map_state>();
+    if (state_) {
+        next->files = state_->files;
+        next->mtimes = state_->mtimes;
+    }
+
+    std::set<std::string> seen;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(maps_dir_, ec)) {
+        if (ec) break;
+        if (!entry.is_regular_file()) continue;
+
+        const std::string filename = entry.path().filename().string();
+        if (filename.size() < 5 ||
+            filename.compare(filename.size() - 5, 5, ".json") != 0) {
+            continue;
+        }
+        seen.insert(filename);
+
+        const std::string path = entry.path().string();
+        struct stat st {};
+        if (stat(path.c_str(), &st) != 0) {
+            result.failed_files.push_back(filename);
+            if (!result.error.empty()) result.error += "; ";
+            result.error += filename + ": cannot stat " + path;
+            return nullptr;
+        }
+
+        const auto mtime_it = next->mtimes.find(filename);
+        const bool unchanged =
+            mtime_it != next->mtimes.end() &&
+            mtime_it->second == st.st_mtime &&
+            next->files.find(filename) != next->files.end();
+        if (unchanged) {
+            continue;
+        }
+
+        nlohmann::json data;
+        std::string error;
+        if (!read_map_file(path, data, error)) {
+            result.failed_files.push_back(filename);
+            if (!result.error.empty()) result.error += "; ";
+            result.error += filename + ": " + error;
+            return nullptr;
+        }
+
+        next->files[filename] = std::move(data);
+        next->mtimes[filename] = st.st_mtime;
+        result.changed_files.push_back(filename);
+    }
+
+    if (ec) {
+        result.error = "directory iteration error: " + ec.message();
+        return nullptr;
+    }
+
+    // Drop maps that no longer exist on disk.
+    for (auto it = next->files.begin(); it != next->files.end();) {
+        if (seen.find(it->first) == seen.end()) {
+            next->mtimes.erase(it->first);
+            it = next->files.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    return next;
+}
+
+void TowerDefenseMapCache::commitReload(std::shared_ptr<const td_map_state> next) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    state_ = std::move(next);
+}
+
+bool TowerDefenseMapCache::reloadChanged(config_reload_result& result) {
+    auto next = prepareReload(result);
+    if (!next) {
+        std::cerr << "[TowerDefenseMapCache] Reload aborted: " << result.error << std::endl;
+        return false;
+    }
+    commitReload(std::move(next));
+    std::cerr << "[TowerDefenseMapCache] Reload complete: changed="
+              << result.changed_files.size() << std::endl;
+    return true;
 }
 
 bool TowerDefenseMapCache::initialize(const std::string& path) {
     set_maps_directory(path);
-    scan_directory();
-    std::cerr << "[TowerDefenseMapCache] Loaded " << cache_.size()
+    config_reload_result result;
+    auto next = prepareReload(result);
+    if (!next) {
+        std::cerr << "[TowerDefenseMapCache] Initialization failed: "
+                  << result.error << std::endl;
+        return false;
+    }
+    commitReload(std::move(next));
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    const std::size_t count = state_ ? state_->files.size() : 0;
+    std::cerr << "[TowerDefenseMapCache] Loaded " << count
               << " maps from " << path
               << " (cwd=" << std::filesystem::current_path().string() << ")"
               << std::endl;
-    return cache_.size() > 0;
+    return count > 0;
 }
 
-void TowerDefenseMapCache::scan_directory() {
+void TowerDefenseMapCache::scan_directory_locked() {
     if (maps_dir_.empty()) {
-        std::cerr << "[TowerDefenseMapCache] scan_directory: maps_dir_ empty" << std::endl;
         return;
     }
 
-    struct stat st;
-    if (stat(maps_dir_.c_str(), &st) != 0) {
+    struct stat dir_st {};
+    if (stat(maps_dir_.c_str(), &dir_st) != 0 || !(dir_st.st_mode & S_IFDIR)) {
         std::cerr << "[TowerDefenseMapCache] Cannot stat: " << maps_dir_
                   << " (cwd=" << std::filesystem::current_path().string()
                   << "): " << strerror(errno) << std::endl;
         return;
     }
 
-    if (!(st.st_mode & S_IFDIR)) {
-        std::cerr << "[TowerDefenseMapCache] Not a directory: " << maps_dir_ << std::endl;
-        return;
+    auto next = std::make_shared<td_map_state>();
+    if (state_) {
+        next->files = state_->files;
+        next->mtimes = state_->mtimes;
     }
 
-    if (!cache_.empty() && st.st_mtime <= last_scan_time_) {
-        std::cerr << "[TowerDefenseMapCache] scan_directory: no change ("
-                  << cache_.size() << " cached)" << std::endl;
-        return;
-    }
-
-    cache_.clear();
-
-    namespace fs = std::filesystem;
+    std::set<std::string> seen;
     std::error_code ec;
-    for (const auto& entry : fs::directory_iterator(maps_dir_, ec)) {
+    for (const auto& entry : std::filesystem::directory_iterator(maps_dir_, ec)) {
+        if (ec) break;
         if (!entry.is_regular_file()) continue;
 
-        std::string path = entry.path().string();
-        std::string filename = entry.path().filename().string();
+        const std::string filename = entry.path().filename().string();
+        if (filename.size() < 5 ||
+            filename.compare(filename.size() - 5, 5, ".json") != 0) {
+            continue;
+        }
+        seen.insert(filename);
 
-        if (filename.size() < 5 || filename.substr(filename.size() - 5) != ".json") {
+        const std::string path = entry.path().string();
+        struct stat st {};
+        if (stat(path.c_str(), &st) != 0) {
+            std::cerr << "[TowerDefenseMapCache] Cannot stat: " << path << std::endl;
             continue;
         }
 
-        std::ifstream file(path);
-        if (!file.is_open()) {
-            std::cerr << "[TowerDefenseMapCache] Failed to open: " << path << std::endl;
+        const auto mtime_it = next->mtimes.find(filename);
+        if (mtime_it != next->mtimes.end() &&
+            mtime_it->second == st.st_mtime &&
+            next->files.find(filename) != next->files.end()) {
             continue;
         }
 
-        try {
-            nlohmann::json map_data = nlohmann::json::parse(
-                std::string((std::istreambuf_iterator<char>(file)),
-                            std::istreambuf_iterator<char>()),
-                nullptr, true, true, true
-            );
-
-            cache_[filename] = std::move(map_data);
-        } catch (const std::exception& e) {
-            std::cerr << "[TowerDefenseMapCache] Failed to parse " << filename << ": " << e.what() << std::endl;
+        nlohmann::json data;
+        std::string error;
+        if (!read_map_file(path, data, error)) {
+            std::cerr << "[TowerDefenseMapCache] Failed to parse "
+                      << filename << ": " << error << std::endl;
+            continue;
         }
+        next->files[filename] = std::move(data);
+        next->mtimes[filename] = st.st_mtime;
     }
 
     if (ec) {
-        std::cerr << "[TowerDefenseMapCache] Warning: directory iteration error: " << ec.message() << std::endl;
+        std::cerr << "[TowerDefenseMapCache] Warning: directory iteration error: "
+                  << ec.message() << std::endl;
     }
 
-    std::cerr << "[TowerDefenseMapCache] Scanned " << cache_.size() << " map(s):";
-    for (auto it = cache_.begin(); it != cache_.end(); ++it) {
-        std::cerr << " " << it->first;
+    for (auto it = next->files.begin(); it != next->files.end();) {
+        if (seen.find(it->first) == seen.end()) {
+            next->mtimes.erase(it->first);
+            it = next->files.erase(it);
+        } else {
+            ++it;
+        }
     }
-    std::cerr << std::endl;
 
-    last_scan_time_ = st.st_mtime;
+    state_ = std::move(next);
 }
 
 std::optional<nlohmann::json> TowerDefenseMapCache::get_map(const std::string& filename) {
     std::lock_guard<std::mutex> lock(mutex_);
-    scan_directory();
+    scan_directory_locked();
 
-    auto it = cache_.find(filename);
-    if (it != cache_.end()) {
-        auto result = it->second;
-        normalize_map_metadata(result);
-        return result;
+    if (!state_) {
+        return std::nullopt;
+    }
+    const auto it = state_->files.find(filename);
+    if (it == state_->files.end()) {
+        std::cerr << "[TowerDefenseMapCache] get_map('" << filename
+                  << "') MISS — cache has " << state_->files.size() << " entries"
+                  << std::endl;
+        return std::nullopt;
     }
 
-    std::cerr << "[TowerDefenseMapCache] get_map('" << filename
-              << "') MISS — cache has " << cache_.size() << " entries";
-    if (cache_.size() > 0) {
-        for (auto it = cache_.begin(); it != cache_.end(); ++it) {
-            std::cerr << " '" << it->first << "'";
-        }
-    }
-    std::cerr << std::endl;
-
-    return std::nullopt;
+    nlohmann::json result = it->second;
+    normalize_map_metadata(result);
+    return result;
 }
 
 std::vector<std::string> TowerDefenseMapCache::list_maps() {
     std::lock_guard<std::mutex> lock(mutex_);
-    scan_directory();
+    scan_directory_locked();
 
     std::vector<std::string> names;
-    names.reserve(cache_.size());
-    for (const auto& pair : cache_) {
+    if (!state_) return names;
+    names.reserve(state_->files.size());
+    for (const auto& pair : state_->files) {
         names.push_back(pair.first);
     }
     return names;

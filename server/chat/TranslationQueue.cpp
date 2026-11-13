@@ -51,7 +51,8 @@ void BaselineTranslationQueue::start(GameConfigCache* config_cache) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (running_) return;
     if (config_cache) {
-        const nlohmann::json config = config_cache->getTranslationConfig();
+        const auto config_handle = config_cache->getTranslationConfig();
+        const nlohmann::json& config = *config_handle;
         max_pending_ = read_limit(config, "queue", "max_pending", 256, 1, 65536);
         batch_size_ = read_limit(config, "queue", "batch_size", 8, 1, 256);
     }
@@ -178,7 +179,8 @@ void PremiumTranslationQueue::start(GameConfigCache* config_cache) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (running_) return;
     if (config_cache) {
-        const nlohmann::json config = config_cache->getTranslationConfig();
+        const auto config_handle = config_cache->getTranslationConfig();
+        const nlohmann::json& config = *config_handle;
         max_pending_ = read_limit(config, "queue", "max_pending", 256, 1, 65536);
         batch_size_ = read_limit(config, "queue", "batch_size", 8, 1, 256);
     }

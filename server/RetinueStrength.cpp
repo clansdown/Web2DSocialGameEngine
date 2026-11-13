@@ -75,25 +75,27 @@ double army_strength(double summed_power, int unit_count, const strength_tuning&
     return summed_power * std::pow(static_cast<double>(unit_count), beta - 1.0);
 }
 
-double member_power(const retinue_db::retinue_member& member, GameConfigCache& cache,
+double member_power(const retinue_db::retinue_member& member, const config_snapshot& cache,
                     const strength_tuning& tuning) {
-    return combatant_power(cache.getPlayerCombatants(), member.unit_class, member.level, tuning);
+    const auto combatants = cache.getPlayerCombatants();
+    return combatant_power(*combatants, member.unit_class, member.level, tuning);
 }
 
 double retinue_power(const std::vector<retinue_db::retinue_member>& members,
-                     GameConfigCache& cache, const strength_tuning& tuning) {
+                     const config_snapshot& cache, const strength_tuning& tuning) {
     double summed = 0.0;
     for (const auto& m : members) summed += member_power(m, cache, tuning);
     return army_strength(summed, static_cast<int>(members.size()), tuning);
 }
 
 double warband_power(const std::vector<combat::warband_spawn_entry>& warband,
-                     GameConfigCache& cache, const strength_tuning& tuning) {
+                     const config_snapshot& cache, const strength_tuning& tuning) {
     double summed = 0.0;
     int total = 0;
+    const auto combatants = cache.getEnemyCombatants();
     for (const auto& e : warband) {
         if (e.count <= 0) continue;
-        summed += combatant_power(cache.getEnemyCombatants(), e.unit_class, e.level, tuning) *
+        summed += combatant_power(*combatants, e.unit_class, e.level, tuning) *
                   static_cast<double>(e.count);
         total += e.count;
     }

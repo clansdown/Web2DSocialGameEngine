@@ -3,7 +3,7 @@
 #include <iostream>
 
 void UnitUnlockCalculator::grant_starting_unlocks(
-    GameConfigCache& config_cache,
+    const config_snapshot& config_cache,
     sqlite::database& db,
     int character_id,
     int64_t timestamp)
@@ -68,7 +68,7 @@ nlohmann::json UnitUnlockCalculator::get_player_unlocks(
 }
 
 nlohmann::json UnitUnlockCalculator::check_and_grant_milestones(
-    GameConfigCache& config_cache,
+    const config_snapshot& config_cache,
     sqlite::database& db,
     int character_id,
     int completed_count,

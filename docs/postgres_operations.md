@@ -44,7 +44,7 @@ Inside that network the DB URLs are
 
 ## Production topologies
 
-`install.sh` supports two database modes.
+`tools/install.sh` supports two database modes.
 
 ### Bundled (`SERVER_DB_MODE=bundled`, default)
 

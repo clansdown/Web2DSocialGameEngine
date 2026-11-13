@@ -40,17 +40,40 @@ uWS loop
 
 ## Game config
 
-`GameConfigCache` is read-only by default. Hot reload is **off** unless `RAVENEST_CONFIG_HOT_RELOAD=1`; enabling it with multiple worker threads still permits a reader/writer race on cached JSON, so it is intended for single-threaded debugging only. All config access is serialized by `reload_mutex_` during lookup/insert. In Docker deployments, use `${SERVER_PATH}/tools/restart_deployment.sh` for config changes until the safe snapshot reload in `docs/TODO_config_reload.md` is implemented.
+`GameConfigCache` stores immutable `config_state` snapshots. Reads go through a
+`config_snapshot` (one consistent generation per request/operation) and
+`config_handle` (a restricted one-file view). Reloads build a complete new state
+and swap it atomically, so a reader never observes a partially replaced file and
+old data stays alive until the last reader releases it.
+
+Reload is triggered by **SIGHUP** (`ConfigReloadService`) or
+`${SERVER_PATH}/tools/reload_deployment.sh` on a Docker host. The reload is
+all-or-nothing: every changed config and both map caches are prepared first; a
+read/parse/postprocess failure in any file keeps the entire previous
+configuration active. `RAVENEST_CONFIG_HOT_RELOAD` no longer exists.
+
+`TowerDefenseMapCache` and `CombatMapCache` track per-file mtimes, so an in-place
+map edit is detected without a directory `touch`. Both participate in the same
+prepare/commit reload. Reload callbacks reapply the Web Push VAPID keyring and
+clear the `TextManager` cache.
+
+A config-only deploy needs no image pull or container restart:
+
+```bash
+rsync -a --chmod=D755,F644 game/config/ user@server:/srv/ravenest/game/config/
+ssh user@server /srv/ravenest/tools/reload_deployment.sh
+```
 
 ## Shutdown order
 
 1. Listener/combat sockets close; `App::run()` returns.
-2. Chat translation queues stop and join.
-3. `file_pool.shutdown()` drains/joins static/avatar reads.
-4. `loop_dispatcher.shutdown()` closes the completion gate.
-5. `http_pool.shutdown()` drains/joins API workers. Their completions are dropped.
-6. Avatar and combat managers shut down.
-7. The uWS `App` and loop are destroyed.
+2. `ConfigReloadService` stops and joins its SIGHUP worker.
+3. Chat translation queues stop and join.
+4. `file_pool.shutdown()` drains/joins static/avatar reads.
+5. `loop_dispatcher.shutdown()` closes the completion gate.
+6. `http_pool.shutdown()` drains/joins API workers. Their completions are dropped.
+7. Avatar and combat managers shut down.
+8. The uWS `App` and loop are destroyed.
 
 `combat_match_manager` keeps its own worker pool and posts through the same loop; it is joined before the App is destroyed.
 

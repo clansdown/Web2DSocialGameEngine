@@ -8,11 +8,12 @@ namespace mission_offerings {
 
 mission_gen::retinue_army_summary load_retinue_army(sqlite::database& db,
                                                     int64_t character_id,
-                                                    GameConfigCache& cache) {
+                                                    const config_snapshot& cache) {
     const std::vector<retinue_db::retinue_member> members =
         retinue_db::load_active_retinue(db, character_id);
+    const auto offerings_handle = cache.getCombatOfferings();
     const retinue_strength::strength_tuning tuning =
-        retinue_strength::load_strength_tuning(cache.getCombatOfferings());
+        retinue_strength::load_strength_tuning(*offerings_handle);
 
     mission_gen::retinue_army_summary summary;
     for (const retinue_db::retinue_member& member : members) {
@@ -22,11 +23,12 @@ mission_gen::retinue_army_summary load_retinue_army(sqlite::database& db,
     return summary;
 }
 
-double character_retinue_power(sqlite::database& db, int64_t character_id, GameConfigCache& cache) {
+double character_retinue_power(sqlite::database& db, int64_t character_id, const config_snapshot& cache) {
     const mission_gen::retinue_army_summary army =
         load_retinue_army(db, character_id, cache);
+    const auto offerings_handle = cache.getCombatOfferings();
     const retinue_strength::strength_tuning tuning =
-        retinue_strength::load_strength_tuning(cache.getCombatOfferings());
+        retinue_strength::load_strength_tuning(*offerings_handle);
     return retinue_strength::army_strength(army.sum_power, army.unit_count, tuning);
 }
 
@@ -38,7 +40,7 @@ bool character_in_barony(sqlite::database& db, int64_t character_id) {
 }
 
 std::vector<mission_gen::retinue_army_summary> barony_member_armies(
-    sqlite::database& db, int64_t character_id, GameConfigCache& cache) {
+    sqlite::database& db, int64_t character_id, const config_snapshot& cache) {
     std::vector<mission_gen::retinue_army_summary> armies;
     int64_t barony_id = 0;
     db << "SELECT barony_id FROM barony_members WHERE character_id = ?;"
@@ -87,9 +89,10 @@ std::set<std::string> completed_offering_ids(
 }
 
 bool validate_offering_authentic(sqlite::database& db, const mission_gen::offering_id_parts& parts,
-                                 int64_t character_id, int64_t now, GameConfigCache& cache) {
+                                 int64_t character_id, int64_t now, const config_snapshot& cache) {
     if (parts.player_id != character_id) return false;
-    const nlohmann::json& cfg = cache.getCombatOfferings();
+    const auto cfg_handle = cache.getCombatOfferings();
+    const nlohmann::json& cfg = *cfg_handle;
     if (!cfg.is_object()) return false;
     const int validity_hours =
         std::max(1, cfg.value("board", nlohmann::json::object()).value("validity_hours", 8));
@@ -123,7 +126,7 @@ bool validate_offering_authentic(sqlite::database& db, const mission_gen::offeri
 }
 
 std::vector<mission_gen::mission_offering> load_board(sqlite::database& db, int64_t character_id,
-                                                      int64_t now, GameConfigCache& cache) {
+                                                      int64_t now, const config_snapshot& cache) {
     const bool in_barony = character_in_barony(db, character_id);
     const mission_gen::retinue_army_summary self_army =
         load_retinue_army(db, character_id, cache);

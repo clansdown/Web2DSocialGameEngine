@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-class GameConfigCache;
+#include "GameConfigCache.hpp"
 
 // Auto-generated, deterministic, per-character PvE mission offerings. An
 // offering's content is a PURE function of its id: the id encodes
@@ -122,19 +122,19 @@ std::vector<mission_tier> parse_tiers(const nlohmann::json& offerings_config);
 party_army party_army_for_tier(const mission_tier& tier,
                                const retinue_army_summary& self_army,
                                const std::vector<retinue_army_summary>& barony_armies,
-                               GameConfigCache& cache);
+                               const config_snapshot& cache);
 
 // Assemble an enemy warband for `spec` (pure function of spec + config).
-assembled_warband assemble_warband(const warband_spec& spec, GameConfigCache& cache);
+assembled_warband assemble_warband(const warband_spec& spec, const config_snapshot& cache);
 
 // The pure generator: content is a function of the id alone.
-mission_offering generate_offering(const offering_id_parts& parts, GameConfigCache& cache);
+mission_offering generate_offering(const offering_id_parts& parts, const config_snapshot& cache);
 
 // The current-hour board for a character (all applicable tiers).
 std::vector<mission_offering> generate_board(
     int64_t character_id, int64_t hour_bucket, const retinue_army_summary& self_army,
     const std::vector<retinue_army_summary>& barony_armies, bool in_barony,
-    GameConfigCache& cache);
+    const config_snapshot& cache);
 
 std::string danger_band_for(double ratio, const nlohmann::json& offerings_config);
 double xp_for_power(double warband_power, const nlohmann::json& offerings_config);

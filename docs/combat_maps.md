@@ -59,9 +59,10 @@ format can evolve as the game gains experience without breaking existing maps.
 
 ## Runtime Behavior
 
-- Maps are **hot-reloaded**: `CombatMapCache` rescans on directory mtime
-  change (POSIX `stat()` — see AGENTS.md filesystem-caching note), so new or
-  edited maps appear without a server restart.
+- Maps are **hot-reloaded**: `CombatMapCache` tracks per-file mtimes (POSIX
+  `stat()` — see AGENTS.md filesystem-caching note), so new or edited maps appear
+  without a server restart. SIGHUP uses the same all-or-nothing prepare/commit
+  path as `GameConfigCache`.
 - The full normalized map JSON is shipped to clients in the `welcome`
   message; clients read what they need and ignore the rest.
 - The config linter (`tools/check_configs.py`) errors only on malformed

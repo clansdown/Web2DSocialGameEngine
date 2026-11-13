@@ -12,7 +12,7 @@
 #include <utility>
 #include <vector>
 
-class GameConfigCache;
+#include "GameConfigCache.hpp"
 
 namespace Reeve {
 
@@ -170,7 +170,7 @@ std::string action_kind_to_string(ReeveActionKind kind);
 std::string target_kind_to_string(ReeveTargetKind kind);
 
 ReeveSnapshot build_reeve_snapshot(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     const nlohmann::json& economy_report,
     const ReeveConfig& config);
@@ -183,7 +183,7 @@ std::vector<ReeveResourceBalance> build_resource_balances(
 std::vector<ReeveBuildingStatus> parse_building_status(const nlohmann::json& economy_report);
 
 std::vector<ReeveSection> build_reeve_sections(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const ReeveConfig& config);
 
@@ -192,38 +192,38 @@ ReeveText build_reeve_headline(
     const std::vector<ReeveSection>& sections);
 
 std::vector<ReeveCandidate> build_reeve_candidates(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const ReeveConfig& config,
     const ReeveStyle& style);
 
 std::vector<ReeveCandidate> build_safety_candidates(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const ReeveConfig& config,
     const ReeveStyle& style);
 std::vector<ReeveCandidate> build_continuity_candidates(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const ReeveConfig& config,
     const ReeveStyle& style);
 std::vector<ReeveCandidate> build_constraint_candidates(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const ReeveConfig& config,
     const ReeveStyle& style);
 std::vector<ReeveCandidate> build_growth_candidates(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const ReeveConfig& config,
     const ReeveStyle& style);
 std::vector<ReeveCandidate> build_connect_candidates(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const ReeveConfig& config,
     const ReeveStyle& style);
 std::vector<ReeveCandidate> build_polish_candidates(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const ReeveConfig& config,
     const ReeveStyle& style);
@@ -237,7 +237,7 @@ double score_reeve_candidate(
     const ReeveStyle& style);
 
 bool is_reeve_action_feasible(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     const ReeveAction& action,
     std::string& error_code);
@@ -246,22 +246,22 @@ std::string reeve_error_text_id(const std::string& error_code);
 std::string reeve_hold_text_id(const std::string& error_code);
 
 std::optional<ReeveAction> next_grow_step(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const std::string& resource,
     const ReeveConfig& config,
     const ReeveStyle& style);
 std::optional<ReeveAction> next_upgrade_step(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const std::string& building_type);
 std::optional<ReeveAction> next_convert_step(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const std::string& building_type);
 
 ReeveReport build_reeve_report(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     const nlohmann::json& economy_report,
     const ReeveConfig& config,

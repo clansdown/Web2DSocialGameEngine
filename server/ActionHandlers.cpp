@@ -42,14 +42,14 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
         return result;
     }
     
-    if (!Validation::buildingTypeExists(*ctx.config_cache, building_type)) {
+    if (!Validation::buildingTypeExists(ctx.config, building_type)) {
         result.status = ActionStatus::FAIL;
         result.error_code = "unknown_building";
         result.error_message = "Unknown building type: " + building_type;
         return result;
     }
 
-    auto config_opt = Validation::getBuildingConfig(*ctx.config_cache, building_type);
+    auto config_opt = Validation::getBuildingConfig(ctx.config, building_type);
     if (!config_opt) {
         result.status = ActionStatus::FAIL;
         result.error_code = "invalid_config";
@@ -78,7 +78,7 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
 
     if (config.contains("max_per_fiefdom") && config["max_per_fiefdom"].is_number()) {
         int max_count = config["max_per_fiefdom"].get<int>();
-        if (max_count >= 1 && Validation::countBuildingsByType(*ctx.config_cache, fiefdom_id, building_type, 1) >= max_count) {
+        if (max_count >= 1 && Validation::countBuildingsByType(ctx.config, fiefdom_id, building_type, 1) >= max_count) {
             result.status = ActionStatus::FAIL;
             result.error_code = "max_per_fiefdom_reached";
             result.error_message = "Only " + std::to_string(max_count) + " " + display_name + "(s) may be built in a fiefdom";
@@ -90,9 +90,9 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
     // parish_church, or the infirmary stages). Distinct from max_per_fiefdom,
     // which caps a single type; this caps the whole group across types.
     {
-        const std::string group = ctx.config_cache->getBuildingExclusiveGroup(building_type);
+        const std::string group = ctx.config.getBuildingExclusiveGroup(building_type);
         if (!group.empty() &&
-            Validation::countBuildingsInExclusiveGroup(*ctx.config_cache, fiefdom_id, group) >= 1) {
+            Validation::countBuildingsInExclusiveGroup(ctx.config, fiefdom_id, group) >= 1) {
             result.status = ActionStatus::FAIL;
             result.error_code = "exclusive_building_exists";
             result.error_message = "You already have a building from the '" + group + "' group in this fiefdom";
@@ -101,9 +101,9 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
     }
 
     if (config.contains("prerequisites") && config["prerequisites"].is_array()) {
-        auto prerequisites_opt = Validation::getPrerequisitesForLevel(*ctx.config_cache, building_type, 1);
+        auto prerequisites_opt = Validation::getPrerequisitesForLevel(ctx.config, building_type, 1);
         if (prerequisites_opt && !prerequisites_opt->empty()) {
-            if (!Validation::checkFiefdomPrerequisites(*ctx.config_cache, fiefdom_id, *prerequisites_opt)) {
+            if (!Validation::checkFiefdomPrerequisites(ctx.config, fiefdom_id, *prerequisites_opt)) {
                 result.status = ActionStatus::FAIL;
                 result.error_code = "prerequisites_not_met";
                 result.error_message = "Building prerequisites not satisfied";
@@ -114,10 +114,10 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
 
     // Check building dependencies for the target level (level 1 = new build)
     {
-        nlohmann::json deps = Validation::getDependenciesForLevel(*ctx.config_cache, building_type, 1);
+        nlohmann::json deps = Validation::getDependenciesForLevel(ctx.config, building_type, 1);
         if (!deps.empty()) {
             auto all_buildings = Validation::getFiefdomAllBuildings(fiefdom_id);
-            auto dep_result = Validation::checkBuildingDependencies(*ctx.config_cache, fiefdom_id, all_buildings, deps);
+            auto dep_result = Validation::checkBuildingDependencies(ctx.config, fiefdom_id, all_buildings, deps);
             if (!dep_result.first) {
                 result.status = ActionStatus::FAIL;
                 result.error_code = "dependencies_not_met";
@@ -129,9 +129,9 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
 
     // Arable land: the building must fit within the manor's remaining arable acres.
     {
-        int required_acres = ctx.config_cache->getBuildingArableAcres(building_type);
+        int required_acres = ctx.config.getBuildingArableAcres(building_type);
         if (required_acres > 0) {
-            double available = Validation::getAvailableArableAcres(*ctx.config_cache, fiefdom_id);
+            double available = Validation::getAvailableArableAcres(ctx.config, fiefdom_id);
             if (available + 0.0001 < required_acres) {
                 result.status = ActionStatus::FAIL;
                 result.error_code = "insufficient_arable_land";
@@ -144,9 +144,9 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
     // Forest land: the wood producers (woodcutter chain) claim forest acres,
     // an off-map resource scaling with manor level like arable land.
     {
-        int required_acres = ctx.config_cache->getBuildingForestAcres(building_type);
+        int required_acres = ctx.config.getBuildingForestAcres(building_type);
         if (required_acres > 0) {
-            double available = Validation::getAvailableForestAcres(*ctx.config_cache, fiefdom_id);
+            double available = Validation::getAvailableForestAcres(ctx.config, fiefdom_id);
             if (available + 0.0001 < required_acres) {
                 result.status = ActionStatus::FAIL;
                 result.error_code = "insufficient_forest_land";
@@ -166,7 +166,7 @@ ActionResult BuildActionHandler::validate(const json& payload, const ActionConte
     int x = payload["x"];
     int y = payload["y"];
 
-    if (!Validation::canBuildBuildingHere(*ctx.config_cache, building_type, fiefdom_id, x, y)) {
+    if (!Validation::canBuildBuildingHere(ctx.config, building_type, fiefdom_id, x, y)) {
         result.status = ActionStatus::FAIL;
         result.error_code = "invalid_location";
         result.error_message = "Cannot build at specified location";
@@ -211,7 +211,7 @@ ActionResult BuildActionHandler::execute(const json& payload, const ActionContex
     int x = payload.value("x", 0);
     int y = payload.value("y", 0);
     
-    auto config = Validation::getBuildingConfig(*ctx.config_cache, building_type);
+    auto config = Validation::getBuildingConfig(ctx.config, building_type);
     if (!config) {
         result.status = ActionStatus::FAIL;
         result.error_code = "invalid_config";
@@ -235,7 +235,7 @@ ActionResult BuildActionHandler::execute(const json& payload, const ActionContex
         if (config->contains("beams_cost")) costs["beams"] = (*config)["beams_cost"][0];
         if (config->contains("boards_cost")) costs["boards"] = (*config)["boards_cost"][0];
         
-        auto deduct_result = Validation::deductResources(*ctx.config_cache, fiefdom_id, costs, result);
+        auto deduct_result = Validation::deductResources(ctx.config, fiefdom_id, costs, result);
         if (deduct_result.status != ActionStatus::OK) {
             return deduct_result;
         }
@@ -341,7 +341,7 @@ public:
         try {
             Validation::TransactionGuard tx(Database::getInstance().gameDB());
 
-            auto cumulative = Validation::calculateCumulativeCost(*ctx.config_cache, building_name, pond_type, level);
+            auto cumulative = Validation::calculateCumulativeCost(ctx.config, building_name, pond_type, level);
             nlohmann::json refund;
 
             for (auto& [key, value] : cumulative.items()) {
@@ -431,7 +431,7 @@ public:
             return result;
         }
 
-        auto placement = GridCollision::checkPlacement(*ctx.config_cache, ctx.requesting_fiefdom_id, building_name, x, y, false, building_id);
+        auto placement = GridCollision::checkPlacement(ctx.config, ctx.requesting_fiefdom_id, building_name, x, y, false, building_id);
         if (!placement.valid) {
             result.status = ActionStatus::FAIL;
             result.error_code = "move_location_invalid";
@@ -472,7 +472,7 @@ public:
             std::string resource_fields[] = {"gold", "silver_pence", "wood", "stone", "steel", "bronze", "grain", "leather", "mana",
                                              "beams", "boards"};
 
-            auto config_opt = Validation::getBuildingConfig(*ctx.config_cache, building_name);
+            auto config_opt = Validation::getBuildingConfig(ctx.config, building_name);
             if (config_opt) {
                 auto config = *config_opt;
                 for (size_t i = 0; i < 11; i++) {
@@ -488,7 +488,7 @@ public:
                 }
             }
 
-            auto deduct_result = Validation::deductResources(*ctx.config_cache, ctx.requesting_fiefdom_id, cost, result);
+            auto deduct_result = Validation::deductResources(ctx.config, ctx.requesting_fiefdom_id, cost, result);
             if (deduct_result.status != ActionStatus::OK) return deduct_result;
 
             if (!Validation::updateBuildingPosition(building_id, x, y)) {
@@ -609,7 +609,7 @@ bool fiefdomExists(int fiefdom_id) {
     return count > 0;
 }
 
-bool hasEnoughResources(GameConfigCache& cache, int fiefdom_id, const json& costs) {
+bool hasEnoughResources(const config_snapshot& cache, int fiefdom_id, const json& costs) {
     auto& db = Database::getInstance().gameDB();
     double gold = 0;
     double silver_pence = 0;
@@ -629,7 +629,8 @@ bool hasEnoughResources(GameConfigCache& cache, int fiefdom_id, const json& cost
     json import_settings = json::object();
     try { import_settings = json::parse(import_settings_str); } catch (...) { import_settings = json::object(); }
 
-    const json economy_cfg = cache.getEconomyConfig();
+    const auto economy_handle = cache.getEconomyConfig();
+    const json& economy_cfg = *economy_handle;
     json import_prices = economy_cfg.value("import_prices", json::object());
 
     std::map<std::string, double> stock = {
@@ -648,7 +649,7 @@ bool hasEnoughResources(GameConfigCache& cache, int fiefdom_id, const json& cost
     return money::affordable(wallet, stock, costs, ctx);
 }
 
-ActionResult deductResources(GameConfigCache& cache, int fiefdom_id, const json& costs, ActionResult& result) {
+ActionResult deductResources(const config_snapshot& cache, int fiefdom_id, const json& costs, ActionResult& result) {
     ActionResult r;
     r.status = ActionStatus::OK;
 
@@ -674,7 +675,8 @@ ActionResult deductResources(GameConfigCache& cache, int fiefdom_id, const json&
     json import_settings = json::object();
     try { import_settings = json::parse(import_settings_str); } catch (...) { import_settings = json::object(); }
 
-    const json economy_cfg = cache.getEconomyConfig();
+    const auto economy_handle = cache.getEconomyConfig();
+    const json& economy_cfg = *economy_handle;
     json import_prices = economy_cfg.value("import_prices", json::object());
 
     std::map<std::string, double> before_stock = {
@@ -735,17 +737,17 @@ ActionResult deductResources(GameConfigCache& cache, int fiefdom_id, const json&
     return r;
 }
 
-bool buildingTypeExists(GameConfigCache& cache, const std::string& building_type) {
+bool buildingTypeExists(const config_snapshot& cache, const std::string& building_type) {
     auto types = cache.getFiefdomBuildingTypes();
-    for (const auto& type_obj : types) {
+    for (const auto& type_obj : *types) {
         if (type_obj.contains(building_type)) return true;
     }
     return false;
 }
 
-std::optional<json> getBuildingConfig(GameConfigCache& cache, const std::string& building_type) {
+std::optional<json> getBuildingConfig(const config_snapshot& cache, const std::string& building_type) {
     auto types = cache.getFiefdomBuildingTypes();
-    for (const auto& type_obj : types) {
+    for (const auto& type_obj : *types) {
         if (type_obj.contains(building_type)) return type_obj[building_type];
     }
     return std::nullopt;
@@ -754,7 +756,7 @@ std::optional<json> getBuildingConfig(GameConfigCache& cache, const std::string&
 // Returns the array field (cost/construction arrays) for a building. Mill ponds
 // resolve arrays from their current pond type (`pond_types[pond_type]`); all
 // other buildings use the top-level config.
-nlohmann::json getBuildingArrayField(GameConfigCache& cache, const std::string& building_name,
+nlohmann::json getBuildingArrayField(const config_snapshot& cache, const std::string& building_name,
                                      const std::string& pond_type, const std::string& field) {
     auto config_opt = getBuildingConfig(cache, building_name);
     if (!config_opt) return nlohmann::json::array();
@@ -773,7 +775,7 @@ nlohmann::json getBuildingArrayField(GameConfigCache& cache, const std::string& 
 
 // Returns the next level's cost for a building, keyed by resource name (gold,
 // wood, stone, ...). Pond buildings resolve costs from their pond type.
-nlohmann::json getNextLevelCost(GameConfigCache& cache, const std::string& building_name,
+nlohmann::json getNextLevelCost(const config_snapshot& cache, const std::string& building_name,
                                 const std::string& pond_type, int current_level) {
     nlohmann::json next_cost;
     std::string cost_fields[] = {"gold_cost", "silver_pence_cost", "wood_cost", "stone_cost", "steel_cost", "bronze_cost", "grain_cost", "leather_cost", "mana_cost",
@@ -792,7 +794,7 @@ nlohmann::json getNextLevelCost(GameConfigCache& cache, const std::string& build
 
 // Returns the max level for a building. Mill ponds use their current pond type's
 // max_level (falling back to the first type when the stored type is blank).
-int getBuildingMaxLevel(GameConfigCache& cache, const std::string& building_name,
+int getBuildingMaxLevel(const config_snapshot& cache, const std::string& building_name,
                         const std::string& pond_type) {
     auto config_opt = getBuildingConfig(cache, building_name);
     if (!config_opt) return 1;
@@ -810,7 +812,7 @@ int getBuildingMaxLevel(GameConfigCache& cache, const std::string& building_name
     return config.value("max_level", 1);
 }
 
-bool canBuildBuildingHere(GameConfigCache& cache, const std::string& building_type, int fiefdom_id, int x, int y) {
+bool canBuildBuildingHere(const config_snapshot& cache, const std::string& building_type, int fiefdom_id, int x, int y) {
     bool isHomeBase = (building_type == "home_base");
     auto result = GridCollision::checkPlacement(cache, fiefdom_id, building_type, x, y, isHomeBase);
     return result.valid;
@@ -829,14 +831,13 @@ int64_t getCurrentTimestamp() {
     return std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 }
 
-std::optional<json> getWallConfig(GameConfigCache& cache) {
-    if (!cache.isLoaded()) return std::nullopt;
+std::optional<json> getWallConfig(const config_snapshot& cache) {
     auto config = cache.getAllConfigs();
     if (config.contains("wall_config")) return config["wall_config"];
     return std::nullopt;
 }
 
-bool validWallPlacement(GameConfigCache& cache, int fiefdom_id, const json& payload) {
+bool validWallPlacement(const config_snapshot& cache, int fiefdom_id, const json& payload) {
     auto wall_config_opt = getWallConfig(cache);
     if (!wall_config_opt) return false;
     auto wall_config = *wall_config_opt;
@@ -867,11 +868,11 @@ void TransactionGuard::commit() {
     committed_ = true;
 }
 
-nlohmann::json calculateCumulativeCost(GameConfigCache& cache, const std::string& building_type, int current_level) {
+nlohmann::json calculateCumulativeCost(const config_snapshot& cache, const std::string& building_type, int current_level) {
     return calculateCumulativeCost(cache, building_type, "", current_level);
 }
 
-nlohmann::json calculateCumulativeCost(GameConfigCache& cache, const std::string& building_type, const std::string& pond_type, int current_level) {
+nlohmann::json calculateCumulativeCost(const config_snapshot& cache, const std::string& building_type, const std::string& pond_type, int current_level) {
     auto config_opt = getBuildingConfig(cache, building_type);
     if (!config_opt) return nlohmann::json::object();
 
@@ -991,7 +992,7 @@ bool updateBuildingPosition(int building_id, int x, int y) {
     }
 }
 
-std::optional<json> getWallConfigByGeneration(GameConfigCache& cache, int generation) {
+std::optional<json> getWallConfigByGeneration(const config_snapshot& cache, int generation) {
     auto config_opt = getWallConfig(cache);
     if (!config_opt) return std::nullopt;
     auto config = *config_opt;
@@ -1016,7 +1017,7 @@ bool hasWallGeneration(int fiefdom_id, int generation) {
     return wallGenerationExists(fiefdom_id, generation);
 }
 
-bool canAffordWall(GameConfigCache& cache, int fiefdom_id, int generation, int level) {
+bool canAffordWall(const config_snapshot& cache, int fiefdom_id, int generation, int level) {
     auto config_opt = getWallConfigByGeneration(cache, generation);
     if (!config_opt) return false;
 
@@ -1047,7 +1048,7 @@ bool canAffordWall(GameConfigCache& cache, int fiefdom_id, int generation, int l
     return true;
 }
 
-int getWallHP(GameConfigCache& cache, int generation, int level) {
+int getWallHP(const config_snapshot& cache, int generation, int level) {
     auto config_opt = getWallConfigByGeneration(cache, generation);
     if (!config_opt) return 0;
 
@@ -1060,7 +1061,7 @@ int getWallHP(GameConfigCache& cache, int generation, int level) {
     return 0;
 }
 
-double getWallMoraleBoost(GameConfigCache& cache, int generation, int level) {
+double getWallMoraleBoost(const config_snapshot& cache, int generation, int level) {
     auto config_opt = getWallConfigByGeneration(cache, generation);
     if (!config_opt) return 0.0;
 
@@ -1073,7 +1074,7 @@ double getWallMoraleBoost(GameConfigCache& cache, int generation, int level) {
     return 0.0;
 }
 
-nlohmann::json calculateWallUpgradeCost(GameConfigCache& cache, int generation, int current_level) {
+nlohmann::json calculateWallUpgradeCost(const config_snapshot& cache, int generation, int current_level) {
     auto config_opt = getWallConfigByGeneration(cache, generation);
     nlohmann::json cost;
 
@@ -1093,7 +1094,7 @@ nlohmann::json calculateWallUpgradeCost(GameConfigCache& cache, int generation, 
     return cost;
 }
 
-nlohmann::json getDemolishRefund(GameConfigCache& cache, int building_id) {
+nlohmann::json getDemolishRefund(const config_snapshot& cache, int building_id) {
     auto& db = Database::getInstance().gameDB();
     std::string building_name;
     int level;
@@ -1150,7 +1151,7 @@ ActionResult BuildWallActionHandler::validate(const json& payload, const ActionC
         return result;
     }
 
-    auto config_opt = Validation::getWallConfigByGeneration(*ctx.config_cache, wall_generation);
+    auto config_opt = Validation::getWallConfigByGeneration(ctx.config, wall_generation);
     if (!config_opt) {
         result.status = ActionStatus::FAIL;
         result.error_code = "generation_invalid";
@@ -1172,7 +1173,7 @@ ActionResult BuildWallActionHandler::validate(const json& payload, const ActionC
         return result;
     }
 
-    if (!Validation::canAffordWall(*ctx.config_cache, fiefdom_id, wall_generation, 1)) {
+    if (!Validation::canAffordWall(ctx.config, fiefdom_id, wall_generation, 1)) {
         result.status = ActionStatus::FAIL;
         result.error_code = "insufficient_resources";
         result.error_message = "Not enough resources to build wall";
@@ -1193,7 +1194,7 @@ ActionResult BuildWallActionHandler::execute(const json& payload, const ActionCo
     int wall_generation = payload["wall_generation"];
     int64_t now = Validation::getCurrentTimestamp();
 
-    auto config_opt = Validation::getWallConfigByGeneration(*ctx.config_cache, wall_generation);
+    auto config_opt = Validation::getWallConfigByGeneration(ctx.config, wall_generation);
     auto config = *config_opt;
 
     try {
@@ -1208,7 +1209,7 @@ ActionResult BuildWallActionHandler::execute(const json& payload, const ActionCo
             cost["stone"] = config["stone_cost"][0].get<int>();
         }
 
-        auto deduct_result = Validation::deductResources(*ctx.config_cache, fiefdom_id, cost, result);
+        auto deduct_result = Validation::deductResources(ctx.config, fiefdom_id, cost, result);
         if (deduct_result.status != ActionStatus::OK) return deduct_result;
 
         std::vector<nlohmann::json> overlapping_buildings;
@@ -1228,11 +1229,11 @@ ActionResult BuildWallActionHandler::execute(const json& payload, const ActionCo
         for (auto& building : overlapping_buildings) {
             int bx = building["x"].get<int>();
             int by = building["y"].get<int>();
-            auto [bw, bh] = GridCollision::getBuildingDimensionsPair(*ctx.config_cache, building["name"]);
+            auto [bw, bh] = GridCollision::getBuildingDimensionsPair(ctx.config, building["name"]);
 
-            if (GridCollision::overlapsWalls(*ctx.config_cache, fiefdom_id, wall_generation, bx, by, bw, bh)) {
+            if (GridCollision::overlapsWalls(ctx.config, fiefdom_id, wall_generation, bx, by, bw, bh)) {
                 int building_id = building["id"].get<int>();
-                auto refund = Validation::getDemolishRefund(*ctx.config_cache, building_id);
+                auto refund = Validation::getDemolishRefund(ctx.config, building_id);
 
                 Validation::refundResources(fiefdom_id, refund, result);
 
@@ -1251,7 +1252,7 @@ ActionResult BuildWallActionHandler::execute(const json& payload, const ActionCo
             }
         }
 
-        int initial_hp = Validation::getWallHP(*ctx.config_cache, wall_generation, 1);
+        int initial_hp = Validation::getWallHP(ctx.config, wall_generation, 1);
         if (!FiefdomFetcher::createWall(fiefdom_id, wall_generation, 1, initial_hp, now)) {
             result.status = ActionStatus::FAIL;
             result.error_code = "database_error";
@@ -1351,7 +1352,7 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
             return result;
         }
 
-        auto config_opt = Validation::getBuildingConfig(*ctx.config_cache, building_name);
+        auto config_opt = Validation::getBuildingConfig(ctx.config, building_name);
         if (!config_opt) {
             result.status = ActionStatus::FAIL;
             result.error_code = "invalid_config";
@@ -1359,7 +1360,7 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
             return result;
         }
 
-        int max_level = Validation::getBuildingMaxLevel(*ctx.config_cache, building_name, pond_type);
+        int max_level = Validation::getBuildingMaxLevel(ctx.config, building_name, pond_type);
         if (current_level >= max_level) {
             result.status = ActionStatus::FAIL;
             result.error_code = "max_level_reached";
@@ -1369,9 +1370,9 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
 
         if (config_opt->contains("prerequisites") && (*config_opt)["prerequisites"].is_array()) {
             int next_level = current_level + 1;
-            auto prerequisites_opt = Validation::getPrerequisitesForLevel(*ctx.config_cache, building_name, next_level);
+            auto prerequisites_opt = Validation::getPrerequisitesForLevel(ctx.config, building_name, next_level);
             if (prerequisites_opt && !prerequisites_opt->empty()) {
-                if (!Validation::checkFiefdomPrerequisites(*ctx.config_cache, fiefdom_id, *prerequisites_opt)) {
+                if (!Validation::checkFiefdomPrerequisites(ctx.config, fiefdom_id, *prerequisites_opt)) {
                     result.status = ActionStatus::FAIL;
                     result.error_code = "prerequisites_not_met";
                     result.error_message = "Building prerequisites not satisfied for next level";
@@ -1383,10 +1384,10 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
         // Check building dependencies for the next level
         {
             int next_level = current_level + 1;
-            nlohmann::json deps = Validation::getDependenciesForLevel(*ctx.config_cache, building_name, next_level);
+            nlohmann::json deps = Validation::getDependenciesForLevel(ctx.config, building_name, next_level);
             if (!deps.empty()) {
                 auto all_buildings = Validation::getFiefdomAllBuildings(fiefdom_id);
-                auto dep_result = Validation::checkBuildingDependencies(*ctx.config_cache, fiefdom_id, all_buildings, deps);
+                auto dep_result = Validation::checkBuildingDependencies(ctx.config, fiefdom_id, all_buildings, deps);
                 if (!dep_result.first) {
                     result.status = ActionStatus::FAIL;
                     result.error_code = "dependencies_not_met";
@@ -1396,9 +1397,9 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
             }
         }
 
-        nlohmann::json next_cost = Validation::getNextLevelCost(*ctx.config_cache, building_name, pond_type, current_level);
+        nlohmann::json next_cost = Validation::getNextLevelCost(ctx.config, building_name, pond_type, current_level);
 
-        if (!Validation::hasEnoughResources(*ctx.config_cache, fiefdom_id, next_cost)) {
+        if (!Validation::hasEnoughResources(ctx.config, fiefdom_id, next_cost)) {
             result.status = ActionStatus::FAIL;
             result.error_code = "insufficient_resources";
             result.error_message = "Not enough resources to upgrade";
@@ -1438,7 +1439,7 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
             return result;
         }
 
-        auto config_opt = Validation::getWallConfigByGeneration(*ctx.config_cache, generation);
+        auto config_opt = Validation::getWallConfigByGeneration(ctx.config, generation);
         if (!config_opt) {
             result.status = ActionStatus::FAIL;
             result.error_code = "invalid_config";
@@ -1457,8 +1458,8 @@ ActionResult UpgradeActionHandler::validate(const json& payload, const ActionCon
             return result;
         }
 
-        auto cost = Validation::calculateWallUpgradeCost(*ctx.config_cache, generation, current_level);
-        if (!Validation::hasEnoughResources(*ctx.config_cache, fiefdom_id, cost)) {
+        auto cost = Validation::calculateWallUpgradeCost(ctx.config, generation, current_level);
+        if (!Validation::hasEnoughResources(ctx.config, fiefdom_id, cost)) {
             result.status = ActionStatus::FAIL;
             result.error_code = "insufficient_resources";
             result.error_message = "Not enough resources to upgrade";
@@ -1497,7 +1498,7 @@ ActionResult UpgradeActionHandler::execute(const json& payload, const ActionCont
                    pond_type = pt;
                };
 
-            auto config_opt = Validation::getBuildingConfig(*ctx.config_cache, building_name);
+            auto config_opt = Validation::getBuildingConfig(ctx.config, building_name);
             if (!config_opt) {
                 result.status = ActionStatus::FAIL;
                 result.error_code = "invalid_config";
@@ -1505,9 +1506,9 @@ ActionResult UpgradeActionHandler::execute(const json& payload, const ActionCont
                 return result;
             }
 
-            nlohmann::json next_cost = Validation::getNextLevelCost(*ctx.config_cache, building_name, pond_type, current_level);
+            nlohmann::json next_cost = Validation::getNextLevelCost(ctx.config, building_name, pond_type, current_level);
 
-            auto deduct_result = Validation::deductResources(*ctx.config_cache, fiefdom_id, next_cost, result);
+            auto deduct_result = Validation::deductResources(ctx.config, fiefdom_id, next_cost, result);
             if (deduct_result.status != ActionStatus::OK) return deduct_result;
 
             if (!FiefdomFetcher::updateBuildingConstructionStart(building_id, now, now)) {
@@ -1535,11 +1536,11 @@ ActionResult UpgradeActionHandler::execute(const json& payload, const ActionCont
                    current_level = lvl;
                };
 
-        auto cost = Validation::calculateWallUpgradeCost(*ctx.config_cache, generation, current_level);
-            auto deduct_result = Validation::deductResources(*ctx.config_cache, fiefdom_id, cost, result);
+        auto cost = Validation::calculateWallUpgradeCost(ctx.config, generation, current_level);
+            auto deduct_result = Validation::deductResources(ctx.config, fiefdom_id, cost, result);
             if (deduct_result.status != ActionStatus::OK) return deduct_result;
 
-            int new_hp = Validation::getWallHP(*ctx.config_cache, generation, current_level + 1);
+            int new_hp = Validation::getWallHP(ctx.config, generation, current_level + 1);
             if (!FiefdomFetcher::updateWallLevel(wall_id, current_level + 1, new_hp, now)) {
                 result.status = ActionStatus::FAIL;
                 result.error_code = "database_error";
@@ -1618,7 +1619,7 @@ bool resolvePondTypeUpgrade(const json& payload, const ActionContext& ctx,
         return false;
     }
 
-    auto config_opt = Validation::getBuildingConfig(*ctx.config_cache, "mill_pond");
+    auto config_opt = Validation::getBuildingConfig(ctx.config, "mill_pond");
     if (!config_opt || !config_opt->contains("pond_types") || !(*config_opt)["pond_types"].is_array()) {
         result.status = ActionStatus::FAIL;
         result.error_code = "invalid_config";
@@ -1680,7 +1681,7 @@ public:
             return result;
         }
         auto cost = pondTypeLevel1Cost(*next_type);
-        if (!Validation::hasEnoughResources(*ctx.config_cache, fiefdom_id, cost)) {
+        if (!Validation::hasEnoughResources(ctx.config, fiefdom_id, cost)) {
             result.status = ActionStatus::FAIL;
             result.error_code = "insufficient_resources";
             result.error_message = "Not enough resources to upgrade the mill pond type";
@@ -1699,7 +1700,7 @@ public:
         }
 
         auto cost = pondTypeLevel1Cost(*next_type);
-        if (!Validation::hasEnoughResources(*ctx.config_cache, fiefdom_id, cost)) {
+        if (!Validation::hasEnoughResources(ctx.config, fiefdom_id, cost)) {
             result.status = ActionStatus::FAIL;
             result.error_code = "insufficient_resources";
             result.error_message = "Not enough resources to upgrade the mill pond type";
@@ -1710,7 +1711,7 @@ public:
         try {
             Validation::TransactionGuard tx(Database::getInstance().gameDB());
 
-            auto deduct_result = Validation::deductResources(*ctx.config_cache, fiefdom_id, cost, result);
+            auto deduct_result = Validation::deductResources(ctx.config, fiefdom_id, cost, result);
             if (deduct_result.status != ActionStatus::OK) return deduct_result;
 
             std::string next_id = next_type->value("id", "");
@@ -1756,9 +1757,9 @@ namespace {
 
 // Returns the unique successor building id whose `built_from` matches the given
 // building (or nullopt if the building has no stage upgrade).
-std::optional<std::string> findStageSuccessor(GameConfigCache& cache, const std::string& building_name) {
+std::optional<std::string> findStageSuccessor(const config_snapshot& cache, const std::string& building_name) {
     auto types = cache.getFiefdomBuildingTypes();
-    for (const auto& type_obj : types) {
+    for (const auto& type_obj : *types) {
         for (auto it = type_obj.begin(); it != type_obj.end(); ++it) {
             if (it.value().is_object() && it.value().value("built_from", "") == building_name) {
                 return it.key();
@@ -1771,7 +1772,7 @@ std::optional<std::string> findStageSuccessor(GameConfigCache& cache, const std:
 // Conversion price = max(0, successor level-1 cost − 80% × old building's
 // cumulative spent) per resource. The 80% matches the demolish refund, so the
 // discount scales with how much was invested in the old building.
-nlohmann::json computeConvertCost(GameConfigCache& cache, const std::string& old_name,
+nlohmann::json computeConvertCost(const config_snapshot& cache, const std::string& old_name,
                                   const std::string& successor_name, const std::string& pond_type,
                                   int current_level) {
     nlohmann::json result;
@@ -1853,7 +1854,7 @@ public:
             return result;
         }
 
-        auto successor_opt = findStageSuccessor(*ctx.config_cache, building_name);
+        auto successor_opt = findStageSuccessor(ctx.config, building_name);
         if (!successor_opt) {
             result.status = ActionStatus::FAIL;
             result.error_code = "no_stage_upgrade";
@@ -1862,7 +1863,7 @@ public:
         }
         std::string successor = *successor_opt;
 
-        auto succ_cfg_opt = Validation::getBuildingConfig(*ctx.config_cache, successor);
+        auto succ_cfg_opt = Validation::getBuildingConfig(ctx.config, successor);
         if (!succ_cfg_opt) {
             result.status = ActionStatus::FAIL;
             result.error_code = "invalid_config";
@@ -1891,9 +1892,9 @@ public:
         // Exclusive group of the successor: at most one building from the group.
         // The row being converted is excluded so chapel -> church is allowed.
         {
-            const std::string group = ctx.config_cache->getBuildingExclusiveGroup(successor);
+            const std::string group = ctx.config.getBuildingExclusiveGroup(successor);
             if (!group.empty() &&
-                Validation::countBuildingsInExclusiveGroup(*ctx.config_cache, fiefdom_id, group, building_id) >= 1) {
+                Validation::countBuildingsInExclusiveGroup(ctx.config, fiefdom_id, group, building_id) >= 1) {
                 result.status = ActionStatus::FAIL;
                 result.error_code = "exclusive_building_exists";
                 result.error_message = "You already have a building from the '" + group + "' group in this fiefdom";
@@ -1902,19 +1903,19 @@ public:
         }
 
         // Successor level-1 prerequisites + dependencies (chain-aware).
-        auto prereqs_opt = Validation::getPrerequisitesForLevel(*ctx.config_cache, successor, 1);
+        auto prereqs_opt = Validation::getPrerequisitesForLevel(ctx.config, successor, 1);
         if (prereqs_opt && !prereqs_opt->empty()) {
-            if (!Validation::checkFiefdomPrerequisites(*ctx.config_cache, fiefdom_id, *prereqs_opt)) {
+            if (!Validation::checkFiefdomPrerequisites(ctx.config, fiefdom_id, *prereqs_opt)) {
                 result.status = ActionStatus::FAIL;
                 result.error_code = "prerequisites_not_met";
                 result.error_message = "Successor building prerequisites not satisfied";
                 return result;
             }
         }
-        nlohmann::json deps = Validation::getDependenciesForLevel(*ctx.config_cache, successor, 1);
+        nlohmann::json deps = Validation::getDependenciesForLevel(ctx.config, successor, 1);
         if (!deps.empty()) {
             auto all_buildings = Validation::getFiefdomAllBuildings(fiefdom_id);
-            auto dep_result = Validation::checkBuildingDependencies(*ctx.config_cache, fiefdom_id, all_buildings, deps);
+            auto dep_result = Validation::checkBuildingDependencies(ctx.config, fiefdom_id, all_buildings, deps);
             if (!dep_result.first) {
                 result.status = ActionStatus::FAIL;
                 result.error_code = "dependencies_not_met";
@@ -1927,11 +1928,11 @@ public:
         // `getAvailableArableAcres` already reflects this building's current
         // acres (they are freed on conversion), so only the delta must fit.
         {
-            int current_acres = ctx.config_cache->getBuildingArableAcres(building_name);
-            int successor_acres = ctx.config_cache->getBuildingArableAcres(successor);
+            int current_acres = ctx.config.getBuildingArableAcres(building_name);
+            int successor_acres = ctx.config.getBuildingArableAcres(successor);
             int delta = successor_acres - current_acres;
             if (delta > 0) {
-                double available = Validation::getAvailableArableAcres(*ctx.config_cache, fiefdom_id);
+                double available = Validation::getAvailableArableAcres(ctx.config, fiefdom_id);
                 if (available + 0.0001 < delta) {
                     result.status = ActionStatus::FAIL;
                     result.error_code = "insufficient_arable_land";
@@ -1945,11 +1946,11 @@ public:
         // (woodcutter 80 -> coppicer 60 frees acres; coppicer 60 -> timber
         // hauler 70 claims 10).
         {
-            int current_acres = ctx.config_cache->getBuildingForestAcres(building_name);
-            int successor_acres = ctx.config_cache->getBuildingForestAcres(successor);
+            int current_acres = ctx.config.getBuildingForestAcres(building_name);
+            int successor_acres = ctx.config.getBuildingForestAcres(successor);
             int delta = successor_acres - current_acres;
             if (delta > 0) {
-                double available = Validation::getAvailableForestAcres(*ctx.config_cache, fiefdom_id);
+                double available = Validation::getAvailableForestAcres(ctx.config, fiefdom_id);
                 if (available + 0.0001 < delta) {
                     result.status = ActionStatus::FAIL;
                     result.error_code = "insufficient_forest_land";
@@ -1959,8 +1960,8 @@ public:
             }
         }
 
-        nlohmann::json convert_cost = computeConvertCost(*ctx.config_cache, building_name, successor, pond_type, current_level);
-        if (!Validation::hasEnoughResources(*ctx.config_cache, fiefdom_id, convert_cost)) {
+        nlohmann::json convert_cost = computeConvertCost(ctx.config, building_name, successor, pond_type, current_level);
+        if (!Validation::hasEnoughResources(ctx.config, fiefdom_id, convert_cost)) {
             result.status = ActionStatus::FAIL;
             result.error_code = "insufficient_resources";
             result.error_message = "Not enough resources to convert this building";
@@ -1991,7 +1992,7 @@ public:
                pond_type = pt;
            };
 
-        auto successor = findStageSuccessor(*ctx.config_cache, building_name);
+        auto successor = findStageSuccessor(ctx.config, building_name);
         if (!successor) {
             result.status = ActionStatus::FAIL;
             result.error_code = "no_stage_upgrade";
@@ -1999,16 +2000,16 @@ public:
             return result;
         }
 
-        nlohmann::json convert_cost = computeConvertCost(*ctx.config_cache, building_name, *successor, pond_type, current_level);
+        nlohmann::json convert_cost = computeConvertCost(ctx.config, building_name, *successor, pond_type, current_level);
 
         int64_t now = Validation::getCurrentTimestamp();
         try {
             Validation::TransactionGuard tx(Database::getInstance().gameDB());
 
-            auto deduct_result = Validation::deductResources(*ctx.config_cache, fiefdom_id, convert_cost, result);
+            auto deduct_result = Validation::deductResources(ctx.config, fiefdom_id, convert_cost, result);
             if (deduct_result.status != ActionStatus::OK) return deduct_result;
 
-            auto succ_cfg = Validation::getBuildingConfig(*ctx.config_cache, *successor);
+            auto succ_cfg = Validation::getBuildingConfig(ctx.config, *successor);
             bool instant = false;
             if (succ_cfg && succ_cfg->contains("construction_times") && (*succ_cfg)["construction_times"].is_array() &&
                 !(*succ_cfg)["construction_times"].empty()) {
@@ -2102,7 +2103,7 @@ void registerAllActionHandlers(ActionRegistry& registry) {
 namespace Validation {
 
 std::optional<nlohmann::json> getPrerequisitesForLevel(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const std::string& building_type,
     int target_level
 ) {
@@ -2157,7 +2158,7 @@ std::optional<nlohmann::json> getPrerequisitesForLevel(
 // walking `built_from` links. A building's chain includes itself and every
 // lower stage it could have been converted from. Chain depth is unbounded
 // ("3 stages" is only a design default, not a limit).
-std::vector<std::string> getBuildingStageChain(GameConfigCache& cache, const std::string& building_name) {
+std::vector<std::string> getBuildingStageChain(const config_snapshot& cache, const std::string& building_name) {
     std::vector<std::string> path;
     std::string cur = building_name;
     std::set<std::string> seen;
@@ -2180,7 +2181,7 @@ std::vector<std::string> getBuildingStageChain(GameConfigCache& cache, const std
 // a plain peasant never counts as a villein), OR if the required id is the
 // building's `class` (a `class` groups types definitively, e.g. the "peasant"
 // class covers villein/freeholder/yeoman).
-bool buildingSatisfiesRequirement(GameConfigCache& cache, const std::string& building_name, const std::string& required_id) {
+bool buildingSatisfiesRequirement(const config_snapshot& cache, const std::string& building_name, const std::string& required_id) {
     auto chain = getBuildingStageChain(cache, building_name);
     if (std::find(chain.begin(), chain.end(), required_id) != chain.end()) {
         return true;
@@ -2189,7 +2190,7 @@ bool buildingSatisfiesRequirement(GameConfigCache& cache, const std::string& bui
     return !cls.empty() && cls == required_id;
 }
 
-int getBuildingLevelInFiefdom(GameConfigCache& cache, int fiefdom_id, const std::string& building_name) {
+int getBuildingLevelInFiefdom(const config_snapshot& cache, int fiefdom_id, const std::string& building_name) {
     auto& db = Database::getInstance().gameDB();
     int level = 0;
     db << "SELECT name, level FROM fiefdom_buildings WHERE fiefdom_id = ? AND level > 0;"
@@ -2215,7 +2216,7 @@ int getFiefdomManorLevel(int fiefdom_id) {
 // Acres are a per-building-type config field (`arable_acres`); a building
 // claims its current type's acres (stage chains claim their own current stage,
 // since each building's `name` reflects the type it was built/converted to).
-int getUsedArableAcres(GameConfigCache& cache, int fiefdom_id) {
+int getUsedArableAcres(const config_snapshot& cache, int fiefdom_id) {
     auto& db = Database::getInstance().gameDB();
     int used = 0;
     db << "SELECT name FROM fiefdom_buildings WHERE fiefdom_id = ? AND level > 0;"
@@ -2227,12 +2228,12 @@ int getUsedArableAcres(GameConfigCache& cache, int fiefdom_id) {
 }
 
 // Total arable acres the manor has, scaling with the home-base (manor) level.
-double getTotalArableAcres(GameConfigCache& cache, int fiefdom_id) {
+double getTotalArableAcres(const config_snapshot& cache, int fiefdom_id) {
     return cache.getArableLandByLevel(getFiefdomManorLevel(fiefdom_id));
 }
 
 // Remaining buildable acres = total (from manor level) minus acres already used.
-double getAvailableArableAcres(GameConfigCache& cache, int fiefdom_id) {
+double getAvailableArableAcres(const config_snapshot& cache, int fiefdom_id) {
     return getTotalArableAcres(cache, fiefdom_id) - getUsedArableAcres(cache, fiefdom_id);
 }
 
@@ -2240,7 +2241,7 @@ double getAvailableArableAcres(GameConfigCache& cache, int fiefdom_id) {
 // (woodcutter/coppicer/timber_hauler). Forest is an off-map resource scaling
 // with manor level (`forest_land_by_level`), claimed per building type via the
 // `forest_acres` config field.
-int getUsedForestAcres(GameConfigCache& cache, int fiefdom_id) {
+int getUsedForestAcres(const config_snapshot& cache, int fiefdom_id) {
     auto& db = Database::getInstance().gameDB();
     int used = 0;
     db << "SELECT name FROM fiefdom_buildings WHERE fiefdom_id = ? AND level > 0;"
@@ -2251,17 +2252,17 @@ int getUsedForestAcres(GameConfigCache& cache, int fiefdom_id) {
     return used;
 }
 
-double getTotalForestAcres(GameConfigCache& cache, int fiefdom_id) {
+double getTotalForestAcres(const config_snapshot& cache, int fiefdom_id) {
     return cache.getForestLandByLevel(getFiefdomManorLevel(fiefdom_id));
 }
 
-double getAvailableForestAcres(GameConfigCache& cache, int fiefdom_id) {
+double getAvailableForestAcres(const config_snapshot& cache, int fiefdom_id) {
     return getTotalForestAcres(cache, fiefdom_id) - getUsedForestAcres(cache, fiefdom_id);
 }
 
 // In-memory land accounting. These avoid eight redundant queries per
 // getFiefdom/Reeve report when the caller already has the building list.
-int getUsedArableAcres(GameConfigCache& cache,
+int getUsedArableAcres(const config_snapshot& cache,
                        const std::vector<BuildingData>& buildings) {
     int used = 0;
     for (const auto& building : buildings) {
@@ -2271,7 +2272,7 @@ int getUsedArableAcres(GameConfigCache& cache,
     return used;
 }
 
-int getUsedForestAcres(GameConfigCache& cache,
+int getUsedForestAcres(const config_snapshot& cache,
                        const std::vector<BuildingData>& buildings) {
     int used = 0;
     for (const auto& building : buildings) {
@@ -2281,27 +2282,27 @@ int getUsedForestAcres(GameConfigCache& cache,
     return used;
 }
 
-double getTotalArableAcresForManor(GameConfigCache& cache, int manor_level) {
+double getTotalArableAcresForManor(const config_snapshot& cache, int manor_level) {
     return cache.getArableLandByLevel(manor_level);
 }
 
-double getTotalForestAcresForManor(GameConfigCache& cache, int manor_level) {
+double getTotalForestAcresForManor(const config_snapshot& cache, int manor_level) {
     return cache.getForestLandByLevel(manor_level);
 }
 
-double getAvailableArableAcres(GameConfigCache& cache, int manor_level,
+double getAvailableArableAcres(const config_snapshot& cache, int manor_level,
                                const std::vector<BuildingData>& buildings) {
     return getTotalArableAcresForManor(cache, manor_level) -
            getUsedArableAcres(cache, buildings);
 }
 
-double getAvailableForestAcres(GameConfigCache& cache, int manor_level,
+double getAvailableForestAcres(const config_snapshot& cache, int manor_level,
                                const std::vector<BuildingData>& buildings) {
     return getTotalForestAcresForManor(cache, manor_level) -
            getUsedForestAcres(cache, buildings);
 }
 
-bool checkFiefdomPrerequisites(GameConfigCache& cache, int fiefdom_id, const nlohmann::json& prerequisites) {
+bool checkFiefdomPrerequisites(const config_snapshot& cache, int fiefdom_id, const nlohmann::json& prerequisites) {
     if (prerequisites.empty()) return true;
     
     for (auto& [building_id, required_level] : prerequisites.items()) {
@@ -2327,7 +2328,7 @@ bool checkFiefdomPrerequisites(GameConfigCache& cache, int fiefdom_id, const nlo
 /// Gets the dependencies array for a building at a given target level.
 /// Returns an empty array if no dependencies configured.
 nlohmann::json getDependenciesForLevel(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const std::string& building_type,
     int target_level
 ) {
@@ -2353,7 +2354,7 @@ nlohmann::json getDependenciesForLevel(
 
 /// Counts buildings in a fiefdom that satisfy a requirement (the building's
 /// stage chain includes `target_building`) and meet the minimum level.
-int countBuildingsByType(GameConfigCache& cache, int fiefdom_id, const std::string& target_building, int min_level) {
+int countBuildingsByType(const config_snapshot& cache, int fiefdom_id, const std::string& target_building, int min_level) {
     auto& db = Database::getInstance().gameDB();
     int count = 0;
     db << "SELECT name, level FROM fiefdom_buildings "
@@ -2370,7 +2371,7 @@ int countBuildingsByType(GameConfigCache& cache, int fiefdom_id, const std::stri
 // membership — the group is an explicit list of types, not a chain). An
 // optional `exclude_building_id` skips one row (used by convert so the building
 // being upgraded does not count itself).
-int countBuildingsInExclusiveGroup(GameConfigCache& cache, int fiefdom_id,
+int countBuildingsInExclusiveGroup(const config_snapshot& cache, int fiefdom_id,
                                    const std::string& group, int exclude_building_id) {
     if (group.empty()) return 0;
     auto& db = Database::getInstance().gameDB();
@@ -2389,7 +2390,7 @@ int countBuildingsInExclusiveGroup(GameConfigCache& cache, int fiefdom_id,
 /// plus optional additional dependencies (e.g., from a building being validated).
 /// Returns a map: target_building -> (max_shared_count, sum_exclusive_count)
 std::map<std::string, std::pair<int, int>> aggregateFiefdomDependencies(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     int fiefdom_id,
     const std::vector<BuildingData>& buildings,
     const nlohmann::json& additional_deps = nlohmann::json::array()
@@ -2438,7 +2439,7 @@ std::map<std::string, std::pair<int, int>> aggregateFiefdomDependencies(
 /// Checks if a fiefdom meets all building dependencies.
 /// Returns { true, "" } if met, or { false, "reason string" } if not.
 std::pair<bool, std::string> checkBuildingDependencies(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     int fiefdom_id,
     const std::vector<BuildingData>& buildings,
     const nlohmann::json& deps_to_check

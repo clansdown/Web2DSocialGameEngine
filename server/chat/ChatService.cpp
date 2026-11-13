@@ -56,7 +56,8 @@ std::string to_lower(std::string s) {
 
 json chat_cfg(GameConfigCache* cache) {
     if (!cache) return json::object();
-    return cache->getChatConfig();
+    const auto cfg = cache->getChatConfig();
+    return *cfg;
 }
 
 int cfg_int(const json& j, const char* key, int fallback) {
@@ -566,7 +567,8 @@ void ChatService::initialize(GameConfigCache* config_cache) {
     std::string sidecar_url = "http://127.0.0.1:8790";
     int timeout_ms = 2000;
     if (config_) {
-        json translation = config_->getTranslationConfig();
+        const auto translation_handle = config_->getTranslationConfig();
+        const json& translation = *translation_handle;
         if (translation.is_object()) {
             enabled = translation.value("enabled", true);
             sidecar_url = translation.value("sidecar_url", sidecar_url);
@@ -576,7 +578,8 @@ void ChatService::initialize(GameConfigCache* config_cache) {
     baseline_engine_ = std::make_shared<MadladTranslationEngine>(sidecar_url, timeout_ms, enabled);
     llm_engine_ = std::make_shared<StubLlmTranslationEngine>();
     if (config_) {
-        PushSender::instance().configure(config_->getPushConfig());
+        const auto push_handle = config_->getPushConfig();
+        PushSender::instance().configure(*push_handle);
     }
 }
 
@@ -657,7 +660,8 @@ void ChatService::check_rate_limit(int64_t account_id) {
 
 bool ChatService::is_admin(int64_t account_id) {
     if (!config_) return false;
-    json admins = config_->getChatAdmins();
+    const auto admins_handle = config_->getChatAdmins();
+    const json& admins = *admins_handle;
     if (!admins.is_object()) return false;
     for (const auto& id : admins.value("account_ids", json::array())) {
         if (id.is_number_integer() && id.get<int64_t>() == account_id) return true;
@@ -1793,7 +1797,8 @@ std::vector<std::string> ChatService::translation_targets(
 
     int max_targets = 8;
     if (config_) {
-        const json translation = config_->getTranslationConfig();
+        const auto translation_handle = config_->getTranslationConfig();
+        const json& translation = *translation_handle;
         if (translation.is_object() && translation.contains("premium") &&
             translation["premium"].is_object()) {
             max_targets = translation["premium"].value("max_target_languages", max_targets);

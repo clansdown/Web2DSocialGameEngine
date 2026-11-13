@@ -33,9 +33,10 @@ const nlohmann::json& obj_or_empty(const nlohmann::json& parent, const char* key
     return scratch;
 }
 
-std::string pick_map(offering_rng& rng, GameConfigCache& cache) {
+std::string pick_map(offering_rng& rng, const config_snapshot& cache) {
     std::vector<std::string> maps;
-    const nlohmann::json& cfg = cache.getCombatOfferings();
+    const auto cfg_handle = cache.getCombatOfferings();
+    const nlohmann::json& cfg = *cfg_handle;
     if (cfg.contains("map_pool") && cfg["map_pool"].is_array()) {
         for (const auto& m : cfg["map_pool"]) {
             if (m.is_string() && !m.get<std::string>().empty()) {
@@ -69,7 +70,7 @@ struct class_power_table {
 // It is rebuilt only when either file's mtime changes, and returned through a
 // shared_ptr so a concurrent hot reload can replace the cache without
 // invalidating readers already assembling a warband.
-std::shared_ptr<const class_power_table> get_class_power_table(GameConfigCache& cache) {
+std::shared_ptr<const class_power_table> get_class_power_table(const config_snapshot& cache) {
     const int64_t generation =
         cache.getConfigGeneration("enemy_combatants.json") * 1000003LL +
         cache.getConfigGeneration("combat/offerings.json");
@@ -83,8 +84,10 @@ std::shared_ptr<const class_power_table> get_class_power_table(GameConfigCache& 
 
     auto table = std::make_shared<class_power_table>();
     table->generation = generation;
-    const nlohmann::json& cfg = cache.getCombatOfferings();
-    const nlohmann::json& enemy = cache.getEnemyCombatants();
+    const auto cfg_handle = cache.getCombatOfferings();
+    const nlohmann::json& cfg = *cfg_handle;
+    const auto enemy_handle = cache.getEnemyCombatants();
+    const nlohmann::json& enemy = *enemy_handle;
     table->tuning = retinue_strength::load_strength_tuning(cfg);
 
     if (enemy.is_object()) {
@@ -123,7 +126,7 @@ std::shared_ptr<const class_power_table> get_class_power_table(GameConfigCache& 
 }
 
 std::shared_ptr<const retinue_strength::strength_tuning> get_strength_tuning(
-    GameConfigCache& cache) {
+    const config_snapshot& cache) {
     const std::shared_ptr<const class_power_table> table = get_class_power_table(cache);
     return std::shared_ptr<const retinue_strength::strength_tuning>(
         table, &table->tuning);
@@ -134,7 +137,7 @@ int64_t now_seconds() {
 }
 
 struct assembly_context {
-    GameConfigCache* cache = nullptr;
+    const config_snapshot* cache = nullptr;
     const nlohmann::json* enemy_combatants = nullptr;
     retinue_strength::strength_tuning tuning;
     const class_power_table* powers = nullptr;
@@ -383,8 +386,9 @@ warband_lru& warband_cache() {
 
 assembled_warband get_or_assemble_warband(const offering_id_parts& parts,
                                           const warband_spec& spec,
-                                          GameConfigCache& cache) {
-    const nlohmann::json& cfg = cache.getCombatOfferings();
+                                          const config_snapshot& cache) {
+    const auto cfg_handle = cache.getCombatOfferings();
+    const nlohmann::json& cfg = *cfg_handle;
     const int validity_hours =
         std::max(1, cfg.value("board", nlohmann::json::object()).value("validity_hours", 8));
     const int64_t expires_at =
@@ -555,7 +559,7 @@ std::vector<mission_tier> parse_tiers(const nlohmann::json& offerings_config) {
 
 party_army party_army_for_tier(const mission_tier& tier, const retinue_army_summary& self_army,
                                const std::vector<retinue_army_summary>& barony_armies,
-                               GameConfigCache& cache) {
+                               const config_snapshot& cache) {
     const std::shared_ptr<const retinue_strength::strength_tuning> tuning =
         get_strength_tuning(cache);
 
@@ -581,10 +585,12 @@ party_army party_army_for_tier(const mission_tier& tier, const retinue_army_summ
     return army;
 }
 
-assembled_warband assemble_warband(const warband_spec& spec, GameConfigCache& cache) {
+assembled_warband assemble_warband(const warband_spec& spec, const config_snapshot& cache) {
     assembled_warband out;
-    const nlohmann::json& cfg = cache.getCombatOfferings();
-    const nlohmann::json& enemy = cache.getEnemyCombatants();
+    const auto cfg_handle = cache.getCombatOfferings();
+    const nlohmann::json& cfg = *cfg_handle;
+    const auto enemy_handle = cache.getEnemyCombatants();
+    const nlohmann::json& enemy = *enemy_handle;
     const std::shared_ptr<const class_power_table> table = get_class_power_table(cache);
     if (!table || table->classes.empty()) return out;
 
@@ -664,8 +670,9 @@ double xp_for_power(double warband_power, const nlohmann::json& offerings_config
     return std::max(min_xp, per_power * warband_power);
 }
 
-mission_offering generate_offering(const offering_id_parts& parts, GameConfigCache& cache) {
-    const nlohmann::json& cfg = cache.getCombatOfferings();
+mission_offering generate_offering(const offering_id_parts& parts, const config_snapshot& cache) {
+    const auto cfg_handle = cache.getCombatOfferings();
+    const nlohmann::json& cfg = *cfg_handle;
 
     mission_offering off;
     off.id = encode_offering_id(parts);
@@ -705,9 +712,10 @@ mission_offering generate_offering(const offering_id_parts& parts, GameConfigCac
 std::vector<mission_offering> generate_board(
     int64_t character_id, int64_t hour_bucket, const retinue_army_summary& self_army,
     const std::vector<retinue_army_summary>& barony_armies, bool in_barony,
-    GameConfigCache& cache) {
+    const config_snapshot& cache) {
     std::vector<mission_offering> board;
-    const nlohmann::json& cfg = cache.getCombatOfferings();
+    const auto cfg_handle = cache.getCombatOfferings();
+    const nlohmann::json& cfg = *cfg_handle;
     const int per_tier =
         cfg.is_object()
             ? std::max(1, cfg.value("board", nlohmann::json::object()).value("per_tier", 8))

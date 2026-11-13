@@ -20,8 +20,7 @@ using nlohmann::json;
 
 json empty_array() { return json::array(); }
 
-const json& catalog_root(GameConfigCache& cache, safe_catalog_kind kind) {
-    static const json empty = json::object();
+config_handle catalog_root(GameConfigCache& cache, safe_catalog_kind kind) {
     switch (kind) {
         case safe_catalog_kind::message: return cache.getSafeMessages();
         case safe_catalog_kind::barony_name: return cache.getSafeBaronyNames();
@@ -30,7 +29,7 @@ const json& catalog_root(GameConfigCache& cache, safe_catalog_kind kind) {
         case safe_catalog_kind::gif: return cache.getSafeGifs();
         case safe_catalog_kind::ban_reason: return cache.getSafeBanReasons();
     }
-    return empty;
+    return config_handle();
 }
 
 std::string catalog_key(safe_catalog_kind kind) {
@@ -125,7 +124,7 @@ bool character_is_adult(int64_t character_id) {
 
 std::vector<json> safe_catalog(GameConfigCache& config_cache, safe_catalog_kind kind) {
     std::vector<json> out;
-    const json& root = catalog_root(config_cache, kind);
+    const auto root = catalog_root(config_cache, kind);
     const std::string key = catalog_key(kind);
     if (!root.is_object() || !root.contains(key) || !root[key].is_array()) {
         return out;

@@ -8,7 +8,7 @@
 namespace weeding_logic {
 
 nlohmann::json initialize_board(
-    GameConfigCache& config_cache,
+    const config_snapshot& config_cache,
     int grid_size,
     const std::vector<std::pair<int, int>>& out_of_bounds,
     int difficulty,
@@ -16,7 +16,8 @@ nlohmann::json initialize_board(
     std::mt19937& rng)
 {
     nlohmann::json board = nlohmann::json::array();
-    const auto& plants = config_cache.getWeedingPlants();
+    const auto plants_handle = config_cache.getWeedingPlants();
+    const auto& plants = *plants_handle;
 
     if (!plants.is_object() || plants.empty()) {
         // Fallback: empty board if no plants config
@@ -326,7 +327,7 @@ static std::string adjacent_mode(const nlohmann::json& plants_config, const std:
 }
 
 WeedingActionResult process_action(
-    GameConfigCache& config_cache,
+    const config_snapshot& config_cache,
     nlohmann::json& session_json,
     const WeedingActionRequest& action,
     std::mt19937& rng,
@@ -335,8 +336,10 @@ WeedingActionResult process_action(
     WeedingActionResult result;
     result.valid = false;
 
-    const auto& plants = config_cache.getWeedingPlants();
-    const auto& tools = config_cache.getWeedingTools();
+    const auto plants_handle = config_cache.getWeedingPlants();
+    const auto& plants = *plants_handle;
+    const auto tools_handle = config_cache.getWeedingTools();
+    const auto& tools = *tools_handle;
     int grid_size = session_json["grid_size"].get<int>();
     auto& board = session_json["board"];
 

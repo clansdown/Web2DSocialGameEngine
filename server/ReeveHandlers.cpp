@@ -66,7 +66,9 @@ ApiResponse handleGetReeveReport(
 
     // The river is lazy-seeded; ensure it exists outside the dry-run transaction
     // so placement can avoid river cells even if this is the first request.
-    FiefdomFetcher::ensureFiefdomRiver(fiefdom_id, config_cache.getManorRiver());
+    const config_snapshot config_view = config_cache.snapshot();
+    const auto river_handle = config_view.getManorRiver();
+    FiefdomFetcher::ensureFiefdomRiver(fiefdom_id, *river_handle);
 
     // Project one full day through the real economy engine, then roll the
     // transaction back. This gives the Reeve a stable per-day ledger without
@@ -95,13 +97,13 @@ ApiResponse handleGetReeveReport(
         economy_report = real_it->second;
     }
 
-    Reeve::ReeveConfig config = Reeve::parse_reeve_config(
-        config_cache.getReeveConfig());
+    const auto reeve_handle = config_view.getReeveConfig();
+    Reeve::ReeveConfig config = Reeve::parse_reeve_config(*reeve_handle);
     const std::string style_tag = Reeve::get_default_reeve_style_tag(config);
     const Reeve::ReeveStyle& style = Reeve::get_reeve_style(config, style_tag);
 
     Reeve::ReeveReport report = Reeve::build_reeve_report(
-        config_cache, *fiefdom_opt, economy_report, config, style);
+        config_view, *fiefdom_opt, economy_report, config, style);
     response.data = Reeve::reeve_report_to_json(report);
 
     if (new_token) response.data["token"] = *new_token;

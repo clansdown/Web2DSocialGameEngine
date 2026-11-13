@@ -44,6 +44,7 @@
 #include "Letters.hpp"
 #include "Progression.hpp"
 #include "TowerDefenseMapCache.hpp"
+#include "ConfigReloadService.hpp"
 #include "TextManager.hpp"
 #include "ImageReader.hpp"
 #include "UnitUnlockCalculator.hpp"
@@ -72,6 +73,7 @@
 #include "avatars/CloudflarePurge.hpp"
 #include "CosmeticsDB.hpp"
 #include "chat/ChatService.hpp"
+#include "chat/PushSender.hpp"
 #include "staff/StaffActionEngine.hpp"
 #include "staff/StaffAuth.hpp"
 #include "staff/StaffStore.hpp"
@@ -291,14 +293,16 @@ void checkBaronPromotion(int barony_id);
 /**
  * Resolves the ongoing config reference for a mini-game, or nullptr.
  */
-static const json* resolve_ongoing_config(GameConfigCache& config_cache, const std::string& mini_game) {
-    if (mini_game == "tower_defense" && config_cache.getTowerDefenseOngoing().is_object()) {
-        return &config_cache.getTowerDefenseOngoing();
+static config_handle resolve_ongoing_config(GameConfigCache& config_cache, const std::string& mini_game) {
+    if (mini_game == "tower_defense") {
+        const auto cfg = config_cache.getTowerDefenseOngoing();
+        if (cfg.is_object()) return cfg;
     }
-    if (mini_game == "weeding" && config_cache.getWeedingOngoing().is_object()) {
-        return &config_cache.getWeedingOngoing();
+    if (mini_game == "weeding") {
+        const auto cfg = config_cache.getWeedingOngoing();
+        if (cfg.is_object()) return cfg;
     }
-    return nullptr;
+    return config_handle();
 }
 
 /**
@@ -313,8 +317,8 @@ static json apply_ongoing_reward(GameConfigCache& config_cache, sqlite::database
     json result = json::object();
     if (!won) return result;
 
-    const json* ongoing_config = resolve_ongoing_config(config_cache, mini_game);
-    if (!ongoing_config) return result;
+    const auto ongoing_config = resolve_ongoing_config(config_cache, mini_game);
+    if (ongoing_config.isNull()) return result;
 
     int base = ongoing_rewards::compute_base_reward_pence(*ongoing_config, difficulty, size);
     if (base <= 0) return result;
@@ -1015,7 +1019,7 @@ ApiResponse handleBuild(GameConfigCache& config_cache, const json& body,
     std::string registry_type = action;
     if (action == "create") registry_type = "build";
 
-    GameLogic::ActionContext ctx;
+    GameLogic::ActionContext ctx(config_cache.snapshot());
     ctx.request_id = std::string(client.request_id);
     ctx.ip_address = std::string(client.real_ip);
 
@@ -1055,7 +1059,6 @@ ApiResponse handleBuild(GameConfigCache& config_cache, const json& body,
 
     ctx.requesting_character_id = character_id;
     ctx.requesting_fiefdom_id = fiefdom_id;
-    ctx.config_cache = &config_cache;
 
     auto& registry = GameLogic::ActionRegistry::getInstance();
     if (!registry.hasType(registry_type)) {
@@ -1280,16 +1283,16 @@ ApiResponse handleGetFiefdom(GameConfigCache& config_cache, const json& body,
         json arable = json::object();
         if (include_buildings) {
             arable["total"] = GameLogic::Validation::getTotalArableAcresForManor(
-                config_cache, fiefdom.manor_level);
+                config_cache.snapshot(), fiefdom.manor_level);
             arable["used"] = GameLogic::Validation::getUsedArableAcres(
-                config_cache, fiefdom.buildings);
+                config_cache.snapshot(), fiefdom.buildings);
             arable["available"] = GameLogic::Validation::getAvailableArableAcres(
-                config_cache, fiefdom.manor_level, fiefdom.buildings);
+                config_cache.snapshot(), fiefdom.manor_level, fiefdom.buildings);
         } else {
-            arable["total"] = GameLogic::Validation::getTotalArableAcres(config_cache, fiefdom_id);
-            arable["used"] = GameLogic::Validation::getUsedArableAcres(config_cache, fiefdom_id);
+            arable["total"] = GameLogic::Validation::getTotalArableAcres(config_cache.snapshot(), fiefdom_id);
+            arable["used"] = GameLogic::Validation::getUsedArableAcres(config_cache.snapshot(), fiefdom_id);
             arable["available"] =
-                GameLogic::Validation::getAvailableArableAcres(config_cache, fiefdom_id);
+                GameLogic::Validation::getAvailableArableAcres(config_cache.snapshot(), fiefdom_id);
         }
         response.data["arable_land"] = std::move(arable);
     }
@@ -1300,16 +1303,16 @@ ApiResponse handleGetFiefdom(GameConfigCache& config_cache, const json& body,
         json forest = json::object();
         if (include_buildings) {
             forest["total"] = GameLogic::Validation::getTotalForestAcresForManor(
-                config_cache, fiefdom.manor_level);
+                config_cache.snapshot(), fiefdom.manor_level);
             forest["used"] = GameLogic::Validation::getUsedForestAcres(
-                config_cache, fiefdom.buildings);
+                config_cache.snapshot(), fiefdom.buildings);
             forest["available"] = GameLogic::Validation::getAvailableForestAcres(
-                config_cache, fiefdom.manor_level, fiefdom.buildings);
+                config_cache.snapshot(), fiefdom.manor_level, fiefdom.buildings);
         } else {
-            forest["total"] = GameLogic::Validation::getTotalForestAcres(config_cache, fiefdom_id);
-            forest["used"] = GameLogic::Validation::getUsedForestAcres(config_cache, fiefdom_id);
+            forest["total"] = GameLogic::Validation::getTotalForestAcres(config_cache.snapshot(), fiefdom_id);
+            forest["used"] = GameLogic::Validation::getUsedForestAcres(config_cache.snapshot(), fiefdom_id);
             forest["available"] =
-                GameLogic::Validation::getAvailableForestAcres(config_cache, fiefdom_id);
+                GameLogic::Validation::getAvailableForestAcres(config_cache.snapshot(), fiefdom_id);
         }
         response.data["forest_land"] = std::move(forest);
     }
@@ -1956,7 +1959,8 @@ ApiResponse handleGetGameInfo(GameConfigCache& config_cache, const json& body,
                     // Strip internal design notes (`descriptions`) from the
                     // building configs — they never reach the client.
                     json bf_cfgs = json::array();
-                    for (const auto& entry : config_cache.getFiefdomBuildingTypes()) {
+                    const auto building_types_cfg = config_cache.getFiefdomBuildingTypes();
+                    for (const auto& entry : *building_types_cfg) {
                         json cfg = entry;
                         if (cfg.is_object()) {
                             for (auto b_it = cfg.begin(); b_it != cfg.end(); ++b_it) {
@@ -2744,7 +2748,8 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
                     std::string eid = entry["enemy_id"].get<std::string>();
                     schedule_totals[eid] += entry["count"].get<int>();
                 }
-                auto& mobs = config_cache.getTowerDefenseMobs()["mobs"];
+                const auto mobs_cfg = config_cache.getTowerDefenseMobs();
+                const auto& mobs = (*mobs_cfg)["mobs"];
                 for (auto& [eid, total] : schedule_totals) {
                     int leaked_count = leaked.contains(eid) ? leaked[eid].get<int>() : 0;
                     int killed = std::max(0, total - leaked_count);
@@ -2898,7 +2903,7 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
                        >> [&](int count) { completed_count = count; };
 
                     nlohmann::json new_unlocks = UnitUnlockCalculator::check_and_grant_milestones(
-                        config_cache, db, character_id, completed_count, now);
+                        config_cache.snapshot(), db, character_id, completed_count, now);
 
                     if (!new_unlocks["new_units"].empty() || !new_unlocks["new_towers"].empty()) {
                         response.data["new_unlocks"] = new_unlocks;
@@ -3187,8 +3192,8 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
 
             // Validate against the ongoing config so clients can't pick settings
             // the server hasn't offered
-            const json* ongoing_config = resolve_ongoing_config(config_cache, mini_game);
-            if (ongoing_config && !ongoing_rewards::validate_ongoing_options(*ongoing_config, difficulty, total_rounds)) {
+            const auto ongoing_config = resolve_ongoing_config(config_cache, mini_game);
+            if (!ongoing_config.isNull() && !ongoing_rewards::validate_ongoing_options(*ongoing_config, difficulty, total_rounds)) {
                 response.error = "Invalid rounds or difficulty for ongoing game";
                 return response;
             }
@@ -3261,7 +3266,7 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
         auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 
         // Grant starting unlocks on first play
-        UnitUnlockCalculator::grant_starting_unlocks(config_cache, db, character_id, now);
+        UnitUnlockCalculator::grant_starting_unlocks(config_cache.snapshot(), db, character_id, now);
 
         player_state_db::start_mini_game(db, character_id, mini_game, level_id, now);
 
@@ -3403,9 +3408,12 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
                     auto& sj = sess.session_json;
 
                     // Load fresh configs
-                    const auto& plants = config_cache.getWeedingPlants();
-                    const auto& tools = config_cache.getWeedingTools();
-                    const auto& specials = config_cache.getWeedingSpecials();
+                    const auto plants_handle = config_cache.getWeedingPlants();
+                    const auto& plants = *plants_handle;
+                    const auto tools_handle = config_cache.getWeedingTools();
+                    const auto& tools = *tools_handle;
+                    const auto specials_handle = config_cache.getWeedingSpecials();
+                    const auto& specials = *specials_handle;
 
                     // Reload map metadata
                     std::string map_id = sj.value("map_id", std::string("map_1.json"));
@@ -3613,9 +3621,12 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
         player_state_db::start_mini_game(db, character_id, "weeding", level_id, now);
 
         // Load weeding configs
-        const auto& plants = config_cache.getWeedingPlants();
-        const auto& tools = config_cache.getWeedingTools();
-        const auto& specials = config_cache.getWeedingSpecials();
+        const auto plants_handle = config_cache.getWeedingPlants();
+        const auto& plants = *plants_handle;
+        const auto tools_handle = config_cache.getWeedingTools();
+        const auto& tools = *tools_handle;
+        const auto specials_handle = config_cache.getWeedingSpecials();
+        const auto& specials = *specials_handle;
 
         // Determine difficulty and map
         int difficulty = 1;
@@ -3664,8 +3675,8 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
             // validated against the server's ongoing config
             difficulty = body.value("difficulty", 1);
             int requested_grid_size = body.value("grid_size", 0);
-            const json* ongoing_config = resolve_ongoing_config(config_cache, "weeding");
-            if (!ongoing_config) {
+            const auto ongoing_config = resolve_ongoing_config(config_cache, "weeding");
+            if (ongoing_config.isNull()) {
                 response.error = "Ongoing weeding config unavailable";
                 return response;
             }
@@ -3712,7 +3723,7 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
         std::mt19937 rng(static_cast<unsigned>(now + character_id + level_id));
 
         // Initialize board
-        nlohmann::json board = weeding_logic::initialize_board(config_cache, grid_size, out_of_bounds, difficulty, allowed_weeds, rng);
+        nlohmann::json board = weeding_logic::initialize_board(config_cache.snapshot(), grid_size, out_of_bounds, difficulty, allowed_weeds, rng);
 
         // Compute par
         int par = weeding_logic::estimate_weed_clearing_rounds(board, grid_size, plants, difficulty);
@@ -3957,7 +3968,7 @@ ApiResponse handleWeedingTurn(GameConfigCache& config_cache, const json& body,
                 return response;
             }
 
-            auto result = weeding_logic::process_action(config_cache, session.session_json, action_req, rng, false);
+            auto result = weeding_logic::process_action(config_cache.snapshot(), session.session_json, action_req, rng, false);
 
             if (!result.valid) {
                 response.error = result.error;
@@ -4402,8 +4413,8 @@ ApiResponse handleGetMiniGameConfig(GameConfigCache& config_cache, const json& b
 
         if (mini_games.contains(mini_game)) {
             response.data[mini_game] = mini_games[mini_game];
-            const json* ongoing_config = resolve_ongoing_config(config_cache, mini_game);
-            if (ongoing_config) {
+            const auto ongoing_config = resolve_ongoing_config(config_cache, mini_game);
+            if (!ongoing_config.isNull()) {
                 response.data[mini_game]["ongoing"] = *ongoing_config;
             }
         } else {
@@ -4412,12 +4423,12 @@ ApiResponse handleGetMiniGameConfig(GameConfigCache& config_cache, const json& b
         }
     } else {
         response.data = config_cache.getMiniGames();
-        const json* td_ongoing = resolve_ongoing_config(config_cache, "tower_defense");
-        const json* wd_ongoing = resolve_ongoing_config(config_cache, "weeding");
-        if (td_ongoing && response.data.contains("tower_defense")) {
+        const auto td_ongoing = resolve_ongoing_config(config_cache, "tower_defense");
+        const auto wd_ongoing = resolve_ongoing_config(config_cache, "weeding");
+        if (!td_ongoing.isNull() && response.data.contains("tower_defense")) {
             response.data["tower_defense"]["ongoing"] = *td_ongoing;
         }
-        if (wd_ongoing && response.data.contains("weeding")) {
+        if (!wd_ongoing.isNull() && response.data.contains("weeding")) {
             response.data["weeding"]["ongoing"] = *wd_ongoing;
         }
     }
@@ -4453,8 +4464,8 @@ ApiResponse handleEstimateOngoingRewards(GameConfigCache& config_cache, const js
     int character_id = body["character_id"].get<int>();
     std::string mini_game = body["mini_game"].get<std::string>();
 
-    const json* ongoing_config = resolve_ongoing_config(config_cache, mini_game);
-    if (!ongoing_config) {
+    const auto ongoing_config = resolve_ongoing_config(config_cache, mini_game);
+    if (ongoing_config.isNull()) {
         response.error = "No ongoing config for mini_game: " + mini_game;
         return response;
     }
@@ -5294,7 +5305,7 @@ ApiResponse handleSetBuildingOutputRate(GameConfigCache& config_cache, const jso
         // Validate the output against the building type config and level-gating.
         auto building_types = config_cache.getFiefdomBuildingTypes();
         json bld_cfg;
-        for (const auto& type_obj : building_types) {
+        for (const auto& type_obj : *building_types) {
             if (type_obj.contains(building_name)) { bld_cfg = type_obj[building_name]; break; }
         }
         if (bld_cfg.is_null()) {
@@ -6976,7 +6987,7 @@ ApiResponse handleGetBuildingConfigs(GameConfigCache& config_cache, const nlohma
     auto building_types = config_cache.getFiefdomBuildingTypes();
     json result = json::object();
 
-    for (const auto& entry : building_types) {
+    for (const auto& entry : *building_types) {
         for (auto it = entry.begin(); it != entry.end(); ++it) {
             const std::string& type_id = it.key();
             json cfg = it.value();
@@ -7160,7 +7171,7 @@ retinue_db::recovery_settings recovery_settings_for(GameConfigCache& config_cach
 
     std::map<std::string, double> type_bonus;
     const auto& types = config_cache.getFiefdomBuildingTypes();
-    for (const auto& obj : types) {
+    for (const auto& obj : *types) {
         if (!obj.is_object()) continue;
         for (auto& [type_id, bcfg] : obj.items()) {
             if (!bcfg.is_object()) continue;
@@ -7256,12 +7267,12 @@ ApiResponse handleCombatCreate(GameConfigCache& config_cache, const json& body,
             return response;
         }
         if (!mission_offerings::validate_offering_authentic(game_db, parts, character_id, now_ts,
-                                                            config_cache)) {
+                                                            config_cache.snapshot())) {
             response.error = "offering is no longer valid";
             return response;
         }
         const mission_gen::mission_offering offering =
-            mission_gen::generate_offering(parts, config_cache);
+            mission_gen::generate_offering(parts, config_cache.snapshot());
         opportunity = offering.to_json();
         ruleset_id = offering.ruleset;
         map_id = offering.map_id;
@@ -7770,7 +7781,7 @@ ApiResponse handleGetCombatOfferings(GameConfigCache& config_cache, const json& 
     auto& db = Database::getInstance().gameDB();
 
     nlohmann::json offerings = nlohmann::json::array();
-    for (const auto& off : mission_offerings::load_board(db, character_id, now_ts, config_cache)) {
+    for (const auto& off : mission_offerings::load_board(db, character_id, now_ts, config_cache.snapshot())) {
         offerings.push_back(off.to_json());
     }
 
@@ -8356,12 +8367,12 @@ ApiResponse handleHireRecruit(GameConfigCache& config_cache, const json& body,
     // Pay the fee from the fungible fiefdom wallet, auto-importing any material
     // shortfalls with money (respecting per-resource import toggles). Same path
     // buildings use — gold and silver_pence are one wallet at pence_per_gold.
-    if (!GameLogic::Validation::hasEnoughResources(config_cache, fiefdom_id, fee)) {
+    if (!GameLogic::Validation::hasEnoughResources(config_cache.snapshot(), fiefdom_id, fee)) {
         response.error = "You cannot afford this candidate's fee (gold + materials).";
         return response;
     }
     GameLogic::ActionResult deduct_result;
-    if (GameLogic::Validation::deductResources(config_cache, fiefdom_id, fee, deduct_result).status != GameLogic::ActionStatus::OK) {
+    if (GameLogic::Validation::deductResources(config_cache.snapshot(), fiefdom_id, fee, deduct_result).status != GameLogic::ActionStatus::OK) {
         response.error = "You cannot afford this candidate's fee (gold + materials).";
         return response;
     }
@@ -8471,7 +8482,8 @@ static void load_building_tech(int64_t building_id, double& xp, std::vector<std:
 
 // The building type config object for a placed building (by its current name).
 static json building_type_config(GameConfigCache& config_cache, const std::string& type_id) {
-    for (const auto& obj : config_cache.getFiefdomBuildingTypes()) {
+    const auto building_types_cfg = config_cache.getFiefdomBuildingTypes();
+    for (const auto& obj : *building_types_cfg) {
         if (obj.is_object() && obj.contains(type_id)) return obj[type_id];
     }
     return json::object();
@@ -8691,12 +8703,12 @@ ApiResponse handleStartForgeOrder(GameConfigCache& config_cache, const json& bod
     // Pay forge materials (fungible money, auto-import honoring import toggles).
     const json materials = craft.value("materials", json::object());
     if (!materials.empty()) {
-        if (!GameLogic::Validation::hasEnoughResources(config_cache, fiefdom_id, materials)) {
+        if (!GameLogic::Validation::hasEnoughResources(config_cache.snapshot(), fiefdom_id, materials)) {
             response.error = "You cannot afford the forge materials.";
             return response;
         }
         GameLogic::ActionResult deduct_result;
-        GameLogic::Validation::deductResources(config_cache, fiefdom_id, materials, deduct_result);
+        GameLogic::Validation::deductResources(config_cache.snapshot(), fiefdom_id, materials, deduct_result);
     }
 
     const int64_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
@@ -9003,12 +9015,12 @@ ApiResponse handleBuyGearCity(GameConfigCache& config_cache, const json& body,
     // Pay the city markup (fungible money path). Extremely expensive by design —
     // a diagetic bypass for lords who skip their own blacksmith.
     const json cost = {{"gold", city_price}};
-    if (!GameLogic::Validation::hasEnoughResources(config_cache, fiefdom_id, cost)) {
+    if (!GameLogic::Validation::hasEnoughResources(config_cache.snapshot(), fiefdom_id, cost)) {
         response.error = "You cannot afford this item in the city.";
         return response;
     }
     GameLogic::ActionResult deduct_result;
-    GameLogic::Validation::deductResources(config_cache, fiefdom_id, cost, deduct_result);
+    GameLogic::Validation::deductResources(config_cache.snapshot(), fiefdom_id, cost, deduct_result);
 
     const int64_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     db << "INSERT INTO fiefdom_armory (fiefdom_id, item_id, member_id, created_at) "
@@ -9066,13 +9078,13 @@ ApiResponse handleHireTeacher(GameConfigCache& config_cache, const json& body,
 
     const json cost = {{"gold", cost_gold}};
     if (cost_gold > 0.0 &&
-        !GameLogic::Validation::hasEnoughResources(config_cache, fiefdom_id, cost)) {
+        !GameLogic::Validation::hasEnoughResources(config_cache.snapshot(), fiefdom_id, cost)) {
         response.error = "You cannot afford a teacher.";
         return response;
     }
     if (cost_gold > 0.0) {
         GameLogic::ActionResult deduct_result;
-        GameLogic::Validation::deductResources(config_cache, fiefdom_id, cost, deduct_result);
+        GameLogic::Validation::deductResources(config_cache.snapshot(), fiefdom_id, cost, deduct_result);
     }
 
     const int64_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
@@ -9695,6 +9707,21 @@ int main(int argc, char* argv[]) {
 
     TowerDefenseMapCache::get_instance().initialize(g_config_dir + "/tower_defense/maps");
     CombatMapCache::get_instance().initialize(g_config_dir + "/combat/maps");
+
+    ConfigReloadService config_reload_service;
+    config_reload_service.start(mini_games.config_cache(),
+                                TowerDefenseMapCache::get_instance(),
+                                CombatMapCache::get_instance());
+
+    // Reapply the Web Push VAPID keyring after a successful config reload.
+    GameConfigCache* reload_config = &mini_games.config_cache();
+    reload_config->addReloadCallback([reload_config](const config_reload_result&) {
+        const auto push_handle = reload_config->snapshot().getPushConfig();
+        chat::PushSender::instance().configure(*push_handle);
+        if (g_text_manager) {
+            g_text_manager->clear_cache();
+        }
+    });
 
     if (!ImageCache::getInstance().initialize(g_images_dir)) {
         std::cerr << "Warning: Failed to initialize image cache" << std::endl;
@@ -10588,6 +10615,7 @@ int main(int argc, char* argv[]) {
     g_run_returned.store(true, std::memory_order_relaxed);
     g_shutdown_requested.store(true, std::memory_order_relaxed);
     if (shutdown_monitor.joinable()) shutdown_monitor.join();
+    config_reload_service.shutdown();
     app_slot->store(nullptr, std::memory_order_release);
     chat::BaselineTranslationQueue::instance().stop();
     chat::PremiumTranslationQueue::instance().stop();

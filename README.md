@@ -89,8 +89,9 @@ build the multi-stage `server/Dockerfile` through
 `tools/build_server_image.sh`. The production image runs as uid `10001`, expects
 game content at `/app/game`, and writes uploads to `/app/uploads`.
 
-Production deployment is done with `install.sh`, which pulls the configured
-prebuilt image and writes the compose files:
+Production deployment is done with `tools/install.sh` (the root `install.sh` is
+a compatibility launcher), which pulls the configured prebuilt image and writes
+the compose files:
 
 ```bash
 # .deploy — bundled PostgreSQL (default)
@@ -102,7 +103,7 @@ SERVER_IMAGE=ghcr.io/clansdown/web2dsocialgameengine
 SERVER_IMAGE_TAG=latest
 ```
 
-In Docker mode, `install.sh` copies operational tools to
+In Docker mode, `tools/install.sh` copies operational tools to
 `${SERVER_PATH}/tools/`:
 
 ```bash
@@ -257,11 +258,17 @@ Builds server binary and Docker image locally. Saves Docker tar to `server/bin/r
 
 ### Publishing (Cloudflare Pages + R2 + API tunnel)
 
-`./install.sh` builds the client, uploads public assets to R2, publishes the
-site repo to Cloudflare Pages, mirrors `game/` to the API server, and writes the
-API server's CORS env file. The Pages site, API, and assets are three separate
-origins; the client bakes their addresses in at build time from `.deploy`.
-See [`docs/publishing.md`](docs/publishing.md) for setup, the `.deploy`
+`./install.sh` (or `tools/install.sh`) builds the client, uploads public assets
+to R2, publishes the site repo to Cloudflare Pages, mirrors `game/` to the API
+server, and writes the API server's CORS env file. The Pages site, API, and
+assets are three separate origins; the client bakes their addresses in at build
+time from `.deploy`.
+
+For routine content changes, use the `tools/push_*.sh` wrappers:
+`push_config_files.sh` and `push_text.sh` mirror one tree and reload;
+`push_assets.sh` uploads R2 assets and mirrors `game/images/`;
+`push_everything.sh` runs the full pipeline. See
+[`docs/publishing.md`](docs/publishing.md) for setup, the `.deploy`
 reference, CORS, cache policy, verification, and rollback.
 
 ### Publish the Engine Server Image

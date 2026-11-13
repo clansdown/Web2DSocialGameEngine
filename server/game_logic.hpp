@@ -5,8 +5,7 @@
 #include <chrono>
 #include <nlohmann/json.hpp>
 #include "Database.hpp"
-
-class GameConfigCache;
+#include "GameConfigCache.hpp"
 #include "ApiResponse.hpp"
 #include "FiefdomData.hpp"
 
@@ -22,11 +21,13 @@ enum class ActionStatus {
 };
 
 struct ActionContext {
-    int requesting_fiefdom_id;
-    int requesting_character_id;
+    int requesting_fiefdom_id = 0;
+    int requesting_character_id = 0;
     std::string request_id;
     std::string ip_address;
-    GameConfigCache* config_cache = nullptr;
+    config_snapshot config;
+
+    explicit ActionContext(config_snapshot snapshot) : config(std::move(snapshot)) {}
 };
 
 struct DiffValue {

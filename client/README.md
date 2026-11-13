@@ -225,7 +225,7 @@ Public origins are build-time Vite variables:
 
 Leave them empty to use the dev proxy. To override locally, copy
 `client/.env.example` to `client/.env.development.local` (gitignored). Production
-values come from `.deploy` via `install.sh`; never commit real deployment values.
+values come from `.deploy` via `tools/install.sh`; never commit real deployment values.
 
 ### Type Checking
 

@@ -8,7 +8,7 @@
  * deployments behind a reverse proxy.
  *
  * Nothing in this module reads secrets. Production values come from `.deploy`
- * through install.sh; local values come from client/.env.development.local.
+ * through tools/install.sh; local values come from client/.env.development.local.
  */
 
 /** Trimmed, slash-free API origin (empty = same origin). */

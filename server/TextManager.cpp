@@ -28,8 +28,7 @@ std::string TextManager::get_text(const std::string& language, const std::string
 
 text_lookup_result TextManager::get_text_resolved(const std::string& language,
                                                   const std::string& text_id) const
-{
-    // Never let a request escape the text directory (path traversal, absolute
+{    // Never let a request escape the text directory (path traversal, absolute
     // paths, or NUL bytes).
     if (!safe_path_component(language, false) || !safe_path_component(text_id, false)) {
         return {};
@@ -60,6 +59,12 @@ text_lookup_result TextManager::get_text_resolved(const std::string& language,
         m_cache[cache_key] = result;
     }
     return result;
+}
+
+void TextManager::clear_cache() const
+{
+    std::lock_guard<std::mutex> lock(m_cache_mutex);
+    m_cache.clear();
 }
 
 std::string TextManager::substitute_gender(const std::string& text, const std::optional<std::string>& sex)

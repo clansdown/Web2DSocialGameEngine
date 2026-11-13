@@ -41,6 +41,13 @@ public:
                                          const std::string& text_id) const;
 
     /**
+     * Drop all cached text lookups so a reload re-reads game/text. Safe to call
+     * while workers are serving requests; in-flight reads may still cache a
+     * value they read just before the clear, but the next access re-reads.
+     */
+    void clear_cache() const;
+
+    /**
      * Replaces {male|female} gender tokens in text based on character sex.
      * Male option always comes first: {his|her} → "his" for male, "her" for female.
      * If sex is nullopt or empty, defaults to male form.

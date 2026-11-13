@@ -95,7 +95,9 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
     }
     
     auto& db = Database::getInstance().gameDB();
-    auto building_types = config_cache.getFiefdomBuildingTypes();
+    const config_snapshot config = config_cache.snapshot();
+    const auto building_types_handle = config.getFiefdomBuildingTypes();
+    const auto& building_types = *building_types_handle;
     
     try {
         db << "BEGIN TRANSACTION;";
@@ -160,7 +162,8 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
             // boost only applies when powered) and the production loop gate on it.
             std::unordered_map<int, bool> water_powered_ok;
             {
-                FiefdomFetcher::ensureFiefdomRiver(fiefdom.id, config_cache.getManorRiver());
+                const auto river_handle = config.getManorRiver();
+                FiefdomFetcher::ensureFiefdomRiver(fiefdom.id, *river_handle);
                 auto river_vec = FiefdomFetcher::fetchRiverCells(fiefdom.id);
                 std::set<std::pair<int, int>> river_set(river_vec.begin(), river_vec.end());
                 auto wp = Water::computeWaterPower(building_types, fiefdom.buildings, river_set);
@@ -175,12 +178,12 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
             for (auto& building : fiefdom.buildings) {
                 if (dry_run) continue;
                 if (building.construction_start_ts > 0) {
-                    auto config_opt = Validation::getBuildingConfig(config_cache, building.name);
+                    auto config_opt = Validation::getBuildingConfig(config, building.name);
                     if (config_opt) {
-                        auto config = *config_opt;
+                        auto building_config = *config_opt;
                         int construction_seconds = 0;
 
-                        auto ct_array = Validation::getBuildingArrayField(config_cache, building.name, building.pond_type, "construction_times");
+                        auto ct_array = Validation::getBuildingArrayField(config, building.name, building.pond_type, "construction_times");
                         if (!ct_array.empty()) {
                             construction_seconds = getIntForLevel(ct_array, building.level, 0);
                         }
@@ -193,18 +196,18 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                                 int building_id = building.id;
                                 
                                 bool prerequisites_met = true;
-                                if (config.contains("prerequisites") && config["prerequisites"].is_array()) {
-                                    auto prerequisites_opt = Validation::getPrerequisitesForLevel(config_cache, building.name, new_level);
+                                if (building_config.contains("prerequisites") && building_config["prerequisites"].is_array()) {
+                                    auto prerequisites_opt = Validation::getPrerequisitesForLevel(config, building.name, new_level);
                                     if (prerequisites_opt && !prerequisites_opt->empty()) {
-                                        prerequisites_met = Validation::checkFiefdomPrerequisites(config_cache, fiefdom.id, *prerequisites_opt);
+                                        prerequisites_met = Validation::checkFiefdomPrerequisites(config, fiefdom.id, *prerequisites_opt);
                                     }
                                 }
 
                                 // Check dependencies for the new level
                                 if (prerequisites_met) {
-                                    nlohmann::json deps = Validation::getDependenciesForLevel(config_cache, building.name, new_level);
+                                    nlohmann::json deps = Validation::getDependenciesForLevel(config, building.name, new_level);
                                     if (!deps.empty()) {
-                                        auto dep_result = Validation::checkBuildingDependencies(config_cache, fiefdom.id, fiefdom.buildings, deps);
+                                        auto dep_result = Validation::checkBuildingDependencies(config, fiefdom.id, fiefdom.buildings, deps);
                                         if (!dep_result.first) {
                                             prerequisites_met = false;
                                         }
@@ -239,7 +242,7 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                                         const auto& cost_key = cost_fields[i];
                                         const auto& resource_key = resource_fields[i];
                                         
-                                        auto costs = Validation::getBuildingArrayField(config_cache, building.name, building.pond_type, cost_key);
+                                        auto costs = Validation::getBuildingArrayField(config, building.name, building.pond_type, cost_key);
                                         if (costs.is_array() && !costs.empty()) {
                                             // Refund the cost actually paid for the failed step:
                                             // create paid costs[0], upgrade from L charged costs[L].
@@ -272,20 +275,20 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
             for (auto& wall : fiefdom.walls) {
                 if (dry_run) continue;
                 if (wall.construction_start_ts > 0) {
-                    auto config_opt = Validation::getWallConfigByGeneration(config_cache, wall.generation);
+                    auto config_opt = Validation::getWallConfigByGeneration(config, wall.generation);
                     if (config_opt) {
-                        auto config = *config_opt;
+                        auto wall_config = *config_opt;
                         int construction_seconds = 0;
 
-                        if (config.contains("construction_times")) {
-                            construction_seconds = getIntForLevel(config["construction_times"], wall.level, 0);
+                        if (wall_config.contains("construction_times")) {
+                            construction_seconds = getIntForLevel(wall_config["construction_times"], wall.level, 0);
                         }
 
                         if (construction_seconds > 0) {
                             int64_t elapsed_seconds = result.new_timestamp - wall.construction_start_ts;
                             if (elapsed_seconds >= construction_seconds) {
                                 int new_level = wall.level + 1;
-                                int new_hp = Validation::getWallHP(config_cache, wall.generation, new_level);
+                                int new_hp = Validation::getWallHP(config, wall.generation, new_level);
                                 if (FiefdomFetcher::updateWallLevel(wall.id, new_level, new_hp, result.new_timestamp)) {
                                     wall.level = new_level;
                                     wall.hp = new_hp;
@@ -325,7 +328,7 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                     // Passive XP accrual (tech_xp_per_day is level-indexed).
                     if (days > 0.0) {
                         auto xp_array = Validation::getBuildingArrayField(
-                            config_cache, building.name, building.pond_type, "tech_xp_per_day");
+                            config, building.name, building.pond_type, "tech_xp_per_day");
                         if (!xp_array.empty()) {
                             const int rate = getIntForLevel(xp_array, building.level, 0);
                             if (rate > 0) {
@@ -379,7 +382,8 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
 
             // ---- Economy: production (dependency graph) -> upkeep -> import -> exports ----
             {
-                auto economy_cfg = config_cache.getEconomyConfig();
+                const auto economy_handle = config.getEconomyConfig();
+                const auto& economy_cfg = *economy_handle;
                 double unmet_penalty = economy_cfg.value("unmet_need_morale_penalty", 0.5);
                 double export_sell_multiplier = economy_cfg.value("export_sell_multiplier", 0.5);
                 int default_prio = economy_cfg.value("default_priority", 50);
@@ -410,8 +414,9 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                           "AND status = 'active';"
                        << fiefdom.owner_id
                        >> [&](int f, int u) { morale_funded = f; morale_unfunded = u; };
+                    const auto retinue_handle = config.getRetinueConfig();
                     auto hm = Morale::computeHouseholdMorale(
-                        building_types, config_cache.getRetinueConfig(),
+                        building_types, *retinue_handle,
                         fiefdom.buildings, morale_funded, morale_unfunded,
                         result.new_timestamp, last_victory_ts, last_defeat_ts);
                     general_morale_percent = hm.percent;
@@ -861,7 +866,8 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                 double retinue_gold_spent = 0.0;
                 double retinue_pence_spent = 0.0;
                 {
-                    const json retinue_cfg = config_cache.getRetinueConfig();
+                    const auto retinue_handle = config.getRetinueConfig();
+                    const auto& retinue_cfg = *retinue_handle;
                     double unfunded_penalty = retinue_cfg.value("morale", json::object())
                                                   .value("unfunded_member_penalty", 1.0);
                     const money::wallet retinue_start{cur_gold, cur_silver_pence};
@@ -893,7 +899,7 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                         retinue_ctx.import_prices = &import_prices;
                         retinue_ctx.import_settings = &fiefdom.import_settings;
                         retinue_ctx.c = money_currency;
-                        const auto& eq_items = config_cache.getEquipmentConfig().value("items", json::object());
+                        const auto& eq_items = config.getEquipmentConfig().value("items", json::object());
 
                         for (const auto& member : members) {
                             auto combatant_opt = combatant_registry.getPlayerCombatant(member.uclass);
@@ -981,7 +987,7 @@ TimeUpdateResult updateStateSince(GameConfigCache& config_cache, Timestamp last_
                     // is folded into the player), but still pays equipment upkeep
                     // on whatever it wears — design §2/§5 ("gear upkeep only").
                     {
-                        const auto& knight_eq_items = config_cache.getEquipmentConfig().value("items", json::object());
+                        const auto& knight_eq_items = config.getEquipmentConfig().value("items", json::object());
                         int64_t knight_id = 0;
                         std::string knight_equipment;
                         db << "SELECT id, equipment FROM retinue_members "

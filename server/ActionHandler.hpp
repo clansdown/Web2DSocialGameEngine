@@ -1,12 +1,11 @@
 #pragma once
 #include "game_logic.hpp"
+#include "GameConfigCache.hpp"
 #include "FiefdomData.hpp"
 #include "MoraleCalculator.hpp"
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
-
-class GameConfigCache;
 
 namespace GameLogic {
 
@@ -34,51 +33,51 @@ protected:
 namespace Validation {
     bool userOwnsFiefdom(const ActionContext& ctx, int fiefdom_id);
     bool fiefdomExists(int fiefdom_id);
-    bool hasEnoughResources(GameConfigCache& cache, int fiefdom_id, const nlohmann::json& costs);
-    ActionResult deductResources(GameConfigCache& cache, int fiefdom_id, const nlohmann::json& costs, ActionResult& result);
-    bool buildingTypeExists(GameConfigCache& cache, const std::string& building_type);
-    std::optional<nlohmann::json> getBuildingConfig(GameConfigCache& cache, const std::string& building_type);
-    bool canBuildBuildingHere(GameConfigCache& cache, const std::string& building_type, int fiefdom_id, int x, int y);
+    bool hasEnoughResources(const config_snapshot& cache, int fiefdom_id, const nlohmann::json& costs);
+    ActionResult deductResources(const config_snapshot& cache, int fiefdom_id, const nlohmann::json& costs, ActionResult& result);
+    bool buildingTypeExists(const config_snapshot& cache, const std::string& building_type);
+    std::optional<nlohmann::json> getBuildingConfig(const config_snapshot& cache, const std::string& building_type);
+    bool canBuildBuildingHere(const config_snapshot& cache, const std::string& building_type, int fiefdom_id, int x, int y);
     int64_t getCurrentTimestamp();
-    std::optional<nlohmann::json> getWallConfig(GameConfigCache& cache);
-    bool validWallPlacement(GameConfigCache& cache, int fiefdom_id, const nlohmann::json& payload);
-    nlohmann::json calculateCumulativeCost(GameConfigCache& cache, const std::string& building_type, int current_level);
-    nlohmann::json calculateCumulativeCost(GameConfigCache& cache, const std::string& building_type, const std::string& pond_type, int current_level);
+    std::optional<nlohmann::json> getWallConfig(const config_snapshot& cache);
+    bool validWallPlacement(const config_snapshot& cache, int fiefdom_id, const nlohmann::json& payload);
+    nlohmann::json calculateCumulativeCost(const config_snapshot& cache, const std::string& building_type, int current_level);
+    nlohmann::json calculateCumulativeCost(const config_snapshot& cache, const std::string& building_type, const std::string& pond_type, int current_level);
     bool userOwnsBuilding(int building_id, const ActionContext& ctx);
     ActionResult refundResources(int fiefdom_id, const nlohmann::json& amounts, ActionResult& result);
     bool deleteBuilding(int building_id);
     bool updateBuildingPosition(int building_id, int x, int y);
-    nlohmann::json getBuildingArrayField(GameConfigCache& cache, const std::string& building_name,
+    nlohmann::json getBuildingArrayField(const config_snapshot& cache, const std::string& building_name,
                                          const std::string& pond_type, const std::string& field);
-    nlohmann::json getNextLevelCost(GameConfigCache& cache, const std::string& building_name,
+    nlohmann::json getNextLevelCost(const config_snapshot& cache, const std::string& building_name,
                                     const std::string& pond_type, int current_level);
-    int getBuildingMaxLevel(GameConfigCache& cache, const std::string& building_name,
+    int getBuildingMaxLevel(const config_snapshot& cache, const std::string& building_name,
                             const std::string& pond_type);
-    std::optional<nlohmann::json> getPrerequisitesForLevel(GameConfigCache& cache, const std::string& building_type, int target_level);
-    std::optional<nlohmann::json> getWallConfigByGeneration(GameConfigCache& cache, int generation);
+    std::optional<nlohmann::json> getPrerequisitesForLevel(const config_snapshot& cache, const std::string& building_type, int target_level);
+    std::optional<nlohmann::json> getWallConfigByGeneration(const config_snapshot& cache, int generation);
     bool wallGenerationExists(int fiefdom_id, int generation);
     bool hasWallGeneration(int fiefdom_id, int generation);
-    bool canAffordWall(GameConfigCache& cache, int fiefdom_id, int generation, int level);
-    int getWallHP(GameConfigCache& cache, int generation, int level);
-    double getWallMoraleBoost(GameConfigCache& cache, int generation, int level);
-    nlohmann::json calculateWallUpgradeCost(GameConfigCache& cache, int generation, int current_level);
-    nlohmann::json getDemolishRefund(GameConfigCache& cache, int building_id);
+    bool canAffordWall(const config_snapshot& cache, int fiefdom_id, int generation, int level);
+    int getWallHP(const config_snapshot& cache, int generation, int level);
+    double getWallMoraleBoost(const config_snapshot& cache, int generation, int level);
+    nlohmann::json calculateWallUpgradeCost(const config_snapshot& cache, int generation, int current_level);
+    nlohmann::json getDemolishRefund(const config_snapshot& cache, int building_id);
 
     // Stage-chain helpers: a building's chain is the ordered list
     // [root, ..., building] produced by walking `built_from` links. A building
     // satisfies a prerequisite/dependency requirement for any stage in its own
     // chain at or below its current stage (a villein counts as peasant; a plain
     // peasant never counts as a villein). Chain depth is unbounded.
-    std::vector<std::string> getBuildingStageChain(GameConfigCache& cache, const std::string& building_name);
-    bool buildingSatisfiesRequirement(GameConfigCache& cache, const std::string& building_name, const std::string& required_id);
-    int getBuildingLevelInFiefdom(GameConfigCache& cache, int fiefdom_id, const std::string& building_name);
-    bool checkFiefdomPrerequisites(GameConfigCache& cache, int fiefdom_id, const nlohmann::json& prerequisites);
-    int countBuildingsByType(GameConfigCache& cache, int fiefdom_id, const std::string& target_building, int min_level);
+    std::vector<std::string> getBuildingStageChain(const config_snapshot& cache, const std::string& building_name);
+    bool buildingSatisfiesRequirement(const config_snapshot& cache, const std::string& building_name, const std::string& required_id);
+    int getBuildingLevelInFiefdom(const config_snapshot& cache, int fiefdom_id, const std::string& building_name);
+    bool checkFiefdomPrerequisites(const config_snapshot& cache, int fiefdom_id, const nlohmann::json& prerequisites);
+    int countBuildingsByType(const config_snapshot& cache, int fiefdom_id, const std::string& target_building, int min_level);
 
     // Counts completed buildings (level >= 1) whose type belongs to `group`'s
     // exclusive group, optionally excluding one row (the building being
     // converted). Returns 0 for an empty group.
-    int countBuildingsInExclusiveGroup(GameConfigCache& cache, int fiefdom_id, const std::string& group, int exclude_building_id = 0);
+    int countBuildingsInExclusiveGroup(const config_snapshot& cache, int fiefdom_id, const std::string& group, int exclude_building_id = 0);
 
     class TransactionGuard {
     public:

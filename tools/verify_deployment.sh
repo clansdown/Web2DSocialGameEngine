@@ -323,6 +323,15 @@ check_content_identity() {
     else
         fail "/app/game/text is missing"
     fi
+
+    # The map JSONs are read by the server process (uid 10001), not served
+    # statically. A mode-600 mirror makes the maps silently disappear.
+    if docker exec "$APP_CONTAINER" test -r /app/game/config/tower_defense/maps/map_1.json >/dev/null 2>&1; then
+        pass "tower-defense map JSONs are readable by the container user"
+    else
+        fail "tower-defense map JSONs are not readable by the container user"
+        warn "  fix: chmod 644 ${RAVENEST_GAME_PATH}/config/tower_defense/maps/*.json (or rerun install.sh)"
+    fi
 }
 
 check_uploads() {

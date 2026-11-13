@@ -1,5 +1,6 @@
 #pragma once
 #include "ActionHandler.hpp"
+#include "GameConfigCache.hpp"
 #include <map>
 #include <unordered_map>
 
@@ -56,52 +57,52 @@ std::optional<nlohmann::json> getPrerequisitesForLevel(
     int target_level
 );
 
-int getBuildingLevelInFiefdom(GameConfigCache& cache, int fiefdom_id, const std::string& building_name);
+int getBuildingLevelInFiefdom(const config_snapshot& cache, int fiefdom_id, const std::string& building_name);
 
 int getFiefdomManorLevel(int fiefdom_id);
 
-int getUsedArableAcres(GameConfigCache& cache, int fiefdom_id);
-double getTotalArableAcres(GameConfigCache& cache, int fiefdom_id);
-double getAvailableArableAcres(GameConfigCache& cache, int fiefdom_id);
+int getUsedArableAcres(const config_snapshot& cache, int fiefdom_id);
+double getTotalArableAcres(const config_snapshot& cache, int fiefdom_id);
+double getAvailableArableAcres(const config_snapshot& cache, int fiefdom_id);
 
-int getUsedForestAcres(GameConfigCache& cache, int fiefdom_id);
-double getTotalForestAcres(GameConfigCache& cache, int fiefdom_id);
-double getAvailableForestAcres(GameConfigCache& cache, int fiefdom_id);
+int getUsedForestAcres(const config_snapshot& cache, int fiefdom_id);
+double getTotalForestAcres(const config_snapshot& cache, int fiefdom_id);
+double getAvailableForestAcres(const config_snapshot& cache, int fiefdom_id);
 
 // In-memory overloads for callers that already fetched the building list
 // (getFiefdom with include_buildings, the Reeve snapshot and economy report).
-int getUsedArableAcres(GameConfigCache& cache,
+int getUsedArableAcres(const config_snapshot& cache,
                        const std::vector<BuildingData>& buildings);
-int getUsedForestAcres(GameConfigCache& cache,
+int getUsedForestAcres(const config_snapshot& cache,
                        const std::vector<BuildingData>& buildings);
-double getTotalArableAcresForManor(GameConfigCache& cache, int manor_level);
-double getTotalForestAcresForManor(GameConfigCache& cache, int manor_level);
-double getAvailableArableAcres(GameConfigCache& cache, int manor_level,
+double getTotalArableAcresForManor(const config_snapshot& cache, int manor_level);
+double getTotalForestAcresForManor(const config_snapshot& cache, int manor_level);
+double getAvailableArableAcres(const config_snapshot& cache, int manor_level,
                                const std::vector<BuildingData>& buildings);
-double getAvailableForestAcres(GameConfigCache& cache, int manor_level,
+double getAvailableForestAcres(const config_snapshot& cache, int manor_level,
                                const std::vector<BuildingData>& buildings);
 
-bool checkFiefdomPrerequisites(GameConfigCache& cache, int fiefdom_id, const nlohmann::json& prerequisites);
+bool checkFiefdomPrerequisites(const config_snapshot& cache, int fiefdom_id, const nlohmann::json& prerequisites);
 
 bool hasCompletedHomeBase(int fiefdom_id);
 
 nlohmann::json getDependenciesForLevel(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const std::string& building_type,
     int target_level
 );
 
-int countBuildingsByType(GameConfigCache& cache, int fiefdom_id, const std::string& target_building, int min_level);
+int countBuildingsByType(const config_snapshot& cache, int fiefdom_id, const std::string& target_building, int min_level);
 
 std::map<std::string, std::pair<int, int>> aggregateFiefdomDependencies(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     int fiefdom_id,
     const std::vector<BuildingData>& buildings,
     const nlohmann::json& additional_deps
 );
 
 std::pair<bool, std::string> checkBuildingDependencies(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     int fiefdom_id,
     const std::vector<BuildingData>& buildings,
     const nlohmann::json& deps_to_check

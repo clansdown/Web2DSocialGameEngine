@@ -109,14 +109,14 @@ std::string worst_input_resource(const ReeveOutputStatus& output, double& satisf
     return worst;
 }
 
-double config_max_level(GameConfigCache& cache, const std::string& building_type) {
+double config_max_level(const config_snapshot& cache, const std::string& building_type) {
     auto config = GameLogic::Validation::getBuildingConfig(cache, building_type);
     if (!config) return 0.0;
     return config->value("max_level", 0);
 }
 
 bool building_type_has_max_reached(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     const std::string& building_type) {
     auto config = GameLogic::Validation::getBuildingConfig(cache, building_type);
@@ -131,10 +131,10 @@ bool building_type_has_max_reached(
     return count >= max_count;
 }
 
-bool has_successor(GameConfigCache& cache, const std::string& building_type) {
+bool has_successor(const config_snapshot& cache, const std::string& building_type) {
     auto types = cache.getFiefdomBuildingTypes();
     if (!types.is_array()) return false;
-    for (const auto& type_obj : types) {
+    for (const auto& type_obj : *types) {
         if (!type_obj.is_object()) continue;
         for (const auto& [id, config] : type_obj.items()) {
             (void)id;
@@ -146,12 +146,12 @@ bool has_successor(GameConfigCache& cache, const std::string& building_type) {
     return false;
 }
 
-bool has_road_morale_source(GameConfigCache& cache, const FiefdomData& fiefdom) {
+bool has_road_morale_source(const config_snapshot& cache, const FiefdomData& fiefdom) {
     auto types = cache.getFiefdomBuildingTypes();
     if (!types.is_array()) return false;
     for (const auto& building : fiefdom.buildings) {
         if (building.level <= 0) continue;
-        for (const auto& type_obj : types) {
+        for (const auto& type_obj : *types) {
             if (!type_obj.is_object() || !type_obj.contains(building.name)) continue;
             const auto& config = type_obj[building.name];
             if (config.is_object() && config.contains("road_morale")) return true;
@@ -392,7 +392,7 @@ std::vector<ReeveBuildingStatus> parse_building_status(const nlohmann::json& eco
 }
 
 ReeveSnapshot build_reeve_snapshot(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     const nlohmann::json& economy_report,
     const ReeveConfig& config) {
@@ -410,8 +410,9 @@ ReeveSnapshot build_reeve_snapshot(
     for (const auto& [x, y] : FiefdomFetcher::fetchRiverCells(fiefdom.id)) {
         snapshot.river_cells.insert({x, y});
     }
+    const auto building_types_handle = cache.getFiefdomBuildingTypes();
     auto water = Water::computeWaterPower(
-        cache.getFiefdomBuildingTypes(), fiefdom.buildings, snapshot.river_cells);
+        *building_types_handle, fiefdom.buildings, snapshot.river_cells);
     snapshot.water_powered = water.powered;
 
     // The snapshot already has the building list; reuse it instead of issuing
@@ -440,7 +441,7 @@ ReeveSnapshot build_reeve_snapshot(
 }
 
 std::vector<ReeveSection> build_reeve_sections(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const ReeveConfig& config) {
     (void)cache;
@@ -794,7 +795,7 @@ ReeveText build_reeve_headline(
 }
 
 std::optional<ReeveAction> next_upgrade_step(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const std::string& building_type) {
     std::vector<const BuildingData*> candidates;
@@ -818,7 +819,7 @@ std::optional<ReeveAction> next_upgrade_step(
 }
 
 std::optional<ReeveAction> next_convert_step(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const std::string& building_type) {
     if (!has_successor(cache, building_type)) return std::nullopt;
@@ -842,7 +843,7 @@ std::optional<ReeveAction> next_convert_step(
 }
 
 std::optional<ReeveAction> next_grow_step(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const std::string& resource,
     const ReeveConfig& config,
@@ -924,7 +925,7 @@ std::optional<ReeveAction> next_grow_step(
 }
 
 std::vector<ReeveCandidate> build_safety_candidates(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const ReeveConfig& config,
     const ReeveStyle& style) {
@@ -1003,7 +1004,7 @@ std::vector<ReeveCandidate> build_safety_candidates(
 }
 
 std::vector<ReeveCandidate> build_continuity_candidates(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const ReeveConfig& config,
     const ReeveStyle& style) {
@@ -1060,7 +1061,7 @@ std::vector<ReeveCandidate> build_continuity_candidates(
 }
 
 std::vector<ReeveCandidate> build_constraint_candidates(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const ReeveConfig& config,
     const ReeveStyle& style) {
@@ -1115,7 +1116,7 @@ std::vector<ReeveCandidate> build_constraint_candidates(
 }
 
 std::vector<ReeveCandidate> build_growth_candidates(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const ReeveConfig& config,
     const ReeveStyle& style) {
@@ -1219,7 +1220,7 @@ std::vector<ReeveCandidate> build_growth_candidates(
 }
 
 std::vector<ReeveCandidate> build_connect_candidates(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const ReeveConfig& config,
     const ReeveStyle& style) {
@@ -1260,7 +1261,7 @@ std::vector<ReeveCandidate> build_connect_candidates(
 }
 
 std::vector<ReeveCandidate> build_polish_candidates(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const ReeveConfig& config,
     const ReeveStyle& style) {
@@ -1369,7 +1370,7 @@ std::vector<ReeveCandidate> build_polish_candidates(
 }
 
 std::vector<ReeveCandidate> build_reeve_candidates(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const ReeveSnapshot& snapshot,
     const ReeveConfig& config,
     const ReeveStyle& style) {
@@ -1457,13 +1458,12 @@ std::optional<ReeveCandidate> select_reeve_candidate(
 }
 
 bool is_reeve_action_feasible(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     const ReeveAction& action,
     std::string& error_code) {
     error_code.clear();
-    GameLogic::ActionContext ctx;
-    ctx.config_cache = &cache;
+    GameLogic::ActionContext ctx(cache);
     ctx.requesting_fiefdom_id = fiefdom.id;
     ctx.requesting_character_id = fiefdom.owner_id;
     auto& registry = GameLogic::ActionRegistry::getInstance();
@@ -1661,7 +1661,7 @@ std::string reeve_hold_text_id(const std::string& error_code) {
 }
 
 ReeveReport build_reeve_report(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     const nlohmann::json& economy_report,
     const ReeveConfig& config,

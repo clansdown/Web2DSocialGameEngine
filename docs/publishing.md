@@ -12,12 +12,28 @@ This document describes how the game is published:
 - the API server's CORS allowlist is written to an env file from `.deploy`.
 
 One command, `./install.sh`, performs the build and all configured deployment
-stages. It pulls the prebuilt server image configured in `.deploy`; it never
-builds or pushes that image. Publishing the engine server image is a separate
-developer workflow (`publish_engine_server_image.sh`, configured by
-`.publish_engine`). The engine stays generic: deployment values live in a
-gitignored `.deploy` file. The site repo, ops overlay, `.deploy`, and
+stages. The implementation lives at `tools/install.sh`; the root `install.sh`
+is a compatibility launcher. It pulls the prebuilt server image configured in
+`.deploy`; it never builds or pushes that image. Publishing the engine server
+image is a separate developer workflow (`publish_engine_server_image.sh`,
+configured by `.publish_engine`). The engine stays generic: deployment values
+live in a gitignored `.deploy` file. The site repo, ops overlay, `.deploy`, and
 `.publish_engine` are **private** and are not part of this repository.
+
+For routine content changes, use the descriptive wrappers in `tools/` instead
+of the full pipeline:
+
+| Wrapper | What it does |
+|---|---|
+| `tools/push_everything.sh` | Full build + R2 + Pages + server deploy. |
+| `tools/push_config_files.sh` | Mirrors `game/config/` and reloads (SIGHUP). |
+| `tools/push_assets.sh` | Uploads R2 assets (`images`, `sounds`, `music`) and mirrors `game/images/` to the server. |
+| `tools/push_text.sh` | Mirrors `game/text/` and reloads (clears the text cache). |
+| `tools/push_server_content.sh` | Mirrors all `game/` content and reloads; no image pull/env/compose changes. |
+
+All wrappers forward arguments, so `--dry-run`, `--skip-build`, `--no-reload`,
+etc. work as usual. `push_assets.sh --skip-server` is the R2-only path.
+
 
 > The hostnames below (`app.example.com`, `api.example.com`,
 > `assets.example.com`) are placeholders. Replace `example.com` with your
@@ -29,9 +45,18 @@ gitignored `.deploy` file. The site repo, ops overlay, `.deploy`, and
 > cp .deploy.example .deploy
 > $EDITOR .deploy          # fill in the destinations, origins, image, and tag
 > chmod 600 .deploy
-> chmod +x install.sh      # once, if your checkout lacks the executable bit
+> chmod +x install.sh tools/install.sh tools/push_*.sh
 > DRY_RUN=1 ./install.sh   # prints the deploy plan, writes nothing remote
 > ./install.sh             # build -> R2 -> Pages -> server content/env
+> ```
+>
+> Routine content updates:
+>
+> ```bash
+> DRY_RUN=1 tools/push_config_files.sh
+> tools/push_config_files.sh
+> tools/push_assets.sh
+> tools/push_text.sh
 > ```
 >
 > Deployers do not need registry credentials or a local Docker build.
@@ -129,7 +154,7 @@ Cloudflare:
 
 | Role | Visibility | Contents |
 |---|---|---|
-| Engine repo (this repository) | public | source, configs, `install.sh`, `publish_engine_server_image.sh`, `docs/publishing.md`, `.deploy.example`, `.publish_engine.example` |
+| Engine repo (this repository) | public | source, configs, `tools/install.sh`, `publish_engine_server_image.sh`, `docs/publishing.md`, `.deploy.example`, `.publish_engine.example` |
 | Site repo | **private** | generated Pages site only: `index.html`, `assets/`, `_headers`, `robots.txt`, favicon |
 | Ops overlay | **private** | files copied into the site repo after the build sync (`_headers`, `robots.txt`, favicon, optional `_redirects`) |
 | `.deploy` | **private** | deployment image/tag, site repo path, R2 credentials, public origins, API server host/path/CORS/restart command |
@@ -846,8 +871,38 @@ Options:
 - `--db-mode auto|bundled|external` overrides detection.
 - `--timeout SECONDS` changes the health wait.
 
-Safe in-place config reload is not implemented yet; it is tracked in
-`docs/TODO_config_reload.md`.
+#### Reloading configuration without a restart
+
+`tools/install.sh` also copies the config reload helper:
+
+```text
+${SERVER_PATH}/tools/reload_deployment.sh
+```
+
+A config-only change needs no image pull or container restart:
+
+```bash
+tools/push_config_files.sh
+```
+
+The wrapper mirrors `game/config/` and invokes the reload helper over SSH. You
+can do the same manually:
+
+```bash
+rsync -a --chmod=D755,F644 game/config/ user@server:/srv/ravenest/game/config/
+ssh user@server /srv/ravenest/tools/reload_deployment.sh
+```
+
+The helper sends SIGHUP through compose (tini forwards it to the server), waits
+for `[GameConfigCache] Reload complete:`, and exits non-zero on
+`[GameConfigCache] Reload aborted:` or timeout. A malformed file leaves the
+previous configuration active. The reload includes `TowerDefenseMapCache` and
+`CombatMapCache`, and clears the `TextManager` cache so `tools/push_text.sh`
+also applies without a restart. See `docs/config_reload.md`.
+
+`tools/install.sh` mirrors content with `--chmod=D755,F644`, so a mode-600
+source checkout cannot make config or map JSONs unreadable to the container
+user (`uid=10001`).
 
 #### Admin CLI wrappers
 

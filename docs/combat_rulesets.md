@@ -64,8 +64,9 @@ The file is an object:
 - Unknown fields are **warnings** in the config linter, not errors — the
   format is meant to grow (respawn budgets, deployment zones, etc.) as the
   game gains experience.
-- Configs are hot-reloadable (mtime-polled); a ruleset edit applies to the
-  next created match without a server restart.
+- Configs are hot-reloadable (SIGHUP via `ConfigReloadService`, plus the safe
+  snapshot API); a ruleset edit applies to the next created match without a
+  server restart.
 
 ## Warbands & Enemy AI
 

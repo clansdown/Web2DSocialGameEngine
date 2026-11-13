@@ -29,7 +29,7 @@ bool is_road_or_race(const std::string& type) {
     return type == "road" || type == "head_race" || type == "tail_race";
 }
 
-std::vector<BuildingFootprint> footprints(GameConfigCache& cache, const FiefdomData& fiefdom) {
+std::vector<BuildingFootprint> footprints(const config_snapshot& cache, const FiefdomData& fiefdom) {
     std::vector<BuildingFootprint> out;
     for (const auto& building : fiefdom.buildings) {
         auto dims = GameLogic::GridCollision::getBuildingDimensions(cache, building.name);
@@ -59,7 +59,7 @@ bool cell_in_any_footprint(int x, int y, const std::vector<BuildingFootprint>& b
     return false;
 }
 
-bool cell_has_road(const FiefdomData& fiefdom, GameConfigCache& cache, int x, int y) {
+bool cell_has_road(const FiefdomData& fiefdom, const config_snapshot& cache, int x, int y) {
     for (const auto& building : fiefdom.buildings) {
         if (building.name != "road") continue;
         auto dims = GameLogic::GridCollision::getBuildingDimensions(cache, building.name);
@@ -81,7 +81,7 @@ std::set<std::pair<int, int>> river_cells(const FiefdomData& fiefdom) {
     return cells;
 }
 
-bool wall_overlap(GameConfigCache& cache, const FiefdomData& fiefdom,
+bool wall_overlap(const config_snapshot& cache, const FiefdomData& fiefdom,
                   int x, int y, int width, int height) {
     for (const auto& wall : fiefdom.walls) {
         if (GameLogic::GridCollision::overlapsWalls(
@@ -92,7 +92,7 @@ bool wall_overlap(GameConfigCache& cache, const FiefdomData& fiefdom,
     return false;
 }
 
-std::pair<int, int> manor_center(GameConfigCache& cache, const FiefdomData& fiefdom) {
+std::pair<int, int> manor_center(const config_snapshot& cache, const FiefdomData& fiefdom) {
     for (const auto& building : fiefdom.buildings) {
         if (building.name != "home_base") continue;
         auto dims = GameLogic::GridCollision::getBuildingDimensions(cache, building.name);
@@ -104,7 +104,7 @@ std::pair<int, int> manor_center(GameConfigCache& cache, const FiefdomData& fief
 }
 
 bool is_free_cell_for_road(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     const std::vector<BuildingFootprint>& buildings,
     const std::set<std::pair<int, int>>& rivers,
@@ -118,7 +118,7 @@ bool is_free_cell_for_road(
 }
 
 std::optional<std::pair<int, int>> first_clear_candidate(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     const std::string& building_type,
     const std::vector<std::pair<int, int>>& candidates,
@@ -157,7 +157,7 @@ bool footprint_overlaps_reserved_corridor(int x, int y, int width, int height, i
 }
 
 bool placement_is_clear(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     const std::string& building_type,
     int x,
@@ -189,7 +189,7 @@ bool placement_is_clear(
 
 bool site_touches_road(
     const FiefdomData& fiefdom,
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     int x,
     int y,
     int width,
@@ -207,7 +207,7 @@ bool site_touches_road(
 
 bool building_touches_road(
     const FiefdomData& fiefdom,
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     int building_id) {
     for (const auto& building : fiefdom.buildings) {
         if (building.id != building_id) continue;
@@ -221,7 +221,7 @@ bool building_touches_road(
 
 bool is_dangling_road_end(
     const FiefdomData& fiefdom,
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     int x,
     int y) {
     if (!cell_has_road(fiefdom, cache, x, y)) return false;
@@ -253,7 +253,7 @@ bool is_dangling_road_end(
 }
 
 std::optional<std::pair<int, int>> find_dangling_road_target(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     const std::string& building_type,
     const ReeveStyle& style) {
@@ -307,7 +307,7 @@ std::optional<std::pair<int, int>> find_dangling_road_target(
 }
 
 int score_building_site(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     const std::string& building_type,
     int x,
@@ -341,7 +341,7 @@ int score_building_site(
 }
 
 std::optional<std::pair<int, int>> find_building_site(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     const std::string& building_type,
     const ReeveStyle& style,
@@ -450,7 +450,7 @@ std::optional<std::pair<int, int>> find_building_site(
 }
 
 RoadLink find_road_link_to_site(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     int target_x,
     int target_y,
@@ -596,7 +596,7 @@ RoadLink find_road_link_to_site(
 }
 
 RoadLink find_road_link_to_building(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     int building_id,
     int max_length,

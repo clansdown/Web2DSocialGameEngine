@@ -3,6 +3,7 @@
 // POSTed to the subscription endpoint via libcurl. Subscriptions are keyed on
 // account; the payload names the addressed character.
 #include <nlohmann/json.hpp>
+#include <mutex>
 #include <string>
 
 namespace chat {
@@ -33,9 +34,18 @@ public:
     // (Re)loads the VAPID keyring from game/config/push.json.
     void configure(const nlohmann::json& push_config);
 
-    bool configured() const { return !vapid_public_.empty() && !vapid_private_.empty(); }
-    std::string public_key() const { return vapid_public_; }
-    std::string key_id() const { return current_key_id_; }
+    bool configured() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return !vapid_public_.empty() && !vapid_private_.empty();
+    }
+    std::string public_key() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return vapid_public_;
+    }
+    std::string key_id() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return current_key_id_;
+    }
 
     // Delivery outcome.
     enum class outcome { ok, retryable, gone, not_configured };
@@ -52,6 +62,7 @@ private:
     std::string vapid_subject_ = "mailto:admin@example.com";
     std::string current_key_id_;
     int ttl_ = 2419200;
+    mutable std::mutex mutex_;
 };
 
 }  // namespace chat

@@ -591,13 +591,14 @@ Local development can use the `app` profile in the root `docker-compose.yml`
 RAVENEST_DB_PASSWORD=ravenest_dev docker compose --profile app up -d --build
 ```
 
-Production deployment is Docker by default. `install.sh` deploys a prebuilt,
-already-published `SERVER_IMAGE:SERVER_IMAGE_TAG`; it never builds or pushes the
+Production deployment is Docker by default. `tools/install.sh` deploys a
+prebuilt, already-published `SERVER_IMAGE:SERVER_IMAGE_TAG`; the root
+`install.sh` is a compatibility launcher for it. It never builds or pushes the
 server image and needs no registry credentials or local Docker. It writes
 `deploy/docker-compose.yml` plus `compose.env` and pulls the image on the API
 server first (`SERVER_PULL_CMD` overrides the default `docker pull`).
 `SERVER_IMAGE_TAG` must be explicit (`latest` or a pinned immutable tag);
-`install.sh` never derives one. In Docker mode it also copies the read-only
+`tools/install.sh` never derives one. In Docker mode it also copies the read-only
 `tools/verify_deployment.sh` to `${SERVER_PATH}/tools/verify_deployment.sh`
 (mode `755`) without running it; run it on the host to verify image/content
 mounts, health, port 2290, and bundled PostgreSQL. It installs the restart
@@ -605,8 +606,13 @@ helper as `${SERVER_PATH}/tools/restart_deployment.sh` and uses it as the
 default `SERVER_RESTART_CMD`; it converges the compose stack and restarts the
 app so mounted config is reread. It also installs `staff_admin.sh` and
 `invite_admin.sh` wrappers under `${SERVER_PATH}/tools/`; they execute the
-image binaries via `docker compose exec`. Safe in-place config reload is
-tracked in `docs/TODO_config_reload.md`. With `SERVER_DB_MODE=bundled`
+image binaries via `docker compose exec`. Config reloads are production-safe:
+`${SERVER_PATH}/tools/reload_deployment.sh` sends SIGHUP and waits for the
+`[GameConfigCache] Reload complete:` marker; the reload is all-or-nothing across
+`GameConfigCache`, `TowerDefenseMapCache`, and `CombatMapCache`, and clears the
+`TextManager` cache. The `tools/push_config_files.sh` and `tools/push_text.sh`
+wrappers mirror one content tree and trigger the reload. See
+`docs/config_reload.md`. With `SERVER_DB_MODE=bundled`
 (default), it also writes `deploy/docker-compose.bundled.yml` and the
 idempotent `db-init` SQL, so PostgreSQL runs in the same stack on the internal
 network. With `SERVER_DB_MODE=external`, only the app compose file is used and
@@ -676,6 +682,20 @@ the solo tier + a non-empty board, and that a non-barony character sees solo
 only) → `combatCreate` with an `offering_id` (asserts the id round-trips and a
 `danger_band` is returned) → a malformed id is rejected. Exits 0 on pass, 2 on
 failure; isolated per-port scratch DB.
+
+**Config reload smoke test** (`tools/config_reload_smoke.sh [PORT]`): starts the
+server with a writable copy of `game/config` and verifies Wolf Marche level 1
+uses the authored `wolf_marche.json` (dire rats only, counts 16/24/20), the
+`getAllConfigs` tower-defense keys, a building-config edit applied via SIGHUP, a
+malformed config aborting the reload with the old state active, a dynamic spawn
+schedule edit applied via SIGHUP, a malformed schedule keeping the old state,
+and an in-place combat map edit reloading. Exits 0 on pass, 2 on failure;
+isolated per-port scratch DB.
+
+**Config reload stress test** (`tools/config_reload_stress.sh [PORT] [SECONDS]`):
+runs 8 concurrent config readers while sending SIGHUP at 10 Hz against a
+ThreadSanitizer build; fails on any TSan report or request error. Exits 0 on
+pass, 2 on failure.
 
 **Monetization smoke test** (`tools/monetization_smoke.sh [PORT]`): end-to-end
 premium-store verification — createAccount → login → getStore → unaffordable
@@ -1286,18 +1306,28 @@ Build the full game progression and content system with a working tower defense 
 - `client/src/components/StoryText.svelte` / `GameText.svelte` - textured text (inline + standalone `overlay` mode)
 - `client/src/components/TextOverlayFrame.svelte` / `TextOverlayButton.svelte` - text-overlay backdrop and optional image-backed dismiss button
 - `game/config/ui_textures.json` / `api/getUITextures.md` - texture padding + optional `button` plaque config
-- `install.sh` - deployment only: builds the client, uploads R2/Pages, mirrors game content, pulls the prebuilt server image, writes compose/env, restarts
+- `tools/install.sh` - deployment only: builds the client, uploads R2/Pages, mirrors game content, pulls the prebuilt server image, writes compose/env, restarts
+- `install.sh` - compatibility launcher that execs `tools/install.sh`
+- `tools/push_everything.sh` - full deploy wrapper (`tools/install.sh`)
+- `tools/push_config_files.sh` - `game/config/` mirror + reload
+- `tools/push_assets.sh` - R2 assets (`images`, `sounds`, `music`) + server `game/images/`
+- `tools/push_text.sh` - `game/text/` mirror + reload (clears the text cache)
+- `tools/push_server_content.sh` - all `game/` content mirror + reload
 - `publish_engine_server_image.sh` - developer-only image publishing: clean-tree check, build, immutable tag + `latest`, print tag/digest
 - `.deploy.example` / `.publish_engine.example` - deployment config vs developer publishing credentials templates
-- `tools/verify_deployment.sh` - read-only Docker deployment verifier (mounted content, uploads, health, port, bundled PostgreSQL); copied to `${SERVER_PATH}/tools/` by `install.sh`
-- `tools/restart_deployment.sh` - Docker compose converge + app restart helper; copied to `${SERVER_PATH}/tools/` by `install.sh` and used as the default `SERVER_RESTART_CMD`
+- `tools/verify_deployment.sh` - read-only Docker deployment verifier (mounted content, uploads, health, port, bundled PostgreSQL); copied to `${SERVER_PATH}/tools/` by `tools/install.sh`
+- `tools/restart_deployment.sh` - Docker compose converge + app restart helper; copied to `${SERVER_PATH}/tools/` by `tools/install.sh` and used as the default `SERVER_RESTART_CMD`
+- `tools/reload_deployment.sh` - SIGHUP config reload helper; waits for the reload marker and exits non-zero on abort; installed under `${SERVER_PATH}/tools/`
+- `tools/config_reload_smoke.sh` / `tools/config_reload_smoke.mjs` - production-safe reload regression (dynamic schedule, building config, abort rollback, combat map)
+- `tools/config_reload_stress.sh` / `tools/config_reload_stress.mjs` - concurrent reader + SIGHUP stress against a TSan build
 - `tools/staff_admin.sh` / `tools/invite_admin.sh` - host wrappers that execute the image's admin CLIs via `docker compose exec`; installed under `${SERVER_PATH}/tools/`
 - `tools/_admin_common.sh` - shared compose/env discovery for the host-side admin wrappers
 - `tools/_deploy_common.sh` - shared compose/env/container discovery for operational scripts
 - `tools/fetch_logs.sh` - generic filtered/redacted compose or container log fetcher
 - `tools/diagnose_auth.sh` - refresh-cookie diagnostic (`/api/auth/refresh` classification + recent logs)
 - `tools/deployment_status.sh` - fast app/database/HTTP/log status check
-- `docs/TODO_config_reload.md` - deferred safe snapshot-based config reload design (no restart)
+- `docs/config_reload.md` - immutable snapshot + SIGHUP reload design (production-safe, all-or-nothing)
+- `docs/TODO_config_reload.md` - remaining snapshot-signature migration follow-up
 - `tools/diagnose_ghcr_push.sh` - GHCR token/package/repository diagnostic (reads `.publish_engine`)
 - `game/config/tower_defense/projectiles.json` - Projectile config (width, height, speed, image_file, forward_vector)
 - `game/config/tower_defense/mobs.json` - Mob config with forward_vector per mob

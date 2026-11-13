@@ -550,7 +550,7 @@ RAVENEST_CORS_ORIGINS="https://app.example.com"
 - `OPTIONS /api/*` returns `204 No Content`.
 - `GET /api/avatar/<id>[/<content-key>]` is sent with `Cache-Control: private, no-store`.
 
-`install.sh` writes this value to the server env file from `.deploy` and
+`tools/install.sh` writes this value to the server env file from `.deploy` and
 optionally restarts the service. See `docs/publishing.md`.
 
 ### Avatar storage
@@ -661,9 +661,9 @@ On startup, the server loads game configuration and image data from the
     - `tower_defense/ongoing.json` - Ongoing-mode options for Tower Defense (difficulty/size availability + silver reward tables)
     - `weeding/ongoing.json` - Ongoing-mode options for Assarting (difficulty/size availability + silver reward tables)
      - `economy.json` - Economy config including the `currency` block (old-English ratios: 12 pence/shillling, 20 shillings/pound, 240 pence/gold), `import_prices` (per-resource cost to buy shortfalls — plain numbers are gold prices, money objects `{gold, shillings, pence}` are paid from the silver-pence wallet, e.g. `grain: {"shillings": 1}`; prices deflate as production scales up, anchored to grain), `export_prices` (optional per-resource explicit sell prices, same money-form as import_prices), `export_sell_multipliers` (optional per-resource sell ratios of the import price — e.g. `ironwork: 0.25` sells at 25% of import), `export_sell_multiplier` (0.5 default; excess above reserve sells at `export_prices` → `export_sell_multipliers` → `export_sell_multiplier` × import price), `default_reserves` (per-resource stockpile minimums), `starting_resources` (per-resource starting balances for a newly created fiefdom — currently gold 5, all others 0), `combatant_upkeep_priority`, and `reward_pools` (diminishing-returns limits)
-    - `tower_defense/maps/` - Tower defense map metadata JSON files (dynamic: directory is rescanned on each request, allowing hot-reload of new maps without server restart)
+    - `tower_defense/maps/` - Tower defense map metadata JSON files (per-file mtime; reloads in place and via SIGHUP)
     - `combat/rulesets.json` - Realtime combat mission rules (mode, death handling, caps, duration — see `docs/combat_rulesets.md`)
-    - `combat/maps/` - Realtime combat map files (CombatMapCache, stat()-based hot reload — see `docs/combat_maps.md`)
+    - `combat/maps/` - Realtime combat map files (CombatMapCache, per-file stat()-based reload — see `docs/combat_maps.md`)
     - `combat/warbands.json` - Mission opportunities (ruleset + map + fixed warband + tier + XP base — enabled content)
     - `combat/structures.json` - Temporary combat structures (barricade/spikes/wall/tower + garrison buffs)
     - `combat/formations.json` - Formation shapes (line/column/wedge/circle + spacing/rotation)
@@ -672,6 +672,14 @@ On startup, the server loads game configuration and image data from the
     - `cosmetics.json` - Premium-variety catalog: six slots, tiers, `price_platinum`, `source`, appearance descriptors; whitelist-validated (no gameplay keys)
     - `manor_river.json` - Per-fiefdom river templates (meandering polyline `points` + band `width`; seeded with 0/90/180/270° rotation per fiefdom — see `server/tables/fiefdom_river.md`)
     - `manor_ui.json` - Manor UI config (`build_order` governs the build-palette button order only)
+
+Config data is immutable at runtime. `GameConfigCache` stores a
+`config_state` snapshot; readers take a `config_snapshot` (one generation) or a
+`config_handle` (one file). Reload is triggered by **SIGHUP** through
+`ConfigReloadService`, or by `${SERVER_PATH}/tools/reload_deployment.sh` on a
+Docker host. It is all-or-nothing: every changed config and both map caches are
+prepared first, and any read/parse/postprocess failure keeps the previous
+configuration active. See `docs/config_reload.md`.
 
  2. **TowerDefenseMapCache**: Dynamically loads tower defense map metadata from `config/tower_defense/maps/`. Each `.json` file follows the map metadata format documented in `/tower_defense_map_metadata_format.md`. The directory is rescanned when its modification time changes, so new maps can be added at runtime without restarting the server. Maps are served to clients as `map_metadata` in `/api/startMiniGame` responses.
 

@@ -3,8 +3,7 @@
 #include <vector>
 #include <utility>
 #include <nlohmann/json.hpp>
-
-class GameConfigCache;
+#include "GameConfigCache.hpp"
 
 namespace GameLogic {
 namespace GridCollision {
@@ -46,7 +45,7 @@ struct WallDimensions {
 };
 
 PlacementCheck checkPlacement(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     int fiefdom_id,
     const std::string& building_type,
     int x,
@@ -55,14 +54,14 @@ PlacementCheck checkPlacement(
     int exclude_building_id = 0
 );
 
-BuildingDimensions getBuildingDimensions(GameConfigCache& cache, const std::string& building_type);
+BuildingDimensions getBuildingDimensions(const config_snapshot& cache, const std::string& building_type);
 
-std::pair<int, int> getBuildingDimensionsPair(GameConfigCache& cache, const std::string& building_type);
+std::pair<int, int> getBuildingDimensionsPair(const config_snapshot& cache, const std::string& building_type);
 
 bool isValidPosition(int x, int y);
 
 PlacementCheck checkPlacementWithExisting(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const std::string& building_type,
     int x,
     int y,
@@ -71,13 +70,13 @@ PlacementCheck checkPlacementWithExisting(
 
 int getMaxBuildingSize();
 
-WallDimensions getWallDimensions(GameConfigCache& cache, int generation);
+WallDimensions getWallDimensions(const config_snapshot& cache, int generation);
 
-std::optional<nlohmann::json> getWallConfigByGeneration(GameConfigCache& cache, int generation);
+std::optional<nlohmann::json> getWallConfigByGeneration(const config_snapshot& cache, int generation);
 
-bool overlapsWalls(GameConfigCache& cache, int fiefdom_id, int generation, int x, int y, int building_width, int building_height);
+bool overlapsWalls(const config_snapshot& cache, int fiefdom_id, int generation, int x, int y, int building_width, int building_height);
 
-std::vector<nlohmann::json> getOverlappingBuildings(GameConfigCache& cache, int fiefdom_id, int generation, int x, int y, int building_width, int building_height);
+std::vector<nlohmann::json> getOverlappingBuildings(const config_snapshot& cache, int fiefdom_id, int generation, int x, int y, int building_width, int building_height);
 
 } // namespace GridCollision
 } // namespace GameLogic

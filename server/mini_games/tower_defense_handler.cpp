@@ -56,7 +56,7 @@ nlohmann::json TowerDefenseHandler::start_level(const MiniGameContext& ctx) {
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 
     // Grant starting unlocks on first play
-    UnitUnlockCalculator::grant_starting_unlocks(config_cache_, db, ctx.character_id, now);
+    UnitUnlockCalculator::grant_starting_unlocks(config_cache_.snapshot(), db, ctx.character_id, now);
 
     if (ctx.is_random_generation) {
         level_config["map"] = "random";
@@ -131,7 +131,7 @@ nlohmann::json TowerDefenseHandler::end_level(const MiniGameContext& ctx, const 
            >> [&](int count) { completed_count = count; };
 
         nlohmann::json new_unlocks = UnitUnlockCalculator::check_and_grant_milestones(
-            config_cache_, db, ctx.character_id, completed_count, now);
+            config_cache_.snapshot(), db, ctx.character_id, completed_count, now);
 
         if (!new_unlocks["new_units"].empty() || !new_unlocks["new_towers"].empty()) {
             outcome["new_unlocks"] = new_unlocks;

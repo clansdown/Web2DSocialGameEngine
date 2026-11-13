@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-class GameConfigCache;
+#include "GameConfigCache.hpp"
 
 namespace Reeve {
 
@@ -23,7 +23,7 @@ struct RoadLink {
 /// Finds a deterministic building site, preferring a dangling road end (so a
 /// speculative road is followed through) and then road adjacency.
 std::optional<std::pair<int, int>> find_building_site(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     const std::string& building_type,
     const ReeveStyle& style,
@@ -31,7 +31,7 @@ std::optional<std::pair<int, int>> find_building_site(
 
 /// Finds a site adjacent to a dangling road end for the requested building.
 std::optional<std::pair<int, int>> find_dangling_road_target(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     const std::string& building_type,
     const ReeveStyle& style);
@@ -39,7 +39,7 @@ std::optional<std::pair<int, int>> find_dangling_road_target(
 /// Scores a site for deterministic selection (road adjacency, corridor
 /// reservation, distance from the manor).
 int score_building_site(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     const std::string& building_type,
     int x,
@@ -56,20 +56,20 @@ bool footprint_overlaps_reserved_corridor(
 /// True if a road cell has no orthogonally adjacent non-road building.
 bool is_dangling_road_end(
     const FiefdomData& fiefdom,
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     int x,
     int y);
 
 /// True if a building footprint touches at least one road cell.
 bool building_touches_road(
     const FiefdomData& fiefdom,
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     int building_id);
 
 /// True if a site footprint touches at least one road cell.
 bool site_touches_road(
     const FiefdomData& fiefdom,
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     int x,
     int y,
     int width,
@@ -78,7 +78,7 @@ bool site_touches_road(
 /// Builds a road link from the nearest existing road (or the manor house's
 /// perimeter when no road exists) to a target footprint.
 RoadLink find_road_link_to_site(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     int target_x,
     int target_y,
@@ -89,7 +89,7 @@ RoadLink find_road_link_to_site(
 
 /// Builds a road link to an existing building's footprint.
 RoadLink find_road_link_to_building(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     int building_id,
     int max_length,
@@ -98,7 +98,7 @@ RoadLink find_road_link_to_building(
 /// Fast placement check (overlap, river, walls, map bounds). The full action
 /// validator is still run by the Reeve before an action is emitted.
 bool placement_is_clear(
-    GameConfigCache& cache,
+    const config_snapshot& cache,
     const FiefdomData& fiefdom,
     const std::string& building_type,
     int x,

@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-class GameConfigCache;
+#include "GameConfigCache.hpp"
 
 // DB-backed side of the offering system: authenticity/freshness checks, board
 // assembly (generation + completion filter), and persistence of completions and
@@ -20,11 +20,11 @@ namespace mission_offerings {
 // health) and the unit count. `army_strength` folds these into S.
 mission_gen::retinue_army_summary load_retinue_army(sqlite::database& db,
                                                     int64_t character_id,
-                                                    GameConfigCache& cache);
+                                                    const config_snapshot& cache);
 
 // The character's own retinue strength (aggregate over active members;
 // S = Σ power × N^(β−1)). Thin wrapper over load_retinue_army.
-double character_retinue_power(sqlite::database& db, int64_t character_id, GameConfigCache& cache);
+double character_retinue_power(sqlite::database& db, int64_t character_id, const config_snapshot& cache);
 
 // True when the character is a member of a barony.
 bool character_in_barony(sqlite::database& db, int64_t character_id);
@@ -32,7 +32,7 @@ bool character_in_barony(sqlite::database& db, int64_t character_id);
 // Army summaries of the OTHER members of the character's barony (empty when not
 // in one).
 std::vector<mission_gen::retinue_army_summary> barony_member_armies(
-    sqlite::database& db, int64_t character_id, GameConfigCache& cache);
+    sqlite::database& db, int64_t character_id, const config_snapshot& cache);
 
 bool offering_is_completed(sqlite::database& db, int64_t character_id,
                            const std::string& offering_id);
@@ -47,12 +47,12 @@ std::set<std::string> completed_offering_ids(
 // power bucket) are at or below the character's current party (a shrink voids
 // older offers).
 bool validate_offering_authentic(sqlite::database& db, const mission_gen::offering_id_parts& parts,
-                                 int64_t character_id, int64_t now, GameConfigCache& cache);
+                                 int64_t character_id, int64_t now, const config_snapshot& cache);
 
 // The current-hour board for the character (all applicable tiers), minus
 // completed offerings.
 std::vector<mission_gen::mission_offering> load_board(sqlite::database& db, int64_t character_id,
-                                                      int64_t now, GameConfigCache& cache);
+                                                      int64_t now, const config_snapshot& cache);
 
 // Records a battle start; returns the attempt row id (0 on failure).
 int64_t record_attempt_start(sqlite::database& db, const std::string& offering_id,

@@ -3,16 +3,18 @@
 #include <fstream>
 #include <iostream>
 #include <filesystem>
+#include <algorithm>
 #include <sys/stat.h>
 
-int64_t GameConfigCache::monotonic_ms() {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return static_cast<int64_t>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+namespace {
+
+const nlohmann::json& null_config() {
+    static const nlohmann::json value = nlohmann::json();
+    return value;
 }
 
-static std::string readFileToString(const std::string& config_path) {
-    std::ifstream file(config_path);
+std::string read_file_to_string(const std::string& path) {
+    std::ifstream file(path);
     if (!file.is_open()) {
         return "";
     }
@@ -21,362 +23,671 @@ static std::string readFileToString(const std::string& config_path) {
     return content;
 }
 
-bool GameConfigCache::loadConfig(const std::string& path, const std::string& name, nlohmann::json& target) {
-    std::string content = readFileToString(path);
-    if (content.empty()) {
-        std::cerr << "Failed to open config file: " << path << std::endl;
-        return false;
-    }
-
-    try {
-        target = nlohmann::json::parse(content, nullptr, true, true, true);
-        return true;
-    } catch (const std::exception& e) {
-        std::cerr << "Failed to parse " << name << ": " << e.what() << std::endl;
-        return false;
-    }
-}
-
-bool GameConfigCache::initialize(const std::string& config_dir) {
-    config_dir_ = config_dir;
-    bool success = true;
-
-    auto add = [&](const std::string& rel_path, void (*pp)(nlohmann::json&) = nullptr) {
-        ConfigEntry e;
-        e.path = config_dir + "/" + rel_path;
-        e.postprocess = pp;
-        configs_[rel_path] = std::move(e);
-    };
-
-    add("damage_types.json");
-    add("fiefdom_building_types.json", money::normalize_money_costs);
-    add("player_combatants.json");
-    add("enemy_combatants.json");
-    add("heroes.json");
-    add("fiefdom_officials.json");
-    add("wall_config.json", money::normalize_money_costs);
-    add("mini_games.json");
-    add("tower_defense/mobs.json");
-    add("tower_defense/towers.json");
-    add("tower_defense/units.json");
-    add("tower_defense/unit_unlocks.json");
-    add("tower_defense/projectiles.json");
-    add("tower_defense/wave_templates.json");
-    add("tower_defense/ongoing.json");
-    add("weeding/plants.json");
-    add("weeding/tools.json");
-    add("weeding/specials.json");
-    add("weeding/ongoing.json");
-    add("economy.json");
-    add("retinue.json");
-    add("equipment.json");
-    add("items.json");
-    add("tech_trees.json");
-    add("manor_ui.json");
-    add("manor_river.json");
-    add("portrait_frames.json");
-    add("combat/rulesets.json");
-    add("combat/warbands.json");
-    add("combat/structures.json");
-    add("combat/formations.json");
-    add("combat/profiles.json");
-    add("combat/rewards.json");
-    add("combat/offerings.json");
-    add("cosmetics.json");
-    add("progression.json");
-    add("chat.json");
-    add("chat_admins.json");
-    add("safe_messages.json");
-    add("safe_barony_names.json");
-    add("safe_barony_tags.json");
-    add("safe_reactions.json");
-    add("safe_gifs.json");
-    add("safe_ban_reasons.json");
-    add("translation.json");
-    add("push.json");
-    // Server-only config. It contains the optional shared global registration
-    // code, so it is deliberately NOT added to getAllConfigs() (which backs
-    // getGameInfo). Only the server reads the raw JSON.
-    add("registration.json");
-    // Server-only Reeve tuning (weights/thresholds/placement policy). The
-    // client receives only the structured report, never this config.
-    add("reeve.json");
-
-    for (auto& [name, entry] : configs_) {
-        struct stat st;
-        if (stat(entry.path.c_str(), &st) == 0) {
-            entry.mtime = st.st_mtime;
-        }
-        success &= loadConfig(entry.path, name, entry.data);
-        if (entry.postprocess && !entry.data.is_null()) {
-            entry.postprocess(entry.data);
-        }
-        entry.last_check_ms = monotonic_ms();
-    }
-
-    auto building_it = configs_.find("fiefdom_building_types.json");
-    if (building_it != configs_.end()) {
-        rebuild_building_land_maps(building_it->second.data);
-    }
-
-    loaded_ = success;
-    return success;
-}
-
-void GameConfigCache::rebuild_building_land_maps(const nlohmann::json& buildings) {
-    std::unordered_map<std::string, int> arable;
-    std::unordered_map<std::string, int> forest;
-    if (buildings.is_array()) {
-        for (const auto& obj : buildings) {
-            if (!obj.is_object() || obj.empty()) continue;
-            for (auto it = obj.begin(); it != obj.end(); ++it) {
-                if (!it.value().is_object()) continue;
-                const auto& cfg = it.value();
-                if (cfg.contains("arable_acres") && cfg["arable_acres"].is_number()) {
-                    arable[it.key()] = cfg["arable_acres"].get<int>();
-                }
-                if (cfg.contains("forest_acres") && cfg["forest_acres"].is_number()) {
-                    forest[it.key()] = cfg["forest_acres"].get<int>();
-                }
-            }
-        }
-    }
-    std::lock_guard<std::mutex> lock(land_mutex_);
-    building_arable_acres_ = std::move(arable);
-    building_forest_acres_ = std::move(forest);
-}
-
-nlohmann::json& GameConfigCache::getConfig(const std::string& name) {
-    std::lock_guard<std::mutex> lock(reload_mutex_);
-    auto it = configs_.find(name);
-    if (it == configs_.end()) {
-        ConfigEntry e;
-        e.path = config_dir_ + "/" + name;
-        e.last_check_ms = 0;
-        it = configs_.emplace(name, std::move(e)).first;
-    }
-    const char* hot_reload = std::getenv("RAVENEST_CONFIG_HOT_RELOAD");
-    if (hot_reload && std::string(hot_reload) == "1") {
-        try_reload(it->first, it->second);
-    }
-    return it->second.data;
-}
-
-void GameConfigCache::try_reload(const std::string& name, ConfigEntry& entry) {
-    int64_t now = monotonic_ms();
-    if (now - entry.last_check_ms < 5000) return;
-    entry.last_check_ms = now;
-
-    struct stat st;
-    if (stat(entry.path.c_str(), &st) != 0) {
-        // File deleted or doesn't exist — clear data so callers can detect
-        entry.data = nullptr;
-        entry.mtime = 0;
+void add_json_files_in_directory(const std::string& directory,
+                                 const std::string& prefix,
+                                 std::vector<std::string>& names) {
+    std::error_code ec;
+    std::filesystem::directory_iterator it(directory, ec);
+    if (ec) {
         return;
     }
-    if (st.st_mtime <= entry.mtime) return;
-    entry.mtime = st.st_mtime;
-    std::cerr << "[GameConfigCache] Hot-reload: " << name << " changed, re-parsing" << std::endl;
-    if (loadConfig(entry.path, name, entry.data)) {
-        if (entry.postprocess) entry.postprocess(entry.data);
-        if (name == "fiefdom_building_types.json") {
-            rebuild_building_land_maps(entry.data);
+    for (const auto& entry : it) {
+        if (!entry.is_regular_file(ec) || ec) {
+            ec.clear();
+            continue;
         }
+        const std::string filename = entry.path().filename().string();
+        if (filename.size() < 5) {
+            continue;
+        }
+        if (filename.compare(filename.size() - 5, 5, ".json") != 0) {
+            continue;
+        }
+        names.push_back(prefix + filename);
     }
 }
 
-nlohmann::json& GameConfigCache::getDamageTypes() { return getConfig("damage_types.json"); }
-nlohmann::json& GameConfigCache::getFiefdomBuildingTypes() { return getConfig("fiefdom_building_types.json"); }
-nlohmann::json& GameConfigCache::getPlayerCombatants() { return getConfig("player_combatants.json"); }
-nlohmann::json& GameConfigCache::getEnemyCombatants() { return getConfig("enemy_combatants.json"); }
-nlohmann::json& GameConfigCache::getHeroes() { return getConfig("heroes.json"); }
-nlohmann::json& GameConfigCache::getFiefdomOfficials() { return getConfig("fiefdom_officials.json"); }
-nlohmann::json& GameConfigCache::getWallConfig() { return getConfig("wall_config.json"); }
-nlohmann::json& GameConfigCache::getMiniGames() { return getConfig("mini_games.json"); }
-nlohmann::json& GameConfigCache::getTowerDefenseMobs() { return getConfig("tower_defense/mobs.json"); }
-nlohmann::json& GameConfigCache::getTowerDefenseTowers() { return getConfig("tower_defense/towers.json"); }
-nlohmann::json& GameConfigCache::getTowerDefenseUnits() { return getConfig("tower_defense/units.json"); }
-nlohmann::json& GameConfigCache::getTowerDefenseUnitUnlocks() { return getConfig("tower_defense/unit_unlocks.json"); }
-nlohmann::json& GameConfigCache::getTowerDefenseProjectiles() { return getConfig("tower_defense/projectiles.json"); }
-nlohmann::json& GameConfigCache::getTowerDefenseWaveTemplates() { return getConfig("tower_defense/wave_templates.json"); }
-nlohmann::json& GameConfigCache::getTowerDefenseOngoing() { return getConfig("tower_defense/ongoing.json"); }
-nlohmann::json& GameConfigCache::getWeedingPlants() { return getConfig("weeding/plants.json"); }
-nlohmann::json& GameConfigCache::getWeedingTools() { return getConfig("weeding/tools.json"); }
-nlohmann::json& GameConfigCache::getWeedingSpecials() { return getConfig("weeding/specials.json"); }
-nlohmann::json& GameConfigCache::getWeedingOngoing() { return getConfig("weeding/ongoing.json"); }
-nlohmann::json& GameConfigCache::getEconomyConfig() { return getConfig("economy.json"); }
-nlohmann::json& GameConfigCache::getRetinueConfig() { return getConfig("retinue.json"); }
-nlohmann::json& GameConfigCache::getEquipmentConfig() { return getConfig("equipment.json"); }
-nlohmann::json& GameConfigCache::getItemsConfig() { return getConfig("items.json"); }
-nlohmann::json& GameConfigCache::getTechTreesConfig() { return getConfig("tech_trees.json"); }
+} // namespace
 
-int GameConfigCache::getRetinueCapacity(int manor_level) {
-    nlohmann::json& cfg = getRetinueConfig();
+// ---------------------------------------------------------------------------
+// config_handle
+// ---------------------------------------------------------------------------
+
+config_handle::config_handle() = default;
+
+config_handle::config_handle(config_ptr ptr) : ptr_(std::move(ptr)) {}
+
+const nlohmann::json& config_handle::operator*() const & {
+    return ptr_ ? *ptr_ : null_config();
+}
+
+const nlohmann::json* config_handle::operator->() const {
+    return ptr_ ? ptr_.get() : &null_config();
+}
+
+bool config_handle::isNull() const {
+    return !ptr_ || ptr_->is_null();
+}
+
+bool config_handle::contains(const std::string& key) const {
+    return (**this).contains(key);
+}
+
+const nlohmann::json& config_handle::operator[](const std::string& key) const {
+    return (**this)[key];
+}
+
+const nlohmann::json& config_handle::operator[](const char* key) const {
+    return (**this)[key];
+}
+
+const nlohmann::json& config_handle::operator[](std::size_t index) const {
+    return (**this)[index];
+}
+
+const nlohmann::json& config_handle::at(const std::string& key) const {
+    return (**this).at(key);
+}
+
+const nlohmann::json& config_handle::at(std::size_t index) const {
+    return (**this).at(index);
+}
+
+bool config_handle::is_null() const { return (**this).is_null(); }
+bool config_handle::is_object() const { return (**this).is_object(); }
+bool config_handle::is_array() const { return (**this).is_array(); }
+bool config_handle::is_string() const { return (**this).is_string(); }
+bool config_handle::is_number() const { return (**this).is_number(); }
+bool config_handle::is_boolean() const { return (**this).is_boolean(); }
+bool config_handle::is_discarded() const { return (**this).is_discarded(); }
+bool config_handle::empty() const { return (**this).empty(); }
+std::size_t config_handle::size() const { return (**this).size(); }
+std::string config_handle::dump() const { return (**this).dump(); }
+
+// ---------------------------------------------------------------------------
+// config_snapshot
+// ---------------------------------------------------------------------------
+
+config_snapshot::config_snapshot(std::shared_ptr<const config_state> state)
+    : state_(std::move(state)) {}
+
+config_handle config_snapshot::get(const std::string& name) const {
+    if (!state_) {
+        return config_handle();
+    }
+    const auto it = state_->files.find(name);
+    if (it == state_->files.end()) {
+        return config_handle();
+    }
+    return config_handle(it->second);
+}
+
+config_handle config_snapshot::getDamageTypes() const { return get("damage_types.json"); }
+config_handle config_snapshot::getFiefdomBuildingTypes() const { return get("fiefdom_building_types.json"); }
+config_handle config_snapshot::getPlayerCombatants() const { return get("player_combatants.json"); }
+config_handle config_snapshot::getEnemyCombatants() const { return get("enemy_combatants.json"); }
+config_handle config_snapshot::getHeroes() const { return get("heroes.json"); }
+config_handle config_snapshot::getFiefdomOfficials() const { return get("fiefdom_officials.json"); }
+config_handle config_snapshot::getWallConfig() const { return get("wall_config.json"); }
+config_handle config_snapshot::getMiniGames() const { return get("mini_games.json"); }
+config_handle config_snapshot::getTowerDefenseMobs() const { return get("tower_defense/mobs.json"); }
+config_handle config_snapshot::getTowerDefenseTowers() const { return get("tower_defense/towers.json"); }
+config_handle config_snapshot::getTowerDefenseUnits() const { return get("tower_defense/units.json"); }
+config_handle config_snapshot::getTowerDefenseUnitUnlocks() const { return get("tower_defense/unit_unlocks.json"); }
+config_handle config_snapshot::getTowerDefenseProjectiles() const { return get("tower_defense/projectiles.json"); }
+config_handle config_snapshot::getTowerDefenseWaveTemplates() const { return get("tower_defense/wave_templates.json"); }
+config_handle config_snapshot::getTowerDefenseOngoing() const { return get("tower_defense/ongoing.json"); }
+config_handle config_snapshot::getWeedingPlants() const { return get("weeding/plants.json"); }
+config_handle config_snapshot::getWeedingTools() const { return get("weeding/tools.json"); }
+config_handle config_snapshot::getWeedingSpecials() const { return get("weeding/specials.json"); }
+config_handle config_snapshot::getWeedingOngoing() const { return get("weeding/ongoing.json"); }
+config_handle config_snapshot::getEconomyConfig() const { return get("economy.json"); }
+config_handle config_snapshot::getRetinueConfig() const { return get("retinue.json"); }
+config_handle config_snapshot::getEquipmentConfig() const { return get("equipment.json"); }
+config_handle config_snapshot::getItemsConfig() const { return get("items.json"); }
+config_handle config_snapshot::getTechTreesConfig() const { return get("tech_trees.json"); }
+config_handle config_snapshot::getManorUi() const { return get("manor_ui.json"); }
+config_handle config_snapshot::getManorRiver() const { return get("manor_river.json"); }
+config_handle config_snapshot::getPortraitFrames() const { return get("portrait_frames.json"); }
+config_handle config_snapshot::getCombatRulesets() const { return get("combat/rulesets.json"); }
+config_handle config_snapshot::getCombatWarbands() const { return get("combat/warbands.json"); }
+config_handle config_snapshot::getCombatStructures() const { return get("combat/structures.json"); }
+config_handle config_snapshot::getCombatFormations() const { return get("combat/formations.json"); }
+config_handle config_snapshot::getCombatProfiles() const { return get("combat/profiles.json"); }
+config_handle config_snapshot::getCombatRewards() const { return get("combat/rewards.json"); }
+config_handle config_snapshot::getCombatOfferings() const { return get("combat/offerings.json"); }
+config_handle config_snapshot::getCosmetics() const { return get("cosmetics.json"); }
+config_handle config_snapshot::getProgression() const { return get("progression.json"); }
+config_handle config_snapshot::getChatConfig() const { return get("chat.json"); }
+config_handle config_snapshot::getChatAdmins() const { return get("chat_admins.json"); }
+config_handle config_snapshot::getSafeMessages() const { return get("safe_messages.json"); }
+config_handle config_snapshot::getSafeBaronyNames() const { return get("safe_barony_names.json"); }
+config_handle config_snapshot::getSafeBaronyTags() const { return get("safe_barony_tags.json"); }
+config_handle config_snapshot::getSafeReactions() const { return get("safe_reactions.json"); }
+config_handle config_snapshot::getSafeGifs() const { return get("safe_gifs.json"); }
+config_handle config_snapshot::getSafeBanReasons() const { return get("safe_ban_reasons.json"); }
+config_handle config_snapshot::getTranslationConfig() const { return get("translation.json"); }
+config_handle config_snapshot::getPushConfig() const { return get("push.json"); }
+config_handle config_snapshot::getRegistrationConfig() const { return get("registration.json"); }
+config_handle config_snapshot::getReeveConfig() const { return get("reeve.json"); }
+
+std::optional<nlohmann::json>
+config_snapshot::getTowerDefenseSpawnSchedule(const std::string& filename) const {
+    const auto data = get("tower_defense/spawn_schedules/" + filename);
+    if (data.is_null()) {
+        return std::nullopt;
+    }
+    return *data;
+}
+
+std::optional<nlohmann::json>
+config_snapshot::loadWeedingMap(const std::string& filename) const {
+    const auto data = get("weeding/maps/" + filename);
+    if (data.is_null()) {
+        return std::nullopt;
+    }
+    return *data;
+}
+
+std::optional<nlohmann::json>
+config_snapshot::loadWeedingLevelConfig(const std::string& filename) const {
+    const auto data = get("weeding/" + filename);
+    if (data.is_null()) {
+        return std::nullopt;
+    }
+    return *data;
+}
+
+int config_snapshot::getRetinueCapacity(int manor_level) const {
+    const auto cfg = getRetinueConfig();
     if (cfg.contains("retinue_capacity_by_level") &&
         cfg["retinue_capacity_by_level"].is_array()) {
         const auto& arr = cfg["retinue_capacity_by_level"];
         if (arr.empty()) return 0;
         if (manor_level < 0) manor_level = 0;
-        size_t idx = static_cast<size_t>(manor_level);
+        std::size_t idx = static_cast<std::size_t>(manor_level);
         if (idx >= arr.size()) idx = arr.size() - 1;
         if (arr[idx].is_number()) return arr[idx].get<int>();
     }
     return 0;
 }
 
-int GameConfigCache::getBuildingArableAcres(const std::string& type_id) {
-    std::lock_guard<std::mutex> lock(land_mutex_);
-    const auto it = building_arable_acres_.find(type_id);
-    return it == building_arable_acres_.end() ? 0 : it->second;
+int config_snapshot::getBuildingArableAcres(const std::string& type_id) const {
+    if (!state_) return 0;
+    const auto it = state_->building_arable_acres.find(type_id);
+    return it == state_->building_arable_acres.end() ? 0 : it->second;
 }
 
-double GameConfigCache::getArableLandByLevel(int manor_level) {
-    nlohmann::json& economy = getEconomyConfig();
+double config_snapshot::getArableLandByLevel(int manor_level) const {
+    const auto economy = getEconomyConfig();
     if (economy.contains("arable_land_by_level") && economy["arable_land_by_level"].is_array()) {
         const auto& arr = economy["arable_land_by_level"];
         if (arr.empty()) return 0.0;
         if (manor_level < 0) manor_level = 0;
-        size_t idx = static_cast<size_t>(manor_level);
+        std::size_t idx = static_cast<std::size_t>(manor_level);
         if (idx >= arr.size()) idx = arr.size() - 1;
         if (arr[idx].is_number()) return arr[idx].get<double>();
     }
     return 0.0;
 }
 
-int GameConfigCache::getBuildingForestAcres(const std::string& type_id) {
-    std::lock_guard<std::mutex> lock(land_mutex_);
-    const auto it = building_forest_acres_.find(type_id);
-    return it == building_forest_acres_.end() ? 0 : it->second;
+int config_snapshot::getBuildingForestAcres(const std::string& type_id) const {
+    if (!state_) return 0;
+    const auto it = state_->building_forest_acres.find(type_id);
+    return it == state_->building_forest_acres.end() ? 0 : it->second;
 }
 
-double GameConfigCache::getForestLandByLevel(int manor_level) {
-    nlohmann::json& economy = getEconomyConfig();
+double config_snapshot::getForestLandByLevel(int manor_level) const {
+    const auto economy = getEconomyConfig();
     if (economy.contains("forest_land_by_level") && economy["forest_land_by_level"].is_array()) {
         const auto& arr = economy["forest_land_by_level"];
         if (arr.empty()) return 0.0;
         if (manor_level < 0) manor_level = 0;
-        size_t idx = static_cast<size_t>(manor_level);
+        std::size_t idx = static_cast<std::size_t>(manor_level);
         if (idx >= arr.size()) idx = arr.size() - 1;
         if (arr[idx].is_number()) return arr[idx].get<double>();
     }
     return 0.0;
 }
 
-std::string GameConfigCache::getBuildingClass(const std::string& type_id) {
-    nlohmann::json& buildings = getFiefdomBuildingTypes();
-    if (buildings.is_array()) {
-        for (auto& obj : buildings) {
-            if (obj.is_object() && obj.contains(type_id)) {
-                const auto& cfg = obj[type_id];
-                if (cfg.is_object() && cfg.contains("class") && cfg["class"].is_string()) {
-                    return cfg["class"].get<std::string>();
-                }
-                return "";
-            }
-        }
-    }
-    return "";
+std::string config_snapshot::getBuildingClass(const std::string& type_id) const {
+    if (!state_) return "";
+    const auto it = state_->building_classes.find(type_id);
+    return it == state_->building_classes.end() ? "" : it->second;
 }
 
-// A building's optional exclusive group: at most one building from a given
-// group may exist in a fiefdom. Empty string means the building is not in an
-// exclusive group. Distinct from `class` (which is a prerequisite/modifier
-// targeting namespace) — exclusivity is a build constraint.
-std::string GameConfigCache::getBuildingExclusiveGroup(const std::string& type_id) {
-    nlohmann::json& buildings = getFiefdomBuildingTypes();
-    if (buildings.is_array()) {
-        for (auto& obj : buildings) {
-            if (obj.is_object() && obj.contains(type_id)) {
-                const auto& cfg = obj[type_id];
-                if (cfg.is_object() && cfg.contains("exclusive_group") &&
-                    cfg["exclusive_group"].is_string()) {
-                    return cfg["exclusive_group"].get<std::string>();
-                }
-                return "";
-            }
-        }
-    }
-    return "";
+std::string config_snapshot::getBuildingExclusiveGroup(const std::string& type_id) const {
+    if (!state_) return "";
+    const auto it = state_->building_exclusive_groups.find(type_id);
+    return it == state_->building_exclusive_groups.end() ? "" : it->second;
 }
 
-nlohmann::json& GameConfigCache::getManorUi() { return getConfig("manor_ui.json"); }
-nlohmann::json& GameConfigCache::getManorRiver() { return getConfig("manor_river.json"); }
-nlohmann::json& GameConfigCache::getPortraitFrames() { return getConfig("portrait_frames.json"); }
-nlohmann::json& GameConfigCache::getCombatRulesets() { return getConfig("combat/rulesets.json"); }
-nlohmann::json& GameConfigCache::getCombatWarbands() { return getConfig("combat/warbands.json"); }
-nlohmann::json& GameConfigCache::getCombatStructures() { return getConfig("combat/structures.json"); }
-nlohmann::json& GameConfigCache::getCombatFormations() { return getConfig("combat/formations.json"); }
-nlohmann::json& GameConfigCache::getCombatProfiles() { return getConfig("combat/profiles.json"); }
-nlohmann::json& GameConfigCache::getCombatRewards() { return getConfig("combat/rewards.json"); }
-nlohmann::json& GameConfigCache::getCombatOfferings() { return getConfig("combat/offerings.json"); }
-nlohmann::json& GameConfigCache::getCosmetics() { return getConfig("cosmetics.json"); }
-nlohmann::json& GameConfigCache::getProgression() { return getConfig("progression.json"); }
-nlohmann::json& GameConfigCache::getChatConfig() { return getConfig("chat.json"); }
-nlohmann::json& GameConfigCache::getChatAdmins() { return getConfig("chat_admins.json"); }
-nlohmann::json& GameConfigCache::getSafeMessages() { return getConfig("safe_messages.json"); }
-nlohmann::json& GameConfigCache::getSafeBaronyNames() { return getConfig("safe_barony_names.json"); }
-nlohmann::json& GameConfigCache::getSafeBaronyTags() { return getConfig("safe_barony_tags.json"); }
-nlohmann::json& GameConfigCache::getSafeReactions() { return getConfig("safe_reactions.json"); }
-nlohmann::json& GameConfigCache::getSafeGifs() { return getConfig("safe_gifs.json"); }
-nlohmann::json& GameConfigCache::getSafeBanReasons() { return getConfig("safe_ban_reasons.json"); }
-nlohmann::json& GameConfigCache::getTranslationConfig() { return getConfig("translation.json"); }
-nlohmann::json& GameConfigCache::getPushConfig() { return getConfig("push.json"); }
-nlohmann::json& GameConfigCache::getRegistrationConfig() { return getConfig("registration.json"); }
-nlohmann::json& GameConfigCache::getReeveConfig() { return getConfig("reeve.json"); }
-
-std::optional<nlohmann::json> GameConfigCache::getTowerDefenseSpawnSchedule(const std::string& filename) {
-    nlohmann::json& data = getConfig("tower_defense/spawn_schedules/" + filename);
-    if (data.is_null()) return std::nullopt;
-    return data;
-}
-
-std::optional<nlohmann::json> GameConfigCache::loadWeedingMap(const std::string& filename) {
-    nlohmann::json& data = getConfig("weeding/maps/" + filename);
-    if (data.is_null()) return std::nullopt;
-    return data;
-}
-
-std::optional<nlohmann::json> GameConfigCache::loadWeedingLevelConfig(const std::string& filename) {
-    nlohmann::json& data = getConfig("weeding/" + filename);
-    if (data.is_null()) return std::nullopt;
-    return data;
-}
-
-nlohmann::json GameConfigCache::getAllConfigs() const {
+nlohmann::json config_snapshot::getAllConfigs() const {
     nlohmann::json result;
-    auto get = [&](const std::string& name) -> const nlohmann::json& {
-        auto it = configs_.find(name);
-        if (it != configs_.end()) return it->second.data;
-        static nlohmann::json null_data;
-        return null_data;
+    auto add = [&](const std::string& key, const std::string& name) {
+        const auto cfg = get(name);
+        if (!cfg.isNull()) {
+            result[key] = *cfg;
+        }
     };
-    result["damage_types"] = get("damage_types.json");
-    result["fiefdom_building_types"] = get("fiefdom_building_types.json");
-    result["player_combatants"] = get("player_combatants.json");
-    result["enemy_combatants"] = get("enemy_combatants.json");
-    result["heroes"] = get("heroes.json");
-    result["fiefdom_officials"] = get("fiefdom_officials.json");
-    result["wall_config"] = get("wall_config.json");
-    result["mini_games"] = get("mini_games.json");
-    result["tower_defense_mobs"] = get("tower_defense_mobs.json");
-    result["tower_defense_towers"] = get("tower_defense_towers.json");
-    result["tower_defense_units"] = get("tower_defense_units.json");
-    result["manor_ui"] = get("manor_ui.json");
-    result["safe_messages"] = get("safe_messages.json");
-    result["safe_barony_names"] = get("safe_barony_names.json");
-    result["safe_barony_tags"] = get("safe_barony_tags.json");
-    result["safe_reactions"] = get("safe_reactions.json");
-    result["safe_gifs"] = get("safe_gifs.json");
-    result["safe_ban_reasons"] = get("safe_ban_reasons.json");
+    add("damage_types", "damage_types.json");
+    add("fiefdom_building_types", "fiefdom_building_types.json");
+    add("player_combatants", "player_combatants.json");
+    add("enemy_combatants", "enemy_combatants.json");
+    add("heroes", "heroes.json");
+    add("fiefdom_officials", "fiefdom_officials.json");
+    add("wall_config", "wall_config.json");
+    add("mini_games", "mini_games.json");
+    // These lookups used to reference nonexistent `tower_defense_mobs.json`
+    // style names, so the client never received the tower-defense configs.
+    add("tower_defense_mobs", "tower_defense/mobs.json");
+    add("tower_defense_towers", "tower_defense/towers.json");
+    add("tower_defense_units", "tower_defense/units.json");
+    add("manor_ui", "manor_ui.json");
+    add("safe_messages", "safe_messages.json");
+    add("safe_barony_names", "safe_barony_names.json");
+    add("safe_barony_tags", "safe_barony_tags.json");
+    add("safe_reactions", "safe_reactions.json");
+    add("safe_gifs", "safe_gifs.json");
+    add("safe_ban_reasons", "safe_ban_reasons.json");
     return result;
 }
 
-bool GameConfigCache::isLoaded() const {
-    return loaded_;
+std::int64_t config_snapshot::getConfigGeneration(const std::string& name) const {
+    if (!state_) return 0;
+    const auto it = state_->generations.find(name);
+    return it == state_->generations.end() ? 0 : it->second;
 }
 
-int64_t GameConfigCache::getConfigGeneration(const std::string& name) {
-    std::lock_guard<std::mutex> lock(reload_mutex_);
-    auto it = configs_.find(name);
-    return it == configs_.end() ? 0 : static_cast<int64_t>(it->second.mtime);
+std::int64_t config_snapshot::generation() const {
+    return state_ ? state_->generation : 0;
+}
+
+// ---------------------------------------------------------------------------
+// GameConfigCache
+// ---------------------------------------------------------------------------
+
+bool GameConfigCache::initialize(const std::string& config_dir) {
+    config_dir_ = config_dir;
+
+    tracked_names_ = {
+        "damage_types.json",
+        "fiefdom_building_types.json",
+        "player_combatants.json",
+        "enemy_combatants.json",
+        "heroes.json",
+        "fiefdom_officials.json",
+        "wall_config.json",
+        "mini_games.json",
+        "tower_defense/mobs.json",
+        "tower_defense/towers.json",
+        "tower_defense/units.json",
+        "tower_defense/unit_unlocks.json",
+        "tower_defense/projectiles.json",
+        "tower_defense/wave_templates.json",
+        "tower_defense/ongoing.json",
+        "weeding/plants.json",
+        "weeding/tools.json",
+        "weeding/specials.json",
+        "weeding/ongoing.json",
+        "economy.json",
+        "retinue.json",
+        "equipment.json",
+        "items.json",
+        "tech_trees.json",
+        "manor_ui.json",
+        "manor_river.json",
+        "portrait_frames.json",
+        "combat/rulesets.json",
+        "combat/warbands.json",
+        "combat/structures.json",
+        "combat/formations.json",
+        "combat/profiles.json",
+        "combat/rewards.json",
+        "combat/offerings.json",
+        "cosmetics.json",
+        "progression.json",
+        "chat.json",
+        "chat_admins.json",
+        "safe_messages.json",
+        "safe_barony_names.json",
+        "safe_barony_tags.json",
+        "safe_reactions.json",
+        "safe_gifs.json",
+        "safe_ban_reasons.json",
+        "translation.json",
+        "push.json",
+        // Server-only config. It contains the optional shared global
+        // registration code, so it is deliberately NOT added to
+        // getAllConfigs() (which backs getGameInfo).
+        "registration.json",
+        // Server-only Reeve tuning (weights/thresholds/placement policy).
+        "reeve.json",
+    };
+
+    postprocessors_.clear();
+    postprocessors_["fiefdom_building_types.json"] = money::normalize_money_costs;
+    postprocessors_["wall_config.json"] = money::normalize_money_costs;
+
+    config_reload_result result;
+    auto next = prepareReload(true, result);
+    if (!next) {
+        std::cerr << "[GameConfigCache] Initialization failed: " << result.error << std::endl;
+        loaded_ = false;
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        state_ = std::move(next);
+    }
+    loaded_ = true;
+    return true;
+}
+
+config_snapshot GameConfigCache::snapshot() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return config_snapshot(state_);
+}
+
+bool GameConfigCache::reloadConfigs(config_reload_result& result) {
+    auto next = prepareReload(true, result);
+    if (!next) {
+        std::cerr << "[GameConfigCache] Reload aborted: " << result.error << std::endl;
+        return false;
+    }
+    commitReload(std::move(next), result);
+    return true;
+}
+
+bool GameConfigCache::reloadChangedConfigs(config_reload_result& result) {
+    auto next = prepareReload(false, result);
+    if (!next) {
+        std::cerr << "[GameConfigCache] Reload aborted: " << result.error << std::endl;
+        return false;
+    }
+    commitReload(std::move(next), result);
+    return true;
+}
+
+bool GameConfigCache::isLoaded() const {
+    return loaded_.load();
+}
+
+void GameConfigCache::addReloadCallback(config_reload_callback callback) {
+    std::lock_guard<std::mutex> lock(callbacks_mutex_);
+    callbacks_.push_back(std::move(callback));
+}
+
+std::shared_ptr<const config_state>
+GameConfigCache::prepareReload(bool force_all, config_reload_result& result) {
+    std::shared_ptr<const config_state> previous;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        previous = state_;
+    }
+
+    auto next = std::make_shared<config_state>();
+    std::int64_t next_generation = previous ? previous->generation : 0;
+
+    const std::vector<std::string> names = collectConfigNames();
+    for (const std::string& name : names) {
+        const std::string path = config_dir_ + "/" + name;
+
+        struct stat st {};
+        const bool stat_ok = (stat(path.c_str(), &st) == 0);
+
+        if (!force_all && previous) {
+            const auto file_it = previous->files.find(name);
+            const auto mtime_it = previous->mtimes.find(name);
+            if (file_it != previous->files.end() && mtime_it != previous->mtimes.end() &&
+                stat_ok && mtime_it->second == st.st_mtime) {
+                next->files[name] = file_it->second;
+                next->mtimes[name] = mtime_it->second;
+                const auto gen_it = previous->generations.find(name);
+                next->generations[name] =
+                    (gen_it == previous->generations.end()) ? 0 : gen_it->second;
+                continue;
+            }
+        }
+
+        if (!stat_ok) {
+            const std::string error = "cannot stat " + path;
+            result.failed_files.push_back(name);
+            if (!result.error.empty()) result.error += "; ";
+            result.error += error;
+            return nullptr;
+        }
+
+        config_ptr loaded;
+        std::string error;
+        if (!loadConfigSnapshot(name, path, loaded, error)) {
+            result.failed_files.push_back(name);
+            if (!result.error.empty()) result.error += "; ";
+            result.error += name + ": " + error;
+            return nullptr;
+        }
+
+        next->files[name] = std::move(loaded);
+        next->mtimes[name] = st.st_mtime;
+        next->generations[name] = ++next_generation;
+        result.changed_files.push_back(name);
+    }
+
+    next->generation = next_generation;
+    rebuildDerivedMaps(next);
+    return next;
+}
+
+void GameConfigCache::commitReload(std::shared_ptr<const config_state> next,
+                                   config_reload_result& result) {
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        state_ = std::move(next);
+    }
+    loaded_ = true;
+
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        result.generation = state_ ? state_->generation : 0;
+    }
+
+    config_reload_result callback_result = result;
+
+    std::vector<config_reload_callback> callbacks;
+    {
+        std::lock_guard<std::mutex> lock(callbacks_mutex_);
+        callbacks = callbacks_;
+    }
+    for (const auto& callback : callbacks) {
+        try {
+            callback(callback_result);
+        } catch (const std::exception& e) {
+            std::cerr << "[GameConfigCache] Reload callback failed: " << e.what() << std::endl;
+        } catch (...) {
+            std::cerr << "[GameConfigCache] Reload callback failed with unknown exception"
+                      << std::endl;
+        }
+    }
+
+    std::cout << "[GameConfigCache] Reload complete: changed="
+              << callback_result.changed_files.size()
+              << " failed=" << callback_result.failed_files.size()
+              << " generation=" << callback_result.generation << std::endl;
+}
+
+config_handle GameConfigCache::loadDynamicConfig(const std::string& name) const {
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (state_) {
+            const auto it = state_->files.find(name);
+            if (it != state_->files.end()) {
+                return config_handle(it->second);
+            }
+        }
+    }
+
+    std::lock_guard<std::mutex> dynamic_lock(dynamic_load_mutex_);
+
+    std::shared_ptr<const config_state> previous;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        previous = state_;
+    }
+    if (previous) {
+        const auto it = previous->files.find(name);
+        if (it != previous->files.end()) {
+            return config_handle(it->second);
+        }
+    }
+
+    const std::string path = config_dir_ + "/" + name;
+    config_ptr loaded;
+    std::string error;
+    if (!loadConfigSnapshot(name, path, loaded, error)) {
+        std::cerr << "[GameConfigCache] Dynamic config load failed for " << name
+                  << ": " << error << std::endl;
+        return config_handle();
+    }
+
+    auto next = std::make_shared<config_state>();
+    if (previous) {
+        next->files = previous->files;
+        next->mtimes = previous->mtimes;
+        next->generations = previous->generations;
+        next->building_arable_acres = previous->building_arable_acres;
+        next->building_forest_acres = previous->building_forest_acres;
+        next->building_classes = previous->building_classes;
+        next->building_exclusive_groups = previous->building_exclusive_groups;
+        next->generation = previous->generation;
+    }
+
+    struct stat st {};
+    if (stat(path.c_str(), &st) == 0) {
+        next->mtimes[name] = st.st_mtime;
+    }
+    next->files[name] = loaded;
+    next->generations[name] = ++next->generation;
+    rebuildDerivedMaps(next);
+
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        state_ = next;
+    }
+    return config_handle(loaded);
+}
+
+std::vector<std::string> GameConfigCache::collectConfigNames() const {
+    std::vector<std::string> names = tracked_names_;
+    std::unordered_set<std::string> seen(names.begin(), names.end());
+
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (state_) {
+            for (const auto& entry : state_->files) {
+                if (seen.insert(entry.first).second) {
+                    names.push_back(entry.first);
+                }
+            }
+        }
+    }
+
+    std::vector<std::string> dynamic_names;
+    add_json_files_in_directory(config_dir_ + "/tower_defense/spawn_schedules",
+                                "tower_defense/spawn_schedules/", dynamic_names);
+    add_json_files_in_directory(config_dir_ + "/weeding/maps",
+                                "weeding/maps/", dynamic_names);
+    add_json_files_in_directory(config_dir_ + "/weeding",
+                                "weeding/", dynamic_names);
+
+    for (const std::string& name : dynamic_names) {
+        if (seen.insert(name).second) {
+            names.push_back(name);
+        }
+    }
+    return names;
+}
+
+bool GameConfigCache::loadConfigSnapshot(const std::string& name,
+                                         const std::string& path,
+                                         config_ptr& out,
+                                         std::string& error) const {
+    const std::string content = read_file_to_string(path);
+    if (content.empty()) {
+        error = "cannot read " + path;
+        return false;
+    }
+
+    try {
+        nlohmann::json parsed = nlohmann::json::parse(content, nullptr, true, true, true);
+        const auto postprocess_it = postprocessors_.find(name);
+        if (postprocess_it != postprocessors_.end() && postprocess_it->second) {
+            postprocess_it->second(parsed);
+        }
+        out = std::make_shared<const nlohmann::json>(std::move(parsed));
+        return true;
+    } catch (const std::exception& e) {
+        error = e.what();
+        return false;
+    }
+}
+
+void GameConfigCache::rebuildDerivedMaps(
+    const std::shared_ptr<config_state>& state) const {    state->building_arable_acres.clear();
+    state->building_forest_acres.clear();
+    state->building_classes.clear();
+    state->building_exclusive_groups.clear();
+
+    const auto it = state->files.find("fiefdom_building_types.json");
+    if (it == state->files.end() || !it->second || !it->second->is_array()) {
+        return;
+    }
+
+    for (const auto& obj : *it->second) {
+        if (!obj.is_object() || obj.empty()) continue;
+        for (auto entry = obj.begin(); entry != obj.end(); ++entry) {
+            if (!entry.value().is_object()) continue;
+            const nlohmann::json& cfg = entry.value();
+            if (cfg.contains("arable_acres") && cfg["arable_acres"].is_number()) {
+                state->building_arable_acres[entry.key()] = cfg["arable_acres"].get<int>();
+            }
+            if (cfg.contains("forest_acres") && cfg["forest_acres"].is_number()) {
+                state->building_forest_acres[entry.key()] = cfg["forest_acres"].get<int>();
+            }
+            if (cfg.contains("class") && cfg["class"].is_string()) {
+                state->building_classes[entry.key()] = cfg["class"].get<std::string>();
+            }
+            if (cfg.contains("exclusive_group") && cfg["exclusive_group"].is_string()) {
+                state->building_exclusive_groups[entry.key()] =
+                    cfg["exclusive_group"].get<std::string>();
+            }
+        }
+    }
+}
+
+std::optional<nlohmann::json>
+GameConfigCache::getTowerDefenseSpawnSchedule(const std::string& filename) const {
+    const auto handle = loadDynamicConfig("tower_defense/spawn_schedules/" + filename);
+    if (handle.is_null()) {
+        return std::nullopt;
+    }
+    return *handle;
+}
+
+std::optional<nlohmann::json>
+GameConfigCache::loadWeedingMap(const std::string& filename) const {
+    const auto handle = loadDynamicConfig("weeding/maps/" + filename);
+    if (handle.is_null()) {
+        return std::nullopt;
+    }
+    return *handle;
+}
+
+std::optional<nlohmann::json>
+GameConfigCache::loadWeedingLevelConfig(const std::string& filename) const {
+    const auto handle = loadDynamicConfig("weeding/" + filename);
+    if (handle.is_null()) {
+        return std::nullopt;
+    }
+    return *handle;
 }

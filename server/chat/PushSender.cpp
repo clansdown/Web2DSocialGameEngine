@@ -149,6 +149,7 @@ size_t write_callback(char* ptr, size_t size, size_t nmemb, void* userdata) {
 
 void PushSender::configure(const nlohmann::json& push_config) {
     if (!push_config.is_object()) return;
+    std::lock_guard<std::mutex> lock(mutex_);
     vapid_subject_ = push_config.value("sub", vapid_subject_);
     ttl_ = push_config.value("default_ttl", ttl_);
     const auto& vapid = push_config.value("vapid", nlohmann::json::object());
@@ -163,11 +164,24 @@ void PushSender::configure(const nlohmann::json& push_config) {
 
 PushSender::outcome PushSender::send(const push_subscription& subscription,
                                      const push_message& message) {
-    if (!configured()) return outcome::not_configured;
+    std::string vapid_public;
+    std::string vapid_private_encoded;
+    std::string vapid_subject;
+    int ttl = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (vapid_public_.empty() || vapid_private_.empty()) {
+            return outcome::not_configured;
+        }
+        vapid_public = vapid_public_;
+        vapid_private_encoded = vapid_private_;
+        vapid_subject = vapid_subject_;
+        ttl = ttl_;
+    }
 
     bytes ua_public = b64url_decode(subscription.p256dh);
     bytes auth_secret = b64url_decode(subscription.auth);
-    bytes vapid_private = b64url_decode(vapid_private_);
+    bytes vapid_private = b64url_decode(vapid_private_encoded);
     if (ua_public.size() != 65 || auth_secret.empty() || vapid_private.size() != 32) {
         return outcome::retryable;
     }
@@ -244,7 +258,7 @@ PushSender::outcome PushSender::send(const push_subscription& subscription,
         std::strlen(R"({"typ":"JWT","alg":"ES256"})"));
     nlohmann::json payload = {{"aud", endpoint_origin(subscription.endpoint)},
                               {"exp", static_cast<int64_t>(std::time(nullptr)) + 43200},
-                              {"sub", vapid_subject_}};
+                              {"sub", vapid_subject}};
     std::string payload_str = payload.dump();
     std::string signing_input =
         header + "." + b64url_encode(reinterpret_cast<const unsigned char*>(payload_str.data()),
@@ -275,11 +289,11 @@ PushSender::outcome PushSender::send(const push_subscription& subscription,
     if (raw_sig.size() != 64) return outcome::retryable;
     std::string jwt = signing_input + "." + b64url_encode(raw_sig.data(), raw_sig.size());
     std::string authorization =
-        "vapid t=" + jwt + ",k=" + vapid_public_;
+        "vapid t=" + jwt + ",k=" + vapid_public;
 
     CURL* curl = curl_easy_init();
     if (!curl) return outcome::retryable;
-    std::string ttl_str = std::to_string(ttl_);
+    std::string ttl_str = std::to_string(ttl);
     struct curl_slist* headers = nullptr;
     headers = curl_slist_append(headers, "Content-Encoding: aes128gcm");
     headers = curl_slist_append(headers, "Content-Type: application/octet-stream");

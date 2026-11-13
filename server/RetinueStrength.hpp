@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-class GameConfigCache;
+#include "GameConfigCache.hpp"
 
 // Generic combat-power primitive. Used by mission generation (both sides),
 // strength-derived XP, and the danger estimate — and later by matchmaking and
@@ -59,15 +59,15 @@ double army_strength(double summed_power, int unit_count, const strength_tuning&
 // Power of one retinue member (class + level). Full health only — the anchor
 // always prices a member at 100% (a wounded retinue is intentionally
 // over-estimated here; the sim's HP bridge still weakens it in battle).
-double member_power(const retinue_db::retinue_member& member, GameConfigCache& cache,
+double member_power(const retinue_db::retinue_member& member, const config_snapshot& cache,
                     const strength_tuning& tuning);
 
 // Total strength of a retinue (aggregate over its members).
 double retinue_power(const std::vector<retinue_db::retinue_member>& members,
-                     GameConfigCache& cache, const strength_tuning& tuning);
+                     const config_snapshot& cache, const strength_tuning& tuning);
 
 // Total strength of an enemy warband (aggregate over its spawn entries).
 double warband_power(const std::vector<combat::warband_spawn_entry>& warband,
-                     GameConfigCache& cache, const strength_tuning& tuning);
+                     const config_snapshot& cache, const strength_tuning& tuning);
 
 } // namespace retinue_strength
