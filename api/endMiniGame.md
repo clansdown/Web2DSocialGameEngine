@@ -100,3 +100,19 @@ Ends an active mini-game session, records the outcome, and processes rewards.
 | `next_level_id` | int or null | Next available level ID, if any |
 | `rewards` | object | Resources earned from this level |
 | `completion_bonus` | object or null | One-time bonus for completing all 9 levels |
+
+## Reward resolution
+
+Campaign rewards resolve from the quest file first:
+
+1. `levels.<id>.reward`
+2. `default_level_reward`
+3. `mini_games.json` `levels[]` / `baron_levels[]`
+
+`completion_bonus` resolves from the quest file first, then
+`mini_games.json`. See `server/docs/mini_game_rewards.md`.
+
+Rewards are credited only on the first completion of a campaign level and are
+added to the character's fiefdom. A server-side replay (possible through the
+API) returns `rewards: {}` and pays nothing. The client locks completed
+campaign levels. Zero-value rewards are hidden by the success screen.

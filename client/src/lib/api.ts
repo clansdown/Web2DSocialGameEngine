@@ -802,6 +802,7 @@ export interface TDRoundCompleteResponse {
   gold: number;
   score: number;
   rewards: Record<string, number>;
+  completion_bonus?: Record<string, number>;
   completed: boolean;
   new_best_score: number;
   times_played: number;

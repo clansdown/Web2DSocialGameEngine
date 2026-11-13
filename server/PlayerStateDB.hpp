@@ -66,6 +66,7 @@ struct WeedingSessionRow {
 
 struct EndMiniGameResult {
     bool completed;
+    bool first_completion = false;
     int new_times_played;
     int new_best_score;
     bool all_levels_done;

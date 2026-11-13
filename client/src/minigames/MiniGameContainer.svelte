@@ -36,10 +36,41 @@
   let levelConfig: StartMiniGameResponse | null = $state(null);
   let gameStarted = $state(false);
   let gameFinished = $state(false);
-  let gameResults: EndMiniGameResponse | null = $state(null);
+  let gameResults = $state<EndMiniGameResponse | null>(null);
   let showResults = $state(false);
   let winMessage = $state('');
   let loseMessage = $state('');
+  let completion_bonus_label = $state('');
+
+  let visible_silver_pence = $derived.by(() => {
+    const silver_pence = gameResults?.rewards?.silver_pence;
+    return typeof silver_pence === 'number' && silver_pence > 0 ? silver_pence : 0;
+  });
+
+  let visible_reward_entries = $derived(
+    Object.entries(gameResults?.rewards ?? {}).filter(
+      ([resource, amount]) => resource !== 'silver_pence' && amount > 0
+    )
+  );
+
+  let visible_completion_bonus_entries = $derived(
+    Object.entries(gameResults?.completion_bonus ?? {}).filter(
+      ([, amount]) => amount > 0
+    )
+  );
+
+  let has_visible_rewards = $derived(
+    visible_silver_pence > 0 ||
+    visible_reward_entries.length > 0 ||
+    visible_completion_bonus_entries.length > 0
+  );
+
+  $effect(() => {
+    if (!showResults || !gameResults) return;
+    loadText('ui_minigame_completion_bonus')
+      .then((text) => { completion_bonus_label = text; })
+      .catch(() => { completion_bonus_label = ''; });
+  });
 
   // For tower defense
   let tdStarted = $state(false);
@@ -354,19 +385,27 @@
           {#if gameResults.new_best_score === gameResults.score && gameResults.score > 0}
             <p class="text-success">New Best Score!</p>
           {/if}
-          {#if gameResults.completed}
+          {#if gameResults.completed && has_visible_rewards}
             <div class="mb-3">
               <h5>Rewards</h5>
-              {#if gameResults.rewards.silver_pence}
+              {#if visible_silver_pence > 0}
                 <span class="badge bg-success me-2">
-                  Silver: +{gameResults.silver_formatted ?? `${gameResults.rewards.silver_pence}d`}
+                  Silver: +{gameResults.silver_formatted ?? `${visible_silver_pence}d`}
                 </span>
               {/if}
-              {#each Object.entries(gameResults.rewards) as [resource, amount]}
-                {#if resource !== 'silver_pence'}
-                  <span class="badge bg-success me-2">{resource}: +{amount}</span>
-                {/if}
+              {#each visible_reward_entries as [resource, amount]}
+                <span class="badge bg-success me-2">{resource}: +{amount}</span>
               {/each}
+              {#if visible_completion_bonus_entries.length > 0}
+                <div class="mt-2">
+                  {#if completion_bonus_label}
+                    <div class="small text-muted mb-1">{completion_bonus_label}</div>
+                  {/if}
+                  {#each visible_completion_bonus_entries as [resource, amount]}
+                    <span class="badge bg-success me-2">{resource}: +{amount}</span>
+                  {/each}
+                </div>
+              {/if}
             </div>
           {/if}
           {#if gameResults.base_unlocked}

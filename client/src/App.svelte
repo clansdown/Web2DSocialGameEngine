@@ -33,6 +33,19 @@
   // Mini-game launch is driven by the hash route (#/game/<game>/<level>)
   let gameRoute = $derived($route_store.type === 'game' ? $route_store : null);
 
+  // Completed campaign levels are one-shot. The campaign grids hide them; this
+  // guard also catches a manually entered #/game/... URL.
+  $effect(() => {
+    if (!gameRoute || !$playerGameState) return;
+    if (gameRoute.level_id <= 0) return;
+    const progress = $playerGameState.progress.find(
+      (row) => row.mini_game === gameRoute.game_id && row.level_id === gameRoute.level_id
+    );
+    if (progress?.completed) {
+      replace_route({ type: 'activity', id: 'tasks', rest: [] });
+    }
+  });
+
   // Language selection state
   let languageLoading = $state(true);
   let languageSet = $state(false);

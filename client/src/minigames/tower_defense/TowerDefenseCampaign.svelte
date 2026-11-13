@@ -51,6 +51,7 @@
 
   function isLevelAvailable(levelId: number): boolean {
     if (!$playerGameState) return false;
+    if (isLevelCompleted(levelId)) return false;
     if (levelId === minLevelId) return true;
     if (levelId < minLevelId) return false;
     const prevLevel = $playerGameState.progress.find(

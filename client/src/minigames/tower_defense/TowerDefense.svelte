@@ -635,7 +635,9 @@
       cls.defaultWidth = m.width || 48;
       cls.defaultHeight = m.height || 48;
       cls.setBoundingBox(cls.defaultWidth, cls.defaultHeight);
+      // The sprite's local frame: the source art may face any direction.
       cls.defaultSpriteForwardVector = m.forward_vector || [1, 0];
+      cls.defaultSpriteUpVector = m.sprite_up_vector || [0, -1];
       mobConfigs.set(id, m);
       mobEnemyClassMap.set(id, cls);
     }
@@ -650,7 +652,9 @@
       cls.defaultHeight = entry.height || 8;
       cls.setBoundingBox(cls.defaultWidth, cls.defaultHeight);
       cls.defaultSingleCollisionOnly = true;
+      // The projectile's local frame: the source art may face any direction.
       cls.defaultSpriteForwardVector = entry.forward_vector || [1, 0];
+      cls.defaultSpriteUpVector = entry.sprite_up_vector || [0, -1];
       projectileConfigs.set(id, entry);
       projectileClasses[id] = cls;
     }
@@ -1618,6 +1622,7 @@
           game_phase: ar.game_phase || 'initial_mission',
           next_level_id: null,
           rewards: ar.rewards || {},
+          completion_bonus: ar.completion_bonus,
           land_patent_earned: ar.land_patent_earned || false,
           baron_right_earned: ar.baron_right_earned || false,
           new_unlocks: ar.new_unlocks as NewUnlocks | undefined,
@@ -1662,6 +1667,7 @@
         game_phase: cr.game_phase || 'initial_mission',
         next_level_id: null,
         rewards: cr.rewards || {},
+        completion_bonus: cr.completion_bonus,
         land_patent_earned: cr.land_patent_earned || false,
         baron_right_earned: cr.baron_right_earned || false,
         new_unlocks: cr.new_unlocks,

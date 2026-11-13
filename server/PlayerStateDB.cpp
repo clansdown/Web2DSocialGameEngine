@@ -156,6 +156,8 @@ EndMiniGameResult end_mini_game(sqlite::database& db, int character_id, const st
                 existing_times = times_played;
             };
 
+        result.first_completion = (existing_completed == 0);
+
         if (existing_id == 0) {
             db << "INSERT INTO mini_game_progress (character_id, mini_game, level_id, completed, best_score, times_played, last_played) "
                   "VALUES (?, ?, ?, 1, ?, 1, ?);"

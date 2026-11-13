@@ -82,6 +82,7 @@ Manages tower defense round lifecycle — creates a new game session or complete
         "gold": 115,
         "score": 195,
         "rewards": { "gold": 10, "grain": 5 },
+        "completion_bonus": { "gold": 0, "wood": 0, "grain": 0 },
         "completed": true,
         "new_best_score": 195,
         "times_played": 1,
@@ -93,6 +94,12 @@ Manages tower defense round lifecycle — creates a new game session or complete
     }
 }
 ```
+
+Campaign rewards resolve from the quest file first (`levels.<id>.reward`, then
+`default_level_reward`), falling back to `mini_games.json`; the one-time
+`completion_bonus` resolves from the quest file then `mini_games.json`. Rewards
+are credited to the fiefdom only on first completion; replays return
+`rewards: {}` and pay nothing. See `server/docs/mini_game_rewards.md`.
 
 ## Error Responses
 

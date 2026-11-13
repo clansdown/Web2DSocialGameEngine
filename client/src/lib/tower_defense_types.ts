@@ -57,6 +57,7 @@ export interface MobConfig {
   width?: number;
   height?: number;
   forward_vector?: [number, number];
+  sprite_up_vector?: [number, number];
   image_url?: string;
   reward_gold?: number;
   spawn_on_death?: string[];
@@ -70,6 +71,7 @@ export interface ProjectileConfig {
   speed?: number;
   image_file?: string;
   forward_vector?: [number, number];
+  sprite_up_vector?: [number, number];
   orbit_radius?: number;
   arc_degrees?: number;
   fade_in_ms?: number;
@@ -201,6 +203,7 @@ export interface AdvanceResponse {
   game_phase?: string;
   next_level_id?: number | null;
   rewards?: Record<string, number>;
+  completion_bonus?: Record<string, number>;
   land_patent_earned?: boolean;
   baron_right_earned?: boolean;
   new_unlocks?: unknown;

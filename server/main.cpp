@@ -2587,6 +2587,207 @@ static std::string resolve_schedule_file(const nlohmann::json& mg_config, int le
     return std::string();
 }
 
+/**
+ * Load the quest-specific config for a campaign level. Tower-defense quests
+ * keep their extra data in the spawn schedule; weeding quests keep it in the
+ * level config file. Returns nullopt for ongoing mode and unknown games.
+ */
+static std::optional<nlohmann::json> load_campaign_quest_config(
+    GameConfigCache& config_cache,
+    const nlohmann::json& mini_game_config,
+    const std::string& mini_game,
+    int level_id)
+{
+    if (level_id <= 0) {
+        return std::nullopt;
+    }
+
+    const std::string schedule_file = resolve_schedule_file(mini_game_config, level_id);
+    if (schedule_file.empty()) {
+        return std::nullopt;
+    }
+
+    if (mini_game == "tower_defense") {
+        return config_cache.getTowerDefenseSpawnSchedule(schedule_file);
+    }
+    if (mini_game == "weeding") {
+        return config_cache.loadWeedingLevelConfig(schedule_file);
+    }
+    return std::nullopt;
+}
+
+/**
+ * Resolve a campaign level's resource reward. Quest-specific entries win over
+ * mini_games.json: an explicit level reward first, then the quest default.
+ */
+static nlohmann::json resolve_campaign_level_reward(
+    GameConfigCache& config_cache,
+    const nlohmann::json& mini_game_config,
+    const std::string& mini_game,
+    int level_id)
+{
+    if (level_id <= 0) {
+        return nlohmann::json::object();
+    }
+
+    if (auto quest = load_campaign_quest_config(config_cache, mini_game_config, mini_game, level_id)) {
+        const std::string level_key = std::to_string(level_id);
+        if (quest->contains("levels") && (*quest)["levels"].is_object() &&
+            (*quest)["levels"].contains(level_key)) {
+            const auto& level = (*quest)["levels"][level_key];
+            if (level.contains("reward")) {
+                return level["reward"];
+            }
+        }
+        if (quest->contains("default_level_reward")) {
+            return (*quest)["default_level_reward"];
+        }
+    }
+
+    auto find_reward = [level_id](const nlohmann::json& levels) -> nlohmann::json {
+        if (!levels.is_array()) {
+            return nlohmann::json::object();
+        }
+        for (const auto& level : levels) {
+            if (level.contains("id") && level["id"] == level_id && level.contains("reward")) {
+                return level["reward"];
+            }
+        }
+        return nlohmann::json::object();
+    };
+
+    nlohmann::json reward = find_reward(mini_game_config.value("levels", nlohmann::json::array()));
+    if (reward.empty()) {
+        reward = find_reward(mini_game_config.value("baron_levels", nlohmann::json::array()));
+    }
+    return reward;
+}
+
+/**
+ * Resolve the quest-specific one-time completion bonus. The quest file wins;
+ * mini_games.json is the fallback.
+ */
+static nlohmann::json resolve_campaign_completion_bonus(
+    GameConfigCache& config_cache,
+    const nlohmann::json& mini_game_config,
+    const std::string& mini_game,
+    int level_id)
+{
+    if (auto quest = load_campaign_quest_config(config_cache, mini_game_config, mini_game, level_id)) {
+        if (quest->contains("completion_bonus")) {
+            return (*quest)["completion_bonus"];
+        }
+    }
+    if (mini_game_config.contains("completion_bonus")) {
+        return mini_game_config["completion_bonus"];
+    }
+    return nlohmann::json::object();
+}
+
+/** Extract the resource map from a completion_bonus block. */
+static nlohmann::json completion_bonus_resources(const nlohmann::json& completion_bonus)
+{
+    if (!completion_bonus.is_object()) {
+        return nlohmann::json::object();
+    }
+    if (completion_bonus.contains("resources") && completion_bonus["resources"].is_object()) {
+        return completion_bonus["resources"];
+    }
+    return nlohmann::json::object();
+}
+
+/**
+ * Credit a config resource map to the character's fiefdom. Zero and negative
+ * amounts are ignored. Returns false when the character has no fiefdom yet
+ * (pre-manor campaign rewards are intentionally not banked).
+ */
+static bool credit_fiefdom_resource_map(sqlite::database& db, int character_id,
+                                        const nlohmann::json& rewards)
+{
+    if (!rewards.is_object() || rewards.empty()) {
+        return false;
+    }
+
+    int fiefdom_id = 0;
+    db << "SELECT id FROM fiefdoms WHERE owner_id = ? LIMIT 1;" << character_id
+       >> [&](int id) { fiefdom_id = id; };
+    if (fiefdom_id <= 0) {
+        return false;
+    }
+
+    auto fiefdom = FiefdomFetcher::fetchFiefdomById(fiefdom_id);
+    if (!fiefdom.has_value()) {
+        return false;
+    }
+
+    FiefdomFetcher::FiefdomResources resources;
+    resources.gold = fiefdom->gold;
+    resources.silver_pence = fiefdom->silver_pence;
+    resources.grain = fiefdom->grain;
+    resources.wood = fiefdom->wood;
+    resources.steel = fiefdom->steel;
+    resources.bronze = fiefdom->bronze;
+    resources.stone = fiefdom->stone;
+    resources.leather = fiefdom->leather;
+    resources.mana = fiefdom->mana;
+    resources.charcoal = fiefdom->charcoal;
+    resources.iron = fiefdom->iron;
+    resources.ironwork = fiefdom->ironwork;
+    resources.fancy_ironwork = fiefdom->fancy_ironwork;
+    resources.beams = fiefdom->beams;
+    resources.boards = fiefdom->boards;
+
+    bool changed = false;
+    for (auto it = rewards.begin(); it != rewards.end(); ++it) {
+        if (!it.value().is_number()) {
+            continue;
+        }
+        const double amount = it.value().get<double>();
+        if (amount <= 0.0) {
+            continue;
+        }
+        if (it.key() == "gold") {
+            resources.gold += amount;
+        } else if (it.key() == "silver_pence") {
+            resources.silver_pence += amount;
+        } else if (it.key() == "grain") {
+            resources.grain += static_cast<int>(amount);
+        } else if (it.key() == "wood") {
+            resources.wood += static_cast<int>(amount);
+        } else if (it.key() == "steel") {
+            resources.steel += static_cast<int>(amount);
+        } else if (it.key() == "bronze") {
+            resources.bronze += static_cast<int>(amount);
+        } else if (it.key() == "stone") {
+            resources.stone += static_cast<int>(amount);
+        } else if (it.key() == "leather") {
+            resources.leather += static_cast<int>(amount);
+        } else if (it.key() == "mana") {
+            resources.mana += static_cast<int>(amount);
+        } else if (it.key() == "charcoal") {
+            resources.charcoal += static_cast<int>(amount);
+        } else if (it.key() == "iron") {
+            resources.iron += static_cast<int>(amount);
+        } else if (it.key() == "ironwork") {
+            resources.ironwork += static_cast<int>(amount);
+        } else if (it.key() == "fancy_ironwork") {
+            resources.fancy_ironwork += static_cast<int>(amount);
+        } else if (it.key() == "beams") {
+            resources.beams += static_cast<int>(amount);
+        } else if (it.key() == "boards") {
+            resources.boards += static_cast<int>(amount);
+        } else {
+            continue;
+        }
+        changed = true;
+    }
+
+    if (!changed) {
+        return false;
+    }
+    return FiefdomFetcher::updateFiefdomResources(fiefdom_id, resources);
+}
+
 /** Load map metadata for a given level from mini-games config. */
 static json load_map_for_level(const json& mg_config, int level_id) {
     auto find_map = [&](const json& levels) -> std::string {
@@ -2863,27 +3064,15 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
                     (session->level_id <= 9) ? 9 : 25
                 );
 
-                // Apply level rewards from config
+                // Apply campaign level rewards only on the first completion.
                 json level_rewards = json::object();
-                if (won) {
+                if (won && session->level_id > 0 && end_result.first_completion) {
                     const auto& mini_games_config = config_cache.getMiniGames();
                     if (mini_games_config.contains(session->mini_game)) {
                         const auto& mg_config = mini_games_config[session->mini_game];
-                        auto check_rewards = [&](const json& levels) {
-                            for (const auto& lvl : levels) {
-                                if (lvl["id"] == session->level_id && lvl.contains("reward")) {
-                                    level_rewards = lvl["reward"];
-                                    return true;
-                                }
-                            }
-                            return false;
-                        };
-                        if (mg_config.contains("levels")) {
-                            check_rewards(mg_config["levels"]);
-                        }
-                        if (level_rewards.empty() && mg_config.contains("baron_levels")) {
-                            check_rewards(mg_config["baron_levels"]);
-                        }
+                        level_rewards = resolve_campaign_level_reward(
+                            config_cache, mg_config, session->mini_game, session->level_id);
+                        credit_fiefdom_resource_map(db, character_id, level_rewards);
                     }
                 }
 
@@ -2926,12 +3115,28 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
 
                 if (end_result.all_levels_done && won) {
                     auto state = player_state_db::get_player_game_state(db, character_id);
+                    bool completion_bonus_awarded = false;
                     if (state.game_phase == "initial_mission" && !state.base_unlocked) {
                         player_state_db::earn_land_patent(db, character_id, now);
                         response.data["land_patent_earned"] = true;
+                        completion_bonus_awarded = true;
                     } else if (state.game_phase == "baron_track") {
                         player_state_db::earn_baron_right(db, character_id, now);
                         response.data["baron_right_earned"] = true;
+                        completion_bonus_awarded = true;
+                    }
+                    if (completion_bonus_awarded) {
+                        const auto& mini_games_config = config_cache.getMiniGames();
+                        nlohmann::json completion_bonus = nlohmann::json::object();
+                        if (mini_games_config.contains(session->mini_game)) {
+                            const auto& mg_config = mini_games_config[session->mini_game];
+                            completion_bonus = resolve_campaign_completion_bonus(
+                                config_cache, mg_config, session->mini_game, session->level_id);
+                        }
+                        const nlohmann::json completion_resources =
+                            completion_bonus_resources(completion_bonus);
+                        response.data["completion_bonus"] = completion_resources;
+                        credit_fiefdom_resource_map(db, character_id, completion_resources);
                     }
                     state = player_state_db::get_player_game_state(db, character_id);
                     response.data["game_phase"] = state.game_phase;
@@ -4022,20 +4227,28 @@ ApiResponse handleWeedingTurn(GameConfigCache& config_cache, const json& body,
             // Phase transitions
             if (end_result.all_levels_done) {
                 auto pstate = player_state_db::get_player_game_state(db, character_id);
+                bool completion_bonus_awarded = false;
                 if (pstate.game_phase == "initial_mission" && !pstate.base_unlocked) {
                     player_state_db::earn_land_patent(db, character_id, now);
                     response.data["land_patent_earned"] = true;
-                    // Award completion bonus
-                    const auto& mini_games_config = config_cache.getMiniGames();
-                    if (mini_games_config.contains("weeding") && mini_games_config["weeding"].contains("completion_bonus")) {
-                        const auto& bonus = mini_games_config["weeding"]["completion_bonus"];
-                        if (bonus.contains("resources")) {
-                            response.data["completion_bonus"] = bonus["resources"];
-                        }
-                    }
+                    completion_bonus_awarded = true;
                 } else if (pstate.game_phase == "baron_track") {
                     player_state_db::earn_baron_right(db, character_id, now);
                     response.data["baron_right_earned"] = true;
+                    completion_bonus_awarded = true;
+                }
+                if (completion_bonus_awarded) {
+                    const auto& mini_games_config = config_cache.getMiniGames();
+                    nlohmann::json completion_bonus = nlohmann::json::object();
+                    if (mini_games_config.contains("weeding")) {
+                        const auto& mg = mini_games_config["weeding"];
+                        completion_bonus = resolve_campaign_completion_bonus(
+                            config_cache, mg, "weeding", session.level_id);
+                    }
+                    const nlohmann::json completion_resources =
+                        completion_bonus_resources(completion_bonus);
+                    response.data["completion_bonus"] = completion_resources;
+                    credit_fiefdom_resource_map(db, character_id, completion_resources);
                 }
                 pstate = player_state_db::get_player_game_state(db, character_id);
                 response.data["game_phase"] = pstate.game_phase;
@@ -4044,22 +4257,16 @@ ApiResponse handleWeedingTurn(GameConfigCache& config_cache, const json& body,
                 response.data["game_phase"] = pstate.game_phase;
             }
 
-            // Level rewards
+            // Level rewards are paid once, on first completion.
             json level_rewards = json::object();
-            const auto& mini_games_config = config_cache.getMiniGames();
-            if (mini_games_config.contains("weeding")) {
-                const auto& mg = mini_games_config["weeding"];
-                auto check = [&](const json& levels) {
-                    for (const auto& lvl : levels) {
-                        if (lvl["id"] == session.level_id && lvl.contains("reward")) {
-                            level_rewards = lvl["reward"];
-                            return true;
-                        }
-                    }
-                    return false;
-                };
-                if (mg.contains("levels")) check(mg["levels"]);
-                if (level_rewards.empty() && mg.contains("baron_levels")) check(mg["baron_levels"]);
+            if (session.level_id > 0 && end_result.first_completion) {
+                const auto& mini_games_config = config_cache.getMiniGames();
+                if (mini_games_config.contains("weeding")) {
+                    const auto& mg = mini_games_config["weeding"];
+                    level_rewards = resolve_campaign_level_reward(
+                        config_cache, mg, "weeding", session.level_id);
+                    credit_fiefdom_resource_map(db, character_id, level_rewards);
+                }
             }
 
             // Ongoing (level 0) games pay silver from the shared reward pool
@@ -4297,66 +4504,56 @@ ApiResponse handleEndMiniGame(GameConfigCache& config_cache, const json& body,
         response.data["baron_right_earned"] = false;
 
         if (won && end_result.all_levels_done) {
+            bool completion_bonus_awarded = false;
             if (state.game_phase == "initial_mission" && !state.base_unlocked) {
                 // Transition to land_patent phase
                 player_state_db::earn_land_patent(db, character_id, now);
                 response.data["land_patent_earned"] = true;
-
-                // Award completion bonus resources
-                const auto& mini_games_config = config_cache.getMiniGames();
-                if (mini_games_config.contains(mini_game)) {
-                    const auto& mg_config = mini_games_config[mini_game];
-                    if (mg_config.contains("completion_bonus") && mg_config["completion_bonus"].contains("resources")) {
-                        response.data["completion_bonus"] = mg_config["completion_bonus"]["resources"];
-                    }
-                }
+                completion_bonus_awarded = true;
             } else if (state.game_phase == "baron_track") {
                 // Transition to baron_right phase
                 player_state_db::earn_baron_right(db, character_id, now);
                 response.data["baron_right_earned"] = true;
+                completion_bonus_awarded = true;
+            }
+
+            if (completion_bonus_awarded) {
+                const auto& mini_games_config = config_cache.getMiniGames();
+                nlohmann::json completion_bonus = nlohmann::json::object();
+                if (mini_games_config.contains(mini_game)) {
+                    const auto& mg_config = mini_games_config[mini_game];
+                    completion_bonus = resolve_campaign_completion_bonus(
+                        config_cache, mg_config, mini_game, level_id);
+                }
+                const nlohmann::json completion_resources =
+                    completion_bonus_resources(completion_bonus);
+                response.data["completion_bonus"] = completion_resources;
+                credit_fiefdom_resource_map(db, character_id, completion_resources);
             }
         }
 
         nlohmann::json level_rewards = nlohmann::json::object();
-        if (won) {
+        if (won && level_id > 0 && end_result.first_completion) {
             const auto& mini_games_config = config_cache.getMiniGames();
-
             if (mini_games_config.contains(mini_game)) {
                 const auto& mg_config = mini_games_config[mini_game];
-
-                // Check main levels first
-                if (mg_config.contains("levels")) {
-                    for (const auto& lvl : mg_config["levels"]) {
-                        if (lvl["id"] == level_id && lvl.contains("reward")) {
-                            level_rewards = lvl["reward"];
-                            break;
-                        }
-                    }
-                }
-
-                // Check baron levels if not found in main levels
-                if (level_rewards.empty() && mg_config.contains("baron_levels")) {
-                    for (const auto& lvl : mg_config["baron_levels"]) {
-                        if (lvl["id"] == level_id && lvl.contains("reward")) {
-                            level_rewards = lvl["reward"];
-                            break;
-                        }
-                    }
-                }
+                level_rewards = resolve_campaign_level_reward(
+                    config_cache, mg_config, mini_game, level_id);
+                credit_fiefdom_resource_map(db, character_id, level_rewards);
             }
-
-            // Ongoing (level 0) games pay silver from the shared reward pool
-            if (level_rewards.empty() && level_id == 0) {
-                auto params = fetch_ongoing_session_params(db, character_id, mini_game);
-                if (params.has_value()) {
-                    fill_ongoing_rewards(config_cache, db, level_rewards, response.data,
-                                         character_id, mini_game,
-                                         params->first, params->second, true, now);
-                }
-            }
-
-            response.data["rewards"] = level_rewards;
         }
+
+        // Ongoing (level 0) games pay silver from the shared reward pool
+        if (level_rewards.empty() && level_id == 0) {
+            auto params = fetch_ongoing_session_params(db, character_id, mini_game);
+            if (params.has_value()) {
+                fill_ongoing_rewards(config_cache, db, level_rewards, response.data,
+                                     character_id, mini_game,
+                                     params->first, params->second, true, now);
+            }
+        }
+
+        response.data["rewards"] = level_rewards;
 
         player_state_db::clear_current_mini_game(db, character_id, now);
 

@@ -1001,6 +1001,7 @@ Validates all JSON configuration files against their schema rules. Written in Py
 - Combatant `requires_manor_level` must be a positive integer (optional; gates which classes appear on the recruit market)
 - Building `recovery_multiplier` must be a non-negative number (optional; infirmary healing-rate bonus), `exclusive_group` a non-empty lowercase snake_case string (optional; at most one building from the group per fiefdom — see `fiefdom_building_types.md`), `tech_trees` an array of non-empty strings, `tech_xp_per_day` a non-empty non-negative int array, `max_concurrent_orders` a positive integer
 - Combat RTS combatant fields (`size` (**required**, normalized body radius `> 0` and `<= 0.2`), `max_hp`/`attack_range`/`attack_interval` per-level arrays, `attack_type`, `turn_rate`, `direction_defense`/`dodge` triples, `aoe` splash block, optional `animations` clips with `fps`/`views` (`{set, mirror}`; the frame count is discovered from the set directory, so `frames` is not declared)) are validated; `combat/warbands.json` warband entries cross-reference enemy combatant ids and carry valid `tactic`/`aggro_model`
+- Tower-defense `mobs.json`/`projectiles.json` sprite frames: `forward_vector` and `sprite_up_vector` are required, each a 2-element `-1/0/1` array, not `[0,0]`, and perpendicular (the engine maps that local frame to movement direction + screen-up)
 - `cosmetics.json` items are validated by a **deny-by-default whitelist** (`id, name, slot, tier, price_platinum, source, description, appearance, sort`; appearance keys `palette/pattern/emblem/trim`) — any unknown key is an ERROR, so a cosmetic can never carry a gameplay key (no pay-to-win; rts_design.md §15.5.1)
 - `portrait_frames.json` `frames` entries must carry `image` (a served `/images/...` path), positive integer `image_width`/`image_height`, and a `portrait` rect (`x,y >= 0`, `width,height > 0`, contained within the image); a missing frame image is a WARN until the art is authored
 - `progression.json` must carry a `mesne_lord.requirements` object (`manor_level` a non-negative integer, `milestones` an array of non-empty strings); `milestones` (optional) is an array of counter-based conditions (`{id, counter, min}`; a `slain.<class>` counter is cross-checked against `enemy_combatants.json`, unknown class = WARN); `barony.join_cooldown_days` (optional) a non-negative integer
@@ -1017,6 +1018,8 @@ Validates all JSON configuration files against their schema rules. Written in Py
 - `game/config/fiefdom_building_types.json` - Building type definitions
 - `game/config/heroes.json` - Hero definitions with equipment, skills, and status effects
 - `game/config/fiefdom_officials.json` - Fiefdom official templates with stats and roles
+- `game/config/tower_defense/mobs.json` - Mob definitions (sprite local frame: `forward_vector` + `sprite_up_vector`)
+- `game/config/tower_defense/projectiles.json` - Projectile definitions (sprite local frame: `forward_vector` + `sprite_up_vector`)
 - `game/config/manor_ui.json` - Manor UI config (`build_order` governs the build-palette button order only — it never overrides the client's display/level/affordability filters)
 - `game/config/manor_river.json` - River templates (meandering polylines `points` + band `width`; seeded per-fiefdom with 0/90/180/270° rotation — see `server/tables/fiefdom_river.md`)
 - `game/config/portrait_frames.json` - Decorative portrait overlay geometry: per-variant overlay `image`, `image_width`/`image_height`, and the pixel `portrait` rect the portrait is mapped into (frame drawn on top — see `server/docs/portrait_frames.md`)
@@ -1106,6 +1109,7 @@ class contexts cover the mechanical bulk.
    - `damage_types.json` or combatant files → `server/docs/combat_system.md`
    - `heroes.json` → `server/docs/heroes.md`
    - `fiefdom_officials.json` → `server/docs/fiefdom_officials.md`
+   - Campaign quest files (`tower_defense/spawn_schedules/*.json`, `weeding/*_marche.json`) → `server/docs/mini_game_rewards.md`
 4. Update AGENTS.md if the change affects config structure or validation rules
 5. **Tower defense maps:** If adding or modifying tower defense maps:
    - Map metadata JSON files go in `config/tower_defense/maps/`
@@ -1195,14 +1199,15 @@ Build the full game progression and content system with a working tower defense 
   `staffGetDeletedMessages`. Canonical policy:
   `docs/minor_content_visibility.md`. Smoke: `tools/minor_visibility_smoke.sh`.
 - **Multi-round system**: Each level in `mini_games.json` has a configurable `rounds` field (3-8 per level). Server tracks current_round in game_sessions. On win, if more rounds remain, server returns `next_round: true` with fresh `spawn_schedule` instead of ending the game. Client shows "Round N/M" indicator, clears enemies between rounds, and offers "Next Round" button or auto-advance after 2s delay.
+- **Campaign reward overrides + payout**: Campaign quest files (`tower_defense/spawn_schedules/*.json`, `weeding/*_marche.json`) may define `default_level_reward` and `completion_bonus`, plus per-level `reward`, overriding the `mini_games.json` defaults. Campaign rewards pay once on first completion to the fiefdom via `credit_fiefdom_resource_map`; replays are server-allowed but return `rewards: {}` and pay nothing. All four current campaign quests configure zero rewards/completion bonuses; regular/replay mini-game events keep their reward pools. The client hides zero reward entries and locks completed campaign levels (grid + route guard). Docs: `server/docs/mini_game_rewards.md`.
 - Created `text/` directory with translation system
 - Created `game/config/` with tower defense configs (mobs, towers, units, projectiles, maps)
 - Built server with auth, game sessions, TD round lifecycle
 - Built client with Svelte 5 + SimpleGame engine integration
 - **SimpleGame collision system**: Projectiles now use `onCollisionWithEnemy()` callbacks instead of manual `dist < 12` — engine's quadtree handles bounding-box overlap detection
-- **Projectile config**: New `game/config/tower_defense/projectiles.json` with width, height, speed (1600 = 4×), image_file, forward_vector. Server sends it in TD kickoff response
+- **Projectile config**: New `game/config/tower_defense/projectiles.json` with width, height, speed (1600 = 4×), image_file, `forward_vector`, and `sprite_up_vector`. Server sends it in TD kickoff response
 - **Engine movement**: Projectiles move via `doMovement()` using `direction_x/direction_y` + `velocity` (set by `setOrientationTowards()`). `projTick()` only updates homing direction
-- **Mob sprite mirroring**: automatic in SimpleGame — each mob's class `defaultSpriteForwardVector` is set from the config `forward_vector` (`[1, 0]` = sprite faces right), and the engine mirrors the sprite per frame from the movement direction. No opt-in flag (the old `mirrorOnDirection` no longer exists in the engine)
+- **Mob sprite mirroring**: each mob class gets both `defaultSpriteForwardVector` and `defaultSpriteUpVector` from the config `forward_vector` / `sprite_up_vector`, defining the source art's local frame. SimpleGame maps that frame to the movement direction and screen-up on every draw, so source art may face any direction (the dire rat faces left). The two vectors must be perpendicular and non-zero; `tools/check_configs.py` enforces this for TD mobs/projectiles. No opt-in flag (the old `mirrorOnDirection` no longer exists in the engine)
 - **Soldier sizes**: Bumped +50% (archers 48×48, others 54×54)
 - **NaN destination fix**: Removed `rename_field(wp, "x", "x")` self-rename that destroyed waypoint x coordinates
 - **Pause button**: Added sidebar pause button using SimpleGame's exported `togglePause()`/`isPaused()`/`onPause`/`onResume` API
@@ -1271,7 +1276,7 @@ Build the full game progression and content system with a working tower defense 
 - **Speed from config**: Projectile speed in `projectiles.json`, set via `p.setSpeed(cfg.speed)` at spawn. No hardcoded 400 anymore.
 - **`setOrientationTowards()`** is used for both visual rotation AND movement direction — it sets `orientation` (for `ctx.rotate`) and `direction_x/direction_y` (for `doMovement`).
 - **`rename_field` self-rename bug**: `rename_field(wp, "x", "x")` with `from == to` destroys the field (self-move + erase). Solution: just delete these no-op calls.
-- **Sprite mirroring**: SimpleGame applies `ctx.scale(-1, 1)` at render time when dot product of movement direction and `forwardVector` is negative. Mob sprites should face RIGHT in source images (forward_vector: [1, 0]).
+- **Sprite mirroring**: SimpleGame builds a local frame from `spriteForwardVector` (which way the raw art faces) and `spriteUpVector` (which way is up in the raw art), then maps that frame to the movement direction and `worldUpVector` on every draw. Source art may face any direction; the two vectors must be perpendicular and non-zero. When facing and world-up are parallel (e.g. a side-view sprite moving vertically), the engine falls back to a simple rotation.
 
 ### Next Steps
 - Add more map JSONs for levels 2–9 in `mini_games.json`
@@ -1329,12 +1334,13 @@ Build the full game progression and content system with a working tower defense 
 - `docs/config_reload.md` - immutable snapshot + SIGHUP reload design (production-safe, all-or-nothing)
 - `docs/TODO_config_reload.md` - remaining snapshot-signature migration follow-up
 - `tools/diagnose_ghcr_push.sh` - GHCR token/package/repository diagnostic (reads `.publish_engine`)
-- `game/config/tower_defense/projectiles.json` - Projectile config (width, height, speed, image_file, forward_vector)
-- `game/config/tower_defense/mobs.json` - Mob config with forward_vector per mob
+- `game/config/tower_defense/projectiles.json` - Projectile config (width, height, speed, image_file, forward_vector, sprite_up_vector)
+- `game/config/tower_defense/mobs.json` - Mob config with forward_vector + sprite_up_vector per mob
 - `game/config/tower_defense/units.json` - Soldier/unit config with width/height
 - `game/config/tower_defense/towers.json` - Tower config
 - `game/config/tower_defense/maps/map_1.json` - Only map file (level 1)
-- `game/config/mini_games.json` - Level grids, map references
+- `game/config/mini_games.json` - Level grids, map references, default campaign rewards
+- `server/docs/mini_game_rewards.md` - Campaign reward override precedence, first-completion payout, ongoing-mode separation, and client lockout policy
 - `server/GameConfigCache.hpp/.cpp` - Config loading, includes projectiles
 - `server/main.cpp` - All API handlers, TD kickoff sends projectiles config
 - `server/TowerDefenseMapCache.cpp` - Map loading/normalization (fixed self-rename bug)

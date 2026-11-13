@@ -134,6 +134,11 @@ Returns mini-game configuration data. Can filter by specific mini-game or return
 | `replay_config` | object | Configuration for random generation in sandbox mode |
 | `ongoing` | object | Ongoing-mode options: `difficulty_options`, `default_difficulty`, `difficulty_coeff_pence`, `size_options` (array of `{value, reward_pence}`), `default_size`. `value` is rounds for tower_defense, grid size for weeding. Server-served so the client only offers what the server allows. |
 
+The `levels[].reward` and `completion_bonus` values in this response are the
+**defaults** from `mini_games.json`. A campaign quest file may override them at
+completion time with `levels.<id>.reward`, `default_level_reward`, and
+`completion_bonus`; see `server/docs/mini_game_rewards.md`.
+
 ## See Also
 
 - This data is also available through `/api/getGameInfo` under the `configs.mini_games` key.

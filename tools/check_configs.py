@@ -4139,6 +4139,13 @@ class ConfigValidator:
                     Severity.ERROR
                 )
 
+            self._validate_reward_map(
+                schedule_file, "default_level_reward", data.get("default_level_reward")
+            )
+            self._validate_completion_bonus(
+                schedule_file, "completion_bonus", data.get("completion_bonus")
+            )
+
             if "levels" not in data:
                 self._add_issue(
                     schedule_file, 1, None,
@@ -4171,6 +4178,11 @@ class ConfigValidator:
                         Severity.ERROR
                     )
                     continue
+
+                if "reward" in level_data:
+                    self._validate_reward_map(
+                        schedule_file, f"Level '{level_key}'.reward", level_data.get("reward")
+                    )
 
                 if "rounds" not in level_data:
                     self._add_issue(
@@ -4437,6 +4449,49 @@ class ConfigValidator:
                         elif dmg < 1 or dmg > 100:
                             self._add_issue(file, 1, None, f"Weed '{plant_id}'.tools.{tool_id}.damage must be 1-100, got {dmg}", Severity.ERROR)
 
+    def _validate_reward_map(self, file: Path, label: str, reward: object) -> None:
+        """Validate a resource->non-negative amount map used by quest rewards."""
+        if reward is None:
+            return
+        if not isinstance(reward, dict):
+            self._add_issue(file, 1, None, f"{label} must be an object", Severity.ERROR)
+            return
+        for resource, amount in reward.items():
+            if not isinstance(resource, str) or resource not in VALID_STARTING_RESOURCES:
+                self._add_issue(
+                    file, 1, None,
+                    f"{label}.{resource} is not a valid fiefdom resource",
+                    Severity.ERROR,
+                )
+                continue
+            if isinstance(amount, bool) or not isinstance(amount, (int, float)):
+                self._add_issue(
+                    file, 1, None,
+                    f"{label}.{resource} must be a non-negative number",
+                    Severity.ERROR,
+                )
+            elif amount < 0:
+                self._add_issue(
+                    file, 1, None,
+                    f"{label}.{resource} must be a non-negative number, got {amount}",
+                    Severity.ERROR,
+                )
+
+    def _validate_completion_bonus(self, file: Path, label: str, bonus: object) -> None:
+        """Validate a quest completion_bonus block (base_unlock + resources)."""
+        if bonus is None:
+            return
+        if not isinstance(bonus, dict):
+            self._add_issue(file, 1, None, f"{label} must be an object", Severity.ERROR)
+            return
+        base_unlock: object = bonus.get("base_unlock")
+        if base_unlock is not None and not isinstance(base_unlock, bool):
+            self._add_issue(file, 1, None, f"{label}.base_unlock must be a boolean", Severity.ERROR)
+        if "resources" not in bonus:
+            self._add_issue(file, 1, None, f"{label} must contain 'resources'", Severity.ERROR)
+            return
+        self._validate_reward_map(file, f"{label}.resources", bonus.get("resources"))
+
     def validate_mini_games_weeding_levels(self, file: Path) -> None:
         """Validate mini_games.json weeding section — schedule_file and baron_schedule_file must exist."""
         try:
@@ -4492,6 +4547,13 @@ class ConfigValidator:
             self._add_issue(file, 1, None, "Missing required key 'levels' (must be an object)", Severity.ERROR)
             return
 
+        self._validate_reward_map(
+            file, "default_level_reward", data.get("default_level_reward")
+        )
+        self._validate_completion_bonus(
+            file, "completion_bonus", data.get("completion_bonus")
+        )
+
         for level_key, level_data in data["levels"].items():
             if not level_key.isdigit():
                 self._add_issue(file, 1, None, f"Level key '{level_key}' is not a numeric string", Severity.ERROR)
@@ -4514,6 +4576,11 @@ class ConfigValidator:
                     self._add_issue(file, 1, None, f"Level '{level_key}'.difficulty must be an integer", Severity.ERROR)
                 elif diff_val < 1 or diff_val > 10:
                     self._add_issue(file, 1, None, f"Level '{level_key}'.difficulty must be 1-10, got {diff_val}", Severity.ERROR)
+
+            if "reward" in level_data:
+                self._validate_reward_map(
+                    file, f"Level '{level_key}'.reward", level_data.get("reward")
+                )
 
             # Validate allowed_tools if present
             allowed_tools: object = level_data.get("allowed_tools")
@@ -4564,6 +4631,95 @@ class ConfigValidator:
                     self._add_issue(file, 1, None, f"Level '{level_key}'.text_outro must be a string", Severity.ERROR)
                 elif len(text_outro) == 0:
                     self._add_issue(file, 1, None, f"Level '{level_key}'.text_outro must not be empty", Severity.ERROR)
+
+    def _validate_sprite_frame(
+        self,
+        file: Path,
+        label: str,
+        forward_vector: object,
+        sprite_up_vector: object,
+        require_up_vector: bool = True
+    ) -> None:
+        """Validate a sprite's forward/up local frame.
+
+        Both vectors must be 2-element arrays of -1/0/1, must not be [0, 0],
+        and must not be parallel (their 2D cross product must be non-zero).
+        """
+        forward: list[int] | None = None
+        if forward_vector is None:
+            self._add_issue(file, 1, None, f"{label}.forward_vector is required", Severity.ERROR)
+        elif not isinstance(forward_vector, list) or len(forward_vector) != 2:
+            self._add_issue(file, 1, None, f"{label}.forward_vector must be a 2-element array", Severity.ERROR)
+        else:
+            forward = forward_vector
+            for i, value in enumerate(forward_vector):
+                if isinstance(value, bool) or not isinstance(value, int) or value < -1 or value > 1:
+                    self._add_issue(file, 1, None, f"{label}.forward_vector[{i}] must be -1, 0, or 1", Severity.ERROR)
+                    forward = None
+            if forward is not None and forward[0] == 0 and forward[1] == 0:
+                self._add_issue(file, 1, None, f"{label}.forward_vector cannot be [0, 0]", Severity.ERROR)
+                forward = None
+
+        up: list[int] | None = None
+        if sprite_up_vector is None:
+            if require_up_vector:
+                self._add_issue(file, 1, None, f"{label}.sprite_up_vector is required", Severity.ERROR)
+        elif not isinstance(sprite_up_vector, list) or len(sprite_up_vector) != 2:
+            self._add_issue(file, 1, None, f"{label}.sprite_up_vector must be a 2-element array", Severity.ERROR)
+        else:
+            up = sprite_up_vector
+            for i, value in enumerate(sprite_up_vector):
+                if isinstance(value, bool) or not isinstance(value, int) or value < -1 or value > 1:
+                    self._add_issue(file, 1, None, f"{label}.sprite_up_vector[{i}] must be -1, 0, or 1", Severity.ERROR)
+                    up = None
+            if up is not None and up[0] == 0 and up[1] == 0:
+                self._add_issue(file, 1, None, f"{label}.sprite_up_vector cannot be [0, 0]", Severity.ERROR)
+                up = None
+
+        if forward is not None and up is not None:
+            cross: int = forward[0] * up[1] - forward[1] * up[0]
+            if cross == 0:
+                self._add_issue(
+                    file, 1, None,
+                    f"{label}.forward_vector and sprite_up_vector must be perpendicular "
+                    f"(got {forward} and {up})",
+                    Severity.ERROR,
+                )
+
+    def validate_tower_defense_sprites(self, game_config_dir: Path) -> None:
+        """Validate the local sprite frame on tower-defense mobs and projectiles."""
+        sprite_files: list[tuple[Path, str]] = [
+            (game_config_dir / "tower_defense" / "mobs.json", "mobs"),
+            (game_config_dir / "tower_defense" / "projectiles.json", "projectiles"),
+        ]
+        for file, root_key in sprite_files:
+            if not file.exists():
+                continue
+            try:
+                content: str = file.read_text(encoding="utf-8")
+            except Exception as e:
+                self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+                continue
+            data: object = self._validate_json(content, file)
+            if data is None:
+                continue
+            if not isinstance(data, dict):
+                self._add_issue(file, 1, None, "Expected an object", Severity.ERROR)
+                continue
+            entries: object = data.get(root_key)
+            if not isinstance(entries, dict):
+                self._add_issue(file, 1, None, f"Missing object '{root_key}'", Severity.ERROR)
+                continue
+            for entry_id, entry in entries.items():
+                if not isinstance(entry, dict):
+                    self._add_issue(file, 1, None, f"{root_key}['{entry_id}'] must be an object", Severity.ERROR)
+                    continue
+                self._validate_sprite_frame(
+                    file,
+                    f"{root_key}['{entry_id}']",
+                    entry.get("forward_vector"),
+                    entry.get("sprite_up_vector"),
+                )
 
     def validate_weeding_tools(self, file: Path) -> None:
         """Validate weeding/tools.json — forward_vector required in sprite config."""
@@ -6689,6 +6845,7 @@ class ConfigValidator:
             else:
                 self.validate_spawn_schedules(game_config_dir)
                 self.validate_wave_templates(game_config_dir)
+                self.validate_tower_defense_sprites(game_config_dir)
 
         # Re-sort issues after image validation
         errors = [issue for issue in self.issues if issue.severity == Severity.ERROR]
