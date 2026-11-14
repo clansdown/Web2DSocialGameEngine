@@ -10,7 +10,7 @@
    * Starting stores the settings for WeedingGame to consume on session start.
    */
 
-  import { currentCharacter } from '../../lib/stores';
+  import { currentCharacter, language } from '../../lib/stores';
   import { getMiniGameConfigs } from '../../lib/game_state';
   import { estimateOngoingRewards } from '../../lib/api';
   import type { OngoingGameConfig } from '../../lib/api';
@@ -18,13 +18,15 @@
   import { setConfig } from '../../lib/storage';
   import { loadTexts as fetchTexts } from '../../lib/text';
   import GameText from '../../components/GameText.svelte';
+  import MiniGameHomeButton from '../MiniGameHomeButton.svelte';
 
   interface Props {
     onStartLevel: (gameId: string, levelId: number) => void;
-    onBack: () => void;
+    onHome: () => void;
+    onBackToGames: () => void;
   }
 
-  let { onStartLevel, onBack }: Props = $props();
+  let { onStartLevel, onHome, onBackToGames }: Props = $props();
 
   let config = $state<OngoingGameConfig | null>(null);
   let loading = $state(true);
@@ -35,8 +37,20 @@
   let rewardEstimate = $state('');
   let message = $state('');
   let starting = $state(false);
+  let ui = $state<Record<string, string>>({});
 
-  const TEXT_IDS: string[] = ['wd_ongoing_info', 'wd_ongoing_rewards'];
+  const TEXT_IDS: string[] = [
+    'wd_ongoing_info',
+    'wd_ongoing_rewards',
+    'ui_wd_ongoing_title',
+    'ui_wd_grid_size_label',
+    'ui_difficulty_label',
+    'ui_start_game',
+    'ui_back_to_games',
+    'ui_loading',
+    'ui_minigame_estimate_error',
+    'ui_minigame_start_error'
+  ];
 
   /**
    * Loads the weeding ongoing config from the server.
@@ -64,6 +78,7 @@
   async function loadTexts(): Promise<void> {
     try {
       const texts = await fetchTexts(TEXT_IDS);
+      ui = texts;
       infoText = texts['wd_ongoing_info'] ?? '';
       rewardsText = texts['wd_ongoing_rewards'] ?? '';
     } catch {
@@ -93,7 +108,7 @@
       message = '';
     } catch {
       rewardEstimate = '';
-      message = 'Could not estimate rewards.';
+      message = ui['ui_minigame_estimate_error'] ?? '';
     }
   }
 
@@ -110,14 +125,17 @@
         grid_size: selectedSize
       });
       onStartLevel('weeding', 0);
-    } catch {
-      message = 'Failed to start game.';
+    } catch (e) {
+      message = ui['ui_minigame_start_error'] ?? '';
+      console.error('[Weeding ongoing] start failed:', e);
     } finally {
       starting = false;
     }
   }
 
   $effect(() => {
+    $language;
+    $currentCharacter;
     loadConfig();
     loadTexts();
   });
@@ -130,16 +148,19 @@
 </script>
 
 <div class="container py-5">
-  <button class="btn btn-outline-secondary mb-4" onclick={onBack}>
-    &larr; Back
-  </button>
+  <div class="d-flex flex-wrap align-items-center gap-2 mb-4">
+    <MiniGameHomeButton {onHome} />
+    <button class="btn btn-sm btn-link text-secondary p-0" onclick={onBackToGames}>
+      &larr; {ui['ui_back_to_games'] ?? ''}
+    </button>
+  </div>
 
-  <h2>Assarting</h2>
+  <h2>{ui['ui_wd_ongoing_title'] ?? ''}</h2>
 
   {#if loading}
     <div class="d-flex justify-content-center py-5">
       <div class="spinner-border" role="status">
-        <span class="visually-hidden">Loading...</span>
+        <span class="visually-hidden">{ui['ui_loading'] ?? ''}</span>
       </div>
     </div>
   {:else if config}
@@ -150,7 +171,7 @@
     {/if}
 
     <div class="mb-4">
-      <div class="fw-bold mb-2">Grid Size</div>
+      <div class="fw-bold mb-2">{ui['ui_wd_grid_size_label'] ?? ''}</div>
       <div class="d-flex flex-wrap gap-2">
         {#each config.size_options as opt}
           <button
@@ -164,7 +185,7 @@
     </div>
 
     <div class="mb-4">
-      <div class="fw-bold mb-2">Difficulty</div>
+      <div class="fw-bold mb-2">{ui['ui_difficulty_label'] ?? ''}</div>
       <div class="d-flex flex-wrap gap-2">
         {#each config.difficulty_options as d}
           <button
@@ -191,7 +212,7 @@
       {#if starting}
         <span class="spinner-border spinner-border-sm me-1" role="status"></span>
       {/if}
-      Start Game
+      {ui['ui_start_game'] ?? ''}
     </button>
   {/if}
 </div>

@@ -88,3 +88,38 @@ export function draw() { ... }
 ```
 
 Alternatively, export the full `gameLoop` function so callers can pass `delta_t` manually.
+
+## 5. Transform-Aware Input Mapping
+
+**Files:** `ui/src/lib/simplegame.ts` — mouse/touch/wheel handlers
+
+**Current:** Input mapping assumes the canvas is not CSS-transformed:
+
+```typescript
+const rect = canvas.getBoundingClientRect();
+const fracX = (event.clientX - rect.left) / canvas.clientWidth;
+```
+
+When an ancestor is rotated (for example, a mini-game shell rotated 90° to
+force landscape on a portrait device), `getBoundingClientRect()` returns the
+rotated visual box while `clientWidth` / `clientHeight` remain the unrotated
+layout dimensions. Pointer coordinates then land in the wrong place.
+
+**Request:** Add a transform-aware mapping hook or accept an explicit
+screen-to-board transform:
+
+```typescript
+export function setInputTransform(
+    transform: ((point: { x: number; y: number }) => { x: number; y: number }) | null
+): void;
+```
+
+The engine's mouse/touch handlers would pass the physical pointer through the
+transform before the normal fraction calculation.
+
+**Workaround currently used by Ravenest:** `client/src/lib/rotated_input.ts`
+intercepts mouse/touch events in the capture phase, maps them into canvas-local
+coordinates, temporarily overrides `canvas.getBoundingClientRect()`, and
+dispatches synthetic mouse events. This works for the current games but is
+fragile and should be replaced by native transform-aware mapping if SimpleGame
+gains support.

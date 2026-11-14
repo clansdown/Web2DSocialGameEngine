@@ -1,7 +1,7 @@
 <script lang="ts">
   import { playerGameState, currentCharacter } from '../lib/stores';
   import { loadTexts } from '../lib/text';
-  import { route_store, navigate, go_back } from '../lib/router';
+  import { route_store, navigate, go_back, go_home } from '../lib/router';
   import { fetchPlayerState } from '../lib/game_state';
   import MiniGameSelect from '../minigames/MiniGameSelect.svelte';
   import ManorMenu from './ManorMenu.svelte';
@@ -122,6 +122,18 @@
     }
   }
 
+  /**
+   * Deterministically returns to the hub grid and refreshes the player state.
+   * Used by the mini-game Home buttons, which must not depend on browser
+   * history.
+   */
+  function goHome() {
+    go_home();
+    if ($currentCharacter) {
+      fetchPlayerState($currentCharacter.id).catch(() => {});
+    }
+  }
+
   $effect(() => {
     if (gridActivities.length > 0) {
       loadActivityNames();
@@ -216,7 +228,7 @@
   <div class="container py-4">
     <MiniGameSelect
       {onStartLevel}
-      onBack={goBackToHub}
+      onHome={goHome}
     />
   </div>
 {:else if activity === 'manor'}

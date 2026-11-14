@@ -3,8 +3,16 @@
    * Tower Defense game using the simplegame engine.
    * All UI is rendered on-canvas (pure simplegame).
    */
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, getContext } from 'svelte';
+  import { get } from 'svelte/store';
   import { tdRound } from '../../lib/game_state';
+  import { loadTexts, apply_text_tokens } from '../../lib/text';
+  import { fit_canvas_contain, observe_viewport_changes } from '../../lib/canvas_fit';
+  import { install_rotated_input_bridge } from '../../lib/rotated_input';
+  import {
+    MINI_GAME_VIEWPORT_CONTEXT,
+    type mini_game_viewport_context
+  } from '../../lib/mini_game_viewport';
   import type { TDRoundKickoffResponse, TDRoundCompleteResponse, SpawnScheduleEntry, EndMiniGameResponse, NewUnlocks } from '../../lib/api';
   import { setConfig, getConfig, deleteConfig } from '../../lib/storage';
   import type {
@@ -68,8 +76,18 @@
   let debugEl: HTMLDivElement;
   let loading = $state(true);
   let errorMsg = $state<string | null>(null);
+  let canvas_ready = $state(false);
+
+  const viewport_context = getContext<mini_game_viewport_context>(
+    MINI_GAME_VIEWPORT_CONTEXT
+  );
+  const shell_store = viewport_context.shell;
+  const rotated_store = viewport_context.rotated;
+  let shell_element = $derived($shell_store);
+  let rotated_view = $derived($rotated_store);
 
   let tdData: TDRoundKickoffResponse | null = null;
+  let td_texts = $state<Record<string, string>>({});
 
   // Game classes
   let mobEnemyClassMap = new Map<string, EnemyClass>();
@@ -139,7 +157,7 @@
   let ringButtons: Button[] = [];
   let showingTargetingPicker = false;
 
-  let resizeHandler: (() => void) | null = null;
+  // Viewport fitting is handled by the MiniGameViewport context and effects.
 
   // Ground effect pools
   let groundPools: {
@@ -180,6 +198,252 @@
   const BH = 780;
   /** Sidebar overlay width in board units. Sidebar overlays the right edge of the board at x ∈ [BW - SIDEBAR_W, BW]. */
   const SIDEBAR_W = 420;
+
+  const TD_TEXT_IDS: string[] = [
+    'ui_td_round_start',
+    'ui_pause',
+    'ui_resume',
+    'ui_td_lives',
+    'ui_td_try_again_later',
+    'ui_td_recall',
+    'ui_td_upgrade',
+    'ui_td_max_level',
+    'ui_td_flask_label',
+    'ui_td_flask_generic',
+    'ui_td_target_closest',
+    'ui_td_target_first',
+    'ui_td_target_strongest',
+    'ui_td_target_weakest',
+    'ui_td_target_nearest_path',
+    'ui_td_target_selectable',
+    'ui_td_piece_label',
+    'ui_td_error_load_session',
+    'ui_td_error_advance_round',
+    'ui_td_error_end_game',
+    'ui_td_error_generic',
+    'ui_td_board_aria_label',
+    'ui_td_loading',
+    'ui_loading'
+  ];
+
+  // ============================================================
+  // Text and viewport helpers
+  // ============================================================
+
+  /**
+   * Returns a localized text value, or an empty string when unavailable.
+   *
+   * @param text_id - Text-system id
+   * @returns Localized text
+   */
+  function text(text_id: string): string {
+    return td_texts[text_id] ?? '';
+  }
+
+  /**
+   * Formats a text template with the supplied tokens.
+   *
+   * @param text_id - Text-system id
+   * @param tokens - Placeholder values
+   * @returns Localized formatted text
+   */
+  function format_text(
+    text_id: string,
+    tokens: Record<string, string | number> = {}
+  ): string {
+    return apply_text_tokens(text(text_id), tokens);
+  }
+
+  /**
+   * Builds the pre-round button label, e.g. `Start 2/4`.
+   *
+   * @returns Localized start-round label
+   */
+  function format_round_start_label(): string {
+    return format_text('ui_td_round_start', {
+      current: String(currentRound),
+      total: String(totalRounds)
+    });
+  }
+
+  /**
+   * Sets the round/pause button back to its pre-round state.
+   */
+  function set_round_start_label(): void {
+    if (!rpButton) return;
+    rpButton.text = format_round_start_label();
+    rpButton.color = '#2D7A2D';
+  }
+
+  /**
+   * Builds the lives label for the current lives count.
+   *
+   * @returns Localized lives label
+   */
+  function format_lives_label(): string {
+    return format_text('ui_td_lives', { lives: String(currentLives) });
+  }
+
+  /**
+   * Resolves a targeting mode label through the text system.
+   *
+   * @param mode - Targeting mode id
+   * @returns Localized label
+   */
+  function targeting_label(mode: string): string {
+    return text(`ui_td_target_${mode}`) || mode;
+  }
+
+  /**
+   * Resolves a picker piece name through the text system.
+   *
+   * @param id - Tower/unit config id
+   * @returns Localized piece name
+   */
+  function piece_name(id: string): string {
+    return (
+      text(`ui_td_tower_${id}_name`) ||
+      text(`ui_td_unit_${id}_name`) ||
+      id
+    );
+  }
+
+  /**
+   * Builds the picker button label for a piece.
+   *
+   * @param id - Tower/unit config id
+   * @param cost - Level-1 gold cost
+   * @returns Localized picker label
+   */
+  function piece_label(id: string, cost: number): string {
+    return format_text('ui_td_piece_label', {
+      name: piece_name(id),
+      cost: String(cost)
+    });
+  }
+
+  /**
+   * Resolves a projectile/flask name through the text system.
+   *
+   * @param id - Projectile config id
+   * @returns Localized projectile name
+   */
+  function projectile_name(id: string): string {
+    return text(`ui_td_projectile_${id}_name`) || id;
+  }
+
+  /**
+   * Loads the localized error for a text id.
+   *
+   * @param text_id - Error text id
+   * @returns Localized message, or empty string
+   */
+  async function localized_error(text_id: string): Promise<string> {
+    try {
+      const texts = await loadTexts([text_id]);
+      return texts[text_id] ?? '';
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * Loads all Tower Defense text, including names for the pieces and
+   * projectiles present in this session.
+   *
+   * @param data - Kickoff data containing the current config ids
+   */
+  async function load_td_texts(data: TDRoundKickoffResponse): Promise<void> {
+    const ids = new Set<string>(TD_TEXT_IDS);
+
+    const towers = (data as any)?.towers?.towers ?? {};
+    const units = (data as any)?.units?.units ?? {};
+    const projectiles = (data as any)?.projectiles?.projectiles ?? {};
+
+    for (const id of Object.keys(towers)) ids.add(`ui_td_tower_${id}_name`);
+    for (const id of Object.keys(units)) ids.add(`ui_td_unit_${id}_name`);
+    for (const id of Object.keys(projectiles)) ids.add(`ui_td_projectile_${id}_name`);
+
+    try {
+      td_texts = await loadTexts([...ids]);
+    } catch (e) {
+      console.error('[TD] Failed to load text:', e);
+      td_texts = {};
+    }
+  }
+
+  /**
+   * Draws an obvious but non-animated affordability cue over picker buttons
+   * whose piece cannot be afforded.
+   *
+   * @param ctx - Canvas context supplied by afterDraw
+   * @param offset_x - Current camera x offset
+   * @param offset_y - Current camera y offset
+   */
+  function draw_unaffordable_picker_cue(
+    ctx: CanvasRenderingContext2D,
+    offset_x: number,
+    offset_y: number
+  ): void {
+    ctx.save();
+    ctx.translate(-offset_x, -offset_y);
+
+    for (const [id, btn] of unitButtons) {
+      if (!btn.visible) continue;
+      const column = soldierIds.has(id) ? unitColumn : towerColumn;
+      if (!column?.visible) continue;
+
+      const cfg = pieceConfigs.get(id);
+      const cost = cfg?.cost?.[0]?.gold || 0;
+      if (currentGold >= cost) continue;
+
+      const x = btn.x - btn.width / 2;
+      const y = btn.y - btn.height / 2;
+      const radius = 4;
+
+      // Red tint over the already-gray disabled button.
+      ctx.fillStyle = 'rgba(120, 0, 0, 0.28)';
+      ctx.beginPath();
+      ctx.roundRect(x, y, btn.width, btn.height, radius);
+      ctx.fill();
+
+      // Strong red inset border.
+      ctx.strokeStyle = 'rgba(235, 70, 70, 0.95)';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.roundRect(x + 2, y + 2, btn.width - 4, btn.height - 4, radius);
+      ctx.stroke();
+
+      // Small universal unavailable badge.
+      const badge_x = x + btn.width - 14;
+      const badge_y = y + 14;
+      ctx.fillStyle = '#D33';
+      ctx.beginPath();
+      ctx.arc(badge_x, badge_y, 11, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font = 'bold 15px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('!', badge_x, badge_y + 1);
+    }
+
+    ctx.restore();
+  }
+
+  /**
+   * Fits the canvas inside the current mini-game shell, preserving aspect.
+   */
+  function fit_canvas_to_viewport(): void {
+    const shell = get(viewport_context.shell);
+    if (!shell || !canvasEl) return;
+    const fit = fit_canvas_contain(shell.clientWidth, shell.clientHeight, BW / BH);
+    canvasEl.style.width = `${fit.width}px`;
+    canvasEl.style.height = `${fit.height}px`;
+  }
 
   // ============================================================
   // Helpers
@@ -529,7 +793,7 @@
 
   function setupGame() {
     if (!tdData) {
-      onError('Failed to load game session data');
+      onError(text('ui_td_error_load_session'));
       return;
     }
     const data = tdData as unknown as KickoffResponse;
@@ -692,7 +956,7 @@
     resourceText.setShadow('#000000', 4, 2, 2);
 
     if (currentLives > 1) {
-      livesText = createText(`Lives: ${currentLives}`, { x: sX + 100, y: 65 });
+      livesText = createText(format_lives_label(), { x: sX + 100, y: 65 });
       livesText.size = 20;
       livesText.foreground = '#FF6666';
       livesText.setShadow('#000000', 4, 2, 2);
@@ -714,7 +978,7 @@
       const isUnit = soldierIds.has(id);
       const cX = isUnit ? cX_unit : cX_tower;
       const cost = p.cost?.[0]?.gold || 0;
-      const label = `${p.name || id} (${cost}g)`;
+      const label = piece_label(id, cost);
       const iconH = Math.round(sbBtnH * 0.6);
       const iconW = Math.round(iconH * (p.width || 64) / (p.height || 64));
       const bc = new ButtonClass(`sb_${id}`);
@@ -765,7 +1029,7 @@
 
     // Combined round/pause button — standalone, not in any column
     const rpCls = new ButtonClass('sb_round');
-    rpButton = rpCls.spawn(sX + 320, 35, `Round ${currentRound}/${totalRounds}`, null, { width: 140, height: 38, color: '#2D7A2D', backgroundOpacity: 0.8 });
+    rpButton = rpCls.spawn(sX + 320, 35, format_round_start_label(), null, { width: 160, height: 38, color: '#2D7A2D', backgroundOpacity: 0.8 });
     rpButton.zIndex = 100;
     rpButton.setOnClick(() => {
       setSelectedTower(null);
@@ -777,7 +1041,7 @@
     });
 
     const fbc = new ButtonClass('sb_forfeit');
-    fbtn = fbc.spawn(BW - sbBtnW / 2 - 10, BH - 21 - 10, 'Try Again Later', null, { width: sbBtnW, height: 42, color: '#7A2D2D', backgroundOpacity: 0.8 });
+    fbtn = fbc.spawn(BW - sbBtnW / 2 - 10, BH - 21 - 10, text('ui_td_try_again_later'), null, { width: sbBtnW, height: 42, color: '#7A2D2D', backgroundOpacity: 0.8 });
     fbtn.zIndex = 100;
     fbtn.setOnClick(() => forfeitGame());
 
@@ -833,8 +1097,18 @@
     });
 
     // Pause lifecycle callbacks
-    onPause(() => { if (rpButton) { rpButton.text = 'Resume'; rpButton.color = '#7A7A2D'; } });
-    onResume(() => { if (rpButton) { rpButton.text = 'Pause'; rpButton.color = '#555555'; } });
+    onPause(() => {
+      if (rpButton) {
+        rpButton.text = text('ui_resume');
+        rpButton.color = '#7A7A2D';
+      }
+    });
+    onResume(() => {
+      if (rpButton) {
+        rpButton.text = text('ui_pause');
+        rpButton.color = '#555555';
+      }
+    });
 
     // Click handler — placement (click-to-place) + tower selection + selectable targeting + ring buttons
     onMouseClick(0, (_e, x, y) => {
@@ -866,7 +1140,8 @@
     });
 
     // Ghost + ring + range rendering
-    afterDraw((ctx, _offsetX, _offsetY) => {
+    afterDraw((ctx, offsetX, offsetY) => {
+      draw_unaffordable_picker_cue(ctx, offsetX, offsetY);
       const unitId = placementMode ?? dragUnitId;
       if (unitId) {
         const cls = towerGameClassMap.get(unitId);
@@ -982,7 +1257,7 @@
 
     if (showingTargetingPicker) {
       specs = modes.map(m => ({
-        text: m === 'nearest_path' ? 'Nearest Path' : (m === 'selectable' ? 'Selectable' : m.charAt(0).toUpperCase() + m.slice(1)),
+        text: targeting_label(m),
         color: twr.targeting === m ? '#2A5A3A' : '#3A5A8B',
         disabled: false,
         action: () => { twr.targeting = m; setSelectedTower(null); }
@@ -990,10 +1265,8 @@
     } else if (showingFlaskPicker && twr.piece.projectile_ids) {
       const flaskIds: string[] = twr.piece.projectile_ids;
       specs = flaskIds.map((fid: string) => {
-        const cfg = projectileConfigs.get(fid);
-        const label = cfg?.name || fid.charAt(0).toUpperCase() + fid.slice(1);
         return {
-          text: label,
+          text: projectile_name(fid),
           color: twr.flaskId === fid ? '#2A5A3A' : '#5A3A8B',
           disabled: false,
           action: () => { twr.flaskId = fid; dirty = true; savePlacements(); setSelectedTower(null); }
@@ -1001,26 +1274,25 @@
       });
     } else {
       specs = [
-        { text: 'Recall', color: '#8B3A3A', disabled: false, action: doSell },
-        { text: modeLabel === 'nearest_path' ? 'Nearest Path' : (modeLabel === 'selectable' ? 'Selectable' : modeLabel.charAt(0).toUpperCase() + modeLabel.slice(1)), color: '#3A5A8B', disabled: false, action: () => { showingTargetingPicker = true; updateRingButtons(); } }
+        { text: text('ui_td_recall'), color: '#8B3A3A', disabled: false, action: doSell },
+        { text: targeting_label(modeLabel), color: '#3A5A8B', disabled: false, action: () => { showingTargetingPicker = true; updateRingButtons(); } }
       ];
       if (twr.piece.projectile_ids) {
-        const fCfg = twr.flaskId ? projectileClasses[twr.flaskId] : null;
-        const fLabel = twr.flaskId ? (projectileConfigs.get(twr.flaskId)?.name || twr.flaskId) : 'Flask';
+        const fLabel = twr.flaskId ? projectile_name(twr.flaskId) : text('ui_td_flask_generic');
         specs.push({
-          text: 'Flask: ' + fLabel, color: '#5A3A8B',
+          text: format_text('ui_td_flask_label', { name: fLabel }), color: '#5A3A8B',
           disabled: false,
           action: () => { showingFlaskPicker = true; updateRingButtons(); }
         });
       }
       if (targetExists) {
         specs.push({
-          text: 'Upgrade', color: '#3A8B3A',
+          text: text('ui_td_upgrade'), color: '#3A8B3A',
           disabled: currentGold < (twr.piece.upgrade_cost?.[twr.level]?.gold || 0),
           action: doUpgrade
         });
       } else if (!upgradeTarget) {
-        specs.push({ text: 'Max Lvl', color: '#555', disabled: true, action: () => {} });
+        specs.push({ text: text('ui_td_max_level'), color: '#555', disabled: true, action: () => {} });
       }
     }
 
@@ -1196,7 +1468,7 @@
     roundStarted = true;
     gameState = 'battle';
     setSidebarVisible(false);
-    if (rpButton) { rpButton.text = 'Pause'; rpButton.color = '#555555'; }
+    if (rpButton) { rpButton.text = text('ui_pause'); rpButton.color = '#555555'; }
   }
 
   function spawnTick(dt: number) {
@@ -1349,7 +1621,7 @@
     if (eid) leakedEnemies[eid] = (leakedEnemies[eid] || 0) + 1;
     const wp = pathMap.get(ev.pathId);
     console.log(`[TD] enemyEscaped: ${eid} path=${ev.pathId} wpIdx=${ev.waypointIndex}/${wp?.waypoints?.length} at (${e.x.toFixed(0)}, ${e.y.toFixed(0)}) lives=${currentLives}`);
-    if (livesText) livesText.text = `Lives: ${currentLives}`;
+    if (livesText) livesText.text = format_lives_label();
     enemies.delete(e);
     e.destroy();
     if (currentLives <= 0) { gameState = 'lost'; endGame(); }
@@ -1599,11 +1871,8 @@
             copper: { image: asset_url('/images/ui/coin_copper.png'), width: 20, height: 20 }
           });
         }
-        if (livesText) livesText.text = `Lives: ${currentLives}`;
-        if (rpButton) {
-          rpButton.text = `Round ${currentRound}/${totalRounds}`;
-          rpButton.color = '#2D7A2D';
-        }
+        if (livesText) livesText.text = format_lives_label();
+        set_round_start_label();
       } else {
         // No next_round — server already ended the game
         console.log('[TD] advanceRound: no next_round, ending game');
@@ -1630,7 +1899,9 @@
         });
       }
     } catch (e) {
-      onError(e instanceof Error ? e.message : 'Failed to advance round');
+      const msg = await localized_error('ui_td_error_advance_round');
+      onError(msg);
+      console.error('[TD] Failed to advance round:', e);
     } finally {
       roundInTransition = false;
     }
@@ -1674,7 +1945,9 @@
         silver_formatted: cr.silver_formatted
       }, forfeited);
     } catch (e) {
-      onError(e instanceof Error ? e.message : 'Failed to end game');
+      const msg = await localized_error('ui_td_error_end_game');
+      onError(msg);
+      console.error('[TD] Failed to end game:', e);
     }
   }
 
@@ -1723,29 +1996,21 @@
       }
     }
 
+    await load_td_texts(tdData as TDRoundKickoffResponse);
+
     // Canvas sized to board dimensions (sidebar is an overlay)
     canvasEl.width = BW;
     canvasEl.height = BH;
     setBoardSize(BW, BH);
     initEngine(canvasEl, debugEl, false, setupGame);
-
-    function resizeCanvas() {
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      const aspect = BW / BH;
-      let w = vw, h = vw / aspect;
-      if (h > vh) { h = vh; w = h * aspect; }
-      canvasEl.style.width = `${w}px`;
-      canvasEl.style.height = `${h}px`;
-    }
-    resizeCanvas();
-    resizeHandler = resizeCanvas;
-    window.addEventListener('resize', resizeCanvas);
+    canvas_ready = true;
+    fit_canvas_to_viewport();
 
     // Native listeners for board click-and-drag placement
     const onMouseDown = (e: MouseEvent) => {
       if (placementMode && e.button === 0) {
-        const bx = BW * (e.clientX / canvasEl.clientWidth);
+        const rect = canvasEl.getBoundingClientRect();
+        const bx = BW * ((e.clientX - rect.left) / canvasEl.clientWidth);
         console.log('native mousedown: placementMode=', placementMode, 'bx=', bx, 'bw=', BW);
         if (bx < BW) boardDragActive = true;
       }
@@ -1754,8 +2019,9 @@
       if (e.button !== 0) return;
       boardDragActive = false;
       if (placementMode) {
-        const bx = BW * (e.clientX / canvasEl.clientWidth);
-        const by = BH * (e.clientY / canvasEl.clientHeight);
+        const rect = canvasEl.getBoundingClientRect();
+        const bx = BW * ((e.clientX - rect.left) / canvasEl.clientWidth);
+        const by = BH * ((e.clientY - rect.top) / canvasEl.clientHeight);
         console.log('native mouseup: placing', placementMode, 'at', bx, by);
         if (bx < BW && by >= 0 && by < BH && !isBlocked(bx, by, placementMode!)) {
           const cfg = pieceConfigs.get(placementMode!);
@@ -1771,6 +2037,13 @@
 
   async function init() {
     try {
+      // Show localized loading text while the session request is in flight.
+      loadTexts(['ui_loading', 'ui_td_loading'])
+        .then((texts) => {
+          td_texts = { ...td_texts, ...texts };
+        })
+        .catch(() => { /* keep empty loading text */ });
+
       const data = await getTdData();
 
       // Phase transition redirect from server (all levels done, stuck phase)
@@ -1795,30 +2068,45 @@
       tdData = data;
       await initEngineWithData();
     } catch (e) {
-      errorMsg = e instanceof Error ? e.message : 'Failed to start TD';
+      const msg = await localized_error('ui_td_error_load_session');
+      errorMsg = msg;
       loading = false;
-      onError(errorMsg);
+      onError(msg);
+      console.error('[TD] Failed to start:', e);
     }
   }
+
+  $effect(() => {
+    if (!shell_element || !canvas_ready) return;
+    // Re-fit immediately when CSS rotation changes; the observer also catches
+    // the resulting shell size change.
+    void rotated_view;
+    fit_canvas_to_viewport();
+    return observe_viewport_changes(shell_element, fit_canvas_to_viewport);
+  });
+
+  $effect(() => {
+    if (!shell_element || !rotated_view || !canvas_ready) return;
+    return install_rotated_input_bridge(canvasEl, shell_element);
+  });
 
   onMount(() => { init(); });
 
   onDestroy(() => {
     if (saveInterval) clearInterval(saveInterval);
-    if (resizeHandler) window.removeEventListener('resize', resizeHandler);
     savePlacements();
     try { removeEventListeners(); clear(); } catch (_e) { /* ignore */ }
   });
 </script>
 
-  <div style="width: 100%; height: 100vh; position: relative; display: flex; justify-content: center; align-items: center; background: #000;">
+  <div style="width: 100%; height: 100%; min-height: 0; position: relative; display: flex; justify-content: center; align-items: center; background: #000;">
   {#if loading}
     <div class="d-flex justify-content-center align-items-center position-absolute top-0 start-0 w-100 h-100" style="z-index: 10; background: rgba(0,0,0,0.7);">
       <div class="text-center">
         <div class="spinner-border mb-3 text-light" role="status">
-          <span class="visually-hidden">Loading...</span>
+          <span class="visually-hidden">{text('ui_loading')}</span>
         </div>
-        <p class="text-light">Loading Tower Defense...</p>
+        <p class="text-light">{text('ui_td_loading')}</p>
       </div>
     </div>
   {/if}
@@ -1830,7 +2118,8 @@
   <canvas
     bind:this={canvasEl}
     tabindex="0"
-    style="display: block;"
+    aria-label={text('ui_td_board_aria_label')}
+    style="display: block; touch-action: none;"
   ></canvas>
   <div bind:this={debugEl} style="display: none;"></div>
 </div>

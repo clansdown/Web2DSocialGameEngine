@@ -60,7 +60,8 @@ the request (`"Invalid difficulty or grid size for ongoing weeding"`).
     "available_plants": [],
     "available_specials": [],
     "map_metadata": {},
-    "message": "Weeding session started"
+    "message": "Weeding session started",
+    "message_id": "wd_session_started"
   },
   "token": "new-token-string"
 }
@@ -74,6 +75,13 @@ the request (`"Invalid difficulty or grid size for ongoing weeding"`).
 
 ### Notes
 
+- `message_id` is the localization key for the status message
+  (`wd_session_started` for a new session, `wd_session_resumed` for a resumed
+  session). Clients should render the localized text for `message_id` rather
+  than displaying the legacy English `message` field.
+- Weeding turn/forfeit responses use the same `message` / `message_id` pair
+  when they carry a visible status (for example `wd_all_land_cleared` and
+  `wd_forfeit_status`).
 - The chosen `difficulty` and `grid_size` are stored in the session and used to
   compute the silver reward (via the shared reward pool) when the session is won.
 - A session can be resumed with `weedingStart` while one is active.

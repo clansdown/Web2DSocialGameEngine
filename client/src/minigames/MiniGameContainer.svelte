@@ -8,10 +8,11 @@
   import WeedingGame from './weeding/WeedingGame.svelte';
   import GameText from '../components/GameText.svelte';
   import StoryText from '../components/StoryText.svelte';
+  import MiniGameViewport from '../components/MiniGameViewport.svelte';
   import { startMiniGame, endMiniGame } from '../lib/game_state';
-  import { currentCharacter, playerGameState } from '../lib/stores';
+  import { currentCharacter, playerGameState, language } from '../lib/stores';
   import { acknowledgeLandPatentRequest } from '../lib/api';
-  import { loadTexts, loadText } from '../lib/text';
+  import { loadTexts, loadText, apply_text_tokens } from '../lib/text';
   import { asset_url } from '../lib/public_urls';
   import type { StartMiniGameResponse, EndMiniGameResponse, UnlockItem } from '../lib/api';
   import * as storage from '../lib/storage';
@@ -40,7 +41,39 @@
   let showResults = $state(false);
   let winMessage = $state('');
   let loseMessage = $state('');
-  let completion_bonus_label = $state('');
+
+  const CONTAINER_TEXT_IDS: string[] = [
+    'ui_loading',
+    'ui_minigame_starting',
+    'game_result_score',
+    'ui_continue',
+    'ui_minigame_new_best_score',
+    'ui_minigame_rewards',
+    'ui_minigame_base_unlocked_title',
+    'ui_minigame_base_unlocked_body',
+    'ui_minigame_barony_right_title',
+    'ui_minigame_barony_right_body',
+    'ui_minigame_unknown',
+    'ui_kings_seal_alt',
+    'ui_minigame_completion_bonus',
+    'ui_minigame_silver_reward',
+    'ui_minigame_reward_entry',
+    'ui_minigame_tower_defense_title',
+    'ui_minigame_weeding_title',
+    'ui_money_shillings',
+    'ui_money_pence',
+    'ui_money_shillings_pence'
+  ];
+
+  let ui = $state<Record<string, string>>({});
+  let resource_labels = $state<Record<string, string>>({});
+
+  let completion_bonus_label = $derived(ui['ui_minigame_completion_bonus'] ?? '');
+  let game_title = $derived(
+    miniGame === 'tower_defense'
+      ? (ui['ui_minigame_tower_defense_title'] ?? '')
+      : (ui['ui_minigame_weeding_title'] ?? '')
+  );
 
   let visible_silver_pence = $derived.by(() => {
     const silver_pence = gameResults?.rewards?.silver_pence;
@@ -66,11 +99,96 @@
   );
 
   $effect(() => {
-    if (!showResults || !gameResults) return;
-    loadText('ui_minigame_completion_bonus')
-      .then((text) => { completion_bonus_label = text; })
-      .catch(() => { completion_bonus_label = ''; });
+    $language;
+    $currentCharacter;
+    let cancelled = false;
+    loadTexts(CONTAINER_TEXT_IDS)
+      .then((texts) => {
+        if (!cancelled) ui = texts;
+      })
+      .catch(() => {
+        if (!cancelled) ui = {};
+      });
+    return () => {
+      cancelled = true;
+    };
   });
+
+  $effect(() => {
+    const resource_ids = new Set<string>();
+    for (const [resource] of visible_reward_entries) resource_ids.add(resource);
+    for (const [resource] of visible_completion_bonus_entries) resource_ids.add(resource);
+
+    if (resource_ids.size === 0) {
+      resource_labels = {};
+      return;
+    }
+
+    const text_ids = [...resource_ids].map((resource) => `ui_resource_${resource}`);
+    let cancelled = false;
+    loadTexts(text_ids)
+      .then((texts) => {
+        if (!cancelled) resource_labels = texts;
+      })
+      .catch(() => {
+        if (!cancelled) resource_labels = {};
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  /**
+   * Resolves a reward resource key through the text system.
+   *
+   * @param resource - Fiefdom resource key
+   * @returns Localized resource label
+   */
+  function resource_label(resource: string): string {
+    return resource_labels[`ui_resource_${resource}`] ?? resource;
+  }
+
+  /**
+   * Formats a pence amount with the localized shilling/pence abbreviations.
+   *
+   * @param pence - Amount in pence
+   * @returns Localized compact amount, e.g. "1s 6d"
+   */
+  function format_silver_pence(pence: number): string {
+    const total = Math.round(pence);
+    const shillings = Math.floor(total / 12);
+    const remainder = total % 12;
+
+    if (shillings > 0 && remainder > 0) {
+      return apply_text_tokens(ui['ui_money_shillings_pence'] ?? '', {
+        shillings: String(shillings),
+        pence: String(remainder)
+      });
+    }
+    if (shillings > 0) {
+      return apply_text_tokens(ui['ui_money_shillings'] ?? '', {
+        amount: String(shillings)
+      });
+    }
+    return apply_text_tokens(ui['ui_money_pence'] ?? '', {
+      amount: String(remainder)
+    });
+  }
+
+  /**
+   * Loads a single localized error message.
+   *
+   * @param text_id - Error text id
+   * @returns Localized message
+   */
+  async function localized_error(text_id: string): Promise<string> {
+    try {
+      const texts = await loadTexts([text_id]);
+      return texts[text_id] ?? '';
+    } catch {
+      return '';
+    }
+  }
 
   // For tower defense
   let tdStarted = $state(false);
@@ -144,9 +262,10 @@
       levelConfig = result;
       gameStarted = true;
     } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Failed to start mini-game';
+      const msg = await localized_error('ui_minigame_start_error');
       startError = msg;
       onError(msg);
+      console.error('[MiniGameContainer] start failed:', e);
     } finally {
       loading = false;
     }
@@ -192,8 +311,9 @@
       gameResults = results;
       showResults = true;
     } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Failed to end mini-game';
+      const msg = await localized_error('ui_minigame_end_error');
       onError(msg);
+      console.error('[MiniGameContainer] end failed:', e);
     }
   }
 
@@ -304,10 +424,11 @@
 
     const unitName = itemText.split('\n')[0].split('**')[1] || itemText.split('\n')[0];
 
+    const seal_alt = ui['ui_kings_seal_alt'] ?? '';
     let msg = kingsMsgTemplate
         .replace(/\{unit_name\}/g, unitName)
         .replace(/\<unit\>/g, `\n\n![](${item.imageUrl})\n\n${itemText}`)
-        .replace(/\<seal\>/g, `\n\n<img src="${asset_url('/images/ui/kings_seal.png')}" style="width: 10em; height: auto;" alt="King's Seal" />`);
+        .replace(/\<seal\>/g, `\n\n<img src="${asset_url('/images/ui/kings_seal.png')}" style="width: 10em; height: auto;" alt="${seal_alt}" />`);
 
     return msg;
   }
@@ -337,7 +458,8 @@
   }
 
   async function showLandPatentOverlay() {
-    const seal = `<img src="${asset_url('/images/ui/kings_seal.png')}" style="width: 10em; height: auto;" alt="King's Seal" />`;
+    const seal_alt = ui['ui_kings_seal_alt'] ?? '';
+    const seal = `<img src="${asset_url('/images/ui/kings_seal.png')}" style="width: 10em; height: auto;" alt="${seal_alt}" />`;
     let raw = await loadText('land_patent_earned');
     landPatentText = raw.replace(/\<seal\>/g, `\n\n${seal}`);
     showLandPatent = true;
@@ -350,14 +472,17 @@
   });
 </script>
 
-<div class="container-fluid p-0">
+<MiniGameViewport>
+  <div class="mini-game-content">
   {#if loading}
     <div class="d-flex justify-content-center align-items-center py-5">
       <div class="text-center">
         <div class="spinner-border mb-3" role="status">
-          <span class="visually-hidden">Loading...</span>
+          <span class="visually-hidden">{ui['ui_loading'] ?? ''}</span>
         </div>
-        <p class="text-muted">Starting {miniGame === 'tower_defense' ? 'Tower Defense' : 'Weeding'}...</p>
+        <p class="text-muted">
+          {apply_text_tokens(ui['ui_minigame_starting'] ?? '', { game: game_title })}
+        </p>
       </div>
     </div>
   {:else if startError}
@@ -381,20 +506,29 @@
               <GameText text={loseMessage} class="mb-0" />
             </div>
           {/if}
-          <p class="lead mb-2">Score: {gameResults.score}</p>
+          <p class="lead mb-2">
+            {apply_text_tokens(ui['game_result_score'] ?? '', { score: String(gameResults.score) })}
+          </p>
           {#if gameResults.new_best_score === gameResults.score && gameResults.score > 0}
-            <p class="text-success">New Best Score!</p>
+            <p class="text-success">{ui['ui_minigame_new_best_score'] ?? ''}</p>
           {/if}
           {#if gameResults.completed && has_visible_rewards}
             <div class="mb-3">
-              <h5>Rewards</h5>
+              <h5>{ui['ui_minigame_rewards'] ?? ''}</h5>
               {#if visible_silver_pence > 0}
                 <span class="badge bg-success me-2">
-                  Silver: +{gameResults.silver_formatted ?? `${visible_silver_pence}d`}
+                  {apply_text_tokens(ui['ui_minigame_silver_reward'] ?? '', {
+                    amount: format_silver_pence(visible_silver_pence)
+                  })}
                 </span>
               {/if}
               {#each visible_reward_entries as [resource, amount]}
-                <span class="badge bg-success me-2">{resource}: +{amount}</span>
+                <span class="badge bg-success me-2">
+                  {apply_text_tokens(ui['ui_minigame_reward_entry'] ?? '', {
+                    label: resource_label(resource),
+                    amount: String(amount)
+                  })}
+                </span>
               {/each}
               {#if visible_completion_bonus_entries.length > 0}
                 <div class="mt-2">
@@ -402,7 +536,12 @@
                     <div class="small text-muted mb-1">{completion_bonus_label}</div>
                   {/if}
                   {#each visible_completion_bonus_entries as [resource, amount]}
-                    <span class="badge bg-success me-2">{resource}: +{amount}</span>
+                    <span class="badge bg-success me-2">
+                      {apply_text_tokens(ui['ui_minigame_reward_entry'] ?? '', {
+                        label: resource_label(resource),
+                        amount: String(amount)
+                      })}
+                    </span>
                   {/each}
                 </div>
               {/if}
@@ -410,19 +549,19 @@
           {/if}
           {#if gameResults.base_unlocked}
             <div class="alert alert-success">
-              <h4 class="alert-heading">Base Unlocked!</h4>
-              <p class="mb-0">You have proven yourself worthy. The right to build is yours.</p>
+              <h4 class="alert-heading">{ui['ui_minigame_base_unlocked_title'] ?? ''}</h4>
+              <p class="mb-0">{ui['ui_minigame_base_unlocked_body'] ?? ''}</p>
             </div>
           {/if}
           {#if gameResults.baron_right_earned}
             <div class="alert alert-warning">
-              <h4 class="alert-heading">Barony Right Earned!</h4>
-              <p class="mb-0">You have cleared the baron track. You may now found your own barony.</p>
+              <h4 class="alert-heading">{ui['ui_minigame_barony_right_title'] ?? ''}</h4>
+              <p class="mb-0">{ui['ui_minigame_barony_right_body'] ?? ''}</p>
             </div>
           {/if}
 
           <button class="btn btn-primary btn-lg mt-4" onclick={() => { if (gameResults) onComplete(gameResults); }}>
-            Continue
+            {ui['ui_continue'] ?? ''}
           </button>
         </div>
       </div>
@@ -448,7 +587,19 @@
     />
   {:else if levelConfig && gameStarted}
     <div class="container py-5">
-      <div class="alert alert-warning">Unknown mini-game: {miniGame}</div>
+      <div class="alert alert-warning">
+        {apply_text_tokens(ui['ui_minigame_unknown'] ?? '', { game: miniGame })}
+      </div>
     </div>
   {/if}
-</div>
+  </div>
+</MiniGameViewport>
+
+<style>
+  .mini-game-content {
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: none;
+  }
+</style>

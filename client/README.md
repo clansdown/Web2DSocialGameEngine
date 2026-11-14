@@ -155,11 +155,36 @@ browser Back/Forward buttons and reload work naturally:
 - `#/game/<game>/<level>` → mini-game level
 
 Components read `route_store` and navigate with `navigate()` / `replace_route()`
-(redirects) / `go_back()` (in-app Back buttons). Entering an activity or game
-from an empty/foreign URL pushes a `#/` hub entry first, so the browser Back
-button always returns to the hub grid before leaving the app. Reloading
-restores the current screen from the URL; mobile app-switching fires no hash
-events and never disturbs the open screen.
+(redirects) / `return_to_route()` (leave a game back to the screen it was
+launched from) / `go_home()` (mini-game Home buttons) / `go_back()` (in-app Back
+buttons). `return_to_route()` reuses the previous history entry when it already
+matches the destination, so finishing a mini-game does not create a duplicate
+tasks entry that makes Back appear to do nothing. Mini-game screens use
+`go_home()`, which always lands on the hub grid and never creates a duplicate
+hub entry; ongoing setup screens keep a secondary “Back to games” link to the
+card list. Entering an activity or game from an empty/foreign URL pushes a `#/`
+hub entry first, so the browser Back button always returns to the hub grid
+before leaving the app. Reloading restores the current screen from the URL;
+mobile app-switching fires no hash events and never disturbs the open screen.
+
+## Mini-game viewport and forced landscape
+
+`src/components/MiniGameViewport.svelte` wraps the Tower Defense and Assarter
+flows. It provides:
+
+- a full-screen `100dvh` shell with aspect-preserving canvas fitting
+- a rotate-to-landscape button on touch devices in portrait
+- a forced-landscape mode that stays active when the device is rotated
+
+The shell can be CSS-rotated 90° while the physical browser viewport is still
+portrait. SimpleGame assumes an unrotated canvas, so the games install
+`src/lib/rotated_input.ts` while the shell is rotated. That bridge maps physical
+pointer positions into canvas-local coordinates and dispatches synthetic mouse
+events; `docs/SimpleGame_changes.md` tracks the native transform-aware input
+mapping that would replace it.
+
+The rotate button shows a full label for 15 seconds, then collapses to a small
+tappable icon. It disappears once the game is forced to landscape.
 
 ## Staff and support
 

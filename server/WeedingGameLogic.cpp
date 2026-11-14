@@ -349,6 +349,7 @@ WeedingActionResult process_action(
         result.won = false;
         result.score = 0;
         result.message = "forfeit";
+        result.message_id = "wd_forfeit_status";
         return result;
     }
 
@@ -584,6 +585,7 @@ WeedingActionResult process_action(
             int current_round = session_json["round"].get<int>();
             result.score = std::max(par - current_round + 10, 1);
             result.message = "All land cleared!";
+            result.message_id = "wd_all_land_cleared";
 
             // Update session_json for won
             session_json["score"] = result.score;
@@ -705,6 +707,7 @@ WeedingActionResult process_action(
             int current_round = session_json["round"].get<int>();
             result.score = std::max(par - current_round + 10, 1);
             result.message = "All land cleared!";
+            result.message_id = "wd_all_land_cleared";
             session_json["score"] = result.score;
         }
 

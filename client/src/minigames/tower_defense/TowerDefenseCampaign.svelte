@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { playerGameState } from '../../lib/stores';
+  import { playerGameState, language, currentCharacter } from '../../lib/stores';
   import { loadTexts as fetchTexts } from '../../lib/text';
   import Book from '../../components/Book.svelte';
   import GameText from '../../components/GameText.svelte';
+  import MiniGameHomeButton from '../MiniGameHomeButton.svelte';
   import { asset_url } from '../../lib/public_urls';
 
   interface Props {
@@ -10,13 +11,16 @@
     gridSize: number;
     minLevelId: number;
     onStartLevel: (levelId: number) => void;
-    onBack: () => void;
+    onHome: () => void;
   }
 
-  let { campaignId, gridSize, minLevelId, onStartLevel, onBack }: Props = $props();
+  let { campaignId, gridSize, minLevelId, onStartLevel, onHome }: Props = $props();
 
   let infoText = $state('');
   let displayName = $state('');
+  let campaignProgressLabel = $state('');
+  let campaignMapAlt = $state('');
+  let bestiaryLabel = $state('');
 
   const bookPages: { image: string; textId: string }[] = [
     { image: asset_url('/images/tower_defense/mobs/dire_rat.png'), textId: 'td_book_enemy_dire_rat' },
@@ -75,32 +79,46 @@
   }
 
   $effect(() => {
-    fetchTexts([titleKey, infoTextId]).then(texts => {
-      displayName = texts[titleKey] ?? 'Wolf Marche';
+    $language;
+    $currentCharacter;
+    fetchTexts([
+      titleKey,
+      infoTextId,
+      'ui_campaign_progress',
+      'ui_campaign_map_alt',
+      'ui_td_bestiary'
+    ]).then(texts => {
+      displayName = texts[titleKey] ?? '';
       infoText = texts[infoTextId] ?? '';
+      campaignProgressLabel = texts['ui_campaign_progress'] ?? '';
+      campaignMapAlt = texts['ui_campaign_map_alt'] ?? '';
+      bestiaryLabel = texts['ui_td_bestiary'] ?? '';
     }).catch(() => {
-      displayName = 'Wolf Marche';
+      displayName = '';
       infoText = '';
+      campaignProgressLabel = '';
+      campaignMapAlt = '';
+      bestiaryLabel = '';
     });
   });
 </script>
 
 <div class="container py-5">
   <div class="d-flex align-items-center mb-4">
-    <button class="btn btn-outline-secondary me-3" onclick={onBack}>
-      &larr; Back
-    </button>
+    <div class="me-3">
+      <MiniGameHomeButton {onHome} />
+    </div>
     <div>
       <h2 class="mb-0">{displayName}</h2>
-      <small class="text-muted">Campaign Progress</small>
+      <small class="text-muted">{campaignProgressLabel}</small>
     </div>
     <div class="ms-auto">
-      <Book pages={bookPages} toolText="Bestiary" width={110} />
+      <Book pages={bookPages} toolText={bestiaryLabel} width={110} />
     </div>
   </div>
 
   <div style="position: relative; max-width: 800px; margin: 0 auto;">
-    <img src={mapImageUrl} alt="Campaign Map" style="width: 100%; height: auto; display: block; border-radius: 8px;" />
+    <img src={mapImageUrl} alt={campaignMapAlt} style="width: 100%; height: auto; display: block; border-radius: 8px;" />
     <div
       style="position: absolute; inset: 0; display: grid; grid-template-columns: repeat({gridSize}, 1fr); grid-template-rows: repeat({gridSize}, 1fr);"
     >

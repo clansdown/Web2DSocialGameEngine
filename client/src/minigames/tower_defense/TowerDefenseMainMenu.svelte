@@ -10,10 +10,10 @@
 
   interface Props {
     onStartLevel: (levelId: number) => void;
-    onBack: () => void;
+    onHome: () => void;
   }
 
-  let { onStartLevel, onBack }: Props = $props();
+  let { onStartLevel, onHome }: Props = $props();
 
   let isBaronTrack = $derived($playerGameState?.game_phase === 'baron_track');
   let campaignSize = $derived(isBaronTrack ? 4 : 3);
@@ -26,5 +26,5 @@
   gridSize={campaignSize}
   minLevelId={minLevelId}
   {onStartLevel}
-  {onBack}
+  {onHome}
 />

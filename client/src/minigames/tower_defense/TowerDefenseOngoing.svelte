@@ -11,7 +11,7 @@
    * (mirrors the previous custom-game flow).
    */
 
-  import { currentCharacter } from '../../lib/stores';
+  import { currentCharacter, language } from '../../lib/stores';
   import { getMiniGameConfigs, tdRound } from '../../lib/game_state';
   import { estimateOngoingRewards } from '../../lib/api';
   import type { OngoingGameConfig } from '../../lib/api';
@@ -19,13 +19,15 @@
   import { setConfig } from '../../lib/storage';
   import { loadTexts as fetchTexts } from '../../lib/text';
   import GameText from '../../components/GameText.svelte';
+  import MiniGameHomeButton from '../MiniGameHomeButton.svelte';
 
   interface Props {
     onStartLevel: (gameId: string, levelId: number) => void;
-    onBack: () => void;
+    onHome: () => void;
+    onBackToGames: () => void;
   }
 
-  let { onStartLevel, onBack }: Props = $props();
+  let { onStartLevel, onHome, onBackToGames }: Props = $props();
 
   let config = $state<OngoingGameConfig | null>(null);
   let loading = $state(true);
@@ -36,8 +38,20 @@
   let rewardEstimate = $state('');
   let message = $state('');
   let starting = $state(false);
+  let ui = $state<Record<string, string>>({});
 
-  const TEXT_IDS: string[] = ['td_ongoing_info', 'td_ongoing_rewards'];
+  const TEXT_IDS: string[] = [
+    'td_ongoing_info',
+    'td_ongoing_rewards',
+    'ui_minigame_tower_defense_title',
+    'ui_td_rounds_label',
+    'ui_difficulty_label',
+    'ui_start_game',
+    'ui_back_to_games',
+    'ui_loading',
+    'ui_minigame_estimate_error',
+    'ui_minigame_start_error'
+  ];
 
   /**
    * Loads the tower defense ongoing config from the server.
@@ -65,6 +79,7 @@
   async function loadTexts(): Promise<void> {
     try {
       const texts = await fetchTexts(TEXT_IDS);
+      ui = texts;
       infoText = texts['td_ongoing_info'] ?? '';
       rewardsText = texts['td_ongoing_rewards'] ?? '';
     } catch {
@@ -94,7 +109,7 @@
       message = '';
     } catch {
       rewardEstimate = '';
-      message = 'Could not estimate rewards.';
+      message = ui['ui_minigame_estimate_error'] ?? '';
     }
   }
 
@@ -115,13 +130,16 @@
       await setConfig('pending_custom_game', result);
       onStartLevel('tower_defense', 0);
     } catch (e) {
-      message = e instanceof Error ? e.message : 'Failed to start game';
+      message = ui['ui_minigame_start_error'] ?? '';
+      console.error('[TD ongoing] start failed:', e);
     } finally {
       starting = false;
     }
   }
 
   $effect(() => {
+    $language;
+    $currentCharacter;
     loadConfig();
     loadTexts();
   });
@@ -134,16 +152,19 @@
 </script>
 
 <div class="container py-5">
-  <button class="btn btn-outline-secondary mb-4" onclick={onBack}>
-    &larr; Back
-  </button>
+  <div class="d-flex flex-wrap align-items-center gap-2 mb-4">
+    <MiniGameHomeButton {onHome} />
+    <button class="btn btn-sm btn-link text-secondary p-0" onclick={onBackToGames}>
+      &larr; {ui['ui_back_to_games'] ?? ''}
+    </button>
+  </div>
 
-  <h2>Tower Defense</h2>
+  <h2>{ui['ui_minigame_tower_defense_title'] ?? ''}</h2>
 
   {#if loading}
     <div class="d-flex justify-content-center py-5">
       <div class="spinner-border" role="status">
-        <span class="visually-hidden">Loading...</span>
+        <span class="visually-hidden">{ui['ui_loading'] ?? ''}</span>
       </div>
     </div>
   {:else if config}
@@ -154,7 +175,7 @@
     {/if}
 
     <div class="mb-4">
-      <div class="fw-bold mb-2">Rounds</div>
+      <div class="fw-bold mb-2">{ui['ui_td_rounds_label'] ?? ''}</div>
       <div class="d-flex flex-wrap gap-2">
         {#each config.size_options as opt}
           <button
@@ -168,7 +189,7 @@
     </div>
 
     <div class="mb-4">
-      <div class="fw-bold mb-2">Difficulty</div>
+      <div class="fw-bold mb-2">{ui['ui_difficulty_label'] ?? ''}</div>
       <div class="d-flex flex-wrap gap-2">
         {#each config.difficulty_options as d}
           <button
@@ -195,7 +216,7 @@
       {#if starting}
         <span class="spinner-border spinner-border-sm me-1" role="status"></span>
       {/if}
-      Start Game
+      {ui['ui_start_game'] ?? ''}
     </button>
   {/if}
 </div>

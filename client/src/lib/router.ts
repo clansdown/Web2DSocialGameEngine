@@ -14,7 +14,7 @@
  *   #/game/<game>/<level>[/…] → mini-game level (rest reserved for future use)
  *
  * Components read `route_store` (a Svelte store) and navigate with
- * `navigate()`, `replace_route()`, or `go_back()`.
+ * `navigate()`, `replace_route()`, `return_to_route()`, or `go_back()`.
  *
  * Back-stack invariant: when navigating into an activity/game from an
  * empty or foreign URL, a `#/` hub entry is pushed first, so the browser
@@ -61,7 +61,7 @@ function parse_hash(hash: string): route {
  * @param route - Route to serialize
  * @returns string - Fragment including the leading '#'
  *
- * Usage: Internal; used by navigate()/replace_route()
+ * Usage: Internal; used by navigate()/replace_route()/return_to_route()
  */
 function to_hash(route: route): string {
   switch (route.type) {
@@ -137,13 +137,14 @@ export function navigate(route: route): void {
 
 /**
  * Navigates to a route by replacing the current history entry.
- * Used for redirects (e.g. game completion) so the browser Back button
- * does not re-enter the screen that was just finished.
+ * Used for in-place redirects where the current entry must be replaced.
+ * Prefer `return_to_route()` when returning to a screen that may already be
+ * the previous history entry (e.g. leaving a mini-game).
  *
  * @param route - Destination route
  * @returns void
  *
- * Usage: onMiniGameComplete → replace_route({ type: 'activity', id: 'tasks', rest: [] })
+ * Usage: redirecting a screen that must never appear in Back history
  */
 export function replace_route(route: route): void {
   const target = to_hash(route);
@@ -160,6 +161,57 @@ export function replace_route(route: route): void {
 }
 
 /**
+ * Returns to a route, reusing an existing history entry when the current
+ * entry was reached from that same route.
+ *
+ * A mini-game launched from `#/activity/tasks` records that route in
+ * `history.state.from`. Replacing the finished game entry with
+ * `replace_route(tasks)` would therefore create a second, identical tasks
+ * entry. The campaign's Back button would then call `history.back()` and land
+ * on the other tasks entry, leaving the screen unchanged.
+ *
+ * @param route - Destination route
+ * @returns void
+ *
+ * Usage: onMiniGameComplete -> return_to_route({ type: 'activity', id: 'tasks', rest: [] })
+ */
+export function return_to_route(route: route): void {
+  const target = to_hash(route);
+
+  if (window.location.hash === target) {
+    route_store.set(route);
+    return;
+  }
+
+  if (history.length > 1 && history.state?.from === target) {
+    // The previous entry is already the destination: return to it instead of
+    // replacing the current entry with a duplicate.
+    history.back();
+    route_store.set(route);
+    return;
+  }
+
+  replace_route(route);
+}
+
+/**
+ * Deterministically returns to the hub grid.
+ *
+ * Reuses the previous hub history entry when the current screen was reached
+ * from the hub, otherwise replaces the current entry with the hub. This never
+ * creates a duplicate hub entry, and browser Back never bounces into the
+ * screen that was left.
+ *
+ * @param none
+ * @returns void
+ *
+ * Usage: the mini-game Home buttons
+ */
+export function go_home(): void {
+  return_to_route({ type: 'hub', rest: [] });
+}
+
+/**
  * Navigates back one history entry when the previous entry is an in-app
  * route; otherwise returns to the hub grid directly. Used by in-app Back
  * buttons so they always escape to an app screen.
@@ -170,8 +222,17 @@ export function replace_route(route: route): void {
  * Usage: goBackToHub() in HubScreen and activity panels
  */
 export function go_back(): void {
+  const current = window.location.hash;
   const from = history.state?.from;
+
   if (typeof from === 'string' && is_in_app_hash(from)) {
+    if (from === current) {
+      // A legacy duplicate entry: history.back() would land on another entry
+      // with the same hash and appear to do nothing. Replace this entry with
+      // the hub so the in-app Back button always reaches the main page.
+      replace_route({ type: 'hub', rest: [] });
+      return;
+    }
     history.back();
   } else {
     navigate({ type: 'hub', rest: [] });

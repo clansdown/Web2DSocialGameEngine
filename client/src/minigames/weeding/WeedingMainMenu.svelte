@@ -5,20 +5,23 @@
    * shown during campaign phases — ongoing mode uses WeedingOngoing instead.
    */
 
-  import { playerGameState } from '../../lib/stores';
+  import { playerGameState, language, currentCharacter } from '../../lib/stores';
   import { getMiniGameConfigs } from '../../lib/game_state';
+  import { loadTexts } from '../../lib/text';
   import type { MiniGameConfig } from '../../lib/api';
   import WeedingCampaign from './WeedingCampaign.svelte';
+  import MiniGameHomeButton from '../MiniGameHomeButton.svelte';
 
   interface Props {
     onStartLevel: (levelId: number) => void;
-    onBack: () => void;
+    onHome: () => void;
   }
 
-  let { onStartLevel, onBack }: Props = $props();
+  let { onStartLevel, onHome }: Props = $props();
 
   let config = $state<MiniGameConfig | null>(null);
   let loading = $state(true);
+  let loadingLabel = $state('');
 
   let isBaronTrack = $derived($playerGameState?.game_phase === 'baron_track');
   let gridSize = $derived(isBaronTrack ? (config?.baron_grid_size ?? 4) : (config?.grid_size ?? 3));
@@ -40,13 +43,34 @@
   $effect(() => {
     loadConfig();
   });
+
+  $effect(() => {
+    $language;
+    $currentCharacter;
+    let cancelled = false;
+    loadTexts(['ui_loading'])
+      .then((texts) => {
+        if (!cancelled) loadingLabel = texts['ui_loading'] ?? '';
+      })
+      .catch(() => {
+        if (!cancelled) loadingLabel = '';
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
 </script>
 
 <div class="container-fluid p-0">
   {#if loading}
-    <div class="d-flex justify-content-center py-5">
-      <div class="spinner-border" role="status">
-        <span class="visually-hidden">Loading...</span>
+    <div class="container py-4">
+      <div class="mb-4">
+        <MiniGameHomeButton {onHome} />
+      </div>
+      <div class="d-flex justify-content-center py-5">
+        <div class="spinner-border" role="status">
+          <span class="visually-hidden">{loadingLabel}</span>
+        </div>
       </div>
     </div>
   {:else}
@@ -55,7 +79,7 @@
       {gridSize}
       {minLevelId}
       {onStartLevel}
-      {onBack}
+      {onHome}
     />
   {/if}
 </div>

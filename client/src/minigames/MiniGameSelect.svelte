@@ -11,7 +11,7 @@
    * All user-facing text comes from the text system via loadTexts().
    */
 
-  import { playerGameState, currentCharacter } from '../lib/stores';
+  import { playerGameState, currentCharacter, language } from '../lib/stores';
   import { getMiniGameConfigs } from '../lib/game_state';
   import { loadTexts } from '../lib/text';
   import type { MiniGameConfig } from '../lib/api';
@@ -19,6 +19,7 @@
   import WeedingMainMenu from './weeding/WeedingMainMenu.svelte';
   import TowerDefenseOngoing from './tower_defense/TowerDefenseOngoing.svelte';
   import WeedingOngoing from './weeding/WeedingOngoing.svelte';
+  import MiniGameHomeButton from './MiniGameHomeButton.svelte';
 
   const ARCHETYPE_TO_GAME: Record<string, string> = {
     wolf_warden: 'tower_defense',
@@ -29,10 +30,10 @@
 
   interface Props {
     onStartLevel: (gameId: string, levelId: number) => void;
-    onBack: () => void;
+    onHome: () => void;
   }
 
-  let { onStartLevel, onBack }: Props = $props();
+  let { onStartLevel, onHome }: Props = $props();
 
   let allConfigs = $state<Record<string, MiniGameConfig> | null>(null);
   let loading = $state(true);
@@ -47,7 +48,6 @@
     'ui_minigame_weeding_desc',
     'ui_minigame_no_track',
     'ui_minigame_load_error',
-    'ui_back_button',
     'ui_play_button',
     'ui_loading',
   ];
@@ -65,21 +65,24 @@
     try {
       allConfigs = await getMiniGameConfigs();
     } catch (e) {
-      loadError = e instanceof Error ? e.message : 'Failed to load configs';
+      loadError = 'load_failed';
+      console.error('[MiniGameSelect] Failed to load configs:', e);
     } finally {
       loading = false;
     }
   }
 
-  function goBack(): void {
-    if (selectedGame) {
-      selectedGame = null;
-    } else {
-      onBack();
-    }
+  /**
+   * Returns from an ongoing-mode setup screen to the mini-game card list.
+   * The screen header has a separate Home button for the hub grid.
+   */
+  function goBackToGames(): void {
+    selectedGame = null;
   }
 
   $effect(() => {
+    $language;
+    $currentCharacter;
     loadTexts(PAGE_TEXT_IDS).then(t => { texts = t; }).catch(() => { texts = {}; });
   });
 
@@ -93,46 +96,56 @@
 {#if inCampaign && archetypeGame === 'tower_defense'}
   <TowerDefenseMainMenu
     onStartLevel={(levelId: number) => onStartLevel('tower_defense', levelId)}
-    onBack={goBack}
+    {onHome}
   />
 {:else if inCampaign && archetypeGame === 'weeding'}
   <WeedingMainMenu
     onStartLevel={(levelId: number) => onStartLevel('weeding', levelId)}
-    onBack={goBack}
+    {onHome}
   />
 {:else if inCampaign}
   <div class="container py-5">
-    <button class="btn btn-outline-secondary mb-4" onclick={goBack}>
-      &larr; {texts['ui_back_button'] || 'Back'}
-    </button>
+    <div class="mb-4">
+      <MiniGameHomeButton {onHome} />
+    </div>
     <div class="alert alert-warning">{texts['ui_minigame_no_track'] || ''}</div>
   </div>
 {:else if selectedGame === 'tower_defense'}
   <TowerDefenseOngoing
     {onStartLevel}
-    onBack={goBack}
+    {onHome}
+    onBackToGames={goBackToGames}
   />
 {:else if selectedGame === 'weeding'}
   <WeedingOngoing
     {onStartLevel}
-    onBack={goBack}
+    {onHome}
+    onBackToGames={goBackToGames}
   />
 {:else if loading}
-  <div class="d-flex justify-content-center py-5">
-    <div class="spinner-border" role="status">
-      <span class="visually-hidden">{texts['ui_loading'] || 'Loading...'}</span>
+  <div class="container py-4">
+    <div class="mb-4">
+      <MiniGameHomeButton {onHome} />
+    </div>
+    <div class="d-flex justify-content-center py-5">
+      <div class="spinner-border" role="status">
+        <span class="visually-hidden">{texts['ui_loading'] ?? ''}</span>
+      </div>
     </div>
   </div>
 {:else if loadError}
-  <div class="container py-5">
-    <div class="alert alert-danger">{texts['ui_minigame_load_error'] || loadError}</div>
+  <div class="container py-4">
+    <div class="mb-4">
+      <MiniGameHomeButton {onHome} />
+    </div>
+    <div class="alert alert-danger">{texts['ui_minigame_load_error'] ?? ''}</div>
   </div>
 {:else if allConfigs}
   <div class="container py-4">
     <div class="d-flex align-items-center mb-4">
-      <button class="btn btn-outline-secondary me-3" onclick={goBack}>
-        &larr; {texts['ui_back_button'] || 'Back'}
-      </button>
+      <div class="me-3">
+        <MiniGameHomeButton {onHome} />
+      </div>
       <h2 class="mb-0">{texts['ui_minigame_select_title'] || ''}</h2>
     </div>
     <div class="row g-4 justify-content-center">
@@ -149,19 +162,19 @@
             onkeydown={(e) => { if (e.key === 'Enter') selectedGame = id; }}
           >
             <div class="card-body text-center pt-3 px-3 pb-2">
-              <h3 class="card-title mb-0">{texts[titleKey] || config.display_name}</h3>
+              <h3 class="card-title mb-0">{texts[titleKey] ?? ''}</h3>
             </div>
             {#if config.image}
               <img
                 src={config.image}
-                alt={texts[titleKey] || config.display_name}
+                alt={texts[titleKey] ?? ''}
                 style="width: 100%; aspect-ratio: 1 / 1; object-fit: cover;"
               />
             {/if}
             <div class="card-body text-center p-4">
-              <p class="card-text text-muted mb-4">{texts[descKey] || config.description}</p>
+              <p class="card-text text-muted mb-4">{texts[descKey] ?? ''}</p>
               <button class="btn btn-primary btn-lg px-5">
-                {texts['ui_play_button'] || 'Play'}
+                {texts['ui_play_button'] ?? ''}
               </button>
             </div>
           </div>

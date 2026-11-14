@@ -17,6 +17,7 @@ export interface WeedingSessionState {
   won: boolean;
   score: number;
   message: string;
+  message_id?: string;
   text_intro_id: string | null;
   text_outro_id: string | null;
 }
@@ -58,6 +59,7 @@ export interface WeedingTurnResponse {
   won: boolean;
   score: number;
   message: string;
+  message_id?: string;
   par: number;
   // Forfeit/completion fields
   game_over?: boolean;

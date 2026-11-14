@@ -1,9 +1,15 @@
 <script lang="ts">
-  import { onMount, onDestroy, tick } from 'svelte';
+  import { onMount, onDestroy, tick, getContext } from 'svelte';
   import { startWeedingSession, submitWeedingTurn } from '../../lib/game_state';
   import type { WeedingSessionState, WeedingTurnRequest, WeedingTurnResponse, WeedingActionItem, BoardChange, GridSquare, RawToolConfig, RawWeedingMapConfig, RawPlantConfig } from './weeding_types';
   import type { EndMiniGameResponse } from '../../lib/api';
-  import { loadTexts } from '../../lib/text';
+  import { loadTexts, apply_text_tokens } from '../../lib/text';
+  import { fit_canvas_contain, observe_viewport_changes } from '../../lib/canvas_fit';
+  import { install_rotated_input_bridge } from '../../lib/rotated_input';
+  import {
+    MINI_GAME_VIEWPORT_CONTEXT,
+    type mini_game_viewport_context
+  } from '../../lib/mini_game_viewport';
   import { getConfig, deleteConfig } from '../../lib/storage';
   import { asset_url, rewrite_asset_urls } from '../../lib/public_urls';
   import { marked } from 'marked';
@@ -34,6 +40,31 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
   let turnPending = $state(false);
+
+  const viewport_context = getContext<mini_game_viewport_context>(
+    MINI_GAME_VIEWPORT_CONTEXT
+  );
+  const shell_store = viewport_context.shell;
+  const rotated_store = viewport_context.rotated;
+  let shell_element = $derived($shell_store);
+  let rotated_view = $derived($rotated_store);
+
+  const WD_TEXT_IDS: string[] = [
+    'ui_wd_round_status',
+    'ui_wd_actions_status',
+    'ui_wd_forfeit',
+    'ui_wd_finished',
+    'ui_wd_begin',
+    'ui_wd_loading',
+    'ui_wd_board_aria_label',
+    'ui_wd_error_start',
+    'ui_wd_error_turn',
+    'ui_wd_error_forfeit',
+    'ui_wd_error_generic',
+    'wd_error_cannot_use',
+    'ui_loading'
+  ];
+  let wd_texts = $state<Record<string, string>>({});
 
   let sessionId = $state(0);
   let boardData: GridSquare[][] | null = $state(null);
@@ -76,6 +107,103 @@
 
   const BW = 1600;
   const BH = 900;
+
+  /**
+   * Returns a localized assarter text value.
+   *
+   * @param text_id - Text-system id
+   * @returns Localized text
+   */
+  function text(text_id: string): string {
+    return wd_texts[text_id] ?? '';
+  }
+
+  /**
+   * Formats a text template with placeholders.
+   *
+   * @param text_id - Text-system id
+   * @param tokens - Placeholder values
+   * @returns Localized formatted text
+   */
+  function format_text(
+    text_id: string,
+    tokens: Record<string, string | number> = {}
+  ): string {
+    return apply_text_tokens(text(text_id), tokens);
+  }
+
+  function format_round_status(): string {
+    return format_text('ui_wd_round_status', {
+      round: String(round),
+      par: String(par)
+    });
+  }
+
+  function format_actions_status(): string {
+    return format_text('ui_wd_actions_status', {
+      actions: String(actionsRemaining),
+      max: '2'
+    });
+  }
+
+  /**
+   * Loads all assarter UI text before the canvas is initialized.
+   */
+  async function load_wd_texts(): Promise<void> {
+    try {
+      wd_texts = await loadTexts(WD_TEXT_IDS);
+      cannotUseText = text('wd_error_cannot_use');
+    } catch (e) {
+      console.error('[Weeding] Failed to load text:', e);
+      wd_texts = {};
+    }
+  }
+
+  /**
+   * Loads a localized error message for the UI.
+   *
+   * @param text_id - Error text id
+   * @returns Localized message
+   */
+  async function localized_error(text_id: string): Promise<string> {
+    try {
+      const texts = await loadTexts([text_id]);
+      return texts[text_id] ?? '';
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * Resolves a server message id into localized HUD text.
+   *
+   * @param message_id - Server message id
+   */
+  async function set_message_id(message_id: string | null | undefined): Promise<void> {
+    if (!message_id) {
+      message = '';
+      updateHUD();
+      return;
+    }
+    try {
+      const texts = await loadTexts([message_id]);
+      message = texts[message_id] ?? '';
+    } catch {
+      message = '';
+    }
+    updateHUD();
+  }
+
+  /**
+   * Fits the canvas inside the mini-game shell, preserving aspect.
+   */
+  function fit_canvas_to_viewport(): void {
+    if (!canvas || !shell_element) return;
+    const fit = fit_canvas_contain(shell_element.clientWidth, shell_element.clientHeight, BW / BH);
+    canvas.style.width = `${fit.width}px`;
+    canvas.style.height = `${fit.height}px`;
+  }
+
   let plantClasses: Map<string, GameObjectClass> = new Map();
   let emptyCellClass: GameObjectClass;
   let cellSize = 0;
@@ -311,6 +439,7 @@
     createGrid();
     createToolBar();
     createHUD();
+    updateHUD();
     updateButtonHighlights();
 
     afterDraw(drawWeedingOverlay);
@@ -485,13 +614,13 @@
   function createHUD(): void {
     const hudX = 15;
 
-    roundText = createText('Round: 1  Par: 0', { x: hudX, y: 28 });
+    roundText = createText(format_round_status(), { x: hudX, y: 28 });
     roundText.zIndex = 50;
     roundText.size = 22;
     roundText.textAlign = 'left';
     roundText.foreground = '#ffffff';
 
-    actionsText = createText('Actions: 2/2', { x: hudX, y: 54 });
+    actionsText = createText(format_actions_status(), { x: hudX, y: 54 });
     actionsText.zIndex = 50;
     actionsText.size = 22;
     actionsText.textAlign = 'left';
@@ -509,7 +638,7 @@
     const btnW = 90;
 
     const fBtnClass = new ButtonClass('forfeit_btn', null);
-    forfeitButton = fBtnClass.spawn(sidebarCenter, BH - 40, 'Forfeit', null, {
+    forfeitButton = fBtnClass.spawn(sidebarCenter, BH - 40, text('ui_wd_forfeit'), null, {
       width: btnW,
       height: 36,
       color: '#8b3a3a',
@@ -523,8 +652,8 @@
   }
 
   function updateHUD(): void {
-    if (roundText) roundText.text = `Round: ${round}  Par: ${par}`;
-    if (actionsText) actionsText.text = `Actions: ${actionsRemaining}/2`;
+    if (roundText) roundText.text = format_round_status();
+    if (actionsText) actionsText.text = format_actions_status();
     if (messageText) messageText.text = message || '';
   }
 
@@ -948,7 +1077,7 @@
 
   function transformFinishedButton(): void {
     if (!forfeitButton) return;
-    forfeitButton.text = 'Finished';
+    forfeitButton.text = text('ui_wd_finished');
     forfeitButton.color = '#5a8a3a';
     forfeitButton.setOnClick(() => {
       if (turnPending) return;
@@ -987,9 +1116,11 @@
     try {
       const resp = await submitWeedingTurn({ actions: pendingActions, character_id: characterId, session_id: sessionId } as WeedingTurnRequest);
       console.log('[Weeding] submitBatch response', { round: resp.round, actionsRemaining: resp.actions_remaining, won: resp.won, hasBoard: !!resp.board, message: resp.message });
-      handleBatchResponse(resp);
+      await handleBatchResponse(resp);
     } catch (e) {
-      onError(e instanceof Error ? e.message : 'Turn failed');
+      const msg = await localized_error('ui_wd_error_turn');
+      onError(msg);
+      console.error('[Weeding] turn failed:', e);
       try {
         const state = await startWeedingSession(characterId, levelId);
         round = state.round; actionsRemaining = state.actions_remaining;
@@ -1013,11 +1144,13 @@
       const resp = await submitWeedingTurn({ action_type: 'forfeit', character_id: characterId, session_id: sessionId });
       pendingActions = []; lastActionWasSwitch = false;
       round = resp.round; actionsRemaining = resp.actions_remaining; equippedToolId = resp.equipped_tool;
-      if (resp.message) message = resp.message;
+      await set_message_id(resp.message_id);
       updateHUD(); updateButtonHighlights();
       onComplete({ completed: false, score: resp.score ?? 0, new_best_score: resp.new_best_score ?? 0, times_played: resp.times_played ?? 0, all_levels_done: false, base_unlocked: false, rewards: {}, game_phase: resp.game_phase ?? 'initial_mission', next_level_id: null });
     } catch (e) {
-      onError(e instanceof Error ? e.message : 'Forfeit failed');
+      const msg = await localized_error('ui_wd_error_forfeit');
+      onError(msg);
+      console.error('[Weeding] forfeit failed:', e);
     } finally {
       turnPending = false;
       if (forfeitButton) forfeitButton.setDisabled(false);
@@ -1025,7 +1158,7 @@
     }
   }
 
-  function handleBatchResponse(resp: WeedingTurnResponse): void {
+  async function handleBatchResponse(resp: WeedingTurnResponse): Promise<void> {
     console.log('[Weeding] handleBatchResponse', { round: resp.round, actionsRemaining: resp.actions_remaining, equippedTool: resp.equipped_tool, won: resp.won, score: resp.score, message: resp.message, boardSize: resp.board?.length, boardChanges: resp.board_changes?.length });
     lastTurnResponse = resp;
     round = resp.round; actionsRemaining = resp.actions_remaining; equippedToolId = resp.equipped_tool;
@@ -1038,7 +1171,7 @@
       transformFinishedButton();
       fetchOutroText();
     }
-    if (resp.message) message = resp.message;
+    await set_message_id(resp.message_id);
     updateHUD(); updateButtonHighlights();
   }
 
@@ -1118,7 +1251,7 @@
       updateHUD();
       score = state.score;
       won = state.won;
-      message = state.message;
+      await set_message_id(state.message_id);
 
       if (state.available_tools) {
         tools = Array.isArray(state.available_tools)
@@ -1145,49 +1278,41 @@
         }
       }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Failed to start weeding session';
+      const msg = await localized_error('ui_wd_error_start');
       error = msg;
       onError(msg);
+      console.error('[Weeding] Failed to start session:', e);
       loading = false;
       return;
     }
     selectedCrop = null;
-    try {
-      const texts = await loadTexts(['wd_error_cannot_use']);
-      cannotUseText = texts['wd_error_cannot_use'] || 'This tool cannot be used here.';
-    } catch {
-      cannotUseText = 'This tool cannot be used here.';
-    }
 
     updateButtonHighlights();
     loading = false;
   }
 
-  function resizeCanvas(): void {
-    if (!canvas) return;
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const aspect = BW / BH;
-    let w = vw;
-    let h = vw / aspect;
-    if (h > vh) {
-      h = vh;
-      w = h * aspect;
-    }
-    canvas.style.width = `${w}px`;
-    canvas.style.height = `${h}px`;
-  }
+  $effect(() => {
+    if (!shell_element || !canvas) return;
+    void rotated_view;
+    fit_canvas_to_viewport();
+    return observe_viewport_changes(shell_element, fit_canvas_to_viewport);
+  });
+
+  $effect(() => {
+    if (!shell_element || !rotated_view || !canvas) return;
+    return install_rotated_input_bridge(canvas, shell_element);
+  });
 
   onMount(() => {
     const doInit = async () => {
+      await load_wd_texts();
       await startSession();
       await tick();
       if (error || !canvas) return;
 
       canvas.width = BW;
       canvas.height = BH;
-      resizeCanvas();
-      window.addEventListener('resize', resizeCanvas);
+      fit_canvas_to_viewport();
 
       await preloadImages();
 
@@ -1199,7 +1324,6 @@
   });
 
   onDestroy(() => {
-    window.removeEventListener('resize', resizeCanvas);
     if (engineInited) {
       try {
         destroyEngine();
@@ -1211,12 +1335,14 @@
   });
 </script>
 
-<div class="d-flex flex-column" style="height: 100vh;">
+<div class="d-flex flex-column" style="height: 100%; min-height: 0;">
   {#if loading}
     <div class="d-flex justify-content-center align-items-center flex-grow-1">
       <div class="text-center">
-        <div class="spinner-border mb-3" role="status"></div>
-        <p class="text-muted">Preparing field...</p>
+        <div class="spinner-border mb-3" role="status">
+          <span class="visually-hidden">{text('ui_loading')}</span>
+        </div>
+        <p class="text-muted">{text('ui_wd_loading')}</p>
       </div>
     </div>
   {:else if error}
@@ -1224,18 +1350,18 @@
       <div class="alert alert-danger">{error}</div>
     </div>
   {:else}
-    <div class="flex-grow-1 position-relative" style="min-height: 0; overflow: hidden; background: #000;">
+    <div class="flex-grow-1 position-relative d-flex justify-content-center align-items-center" style="min-height: 0; overflow: hidden; background: #000;">
       <canvas
         bind:this={canvas}
-        style="display: block; margin: 0 auto; cursor: pointer;"
-        aria-label="Weeding game board"
+        style="display: block; cursor: pointer; touch-action: none;"
+        aria-label={text('ui_wd_board_aria_label')}
       ></canvas>
       {#if showIntro}
-        <div class="position-absolute top-0 start-0 w-100 h-100 d-flex justify-content-center align-items-center" style="z-index: 1000; background: rgba(0,0,0,0.75);">
-          <div class="card bg-dark border-secondary mx-3" style="max-width: 600px;">
+        <div class="position-absolute top-0 start-0 w-100 h-100 d-flex justify-content-center align-items-center" style="z-index: 1000; background: rgba(0,0,0,0.75); overflow-y: auto;">
+          <div class="card bg-dark border-secondary mx-3 my-3" style="max-width: 600px; max-height: calc(100% - 2rem); overflow-y: auto;">
             <div class="card-body text-center">
               <p class="card-text text-light fs-5 mb-4 intro-text">{@html rewrite_asset_urls(marked.parse(introText ?? '') as string)}</p>
-              <button class="btn btn-primary px-4" onclick={() => showIntro = false}>Begin</button>
+              <button class="btn btn-primary px-4" onclick={() => showIntro = false}>{text('ui_wd_begin')}</button>
             </div>
           </div>
         </div>

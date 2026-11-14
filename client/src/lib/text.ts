@@ -79,3 +79,25 @@ export async function loadText(textId: string): Promise<string> {
   const texts = await loadTexts([textId]);
   return texts[textId] || '';
 }
+
+/**
+ * Replaces `{key}` and `<key>` placeholders in text with the provided values.
+ *
+ * @param content - Raw text content
+ * @param tokens - Placeholder values keyed by placeholder name
+ * @returns Content with all known placeholders substituted
+ *
+ * Usage: apply_text_tokens(texts['ui_td_round_start'], { current: '1', total: '3' })
+ */
+export function apply_text_tokens(
+  content: string,
+  tokens: Record<string, string | number>
+): string {
+  let result = content;
+  for (const [key, value] of Object.entries(tokens)) {
+    const text = String(value);
+    result = result.split(`{${key}}`).join(text);
+    result = result.split(`<${key}>`).join(text);
+  }
+  return result;
+}

@@ -20,7 +20,7 @@
   import { loadTexts, loadText } from './lib/text';
   import { asset_url } from './lib/public_urls';
   import { fetchPlayerState } from './lib/game_state';
-  import { route_store, navigate, replace_route } from './lib/router';
+  import { route_store, navigate, return_to_route } from './lib/router';
   import type { EndMiniGameResponse } from './lib/api';
   import { handleError } from './lib/errors';
 
@@ -42,7 +42,7 @@
       (row) => row.mini_game === gameRoute.game_id && row.level_id === gameRoute.level_id
     );
     if (progress?.completed) {
-      replace_route({ type: 'activity', id: 'tasks', rest: [] });
+      return_to_route({ type: 'activity', id: 'tasks', rest: [] });
     }
   });
 
@@ -280,9 +280,10 @@
 
   function handleGameError(error: string) {
     handleError('Mini-game error', new Error(error));
-    // Return to the tasks page — the game entry is replaced so browser Back
-    // does not re-enter the failed game.
-    replace_route({ type: 'activity', id: 'tasks', rest: [] });
+    // Return to the tasks page, reusing the entry the game was launched from
+    // so browser Back does not re-enter the failed game or a duplicate tasks
+    // entry.
+    return_to_route({ type: 'activity', id: 'tasks', rest: [] });
   }
 
   // ── Barony flow handlers ──────────────────────────────────────
@@ -355,9 +356,10 @@
   }
 
   function handleGameCompleteFromGrid(results: EndMiniGameResponse) {
-    // Replace the game history entry with the tasks page so browser Back
-    // from the tasks page does not re-enter the finished game.
-    replace_route({ type: 'activity', id: 'tasks', rest: [] });
+    // Return to the tasks page, reusing the entry the game was launched from
+    // so browser Back from the tasks page goes to the hub instead of landing
+    // on a duplicate tasks entry.
+    return_to_route({ type: 'activity', id: 'tasks', rest: [] });
     if ($currentCharacter) {
       fetchPlayerState($currentCharacter.id);
     }

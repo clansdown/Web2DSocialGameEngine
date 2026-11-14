@@ -3749,6 +3749,7 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
                     response.data["available_specials"] = specials_arr;
                     response.data["map_metadata"] = map_meta;
                     response.data["message"] = "Weeding session resumed";
+                    response.data["message_id"] = "wd_session_resumed";
 
                     if (!text_intro_val.is_null()) {
                         response.data["text_intro_id"] = text_intro_val;
@@ -4034,6 +4035,7 @@ ApiResponse handleWeedingStart(GameConfigCache& config_cache, const json& body,
         response.data["available_specials"] = specials_arr;
         response.data["map_metadata"] = map_meta;
         response.data["message"] = "Weeding session started";
+        response.data["message_id"] = "wd_session_started";
 
         if (!text_intro_val.is_null()) {
             response.data["text_intro_id"] = text_intro_val;
@@ -4126,6 +4128,7 @@ ApiResponse handleWeedingTurn(GameConfigCache& config_cache, const json& body,
             response.data["new_best_score"] = end_result.new_best_score;
             response.data["times_played"] = end_result.new_times_played;
             response.data["message"] = "Forfeited";
+            response.data["message_id"] = "wd_forfeit_status";
 
             auto updated_state = player_state_db::get_player_game_state(db, character_id);
             response.data["game_phase"] = updated_state.game_phase;
@@ -4209,6 +4212,7 @@ ApiResponse handleWeedingTurn(GameConfigCache& config_cache, const json& body,
         response.data["score"] = result.score;
         response.data["par"] = result.par;
         response.data["message"] = result.won ? result.message : "";
+        response.data["message_id"] = result.won ? result.message_id : "";
         response.data["board"] = session.session_json["board"];
 
         if (result.won) {

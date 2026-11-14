@@ -33,6 +33,7 @@ struct WeedingActionResult {
     int score = 0;
     int par = 0;
     std::string message;
+    std::string message_id;
 };
 
 namespace weeding_logic {

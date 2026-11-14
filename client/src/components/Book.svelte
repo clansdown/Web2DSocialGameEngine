@@ -13,6 +13,7 @@
    */
   import { marked } from 'marked';
   import { loadTexts as fetchTexts } from '../lib/text';
+  import { language, currentCharacter } from '../lib/stores';
   import { asset_url, rewrite_asset_urls } from '../lib/public_urls';
 
   interface BookPage {
@@ -37,6 +38,28 @@
   let isDragging = $state(false);
   let contentKey = $state(0);
   let fading = $state(false);
+  let openBookAlt = $state('');
+  let loadingLabel = $state('');
+
+  $effect(() => {
+    $language;
+    $currentCharacter;
+    let cancelled = false;
+    fetchTexts(['ui_book_open', 'ui_loading'])
+      .then((texts) => {
+        if (cancelled) return;
+        openBookAlt = texts['ui_book_open'] ?? '';
+        loadingLabel = texts['ui_loading'] ?? '';
+      })
+      .catch(() => {
+        if (cancelled) return;
+        openBookAlt = '';
+        loadingLabel = '';
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
 
   let triggerStyle = $derived(
     width
@@ -130,7 +153,7 @@
 >
   <img
     src={asset_url('/images/ui/book_on_podium.png')}
-    alt="Open book"
+    alt={openBookAlt}
     style="width: 100%; height: 100%; object-fit: contain; pointer-events: none; display: block;"
   />
 </div>
@@ -165,7 +188,7 @@
                 {#if textsLoaded}
                   {@html rewrite_asset_urls(marked.parse(pageTexts[pages[currentPage].textId] ?? '') as string)}
                 {:else}
-                  <div style="text-align: center; padding-top: 20%; opacity: 0.5;">Loading...</div>
+                  <div style="text-align: center; padding-top: 20%; opacity: 0.5;">{loadingLabel}</div>
                 {/if}
               {/key}
             </div>
@@ -185,7 +208,7 @@
                 {#if textsLoaded}
                   {@html rewrite_asset_urls(marked.parse(pageTexts[pages[currentPage + 1].textId] ?? '') as string)}
                 {:else}
-                  <div style="text-align: center; padding-top: 20%; opacity: 0.5;">Loading...</div>
+                  <div style="text-align: center; padding-top: 20%; opacity: 0.5;">{loadingLabel}</div>
                 {/if}
               {/key}
             </div>
