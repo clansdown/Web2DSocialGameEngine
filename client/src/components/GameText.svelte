@@ -1,10 +1,10 @@
 <script lang="ts">
 /**
- * Displays game text on a vellum-texture background.
- * Uses text_vellum_*.png as a scalable background image, selecting the
- * appropriate size based on the container's rendered height via
- * ResizeObserver. Supports markdown text via the `text` prop, or
- * custom content via the children snippet.
+ * Displays game text on a 9-sliced vellum texture.
+ * Uses text_vellum_* images, selecting the closest aspect ratio for the
+ * rendered panel and preserving the deckled edge with CSS border-image
+ * slicing. Supports markdown text via the `text` prop, or custom content
+ * via the children snippet.
  *
  * Text may be provided directly (`text`), or fetched from the text system
  * by ID (`id`). When `id` is used, the text is fetched in the current
@@ -19,6 +19,12 @@
   import { getUITexturesRequest } from '../lib/api';
   import { loadText } from '../lib/text';
   import { rewrite_asset_urls } from '../lib/public_urls';
+  import {
+    compute_texture_layout,
+    select_texture,
+    texture_min_height,
+    type TextureLayout
+  } from '../lib/text_texture';
   import TextOverlayFrame from './TextOverlayFrame.svelte';
   import TextOverlayButton from './TextOverlayButton.svelte';
   import type { UITexture, UITexturesResponse, UITextureButton } from '../lib/api';
@@ -52,13 +58,12 @@
     rewrite_asset_urls(marked.parse(applyTokens(id ? fetchedText : (text ?? ''), tokens)) as string)
   );
   let containerEl: HTMLDivElement;
+  let contentEl: HTMLDivElement;
   let textures: UITexture[] = $state([]);
   let texturesLoaded = $state(false);
-  let basePaddingVertical = 60;
-  let basePaddingHorizontal = 60;
-  let paddingVertical = $state(60);
-  let paddingHorizontal = $state(60);
-  let bgImage = $state('');
+  let basePaddingVertical = $state(60);
+  let basePaddingHorizontal = $state(60);
+  let layout: TextureLayout | null = $state(null);
   let currentTexture: UITexture | null = $state(null);
   let button_config = $state<UITextureButton>({});
 
@@ -74,9 +79,6 @@
     }
     return merged;
   });
-
-  const MAX_STRETCH = 1.3;
-  const MIN_STRETCH = 0.7;
 
   /**
    * Replaces {key} and <key> placeholders in the text with the provided token
@@ -112,36 +114,6 @@
     return () => { cancelled = true; };
   });
 
-  function pickBg(height: number): { url: string; w: number; h: number } | null {
-    if (textures.length === 0) return null;
-
-    let selected: UITexture | null = currentTexture;
-
-    if (selected) {
-      const lower = selected.height * MIN_STRETCH;
-      const upper = selected.height * MAX_STRETCH;
-      if (height < lower || height > upper) {
-        selected = null;
-      }
-    }
-
-    if (!selected) {
-      let best: UITexture | null = null;
-      let bestDist = Infinity;
-      for (const t of textures) {
-        const dist = Math.abs(height / t.height - 1);
-        if (dist < bestDist) {
-          bestDist = dist;
-          best = t;
-        }
-      }
-      selected = best ?? textures[textures.length - 1];
-      currentTexture = selected;
-    }
-
-    return { url: selected.url, w: selected.width, h: selected.height };
-  }
-
   let minHeight = $state(0);
 
   $effect(() => {
@@ -151,11 +123,7 @@
         textures = response.textures;
         basePaddingVertical = response.padding_vertical_px;
         basePaddingHorizontal = response.padding_horizontal_px;
-        paddingVertical = response.padding_vertical_px;
-        paddingHorizontal = response.padding_horizontal_px;
-        if (textures.length > 0) {
-          minHeight = textures[0].height * MIN_STRETCH;
-        }
+        minHeight = texture_min_height(textures);
         button_config = response.button ?? {};
       }
       texturesLoaded = true;
@@ -171,21 +139,27 @@
     let frameId: number;
 
     function apply(): void {
-      const h = el.offsetHeight;
       const w = el.offsetWidth;
-      const sel = pickBg(h);
-      if (sel) {
-        bgImage = sel.url;
-        paddingHorizontal = basePaddingHorizontal * (w / sel.w);
-        const style = getComputedStyle(el);
-        const padT = parseFloat(style.paddingTop) || 0;
-        const padB = parseFloat(style.paddingBottom) || 0;
-        const contentH = el.clientHeight - padT - padB;
-        const dv = sel.h - 2 * basePaddingVertical;
-        paddingVertical = dv > 0
-          ? basePaddingVertical * contentH / dv
-          : basePaddingVertical * (contentH / sel.h);
-      }
+      const h = el.offsetHeight;
+      const selected: UITexture | null = select_texture(textures, w, h, currentTexture);
+      if (!selected) return;
+      currentTexture = selected;
+
+      const style = getComputedStyle(el);
+      const padT = parseFloat(style.paddingTop) || 0;
+      const padB = parseFloat(style.paddingBottom) || 0;
+      const measured_content: number = contentEl?.offsetHeight ?? 0;
+      const contentH = Math.max(0, measured_content > 0
+        ? measured_content
+        : el.clientHeight - padT - padB);
+      layout = compute_texture_layout(
+        selected,
+        w,
+        contentH,
+        basePaddingVertical,
+        basePaddingHorizontal,
+        minHeight
+      );
     }
 
     function measure(): void {
@@ -199,6 +173,7 @@
     });
 
     observer.observe(el);
+    if (contentEl) observer.observe(contentEl);
 
     frameId = requestAnimationFrame(measure);
 
@@ -211,44 +186,52 @@
 
 {#snippet textured_panel()}
   <div
-    class="game-text-container rounded-3 shadow-sm {className}"
+    class="game-text-container shadow-sm {className}"
     bind:this={containerEl}
     style="
-      background-image: {bgImage ? 'url(' + bgImage + ')' : 'none'};
-      background-size: 100% 100%;
-      padding: {paddingVertical}px {paddingHorizontal}px;
+      box-sizing: border-box;
+      border-style: {layout ? 'solid' : 'none'};
+      border-color: transparent;
+      border-width: {layout ? layout.border_vertical_px : 0}px {layout ? layout.border_horizontal_px : 0}px;
+      border-image-source: {currentTexture ? `url('${currentTexture.url}')` : 'none'};
+      border-image-slice: {layout ? `${layout.slice_vertical_px} ${layout.slice_horizontal_px} fill` : '0'};
+      border-image-width: 1;
+      border-image-repeat: stretch;
+      padding: {layout ? layout.padding_vertical_px : basePaddingVertical}px {layout ? layout.padding_horizontal_px : basePaddingHorizontal}px;
       display: flex;
       flex-direction: column;
       justify-content: center;
       min-height: {minHeight}px;
     "
   >
-    <div
-      class="game-text"
-      style="
-        color: #3a3025;
-        font-family: 'Georgia', 'Palatino', serif;
-        line-height: 1.65;
-        mix-blend-mode: multiply;
-        opacity: 0.8;
-        text-align: justify;
-      "
-    >
-      {#if text}
-        {@html htmlContent}
-      {:else if children}
-        {@render children()}
+    <div class="textured-content" bind:this={contentEl}>
+      <div
+        class="game-text"
+        style="
+          color: #3a3025;
+          font-family: 'Georgia', 'Palatino', serif;
+          line-height: 1.65;
+          mix-blend-mode: multiply;
+          opacity: 0.8;
+          text-align: justify;
+        "
+      >
+        {#if text}
+          {@html htmlContent}
+        {:else if children}
+          {@render children()}
+        {/if}
+      </div>
+      {#if overlay && on_dismiss}
+        <div class="text-overlay-actions">
+          <TextOverlayButton
+            on_click={on_dismiss}
+            label={continue_label}
+            button={effective_button}
+          />
+        </div>
       {/if}
     </div>
-    {#if overlay && on_dismiss}
-      <div class="text-overlay-actions">
-        <TextOverlayButton
-          on_click={on_dismiss}
-          label={continue_label}
-          button={effective_button}
-        />
-      </div>
-    {/if}
   </div>
 {/snippet}
 
@@ -261,6 +244,12 @@
 {/if}
 
 <style>
+.textured-content {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
 .game-text {
 text-shadow: 
     0 0 0.4px rgba(26, 26, 26, 0.6),      /* Soft edge bleed */

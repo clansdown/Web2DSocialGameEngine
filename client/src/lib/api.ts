@@ -885,6 +885,10 @@ export interface UITexture {
   url: string;
   width: number;
   height: number;
+  /** Source-image vertical slice inset for border-image (falls back to the response padding). */
+  slice_vertical_px?: number;
+  /** Source-image horizontal slice inset for border-image (falls back to the response padding). */
+  slice_horizontal_px?: number;
 }
 
 /** Optional image/styling for a text-overlay dismiss button. */

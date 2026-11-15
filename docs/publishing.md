@@ -20,19 +20,27 @@ configured by `.publish_engine`). The engine stays generic: deployment values
 live in a gitignored `.deploy` file. The site repo, ops overlay, `.deploy`, and
 `.publish_engine` are **private** and are not part of this repository.
 
-For routine content changes, use the descriptive wrappers in `tools/` instead
+For routine deploys, use the descriptive wrappers in `tools/` instead
 of the full pipeline:
 
 | Wrapper | What it does |
 |---|---|
 | `tools/push_everything.sh` | Full build + R2 + Pages + server deploy. |
+| `tools/push_app.sh` | Builds the client and publishes only the Pages shell; takes no arguments. |
+| `tools/push_server.sh` | Full server deploy: image pull, all content, env/compose, tools, restart; takes no arguments. |
+| `tools/push_r2_assets.sh` | Uploads R2 assets only (`images`, `sounds`, `music`); no server mirror or restart; takes no arguments. |
 | `tools/push_config_files.sh` | Mirrors `game/config/` and reloads (SIGHUP). |
 | `tools/push_assets.sh` | Uploads R2 assets (`images`, `sounds`, `music`) and mirrors `game/images/` to the server. |
 | `tools/push_text.sh` | Mirrors `game/text/` and reloads (clears the text cache). |
 | `tools/push_server_content.sh` | Mirrors all `game/` content and reloads; no image pull/env/compose changes. |
 
-All wrappers forward arguments, so `--dry-run`, `--skip-build`, `--no-reload`,
-etc. work as usual. `push_assets.sh --skip-server` is the R2-only path.
+Most wrappers forward arguments, so `--dry-run`, `--skip-build`, `--no-reload`,
+etc. work as usual. The three no-argument wrappers (`push_app.sh`,
+`push_server.sh`, `push_r2_assets.sh`) reject extra arguments and always run
+their full stage; use `DRY_RUN=1` for a preview. `push_assets.sh --skip-server`
+remains the argument-taking R2-only path; `push_r2_assets.sh` is its no-argument
+equivalent. `push_server.sh` is the full server stage; `push_server_content.sh`
+only mirrors content and reloads.
 
 
 > The hostnames below (`app.example.com`, `api.example.com`,
@@ -57,6 +65,14 @@ etc. work as usual. `push_assets.sh --skip-server` is the R2-only path.
 > tools/push_config_files.sh
 > tools/push_assets.sh
 > tools/push_text.sh
+> ```
+>
+> Target-specific deploys:
+>
+> ```bash
+> tools/push_app.sh            # rebuild + Pages only
+> tools/push_server.sh         # full server deploy
+> tools/push_r2_assets.sh      # R2 assets only
 > ```
 >
 > Deployers do not need registry credentials or a local Docker build.
@@ -577,7 +593,12 @@ The order is fixed:
 | `--skip-r2` | Skip the R2 stage even if `R2_BUCKET` is set. |
 | `--skip-pages` | Skip the Pages stage even if `SITE_REPO` is set. |
 | `--skip-server` | Skip the server content, env, and restart stages even if `SERVER_HOST` is set. |
+| `--require-r2` | Fail unless R2 credentials are configured, then force the R2 stage. Used by `push_r2_assets.sh`. |
+| `--require-pages` | Fail unless `SITE_REPO` is configured, then force the Pages stage. Used by `push_app.sh`. |
+| `--require-server` | Fail unless `SERVER_HOST` and `SERVER_PATH` are configured, then force the server stage. Used by `push_server.sh`. |
 | `--help` | Show usage. |
+
+`--require-*` cannot be combined with the matching `--skip-*` flag.
 
 Publishing the server image is a separate command; see
 `publish_engine_server_image.sh` and the `.publish_engine` reference above.

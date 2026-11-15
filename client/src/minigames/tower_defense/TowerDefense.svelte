@@ -373,6 +373,51 @@
   }
 
   /**
+   * Draws a muted coin-with-slash marker for an unaffordable picker button.
+   *
+   * The marker communicates "cannot afford" without using an alarm-like
+   * exclamation badge.
+   *
+   * @param ctx - Canvas context
+   * @param center_x - Marker center x in board coordinates
+   * @param center_y - Marker center y in board coordinates
+   */
+  function draw_unaffordable_coin_marker(
+    ctx: CanvasRenderingContext2D,
+    center_x: number,
+    center_y: number
+  ): void {
+    ctx.save();
+
+    // Subtle dark backing keeps the muted icon legible over unit art.
+    ctx.fillStyle = 'rgba(26, 21, 23, 0.55)';
+    ctx.beginPath();
+    ctx.arc(center_x, center_y, 9, 0, Math.PI * 2);
+    ctx.fill();
+
+    const coin_radius = 6;
+    ctx.fillStyle = 'rgba(132, 64, 66, 0.18)';
+    ctx.beginPath();
+    ctx.arc(center_x, center_y, coin_radius, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = 'rgba(140, 72, 74, 0.9)';
+    ctx.lineWidth = 1.5;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.arc(center_x, center_y, coin_radius, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Slash across the coin: this piece cannot be afforded.
+    ctx.beginPath();
+    ctx.moveTo(center_x - 5, center_y + 5);
+    ctx.lineTo(center_x + 5, center_y - 5);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  /**
    * Draws an obvious but non-animated affordability cue over picker buttons
    * whose piece cannot be afforded.
    *
@@ -401,34 +446,20 @@
       const y = btn.y - btn.height / 2;
       const radius = 4;
 
-      // Red tint over the already-gray disabled button.
-      ctx.fillStyle = 'rgba(120, 0, 0, 0.28)';
+      // Dark red-grey tint over the already-gray disabled button.
+      ctx.fillStyle = 'rgba(52, 29, 31, 0.32)';
       ctx.beginPath();
       ctx.roundRect(x, y, btn.width, btn.height, radius);
       ctx.fill();
 
-      // Strong red inset border.
-      ctx.strokeStyle = 'rgba(235, 70, 70, 0.95)';
-      ctx.lineWidth = 4;
+      // Muted inset border.
+      ctx.strokeStyle = 'rgba(122, 58, 60, 0.9)';
+      ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.roundRect(x + 2, y + 2, btn.width - 4, btn.height - 4, radius);
       ctx.stroke();
 
-      // Small universal unavailable badge.
-      const badge_x = x + btn.width - 14;
-      const badge_y = y + 14;
-      ctx.fillStyle = '#D33';
-      ctx.beginPath();
-      ctx.arc(badge_x, badge_y, 11, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      ctx.fillStyle = '#FFFFFF';
-      ctx.font = 'bold 15px Arial';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('!', badge_x, badge_y + 1);
+      draw_unaffordable_coin_marker(ctx, x + btn.width - 16, y + 16);
     }
 
     ctx.restore();

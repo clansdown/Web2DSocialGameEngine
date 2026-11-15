@@ -250,7 +250,8 @@ Public origins are build-time Vite variables:
 
 Leave them empty to use the dev proxy. To override locally, copy
 `client/.env.example` to `client/.env.development.local` (gitignored). Production
-values come from `.deploy` via `tools/install.sh`; never commit real deployment values.
+values come from `.deploy` via `tools/install.sh`; `tools/push_app.sh` rebuilds
+and publishes only the Pages shell. Never commit real deployment values.
 
 ### Type Checking
 
@@ -386,8 +387,8 @@ The client provides three reusable display components for showing text and conte
 | Component | File | Role |
 |-----------|------|------|
 | **`DialogOverlay`** | `src/components/DialogOverlay.svelte` | Form-dialog shell — dark backdrop, solid panel, title, Continue button. Use for forms and confirmations, **not** for story/game text. |
-| **`StoryText`** | `src/components/StoryText.svelte` | Silk-texture background. Use for narrative/story text (king's messages, intro lore). Supports markdown via `text` prop or arbitrary content via `children` snippet. |
-| **`GameText`** | `src/components/GameText.svelte` | Vellum-texture background. Use for game text (descriptions, tooltips, UI text). Supports markdown via `text` prop or arbitrary content via `children` snippet. |
+| **`StoryText`** | `src/components/StoryText.svelte` | Silk-texture background, aspect-selected and 9-sliced. Use for narrative/story text (king's messages, intro lore). Supports markdown via `text` prop or arbitrary content via `children` snippet. |
+| **`GameText`** | `src/components/GameText.svelte` | Vellum-texture background, aspect-selected and 9-sliced. Use for game text (descriptions, tooltips, UI text). Supports markdown via `text` prop or arbitrary content via `children` snippet. |
 | **`TextOverlayFrame`** | `src/components/TextOverlayFrame.svelte` | Internal dark backdrop for `StoryText`/`GameText` overlay mode. Paints no panel of its own. |
 | **`TextOverlayButton`** | `src/components/TextOverlayButton.svelte` | Dismiss button rendered inside the texture; optional image plaque / 9-slice. |
 
@@ -398,6 +399,7 @@ The client provides three reusable display components for showing text and conte
 - For game descriptions and tooltips: use `GameText`
 - Pass markdown content via the `text` prop, or use `children` for custom HTML/Svelte content
 - The overlay's background, text, and Continue button scroll together as one textured panel. Do not put `max-height`/`overflow` on the texture container.
+- Textures are selected by rendered aspect ratio (with a mild height tiebreak) and drawn with CSS `border-image` 9-slicing, so narrow mobile panels don't squash the ornate border. Per-file insets live in `ui_textures.json` `texture_slice_px`; see `client/src/lib/text_texture.ts`.
 - Optional button images come from `ui_textures.json` `button.image` (bare filename under `images/ui`) or the `button` prop. Set `button.image_slice_px` to use a 9-slice plaque.
 
 ## Text System

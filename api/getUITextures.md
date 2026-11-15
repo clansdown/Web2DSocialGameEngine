@@ -27,7 +27,9 @@ for a textured text component. Public endpoint — no authentication required.
       {
         "url": "/images/ui/text_silk_413.png",
         "width": 697,
-        "height": 413
+        "height": 413,
+        "slice_vertical_px": 80,
+        "slice_horizontal_px": 80
       }
     ],
     "padding_vertical_px": 140,
@@ -50,6 +52,8 @@ for a textured text component. Public endpoint — no authentication required.
 | textures[].url | string | Served texture path (rebased to the asset origin by the client) |
 | textures[].width | integer | Native texture width in pixels |
 | textures[].height | integer | Native texture height in pixels |
+| textures[].slice_vertical_px | integer | Optional CSS `border-image-slice` top/bottom inset in source pixels |
+| textures[].slice_horizontal_px | integer | Optional CSS `border-image-slice` left/right inset in source pixels |
 | padding_vertical_px | integer | Safe-area vertical padding at native texture scale |
 | padding_horizontal_px | integer | Safe-area horizontal padding at native texture scale |
 | button | object | Optional dismiss-button styling; omitted when not configured |
@@ -73,6 +77,15 @@ for a textured text component. Public endpoint — no authentication required.
 ## Implementation Notes
 
 - Reads `game/config/ui_textures.json` by `component_id`.
+- `texture_slice_px` is optional. It is an object keyed by exact image filename
+  (including extension), with `vertical` and `horizontal` positive integer
+  values. The server copies them onto each matching texture as
+  `slice_vertical_px` / `slice_horizontal_px`; the client uses them for CSS
+  `border-image` 9-slicing. Textures without an entry fall back to the
+  component's `padding_*_px` in the client.
+- A component's `padding_*_px` remains the text safe area. The client treats the
+  larger of the configured padding and the texture slice as the total inset, so
+  a thick frame never overlaps text.
 - The `button` block is optional. When absent, `TextOverlayButton` falls back to
   the built-in brown/gold button style.
 - A bare `button.image` filename is resolved to `/images/ui/<filename>`; a path

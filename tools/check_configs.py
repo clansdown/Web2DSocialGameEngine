@@ -2625,6 +2625,98 @@ class ConfigValidator:
 
         return valid
 
+    def validate_ui_textures(self, file: Path, content: str) -> bool:
+        """Validate ui_textures.json (textured panel padding and slice insets).
+
+        `texture_slice_px` is keyed by exact image filename. Each entry supplies
+        the source-image border slices used by CSS border-image; the values must
+        be positive integers. The component-level padding remains the text safe
+        area and is also the fallback when a texture has no per-file entry.
+        """
+        data: JsonDataType = self._validate_json(content, file)
+        if data is None:
+            return False
+
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected an object", Severity.ERROR)
+            return False
+
+        valid: bool = True
+        for component_id, component in data.items():
+            if not isinstance(component_id, str) or not component_id:
+                self._add_issue(file, 1, None, "Component ids must be non-empty strings", Severity.ERROR)
+                valid = False
+                continue
+            if not isinstance(component, dict):
+                self._add_issue(
+                    file, 1, None,
+                    f"'{component_id}' must be an object",
+                    Severity.ERROR,
+                )
+                valid = False
+                continue
+
+            prefix = component.get("texture_prefix")
+            if prefix is not None and (not isinstance(prefix, str) or not prefix):
+                self._add_issue(
+                    file, 1, None,
+                    f"'{component_id}.texture_prefix' must be a non-empty string",
+                    Severity.ERROR,
+                )
+                valid = False
+
+            for padding_key in ("padding_vertical_px", "padding_horizontal_px"):
+                padding = component.get(padding_key)
+                if padding is None:
+                    continue
+                if isinstance(padding, bool) or not isinstance(padding, int) or padding < 0:
+                    self._add_issue(
+                        file, 1, None,
+                        f"'{component_id}.{padding_key}' must be a non-negative integer",
+                        Severity.ERROR,
+                    )
+                    valid = False
+
+            slices = component.get("texture_slice_px")
+            if slices is not None:
+                if not isinstance(slices, dict):
+                    self._add_issue(
+                        file, 1, None,
+                        f"'{component_id}.texture_slice_px' must be an object keyed by filename",
+                        Severity.ERROR,
+                    )
+                    valid = False
+                else:
+                    for filename, slice_entry in slices.items():
+                        if not isinstance(filename, str) or not filename:
+                            self._add_issue(
+                                file, 1, None,
+                                f"'{component_id}.texture_slice_px' keys must be non-empty filenames",
+                                Severity.ERROR,
+                            )
+                            valid = False
+                            continue
+                        if not isinstance(slice_entry, dict):
+                            self._add_issue(
+                                file, 1, None,
+                                f"'{component_id}.texture_slice_px.{filename}' must be an object",
+                                Severity.ERROR,
+                            )
+                            valid = False
+                            continue
+                        for axis in ("vertical", "horizontal"):
+                            value = slice_entry.get(axis)
+                            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                                self._add_issue(
+                                    file, 1, None,
+                                    f"'{component_id}.texture_slice_px.{filename}.{axis}' "
+                                    "must be a positive integer",
+                                    Severity.ERROR,
+                                )
+                                valid = False
+
+        return valid
+
     def validate_manor_river(self, file: Path, content: str) -> bool:
         """Validate manor_river.json (per-fiefdom river templates).
 
@@ -6778,6 +6870,15 @@ class ConfigValidator:
                 self.validate_wall_config(wall_config_file, wall_content)
             except Exception as e:
                 self._add_issue(wall_config_file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+
+        # Validate ui_textures.json (textured text panels).
+        ui_textures_file: Path = config_dir / "ui_textures.json"
+        if ui_textures_file.exists():
+            try:
+                ui_textures_content: str = ui_textures_file.read_text(encoding="utf-8")
+                self.validate_ui_textures(ui_textures_file, ui_textures_content)
+            except Exception as e:
+                self._add_issue(ui_textures_file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
 
         # Validate manor_ui.json (needs validated_building_ids, so it runs after
         # the buildings loop above)

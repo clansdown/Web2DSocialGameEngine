@@ -264,9 +264,12 @@ server, and writes the API server's CORS env file. The Pages site, API, and
 assets are three separate origins; the client bakes their addresses in at build
 time from `.deploy`.
 
-For routine content changes, use the `tools/push_*.sh` wrappers:
+For routine deploys, use the `tools/push_*.sh` wrappers:
 `push_config_files.sh` and `push_text.sh` mirror one tree and reload;
 `push_assets.sh` uploads R2 assets and mirrors `game/images/`;
+`push_app.sh` rebuilds and publishes only the Pages shell;
+`push_server.sh` does a full server deploy;
+`push_r2_assets.sh` uploads R2 assets only;
 `push_everything.sh` runs the full pipeline. See
 [`docs/publishing.md`](docs/publishing.md) for setup, the `.deploy`
 reference, CORS, cache policy, verification, and rollback.

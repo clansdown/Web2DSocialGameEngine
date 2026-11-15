@@ -4731,6 +4731,7 @@ ApiResponse handleGetUITextures(GameConfigCache& config_cache, const json& body,
 
     json textures = json::array();
     json button = json::object();
+    json texture_slices = json::object();
 
     std::string texture_prefix = "text_silk_";
     int padding_vertical_px = 60;
@@ -4752,6 +4753,10 @@ ApiResponse handleGetUITextures(GameConfigCache& config_cache, const json& body,
                 if (cfg[component_id].contains("padding_horizontal_px")
                     && cfg[component_id]["padding_horizontal_px"].is_number_integer()) {
                     padding_horizontal_px = cfg[component_id]["padding_horizontal_px"].get<int>();
+                }
+                if (cfg[component_id].contains("texture_slice_px")
+                    && cfg[component_id]["texture_slice_px"].is_object()) {
+                    texture_slices = cfg[component_id]["texture_slice_px"];
                 }
                 if (cfg[component_id].contains("button")
                     && cfg[component_id]["button"].is_object()) {
@@ -4809,6 +4814,17 @@ ApiResponse handleGetUITextures(GameConfigCache& config_cache, const json& body,
             tex["url"] = "/images/ui/" + filename;
             tex["width"] = dims.width;
             tex["height"] = dims.height;
+            if (texture_slices.contains(filename) && texture_slices[filename].is_object()) {
+                const json& slice = texture_slices[filename];
+                if (slice.contains("vertical") && slice["vertical"].is_number_integer()) {
+                    int vertical = slice["vertical"].get<int>();
+                    if (vertical > 0) tex["slice_vertical_px"] = vertical;
+                }
+                if (slice.contains("horizontal") && slice["horizontal"].is_number_integer()) {
+                    int horizontal = slice["horizontal"].get<int>();
+                    if (horizontal > 0) tex["slice_horizontal_px"] = horizontal;
+                }
+            }
             textures.push_back(tex);
         }
     } catch (const std::exception& e) {

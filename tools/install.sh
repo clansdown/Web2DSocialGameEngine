@@ -12,13 +12,17 @@
 #
 # Usage:
 #   tools/install.sh [--dry-run] [--skip-build] [--skip-r2] [--skip-pages]
-#                    [--skip-server] [--server-content SCOPE] [--no-reload]
+#                    [--skip-server] [--require-r2] [--require-pages]
+#                    [--require-server] [--server-content SCOPE] [--no-reload]
 #
 # Deploy order is build -> R2 -> Pages -> API server. R2 goes before Pages so the
 # new shell never references an image that has not been uploaded yet.
 #
 # The convenience wrappers in tools/ select a scope:
 #   tools/push_everything.sh      full deploy
+#   tools/push_app.sh             client build + Pages only
+#   tools/push_server.sh          full server deploy (no client/R2/Pages)
+#   tools/push_r2_assets.sh       R2 assets only
 #   tools/push_config_files.sh    game/config/ only, then reload
 #   tools/push_assets.sh          R2 assets + game/images/ on the server
 #   tools/push_text.sh            game/text/ only, then reload
@@ -63,12 +67,19 @@ Options:
   --skip-r2       Skip the R2 upload stage.
   --skip-pages    Skip the Pages site-repo stage.
   --skip-server   Skip the API server content/env/restart stage.
+  --require-r2    Fail unless R2 is configured, then force the R2 stage.
+  --require-pages Fail unless Pages is configured, then force the Pages stage.
+  --require-server
+                  Fail unless the API server is configured, then force the
+                  server stage.
   --server-content SCOPE
                   Server content scope: full (default), all, config, assets,
                   or text. all/config/text reload afterwards; assets mirrors
                   game/images/ only and does not reload.
   --no-reload     Do not reload/restart after a content-only scope.
   -h, --help      Show this help.
+
+  The --require-* flags cannot be combined with the matching --skip-* flag.
 
 Environment:
   DRY_RUN=1       Same as --dry-run.
@@ -112,6 +123,9 @@ SKIP_BUILD=0
 SKIP_R2=0
 SKIP_PAGES=0
 SKIP_SERVER=0
+REQUIRE_R2=0
+REQUIRE_PAGES=0
+REQUIRE_SERVER=0
 SERVER_CONTENT_SCOPE="${SERVER_CONTENT_SCOPE:-full}"
 SKIP_RELOAD="${SKIP_RELOAD:-0}"
 
@@ -194,6 +208,9 @@ parse_args() {
             --skip-r2) SKIP_R2=1 ;;
             --skip-pages) SKIP_PAGES=1 ;;
             --skip-server) SKIP_SERVER=1 ;;
+            --require-r2) REQUIRE_R2=1 ;;
+            --require-pages) REQUIRE_PAGES=1 ;;
+            --require-server) REQUIRE_SERVER=1 ;;
             --server-content)
                 [ "$#" -ge 2 ] || die "--server-content requires a value"
                 SERVER_CONTENT_SCOPE="$2"
@@ -1362,6 +1379,31 @@ if [ -z "$SERVER_HOST" ]; then RUN_SERVER=0; fi
 if [ "$SKIP_R2" = "1" ]; then RUN_R2=0; fi
 if [ "$SKIP_PAGES" = "1" ]; then RUN_PAGES=0; fi
 if [ "$SKIP_SERVER" = "1" ]; then RUN_SERVER=0; fi
+
+# The no-argument wrappers use --require-* so a missing destination is a hard
+# failure instead of a silent skipped stage.
+if [ "$REQUIRE_R2" = "1" ] && [ "$SKIP_R2" = "1" ]; then
+    die "--require-r2 cannot be combined with --skip-r2"
+fi
+if [ "$REQUIRE_PAGES" = "1" ] && [ "$SKIP_PAGES" = "1" ]; then
+    die "--require-pages cannot be combined with --skip-pages"
+fi
+if [ "$REQUIRE_SERVER" = "1" ] && [ "$SKIP_SERVER" = "1" ]; then
+    die "--require-server cannot be combined with --skip-server"
+fi
+
+if [ "$REQUIRE_R2" = "1" ]; then
+    require_var R2_BUCKET R2_ENDPOINT R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY
+    RUN_R2=1
+fi
+if [ "$REQUIRE_PAGES" = "1" ]; then
+    require_var SITE_REPO
+    RUN_PAGES=1
+fi
+if [ "$REQUIRE_SERVER" = "1" ]; then
+    require_var SERVER_HOST SERVER_PATH
+    RUN_SERVER=1
+fi
 
 # Content-only scopes are server operations. Require the transport explicitly
 # (and fail clearly) instead of silently skipping because SERVER_HOST was unset.
