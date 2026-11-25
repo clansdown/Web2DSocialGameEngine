@@ -2588,6 +2588,55 @@ static std::string resolve_schedule_file(const nlohmann::json& mg_config, int le
 }
 
 /**
+ * Resolve the Tower Defense starting gold for a level.
+ *
+ * A level-specific `starting_gold` (campaign or baron level) wins; otherwise
+ * the `tower_defense.starting_gold` default applies. The hard-coded 100 is only
+ * a safety fallback for configs that omit both. `level_id == 0` is ongoing
+ * mode and uses the mini-game default.
+ */
+static int resolve_td_starting_gold(const nlohmann::json& tower_defense_config, int level_id) {
+    constexpr int fallback_starting_gold = 100;
+    if (!tower_defense_config.is_object()) {
+        return fallback_starting_gold;
+    }
+
+    if (level_id > 0) {
+        for (const char* tier_name : {"levels", "baron_levels"}) {
+            if (!tower_defense_config.contains(tier_name) ||
+                !tower_defense_config[tier_name].is_array()) {
+                continue;
+            }
+            for (const auto& level : tower_defense_config[tier_name]) {
+                if (!level.is_object() || !level.contains("id") ||
+                    !level["id"].is_number_integer() ||
+                    level["id"].get<int>() != level_id) {
+                    continue;
+                }
+                if (level.contains("starting_gold") &&
+                    level["starting_gold"].is_number_integer()) {
+                    const int level_starting_gold = level["starting_gold"].get<int>();
+                    if (level_starting_gold >= 0) {
+                        return level_starting_gold;
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    if (tower_defense_config.contains("starting_gold") &&
+        tower_defense_config["starting_gold"].is_number_integer()) {
+        const int default_starting_gold = tower_defense_config["starting_gold"].get<int>();
+        if (default_starting_gold >= 0) {
+            return default_starting_gold;
+        }
+    }
+
+    return fallback_starting_gold;
+}
+
+/**
  * Load the quest-specific config for a campaign level. Tower-defense quests
  * keep their extra data in the spawn schedule; weeding quests keep it in the
  * level config file. Returns nullopt for ongoing mode and unknown games.
@@ -3475,7 +3524,13 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
 
         player_state_db::start_mini_game(db, character_id, mini_game, level_id, now);
 
-        auto session = player_state_db::create_game_session(db, character_id, mini_game, level_id, difficulty, total_rounds, now);
+        const int starting_gold =
+            (mini_game == "tower_defense" && mini_games_config.contains("tower_defense"))
+                ? resolve_td_starting_gold(mini_games_config["tower_defense"], level_id)
+                : 100;
+        auto session = player_state_db::create_game_session(
+            db, character_id, mini_game, level_id, difficulty, total_rounds,
+            starting_gold, now);
         player_state_db::store_spawn_schedule(db, session.id, spawn_schedule);
 
         // (map_metadata already loaded above for spawn schedule generation)

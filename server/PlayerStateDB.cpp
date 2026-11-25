@@ -315,7 +315,7 @@ void set_barony_left_at(sqlite::database& db, int character_id, int64_t timestam
        << timestamp << timestamp << character_id;
 }
 
-    GameSessionRow create_game_session(sqlite::database& db, int character_id, const std::string& mini_game, int level_id, int difficulty, int total_rounds, int64_t timestamp) {
+    GameSessionRow create_game_session(sqlite::database& db, int character_id, const std::string& mini_game, int level_id, int difficulty, int total_rounds, int starting_gold, int64_t timestamp) {
         GameSessionRow row;
         row.character_id = character_id;
         row.mini_game = mini_game;
@@ -324,7 +324,7 @@ void set_barony_left_at(sqlite::database& db, int character_id, int64_t timestam
         row.total_rounds = total_rounds;
 
         row.lives = 1;
-        row.gold = 100;
+        row.gold = starting_gold;
         row.current_round = 0;
         row.started_at = timestamp;
         row.last_activity = timestamp;

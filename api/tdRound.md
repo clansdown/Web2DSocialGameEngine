@@ -51,6 +51,20 @@ Manages tower defense round lifecycle — creates a new game session or complete
 }
 ```
 
+### Starting gold
+
+The `gold` value in the kickoff response is resolved per new session:
+
+1. The matching `levels[]` or `baron_levels[]` entry's `starting_gold`, if present.
+2. `tower_defense.starting_gold` from `mini_games.json`.
+3. Fallback `100`.
+
+`level_id: 0` (ongoing/custom games) uses the `tower_defense.starting_gold`
+default. Existing active sessions keep the gold already stored on the session.
+
+Current campaign values: Wolf Marche levels 1–5 start with `100`; levels 6–9,
+ongoing games, and the baron challenge start with `120`.
+
 ## Request — Complete Round
 
 ```json

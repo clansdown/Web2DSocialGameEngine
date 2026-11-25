@@ -4619,6 +4619,56 @@ class ConfigValidator:
                     level_id: object = level_entry.get("id")
                     self._add_issue(file, 1, None, f"{tier_name} level {level_id}: 'difficulty' should be in the level config file, not inline", Severity.ERROR)
 
+    def validate_mini_games_starting_gold(self, file: Path) -> None:
+        """Validate tower_defense starting_gold defaults and per-level overrides."""
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+
+        data: object = self._validate_json(content, file)
+        if data is None or not isinstance(data, dict):
+            return
+
+        tower_defense: object = data.get("tower_defense")
+        if not isinstance(tower_defense, dict):
+            return
+
+        if "starting_gold" in tower_defense:
+            default_starting_gold: object = tower_defense["starting_gold"]
+            if (
+                isinstance(default_starting_gold, bool)
+                or not isinstance(default_starting_gold, int)
+                or default_starting_gold < 0
+            ):
+                self._add_issue(
+                    file, 1, None,
+                    "'tower_defense.starting_gold' must be a non-negative integer",
+                    Severity.ERROR,
+                )
+
+        for tier_name in ("levels", "baron_levels"):
+            levels_array: object = tower_defense.get(tier_name)
+            if not isinstance(levels_array, list):
+                continue
+            for level_entry in levels_array:
+                if not isinstance(level_entry, dict) or "starting_gold" not in level_entry:
+                    continue
+                starting_gold: object = level_entry["starting_gold"]
+                if (
+                    isinstance(starting_gold, bool)
+                    or not isinstance(starting_gold, int)
+                    or starting_gold < 0
+                ):
+                    level_id: object = level_entry.get("id")
+                    self._add_issue(
+                        file, 1, None,
+                        f"tower_defense {tier_name} level {level_id}: "
+                        "'starting_gold' must be a non-negative integer",
+                        Severity.ERROR,
+                    )
+
     def validate_weeding_level_config(self, file: Path) -> None:
         """Validate a weeding level config file (wildlands_marche.json / great_wildlands_marche.json)."""
         try:
@@ -7161,6 +7211,7 @@ class ConfigValidator:
             mini_games_file: Path = game_config_dir / "mini_games.json"
             if mini_games_file.exists():
                 self.validate_mini_games_weeding_levels(mini_games_file)
+                self.validate_mini_games_starting_gold(mini_games_file)
 
             # Validate weeding level config files referenced in mini_games.json
             if mini_games_file.exists():

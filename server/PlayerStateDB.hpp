@@ -110,7 +110,7 @@ void enter_freehold_qualified(sqlite::database& db, int character_id, int64_t ti
 void set_barony_left_at(sqlite::database& db, int character_id, int64_t timestamp);
 
 // Game session management
-GameSessionRow create_game_session(sqlite::database& db, int character_id, const std::string& mini_game, int level_id, int difficulty, int total_rounds, int64_t timestamp);
+GameSessionRow create_game_session(sqlite::database& db, int character_id, const std::string& mini_game, int level_id, int difficulty, int total_rounds, int starting_gold, int64_t timestamp);
 
 std::optional<GameSessionRow> get_game_session(sqlite::database& db, int session_id);
 
