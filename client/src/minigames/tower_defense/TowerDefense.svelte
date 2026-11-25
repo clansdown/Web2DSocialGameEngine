@@ -156,6 +156,10 @@
   let fbtn: any = null;
   let ringButtons: Button[] = [];
   let showingTargetingPicker = false;
+  /** CSS pixels per board unit, updated whenever the canvas is fitted. */
+  let board_css_scale = 1;
+  /** Cached copper icon so repeated gold updates never reload the image. */
+  let copper_coin_image: HTMLImageElement | null = null;
 
   // Viewport fitting is handled by the MiniGameViewport context and effects.
 
@@ -198,6 +202,12 @@
   const BH = 780;
   /** Sidebar overlay width in board units. Sidebar overlays the right edge of the board at x ∈ [BW - SIDEBAR_W, BW]. */
   const SIDEBAR_W = 420;
+  /** Base board-unit sizes for the copper readout. */
+  const BASE_COPPER_TEXT_UNITS = 22;
+  const BASE_COIN_UNITS = 20;
+  /** Minimum rendered CSS-pixel sizes so the readout stays legible when the canvas scales down. */
+  const MIN_COPPER_TEXT_CSS_PX = 20;
+  const MIN_COIN_CSS_PX = 22;
 
   const TD_TEXT_IDS: string[] = [
     'ui_td_round_start',
@@ -238,6 +248,69 @@
    */
   function text(text_id: string): string {
     return td_texts[text_id] ?? '';
+  }
+
+  /**
+   * Returns the cached copper-coin image, loading it on first use.
+   *
+   * Reusing the same HTMLImageElement prevents Text.setInlineImages() from
+   * starting a fresh image load on every gold update, which made the coin
+   * visibly flicker.
+   *
+   * @returns The shared copper-coin image element
+   */
+  function get_copper_coin_image(): HTMLImageElement {
+    if (!copper_coin_image) {
+      copper_coin_image = new Image();
+      copper_coin_image.src = asset_url('/images/ui/coin_copper.png');
+    }
+    return copper_coin_image;
+  }
+
+  /**
+   * Sizes the copper readout so it has a minimum physical (CSS-pixel) size
+   * regardless of how much the canvas is scaled down.
+   *
+   * The board itself remains in board units; only the readout text and its
+   * inline coin icon are converted back from the desired CSS size.
+   */
+  function update_resource_display_metrics(): void {
+    if (!resourceText) return;
+    const scale = board_css_scale > 0 ? board_css_scale : 1;
+    const text_units = Math.max(
+      BASE_COPPER_TEXT_UNITS,
+      MIN_COPPER_TEXT_CSS_PX / scale
+    );
+    const coin_units = Math.max(
+      BASE_COIN_UNITS,
+      MIN_COIN_CSS_PX / scale
+    );
+
+    resourceText.size = text_units;
+    const coin = resourceText.inlineImages?.copper;
+    if (coin) {
+      coin.width = coin_units;
+      coin.height = coin_units;
+    }
+  }
+
+  /**
+   * Updates the copper readout text and its physical sizing without replacing
+   * the inline image element.
+   */
+  function set_resource_display(): void {
+    if (!resourceText) return;
+    resourceText.text = `{img:copper} ${currentGold}`;
+    if (!resourceText.inlineImages?.copper) {
+      resourceText.setInlineImages({
+        copper: {
+          image: get_copper_coin_image(),
+          width: BASE_COIN_UNITS,
+          height: BASE_COIN_UNITS
+        }
+      });
+    }
+    update_resource_display_metrics();
   }
 
   /**
@@ -474,6 +547,8 @@
     const fit = fit_canvas_contain(shell.clientWidth, shell.clientHeight, BW / BH);
     canvasEl.style.width = `${fit.width}px`;
     canvasEl.style.height = `${fit.height}px`;
+    board_css_scale = fit.width > 0 ? fit.width / BW : 1;
+    update_resource_display_metrics();
   }
 
   // ============================================================
@@ -974,17 +1049,22 @@
     const cX = sX + sW / 2;
 
     const copperImages: InlineImageMap = {
-      copper: { image: asset_url('/images/ui/coin_copper.png'), width: 20, height: 20 }
+      copper: {
+        image: get_copper_coin_image(),
+        width: BASE_COIN_UNITS,
+        height: BASE_COIN_UNITS
+      }
     };
     resourceText = createText(
       `{img:copper} ${currentGold}`,
       { x: sX + 100, y: 35 },
       copperImages
     );
-    resourceText.size = 22;
+    resourceText.size = BASE_COPPER_TEXT_UNITS;
     resourceText.foreground = '#FFD700';
     resourceText.setTextAlign('center');
     resourceText.setShadow('#000000', 4, 2, 2);
+    update_resource_display_metrics();
 
     if (currentLives > 1) {
       livesText = createText(format_lives_label(), { x: sX + 100, y: 65 });
@@ -1398,12 +1478,7 @@
       });
     }
     currentGold -= cost;
-    if (resourceText) {
-      resourceText.text = `{img:copper} ${currentGold}`;
-      resourceText.setInlineImages({
-        copper: { image: asset_url('/images/ui/coin_copper.png'), width: 20, height: 20 }
-      });
-    }
+    set_resource_display();
     refreshButtonStates();
     dirty = true;
     savePlacements();
@@ -1456,12 +1531,7 @@
     const newProjOrigin: { x: number; y: number } = (pieceCfg as any).projectile_origin || { x: 0, y: 0 };
     activeCombatants[newIdx] = { obj: newObj, configId: piece.becomes, level: tower.level + 1, piece: pieceCfg, targeting: tower.targeting, flaskId: tower.flaskId, originY: newOriginY, projOrigin: newProjOrigin, attackPeriod: 1.0 / (pieceCfg.attack_rate || 1.0), placementId: tower.placementId };
     currentGold -= goldCost;
-    if (resourceText) {
-      resourceText.text = `{img:copper} ${currentGold}`;
-      resourceText.setInlineImages({
-        copper: { image: asset_url('/images/ui/coin_copper.png'), width: 20, height: 20 }
-      });
-    }
+    set_resource_display();
     refreshButtonStates();
     setSelectedTower(null);
     dirty = true;
@@ -1476,12 +1546,7 @@
     const cost = tower.piece.cost?.[0]?.gold || 0;
     const refund = Math.floor(cost * 0.8);
     currentGold += refund;
-    if (resourceText) {
-      resourceText.text = `{img:copper} ${currentGold}`;
-      resourceText.setInlineImages({
-        copper: { image: asset_url('/images/ui/coin_copper.png'), width: 20, height: 20 }
-      });
-    }
+    set_resource_display();
     refreshButtonStates();
     tower.obj.destroy();
     activeCombatants.splice(towerIdx, 1);
@@ -1643,6 +1708,53 @@
     }
     console.log(`[TD] doSpawn: ${enemyId} at (${spawnX.toFixed(0)}, ${spawnY.toFixed(0)}) hp=${cls.defaultHitpoints} spd=${spd} waypoints=${wps.length} startIdx=${startIdx}`);
     e.logMovement();
+  }
+
+  /**
+   * Spawns a dying mob's children with a small perpendicular spread so
+   * multiple children do not occupy exactly the same point.
+   *
+   * @param e - The dying enemy
+   * @param ev - The enemy's runtime state (path and waypoint)
+   * @param mc - The dying mob's config
+   */
+  function spawn_death_children(e: Enemy, ev: EnemyVar, mc: MobConfig | undefined): void {
+    const spawn_ids = mc?.spawn_on_death ?? [];
+    if (spawn_ids.length === 0) return;
+    if (spawn_ids.length === 1) {
+      doSpawn(spawn_ids[0], e.x, e.y, ev.pathId, ev.waypointIndex);
+      return;
+    }
+
+    const waypoints = pathMap.get(ev.pathId)?.waypoints as
+      { x: number; y: number }[] | undefined;
+    const next_waypoint = waypoints?.[ev.waypointIndex];
+    let direction_x = next_waypoint ? next_waypoint.x - e.x : e.direction_x;
+    let direction_y = next_waypoint ? next_waypoint.y - e.y : e.direction_y;
+    const direction_length = Math.hypot(direction_x, direction_y);
+    if (direction_length > 0.0001) {
+      direction_x /= direction_length;
+      direction_y /= direction_length;
+    } else {
+      direction_x = 1;
+      direction_y = 0;
+    }
+
+    const child_width = Math.max(
+      ...spawn_ids.map(id => mobEnemyClassMap.get(id)?.defaultWidth ?? 40)
+    );
+    const spacing = Math.max(18, child_width);
+
+    for (let i = 0; i < spawn_ids.length; i++) {
+      const offset = (i - (spawn_ids.length - 1) / 2) * spacing;
+      doSpawn(
+        spawn_ids[i],
+        e.x - direction_y * offset,
+        e.y + direction_x * offset,
+        ev.pathId,
+        ev.waypointIndex
+      );
+    }
   }
 
   function enemyEscaped(e: Enemy) {
@@ -1825,15 +1937,10 @@
       const mobId = ev.enemyId;
       const mc = mobConfigs.get(mobId);
       currentGold = Math.min(currentGold + (mc?.reward_gold || 1), roundStartGold + 1000);
-      if (resourceText) {
-        resourceText.text = `{img:copper} ${currentGold}`;
-        resourceText.setInlineImages({
-          copper: { image: asset_url('/images/ui/coin_copper.png'), width: 20, height: 20 }
-        });
-      }
+      set_resource_display();
       refreshButtonStates();
       console.log(`[TD] hitEnemy: ${mobId} killed, reward=${mc?.reward_gold || 1}`);
-      for (const spawnId of (mc?.spawn_on_death || [])) doSpawn(spawnId, e.x, e.y, ev.pathId, ev.waypointIndex);
+      spawn_death_children(e, ev, mc);
       enemies.delete(e);
       e.destroy();
     }
@@ -1896,12 +2003,7 @@
         leakedEnemies = {};
         refreshButtonStates();
         // Update UI
-        if (resourceText) {
-          resourceText.text = `{img:copper} ${currentGold}`;
-          resourceText.setInlineImages({
-            copper: { image: asset_url('/images/ui/coin_copper.png'), width: 20, height: 20 }
-          });
-        }
+        set_resource_display();
         if (livesText) livesText.text = format_lives_label();
         set_round_start_label();
       } else {
