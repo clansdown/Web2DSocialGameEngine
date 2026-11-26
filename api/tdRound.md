@@ -29,6 +29,7 @@ Manages tower defense round lifecycle — creates a new game session or complete
         "total_rounds": 1,
         "lives": 20,
         "gold": 100,
+        "cost_suffix": "c",
         "spawn_schedule": [
             {
                 "enemy_id": "dire_rat",
@@ -64,6 +65,13 @@ default. Existing active sessions keep the gold already stored on the session.
 
 Current campaign values: Wolf Marche levels 1–5 start with `100`; levels 6–9,
 ongoing games, and the baron challenge start with `120`.
+
+### Cost suffix
+
+`cost_suffix` comes from `tower_defense.cost_suffix` in `mini_games.json`
+(currently `c`). The client renders each picker's level-1 cost as
+`<cost><suffix>` in the button's top-right corner; the value is unchanged and
+the suffix is display-only.
 
 ## Request — Complete Round
 

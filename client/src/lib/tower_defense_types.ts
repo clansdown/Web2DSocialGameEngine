@@ -165,6 +165,7 @@ export interface KickoffResponse {
   total_rounds: number;
   lives: number;
   gold: number;
+  cost_suffix?: string;
   spawn_schedule: {
     enemy_id: string;
     count: number;

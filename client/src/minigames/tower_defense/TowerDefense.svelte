@@ -26,9 +26,9 @@
 
   import {
     initEngine, setCameraFollowsPlayer, setBoardSize, setButtonDebugLevel,
-    clear, gameObjects, enemies, projectiles,
+    destroyEngine, gameObjects, enemies, projectiles,
     boardWidth, boardHeight, getMousePosition, debug,
-    everyTick, onMouseClick, whenLoaded, removeEventListeners, afterDraw,
+    everyTick, onMouseClick, whenLoaded, afterDraw,
     onPause, onResume, togglePause, isPaused,
     setBackground, setBackgroundMode
   } from '../../../SimpleGame/ui/src/lib/simplegame';
@@ -70,6 +70,11 @@
     level_id: number;
     gold?: number;
     placements: SavedPlacement[];
+  }
+  interface piece_cost_label_metrics {
+    center_x: number;
+    center_y: number;
+    width: number;
   }
 
   let canvasEl: HTMLCanvasElement;
@@ -160,6 +165,8 @@
   let board_css_scale = 1;
   /** Cached copper icon so repeated gold updates never reload the image. */
   let copper_coin_image: HTMLImageElement | null = null;
+  /** Configured suffix used by the picker cost badges (e.g. c for copper). */
+  let td_cost_suffix = '';
 
   // Viewport fitting is handled by the MiniGameViewport context and effects.
 
@@ -179,8 +186,10 @@
   // Sidebar column for hide/show on drag/place
   let towerColumn: Column | null = null;
   let unitColumn: Column | null = null;
+  let sidebar_visible = true;
 
   function setSidebarVisible(visible: boolean) {
+    sidebar_visible = visible;
     if (towerColumn) towerColumn.setVisible(visible);
     if (unitColumn) unitColumn.setVisible(visible);
     if (fbtn) fbtn.visible = visible;
@@ -208,6 +217,9 @@
   /** Minimum rendered CSS-pixel sizes so the readout stays legible when the canvas scales down. */
   const MIN_COPPER_TEXT_CSS_PX = 20;
   const MIN_COIN_CSS_PX = 22;
+  const PIECE_COST_FONT_SIZE = 18;
+  const PIECE_COST_INSET_X = 12;
+  const PIECE_COST_INSET_Y = 10;
 
   const TD_TEXT_IDS: string[] = [
     'ui_td_round_start',
@@ -227,6 +239,7 @@
     'ui_td_target_nearest_path',
     'ui_td_target_selectable',
     'ui_td_piece_label',
+    'ui_td_piece_cost',
     'ui_td_error_load_session',
     'ui_td_error_advance_round',
     'ui_td_error_end_game',
@@ -382,17 +395,47 @@
   }
 
   /**
-   * Builds the picker button label for a piece.
+   * Builds the centered picker button label for a piece. The cost is drawn
+   * separately in the button's top-right corner.
    *
    * @param id - Tower/unit config id
-   * @param cost - Level-1 gold cost
    * @returns Localized picker label
    */
-  function piece_label(id: string, cost: number): string {
+  function piece_label(id: string): string {
     return format_text('ui_td_piece_label', {
-      name: piece_name(id),
-      cost: String(cost)
+      name: piece_name(id)
     });
+  }
+
+  /**
+   * Formats the top-right affordability badge for a picker button.
+   *
+   * @param cost - Level-1 gold cost
+   * @returns Localized cost label, including the configured suffix
+   */
+  function format_piece_cost(cost: number): string {
+    return format_text('ui_td_piece_cost', {
+      cost: String(cost),
+      suffix: td_cost_suffix
+    });
+  }
+
+  /**
+   * Checks whether an object and all its attached ancestors are visible.
+   *
+   * SimpleGame keeps its equivalent helper private, so the afterDraw overlay
+   * uses this local copy to stay in sync with the engine's draw pass.
+   *
+   * @param obj - Game object to test
+   * @returns True when the object and every ancestor are visible
+   */
+  function is_game_object_visible_in_chain(obj: GameObject): boolean {
+    let current: GameObject | null = obj;
+    while (current) {
+      if (!current.visible) return false;
+      current = current.attachedTo;
+    }
+    return true;
   }
 
   /**
@@ -491,48 +534,100 @@
   }
 
   /**
-   * Draws an obvious but non-animated affordability cue over picker buttons
-   * whose piece cannot be afforded.
+   * Draws the muted red tint and border over an unaffordable picker button.
+   *
+   * @param ctx - Canvas context
+   * @param btn - Picker button
+   */
+  function draw_unaffordable_button_tint(
+    ctx: CanvasRenderingContext2D,
+    btn: Button
+  ): void {
+    const x = btn.x - btn.width / 2;
+    const y = btn.y - btn.height / 2;
+    const radius = 4;
+
+    // Dark red-grey tint over the already-gray disabled button.
+    ctx.fillStyle = 'rgba(52, 29, 31, 0.32)';
+    ctx.beginPath();
+    ctx.roundRect(x, y, btn.width, btn.height, radius);
+    ctx.fill();
+
+    // Muted inset border.
+    ctx.strokeStyle = 'rgba(122, 58, 60, 0.9)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.roundRect(x + 2, y + 2, btn.width - 4, btn.height - 4, radius);
+    ctx.stroke();
+  }
+
+  /**
+   * Draws the cost badge in a picker button's top-right corner.
+   *
+   * @param ctx - Canvas context
+   * @param btn - Picker button
+   * @param cost_text - Formatted cost text
+   * @returns Measured center and width of the drawn text
+   */
+  function draw_piece_cost_label(
+    ctx: CanvasRenderingContext2D,
+    btn: Button,
+    cost_text: string
+  ): piece_cost_label_metrics {
+    ctx.save();
+    ctx.font = `bold ${PIECE_COST_FONT_SIZE}px Arial, Helvetica, sans-serif`;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'top';
+
+    const right = btn.x + btn.width / 2 - PIECE_COST_INSET_X;
+    const top = btn.y - btn.height / 2 + PIECE_COST_INSET_Y;
+    const width = ctx.measureText(cost_text).width;
+
+    ctx.fillStyle = '#f2d98b';
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
+    ctx.shadowBlur = 3;
+    ctx.shadowOffsetX = 1;
+    ctx.shadowOffsetY = 1;
+    ctx.fillText(cost_text, right, top);
+    ctx.restore();
+
+    return {
+      center_x: right - width / 2,
+      center_y: top + PIECE_COST_FONT_SIZE / 2,
+      width
+    };
+  }
+
+  /**
+   * Draws the top-right cost badges and affordability cues over visible
+   * picker buttons. The overlay is skipped whenever the sidebar is hidden.
    *
    * @param ctx - Canvas context supplied by afterDraw
    * @param offset_x - Current camera x offset
    * @param offset_y - Current camera y offset
    */
-  function draw_unaffordable_picker_cue(
+  function draw_piece_button_overlays(
     ctx: CanvasRenderingContext2D,
     offset_x: number,
     offset_y: number
   ): void {
+    if (!sidebar_visible) return;
+
     ctx.save();
     ctx.translate(-offset_x, -offset_y);
 
     for (const [id, btn] of unitButtons) {
-      if (!btn.visible) continue;
-      const column = soldierIds.has(id) ? unitColumn : towerColumn;
-      if (!column?.visible) continue;
+      if (!is_game_object_visible_in_chain(btn)) continue;
 
       const cfg = pieceConfigs.get(id);
       const cost = cfg?.cost?.[0]?.gold || 0;
-      if (currentGold >= cost) continue;
+      const unaffordable = currentGold < cost;
 
-      const x = btn.x - btn.width / 2;
-      const y = btn.y - btn.height / 2;
-      const radius = 4;
-
-      // Dark red-grey tint over the already-gray disabled button.
-      ctx.fillStyle = 'rgba(52, 29, 31, 0.32)';
-      ctx.beginPath();
-      ctx.roundRect(x, y, btn.width, btn.height, radius);
-      ctx.fill();
-
-      // Muted inset border.
-      ctx.strokeStyle = 'rgba(122, 58, 60, 0.9)';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.roundRect(x + 2, y + 2, btn.width - 4, btn.height - 4, radius);
-      ctx.stroke();
-
-      draw_unaffordable_coin_marker(ctx, x + btn.width - 16, y + 16);
+      if (unaffordable) draw_unaffordable_button_tint(ctx, btn);
+      const metrics = draw_piece_cost_label(ctx, btn, format_piece_cost(cost));
+      if (unaffordable) {
+        draw_unaffordable_coin_marker(ctx, metrics.center_x, metrics.center_y);
+      }
     }
 
     ctx.restore();
@@ -907,6 +1002,7 @@
 
     currentGold = data.gold;
     roundStartGold = data.gold;
+    td_cost_suffix = data.cost_suffix ?? '';
     initialLives = data.lives;
     currentLives = data.lives;
     currentRound = data.round_number || 1;
@@ -1088,8 +1184,7 @@
       const p = allPieces[id];
       const isUnit = soldierIds.has(id);
       const cX = isUnit ? cX_unit : cX_tower;
-      const cost = p.cost?.[0]?.gold || 0;
-      const label = piece_label(id, cost);
+      const label = piece_label(id);
       const iconH = Math.round(sbBtnH * 0.6);
       const iconW = Math.round(iconH * (p.width || 64) / (p.height || 64));
       const bc = new ButtonClass(`sb_${id}`);
@@ -1252,7 +1347,7 @@
 
     // Ghost + ring + range rendering
     afterDraw((ctx, offsetX, offsetY) => {
-      draw_unaffordable_picker_cue(ctx, offsetX, offsetY);
+      draw_piece_button_overlays(ctx, offsetX, offsetY);
       const unitId = placementMode ?? dragUnitId;
       if (unitId) {
         const cls = towerGameClassMap.get(unitId);
@@ -2228,7 +2323,7 @@
   onDestroy(() => {
     if (saveInterval) clearInterval(saveInterval);
     savePlacements();
-    try { removeEventListeners(); clear(); } catch (_e) { /* ignore */ }
+    try { destroyEngine(); } catch (_e) { /* ignore */ }
   });
 </script>
 

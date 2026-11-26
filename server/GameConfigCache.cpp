@@ -137,6 +137,17 @@ config_handle config_snapshot::getTowerDefenseUnitUnlocks() const { return get("
 config_handle config_snapshot::getTowerDefenseProjectiles() const { return get("tower_defense/projectiles.json"); }
 config_handle config_snapshot::getTowerDefenseWaveTemplates() const { return get("tower_defense/wave_templates.json"); }
 config_handle config_snapshot::getTowerDefenseOngoing() const { return get("tower_defense/ongoing.json"); }
+std::string config_snapshot::getTowerDefenseCostSuffix() const {
+    const auto mini_games = getMiniGames();
+    if (!mini_games.is_object() || !mini_games.contains("tower_defense")) {
+        return {};
+    }
+    const auto& tower_defense = mini_games["tower_defense"];
+    if (!tower_defense.is_object()) {
+        return {};
+    }
+    return tower_defense.value("cost_suffix", std::string{});
+}
 config_handle config_snapshot::getWeedingPlants() const { return get("weeding/plants.json"); }
 config_handle config_snapshot::getWeedingTools() const { return get("weeding/tools.json"); }
 config_handle config_snapshot::getWeedingSpecials() const { return get("weeding/specials.json"); }

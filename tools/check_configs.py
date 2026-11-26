@@ -4620,7 +4620,7 @@ class ConfigValidator:
                     self._add_issue(file, 1, None, f"{tier_name} level {level_id}: 'difficulty' should be in the level config file, not inline", Severity.ERROR)
 
     def validate_mini_games_starting_gold(self, file: Path) -> None:
-        """Validate tower_defense starting_gold defaults and per-level overrides."""
+        """Validate tower_defense starting_gold defaults, cost suffix, and per-level overrides."""
         try:
             content: str = file.read_text(encoding="utf-8")
         except Exception as e:
@@ -4647,6 +4647,14 @@ class ConfigValidator:
                     "'tower_defense.starting_gold' must be a non-negative integer",
                     Severity.ERROR,
                 )
+
+        cost_suffix: object = tower_defense.get("cost_suffix")
+        if not isinstance(cost_suffix, str) or not cost_suffix.strip():
+            self._add_issue(
+                file, 1, None,
+                "'tower_defense.cost_suffix' must be a non-empty string",
+                Severity.ERROR,
+            )
 
         for tier_name in ("levels", "baron_levels"):
             levels_array: object = tower_defense.get(tier_name)

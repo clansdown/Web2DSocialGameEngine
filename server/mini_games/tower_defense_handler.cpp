@@ -87,6 +87,7 @@ nlohmann::json TowerDefenseHandler::start_level(const MiniGameContext& ctx) {
     level_config["mobs"] = config_cache_.getTowerDefenseMobs();
     level_config["towers"] = config_cache_.getTowerDefenseTowers();
     level_config["units"] = config_cache_.getTowerDefenseUnits();
+    level_config["cost_suffix"] = config_cache_.getTowerDefenseCostSuffix();
 
     // Filter towers/units by player unlocks minus level disallowed
     nlohmann::json unlocks = UnitUnlockCalculator::get_player_unlocks(db, ctx.character_id);

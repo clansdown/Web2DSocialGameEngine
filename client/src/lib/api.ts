@@ -786,6 +786,7 @@ export interface TDRoundKickoffResponse {
   total_rounds: number;
   lives: number;
   gold: number;
+  cost_suffix?: string;
   spawn_schedule: SpawnScheduleEntry[];
   map_metadata?: unknown;
   mobs?: unknown;
