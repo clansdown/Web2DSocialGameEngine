@@ -172,6 +172,10 @@ ApiResponse handle_staff_list_invitation_codes(
         parse_registration_settings(config_cache.getRegistrationConfig());
     response.data["mode"] = registration_mode_name(settings.mode);
     response.data["invitations_enabled"] = settings.mode != registration_mode::off;
+    response.data["global_code"] =
+        settings.mode == registration_mode::global_code
+            ? settings.global_code
+            : std::string{};
     json codes = json::array();
 
     if (settings.mode != registration_mode::off) {

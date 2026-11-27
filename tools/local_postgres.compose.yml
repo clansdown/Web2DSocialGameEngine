@@ -1,0 +1,26 @@
+# Internal compose file for the local dev/test PostgreSQL wrappers.
+#
+# Do not run this directly. `tools/dev_postgres.sh` and `tools/test_postgres.sh`
+# pass --project-name and set RAVENEST_PG_DATA_DIR, RAVENEST_PG_HOST_PORT,
+# RAVENEST_PG_INIT_DIR, and the credentials before invoking it. Keeping the
+# profile-specific values out of this file makes it impossible for the two
+# clusters to share a data directory or host port by accident.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${RAVENEST_PG_USER:-ravenest}
+      POSTGRES_PASSWORD: ${RAVENEST_PG_PASSWORD:-ravenest_dev}
+      POSTGRES_DB: ravenest_game
+    ports:
+      - "127.0.0.1:${RAVENEST_PG_HOST_PORT:?RAVENEST_PG_HOST_PORT is required}:5432"
+    volumes:
+      - "${RAVENEST_PG_DATA_DIR:?RAVENEST_PG_DATA_DIR is required}:/var/lib/postgresql/data"
+      - "${RAVENEST_PG_INIT_DIR:?RAVENEST_PG_INIT_DIR is required}:/docker-entrypoint-initdb.d:ro"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${RAVENEST_PG_USER:-ravenest} -d ravenest_game"]
+      interval: 5s
+      timeout: 5s
+      retries: 12

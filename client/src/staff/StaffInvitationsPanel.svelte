@@ -27,12 +27,14 @@
     'ui_staff_invitations_used_by', 'ui_staff_invitations_search',
     'ui_staff_no_results', 'ui_staff_error', 'ui_invitations_used',
     'ui_invitations_unused', 'ui_invitations_revoked', 'ui_invitations_code_created',
-    'ui_invitations_all'
+    'ui_invitations_all', 'ui_staff_invitations_global_code',
+    'ui_staff_invitations_global_code_hint', 'ui_invitations_copy'
   ];
 
   let texts = $state<Record<string, string>>({});
   let codes = $state<staff_invitation_code_dto[]>([]);
   let mode = $state('off');
+  let global_code = $state('');
   let loading = $state(false);
   let error = $state('');
   let info = $state('');
@@ -42,6 +44,21 @@
 
   function t(id: string): string {
     return texts[id] ?? id;
+  }
+
+  /**
+   * Copies a value to the clipboard when the browser permits it. The value
+   * stays selectable in the page if clipboard access is unavailable.
+   *
+   * @param code - Invitation code to copy
+   */
+  async function copy_code(code: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(code);
+    } catch {
+      // Clipboard can be unavailable (permissions/insecure context); the code
+      // remains selectable.
+    }
   }
 
   function code_status(code: staff_invitation_code_dto): string {
@@ -67,6 +84,7 @@
       });
       codes = result.codes;
       mode = result.mode;
+      global_code = result.global_code ?? '';
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -110,6 +128,23 @@
 <div>
   {#if error}<div class="alert alert-danger py-2">{t('ui_staff_error')}: {error}</div>{/if}
   {#if info}<div class="alert alert-success py-2">{info}</div>{/if}
+
+  {#if mode === 'global_code' && global_code}
+    <div class="card mb-3">
+      <div class="card-body">
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+          <div class="me-auto">
+            <div class="small text-secondary">{t('ui_staff_invitations_global_code')}</div>
+            <code class="fs-5 user-select-all">{global_code}</code>
+            <div class="small text-secondary">{t('ui_staff_invitations_global_code_hint')}</div>
+          </div>
+          <button class="btn btn-sm btn-outline-secondary" onclick={() => copy_code(global_code)}>
+            {t('ui_invitations_copy')}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
 
   <div class="d-flex flex-wrap gap-2 align-items-center mb-3">
     <select class="form-select form-select-sm" style="max-width: 180px;" bind:value={status_filter} onchange={load_codes}>

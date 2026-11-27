@@ -1,17 +1,27 @@
 /**
- * Input bridge for a CSS-rotated game canvas.
+ * Pointer mapping for a CSS-rotated game canvas.
  *
  * SimpleGame maps pointer coordinates with canvas.getBoundingClientRect() and
- * canvas.clientWidth/clientHeight. That assumes the canvas is not rotated. When
- * the mini-game shell is rotated 90° to provide a forced-landscape view on a
- * portrait device, the physical pointer coordinates need to be mapped back into
- * the canvas's unrotated local coordinate space.
+ * canvas.clientWidth/clientHeight by default. That assumes the canvas is not
+ * rotated. When the mini-game shell is rotated 90° to provide a forced-landscape
+ * view on a portrait device, the physical pointer coordinates need to be mapped
+ * back into the canvas's unrotated local coordinate space.
  *
- * This module intercepts pointer events in the capture phase, maps them, and
- * dispatches synthetic mouse events using canvas-local coordinates. The canvas
- * bounding rect is overridden while active so SimpleGame's existing mapping
- * continues to work without modifying client/SimpleGame/.
+ * This module installs a native SimpleGame input transform while the shell is
+ * rotated; no synthetic mouse events or getBoundingClientRect overrides are
+ * needed.
  */
+
+import {
+  setInputTransform
+} from '../../SimpleGame/ui/src/lib/simplegame';
+import type {
+  InputPoint,
+  InputTransform
+} from '../../SimpleGame/ui/src/lib/simplegame';
+
+/** The transform currently installed by this module, if any. */
+let active_transform: InputTransform | null = null;
 
 /**
  * Returns the layout offset of an element relative to an ancestor. Uses the
@@ -79,137 +89,42 @@ export function physical_to_canvas_point(
   return { x, y };
 }
 
-interface synthetic_mouse_event_options {
-  bubbles: boolean;
-  cancelable: boolean;
-  view: Window;
-  clientX: number;
-  clientY: number;
-  button: number;
-  buttons: number;
-}
-
 /**
- * Installs the rotated-canvas input bridge.
+ * Installs SimpleGame's native input transform for a rotated canvas.
  *
- * The returned cleanup removes all listeners and restores
- * canvas.getBoundingClientRect.
+ * The transform maps physical client coordinates through the shell rotation
+ * into canvas-local CSS coordinates. Points outside the canvas map to an
+ * off-canvas sentinel so they cannot trigger hits.
+ *
+ * The returned cleanup removes the transform only if this installation is
+ * still the active one, so a stale cleanup cannot clear a newer game's
+ * transform.
  *
  * @param canvas - Canvas receiving game input
  * @param shell - Rotated shell ancestor
  * @returns Cleanup function
  */
-export function install_rotated_input_bridge(
+export function install_rotated_input_transform(
   canvas: HTMLCanvasElement,
   shell: HTMLElement
 ): () => void {
-  let dispatching = false;
-  const original_get_bounding_client_rect = canvas.getBoundingClientRect.bind(canvas);
+  const transform: InputTransform = (client_point: InputPoint): InputPoint => {
+    const point = physical_to_canvas_point(
+      client_point.x,
+      client_point.y,
+      shell,
+      canvas
+    );
+    return point ?? { x: -1, y: -1 };
+  };
 
-  // Synthetic events use canvas-local coordinates. Make SimpleGame's
-  // getBoundingClientRect() + clientWidth/clientHeight mapping see a local rect.
-  canvas.getBoundingClientRect = () =>
-    new DOMRect(0, 0, canvas.clientWidth, canvas.clientHeight);
-
-  function dispatch_mouse(
-    type: string,
-    point: { x: number; y: number },
-    button: number,
-    buttons: number,
-    source: MouseEvent | Touch
-  ): void {
-    const options: synthetic_mouse_event_options = {
-      bubbles: true,
-      cancelable: true,
-      view: window,
-      clientX: point.x,
-      clientY: point.y,
-      button,
-      buttons
-    };
-
-    // Preserve modifier keys for input handlers that inspect them.
-    const mouse_source = source instanceof MouseEvent ? source : null;
-    if (mouse_source) {
-      Object.assign(options, {
-        shiftKey: mouse_source.shiftKey,
-        ctrlKey: mouse_source.ctrlKey,
-        altKey: mouse_source.altKey,
-        metaKey: mouse_source.metaKey
-      });
-    }
-
-    dispatching = true;
-    try {
-      canvas.dispatchEvent(new MouseEvent(type, options));
-    } finally {
-      dispatching = false;
-    }
-  }
-
-  function point_for_event(
-    client_x: number,
-    client_y: number
-  ): { x: number; y: number } | null {
-    return physical_to_canvas_point(client_x, client_y, shell, canvas);
-  }
-
-  function on_mouse(event: MouseEvent): void {
-    if (dispatching) return;
-
-    event.preventDefault();
-    event.stopImmediatePropagation();
-
-    const point = point_for_event(event.clientX, event.clientY);
-    if (!point) return;
-
-    dispatch_mouse(event.type, point, event.button, event.buttons, event);
-  }
-
-  function on_touch(event: TouchEvent): void {
-    if (dispatching) return;
-
-    event.preventDefault();
-    event.stopImmediatePropagation();
-
-    const touch = event.changedTouches[0];
-    if (!touch) return;
-
-    const point = point_for_event(touch.clientX, touch.clientY);
-    if (!point) return;
-
-    if (event.type === 'touchstart') {
-      dispatch_mouse('mousedown', point, 0, 1, touch);
-    } else if (event.type === 'touchmove') {
-      dispatch_mouse('mousemove', point, 0, 1, touch);
-    } else {
-      dispatch_mouse('mouseup', point, 0, 0, touch);
-    }
-  }
-
-  const mouse_events: string[] = ['mousedown', 'mousemove', 'mouseup'];
-  const touch_events: string[] = ['touchstart', 'touchmove', 'touchend', 'touchcancel'];
-
-  for (const type of mouse_events) {
-    canvas.addEventListener(type, on_mouse as EventListener, true);
-  }
-  for (const type of touch_events) {
-    canvas.addEventListener(type, on_touch as EventListener, {
-      capture: true,
-      passive: false
-    });
-  }
+  active_transform = transform;
+  setInputTransform(transform);
 
   return () => {
-    for (const type of mouse_events) {
-      canvas.removeEventListener(type, on_mouse as EventListener, true);
+    if (active_transform === transform) {
+      setInputTransform(null);
+      active_transform = null;
     }
-    for (const type of touch_events) {
-      canvas.removeEventListener(type, on_touch as EventListener, {
-        capture: true,
-        passive: false
-      } as AddEventListenerOptions);
-    }
-    canvas.getBoundingClientRect = original_get_bounding_client_rect;
   };
 }

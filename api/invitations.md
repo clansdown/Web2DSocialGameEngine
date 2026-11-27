@@ -137,8 +137,9 @@ Capability: `registration.invites.view`. Logs `read.invitation_codes`.
 {
   "status": "ok",
   "data": {
-    "mode": "invite_only",
+    "mode": "global_code",
     "invitations_enabled": true,
+    "global_code": "B849F752B270",
     "codes": [
       {
         "id": "inv_...",
@@ -162,6 +163,12 @@ Capability: `registration.invites.view`. Logs `read.invitation_codes`.
 
 `invitations_enabled` is false in `off` mode; `codes` is then empty and
 `invites.db` is not opened.
+
+`global_code` is the active shared registration code and is non-empty only in
+`global_code` mode. It is empty in `invite_only` and `off` modes. The public
+`/api/getRegistrationConfig` endpoint never returns it. The list request is
+recorded as `read.invitation_codes`; the code itself is not written to the
+staff journal.
 
 ---
 

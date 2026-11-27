@@ -107,4 +107,8 @@ SET lock_timeout = '2s';
 SET idle_in_transaction_session_timeout = '10s';
 ```
 
-`tools/init_postgres.sh` creates the role and four databases. See `docs/postgres_operations.md`.
+`tools/init_postgres.sh` creates the role and four databases for a
+host-managed/pre-existing cluster. Local development and smoke tests use
+separate Docker clusters (`tools/dev_postgres.sh` on port 5433 and
+`tools/test_postgres.sh` on port 5432). See `docs/postgres_operations.md` and
+`DIRECTORIES.md`.

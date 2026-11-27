@@ -15,7 +15,7 @@
   import {
     initEngine,
     setBoardSize,
-    setViewportSize,
+    setViewportAutoResize,
     setCameraFollowsPlayer,
     setBoardPanEnabled,
     setZoomEnabled,
@@ -23,8 +23,7 @@
     getZoomLevel,
     everyTick,
     afterDraw,
-    removeEventListeners,
-    clear
+    destroyEngine
   } from '../../SimpleGame/ui/src/lib/simplegame';
   import { load_combat_configs } from './combat_configs';
   import { loadTexts } from '../lib/text';
@@ -1149,13 +1148,15 @@
 
   /** Sets up the engine after the canvas mounts. */
   function setup_game(): void {
+    // Combat renders to a fixed 960 × 640 virtual canvas. Its camera and input
+    // math use BW/BH directly, so keep the engine from resizing the backing
+    // store to the CSS display size.
+    setViewportAutoResize(false);
     setCameraFollowsPlayer(false);
     setBoardPanEnabled(false);
     setZoomEnabled(true, 0.6, 4.0, 0.15);
     setCameraPosition(BW / 2, BH / 2);
-    // The engine's tick callback type omits the dt parameter — cast like
-    // TowerDefense.svelte does (see docs/SimpleGame_changes.md).
-    (everyTick as unknown as (fn: (dt: number) => void) => void)((dt: number) => {
+    everyTick((dt: number) => {
       if (!engine_ready) return;
       tick_effects(dt);
     });
@@ -1168,8 +1169,11 @@
 
   $effect(() => {
     if (canvas_el && !engine_ready) {
+      // Establish the authored backing store before initEngine reads it.
+      // setViewportSize() is a no-op until the engine is initialized.
+      canvas_el.width = BW;
+      canvas_el.height = BH;
       setBoardSize(BW, BH);
-      setViewportSize(BW, BH);
       initEngine(canvas_el, debug_el, false, setup_game);
     }
   });
@@ -1200,8 +1204,7 @@
       window.removeEventListener('keydown', on_key_down);
       window.removeEventListener('keyup', on_key_up);
       try {
-        removeEventListeners();
-        clear();
+        destroyEngine();
       } catch {
         // Engine may already be torn down — ignore.
       }

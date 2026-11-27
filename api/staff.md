@@ -126,7 +126,8 @@ See the chat endpoint docs in `api/` (`banFromChat`, `unbanFromChat`,
 See `api/invitations.md` for the full contract.
 
 - `/api/staffListInvitationCodes` — requires `registration.invites.view`; logs
-  `read.invitation_codes`.
+  `read.invitation_codes`; returns the active `global_code` in `global_code`
+  mode (empty in `invite_only`/`off`).
 - `/api/staffCreateInvitationCode` — requires
   `registration.invites.generate`; `invite_only` only; journal
   `registration.invite_generate`.

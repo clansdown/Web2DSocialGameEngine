@@ -2,7 +2,9 @@
 -- `postgres` maintenance database as a role with CREATEDB.
 --
 -- This file is idempotent and is used by the bundled compose `db-init` service
--- on every `up`, so it also works with an existing PostgreSQL data volume.
+-- and by the local dev/test PostgreSQL wrappers (tools/dev_postgres.sh and
+-- tools/test_postgres.sh) on every `up`, so it also works with an existing
+-- PostgreSQL data volume.
 -- `current_user` is POSTGRES_USER in the bundled stack.
 --
 -- \gexec executes each generated CREATE DATABASE outside a single transaction,

@@ -435,7 +435,7 @@ All endpoints accept POST requests with JSON bodies and respond with:
 - **/api/staffGetDeletedMessages**: Staff forensic message_deletions reader
 - **/api/staffSetBaronyIdentity**: Staff reassignment of a barony's safe name/tags (and optional custom text)
 - **/api/staffListJournal** / **/api/staffPreflightUndo** / **/api/staffUndo**: Shared action journal, preflight, and compensating undo (requires `staff.undo`)
-- **/api/staffListInvitationCodes** / **/api/staffCreateInvitationCode** / **/api/staffRevokeInvitationCode**: Staff invite management (`registration.invites.view/generate/revoke`); journaled without plaintext codes
+- **/api/staffListInvitationCodes** / **/api/staffCreateInvitationCode** / **/api/staffRevokeInvitationCode**: Staff invite management (`registration.invites.view/generate/revoke`); the list returns the active `global_code` in `global_code` mode; journaled without plaintext codes
 - **/api/staff* support/unstick**: Queue, ticket replies/notes, session unstick, phase/march/construction/resource corrections
 - **/api/getSupportContext**, **/api/listSupportTickets**, **/api/getSupportTicket**, **/api/createSupportTicket**, **/api/replySupportTicket**, **/api/reopenSupportTicket**: Account-level support tickets
 - **/api/getNotifications**, **/api/markNotificationRead**, **/api/markAllNotificationsRead**: Account-level notification inbox
@@ -629,6 +629,21 @@ public package needs no server-side `docker login`. If a push is denied, run
 `tools/diagnose_ghcr_push.sh` (add `--push-test` for a real throwaway push).
 See `docs/publishing.md`.
 
+### Local Development Databases
+
+`./run_server.sh` uses the isolated dev PostgreSQL cluster in `dev_run/`
+(127.0.0.1:5433) and runs the server from `dev_run/`. Smoke tests use a separate
+test PostgreSQL cluster in `test_run/` (127.0.0.1:5432). The two clusters have
+different Docker Compose projects, data directories, ports, and env files.
+
+```bash
+bash tools/dev_postgres.sh up|status|down|reset
+bash tools/test_postgres.sh up|status|down|reset
+```
+
+See `DIRECTORIES.md` for every runtime directory and its owner. Smoke tests
+require a host `psql` client (`postgresql-client`).
+
 ### Testing the Server
 
 When testing or verifying the server, use the `agent_test_server.sh` script for automated testing:
@@ -646,7 +661,7 @@ When testing or verifying the server, use the `agent_test_server.sh` script for 
 - `-l FILE`: Write logs to file
 - `-q`: Quiet mode (minimal output)
 - `-v`: Verbose mode
-- `--keep-db`: Keep `test_run/agent/` directory after exit (default: cleanup)
+- `--keep-db`: Keep scratch databases and the `test_run/agent/` run directory after exit (default: cleanup)
 
 **Exit Codes:**
 - `0`: Success (limit reached and server exited cleanly)
@@ -654,7 +669,7 @@ When testing or verifying the server, use the `agent_test_server.sh` script for 
 - `2`: Server startup failed
 
 **Behavior:**
-- Uses `test_run/agent/` directory for databases (automatically wiped and recreated), running the server with `--content game/`
+- Uses the isolated test PostgreSQL cluster (`test_run/postgres`, 127.0.0.1:5432) and `test_run/agent/` as its run directory (automatically wiped and recreated), running the server with `--content game/`
 - Runs on port 3290 by default
 - Exits immediately when request or time limit is reached
 - Cuts off in-flight requests on timeout
@@ -773,7 +788,7 @@ Use `tools/set_march_progress.sh` to set a character's march progress to an exac
 3. **Concurrent Access**: Each worker thread opens one connection per logical database; the four databases remain independent.
 4. **Error Handling**: All errors return JSON with format `{ "error": "description" }`
 5. **API Documentation**: Every endpoint has a corresponding `.md` file in `api/` directory with detailed request/response examples
-6. **Assets vs working directory**: the read-only assets `config/`, `images/`, and `text/` are read from the `--content` root (default: the working directory). `run_server.sh` runs the server from `test_run/` and passes `--content <repo>/game`, so databases and uploads land in `test_run/` and `game/` stays pristine for `push_to_production.sh`. Image paths like `images/ui/` resolve under the content root, so assets at `game/images/ui/book.png` are served from `/images/ui/book.png`. The client resolves API/asset/WebSocket origins from `VITE_API_BASE_URL`, `VITE_ASSETS_BASE_URL`, and `VITE_WS_BASE_URL` at build time (`install.sh` fills them from `.deploy`); empty values fall back to same-origin, which keeps the Vite dev proxy (`/api`, `/images`, `/ws` → `localhost:2290`) working. Production serves the client from Pages, the API from `api.<zone>`, and assets from `assets.<zone>`; the API uses `RAVENEST_CORS_ORIGINS` (see `docs/publishing.md`).
+6. **Assets vs working directory**: the read-only assets `config/`, `images/`, and `text/` are read from the `--content` root (default: the working directory). `run_server.sh` runs the server from `dev_run/` and passes `--content <repo>/game`, so dev uploads land in `dev_run/uploads` and `game/` stays pristine for `push_to_production.sh`. Smoke tests use their own `test_run/...` run directories. Image paths like `images/ui/` resolve under the content root, so assets at `game/images/ui/book.png` are served from `/images/ui/book.png`. The client resolves API/asset/WebSocket origins from `VITE_API_BASE_URL`, `VITE_ASSETS_BASE_URL`, and `VITE_WS_BASE_URL` at build time (`install.sh` fills them from `.deploy`); empty values fall back to same-origin, which keeps the Vite dev proxy (`/api`, `/images`, `/ws` → `localhost:2290`) working. Production serves the client from Pages, the API from `api.<zone>`, and assets from `assets.<zone>`; the API uses `RAVENEST_CORS_ORIGINS` (see `docs/publishing.md`).
 
 ### Coding Standards
 
@@ -1144,7 +1159,7 @@ Build the full game progression and content system with a working tower defense 
 
 #### Done
 - **Standalone textured text overlays**: `StoryText`/`GameText` gained `overlay` mode (`on_dismiss`, `continue_label`, `button`) and now render inside `TextOverlayFrame` instead of `DialogOverlay`. The Continue button lives inside the silk/vellum texture and can use an optional image plaque (`ui_textures.json` `button`, with `image_slice_px` for a CSS `border-image` 9-slice) or the `button` prop. The backdrop scrolls the whole textured panel so background, text, and button stay in sync. `DialogOverlay` remains for form dialogs; unused `ParchmentOverlay` removed.
-- **Text texture 9-slice + aspect-aware selection**: `StoryText`/`GameText` choose the texture whose native aspect best matches the rendered panel (mild height tiebreak + current-texture hysteresis), then render it with CSS `border-image` rather than stretching the whole image. Per-file `texture_slice_px` in `ui_textures.json` supplies the source-pixel insets; `/api/getUITextures` returns `slice_vertical_px`/`slice_horizontal_px` per texture. Component padding remains the text safe area, and the client uses `max(padding, slice)` as the total inset, so thick frames never overlap text. Shared math lives in `client/src/lib/text_texture.ts`; `check_configs.py` validates the new config field; `story_text` now declares `texture_prefix` so `check_art.py` checks the silk pool. This fixes the mobile border squashing caused by the old height-only selection + `background-size: 100% 100%` path.
+- **Text texture 9-slice + content-driven selection**: `StoryText`/`GameText` choose the texture whose native aspect best matches the panel, but selection is driven by the **content size**, not the currently applied frame: each candidate's final panel height is derived from content height + safe padding, then scored (mild height tiebreak + current-texture hysteresis). This makes selection deterministic and prevents the texture/height feedback loop that could alternate between short and tall silk textures. The panel is rendered with CSS `border-image` rather than stretching the whole image. Per-file `texture_slice_px` in `ui_textures.json` supplies the source-pixel insets; `/api/getUITextures` returns `slice_vertical_px`/`slice_horizontal_px` per texture. Component padding remains the text safe area, and the client uses `max(padding, slice)` as the total inset, so thick frames never overlap text. Shared math lives in `client/src/lib/text_texture.ts`; measurement writes are idempotent (plain last-texture/last-layout caches + field-by-field layout comparison). `check_configs.py` validates the new config field; `story_text` now declares `texture_prefix` so `check_art.py` checks the silk pool. This also fixes the mobile border squashing caused by the old height-only selection + `background-size: 100% 100%` path.
 - **Non-adult account creation + Profile identity editors**: `/api/createAccount` no longer accepts `adult`, `displayName`, or `digitalCredential`; new accounts always start non-adult with their safe name. The removed creation-time Digital Credentials design (including the Brave `brave://flags/#web-digital-credentials` caveat, protocol list, request/verifier shapes, error codes, and UI copy) is preserved in `docs/adult_verification.md`. Profile now hosts adult custom-name and safe-name editors alongside custom/safe portraits; custom sections appear first for adults and are hidden for minors. `updateCharacterProfile` supports `clear_display_name`, unique safe-name regeneration without self-renaming, `name_locked`, and keeps the visible name following the safe name when no custom name is set. New `tools/profile_smoke.sh`/`.mjs`.
 - **PostgreSQL portability audit fixes**: staff account search uses `EXISTS` instead of `LEFT JOIN + DISTINCT` (PostgreSQL rejects `DISTINCT` with an unselected `ORDER BY` column); chat relation/read counters use `GREATEST` instead of SQLite scalar `MAX(a,b)`; platinum transaction IDs are read back by idempotency key instead of `LASTVAL()` after `INSERT OR IGNORE`; user-facing staff/chat searches use `ILIKE`; invitation generation takes a transaction-scoped advisory lock so count-then-insert limits remain serialized, and invitation insertion retries use `ON CONFLICT DO NOTHING` because a PostgreSQL unique violation aborts the transaction. Documented in `docs/database.md`; staff smoke covers mixed-case and character-name search.
 - **Auth refresh route + logging**: `/api/auth/<action>` is normalized to `auth<Action>`, so `/api/auth/refresh` and `/api/auth/logout` reach their handlers instead of falling through to `token_missing`. Server logs `[authRefresh]` start/rejected/ok lines (IP, cookie/token presence, reason, account/session, duration; tokens never logged) and warns on unrouted auth paths; the client logs `[auth]` refresh attempts, statuses, retry delays, and terminal failures. Regression: `tools/auth_refresh_smoke.sh`.
@@ -1299,7 +1314,7 @@ Build the full game progression and content system with a working tower defense 
 
 ### Critical Context
 - **Server compiles** with `./compile_server.sh` (no arguments). Client `npm run check` passes with 0 errors (3 pre-existing a11y/self-closing-tag warnings in `RetinuePanel.svelte` and `GameBoard.svelte`).
-- **SimpleGame is never modified** — all changes in our code (`TowerDefense.svelte`). Required changes documented in `docs/SimpleGame_changes.md`.
+- **SimpleGame is never modified** — all changes in our code (`TowerDefense.svelte`). `docs/SimpleGame_changes.md` currently lists no outstanding upstream requests.
 - **Tower defense maps** live in `game/config/tower_defense/maps/` as JSON. Only `map_1.json` exists (level 1). Map metadata normalized server-side from camelCase to snake_case.
 - **`TowerDefenseMapCache`** uses POSIX `stat()` with `time_t` (not `std::filesystem::file_time_type` — broken on this Linux).
 - **`enemies.delete(e)` required manually** — SimpleGame's `EnemyClass.destroy()` doesn't remove from the global `enemies` set, only from `gameObjects`.
@@ -1316,7 +1331,7 @@ Build the full game progression and content system with a working tower defense 
 - `client/src/components/StoryText.svelte` / `GameText.svelte` - textured text (inline + standalone `overlay` mode)
 - `client/src/components/TextOverlayFrame.svelte` / `TextOverlayButton.svelte` - text-overlay backdrop and optional image-backed dismiss button
 - `game/config/ui_textures.json` / `api/getUITextures.md` - texture padding, per-file `texture_slice_px` border-image insets, and optional `button` plaque config
-- `client/src/lib/text_texture.ts` - shared aspect-ratio texture selection + 9-slice layout math
+- `client/src/lib/text_texture.ts` - shared content-driven texture selection + 9-slice layout math
 - `client/src/components/StoryText.svelte` / `GameText.svelte` - textured panels using `border-image` 9-slicing
 - `tools/install.sh` - deployment only: builds the client, uploads R2/Pages, mirrors game content, pulls the prebuilt server image, writes compose/env, restarts
 - `install.sh` - compatibility launcher that execs `tools/install.sh`

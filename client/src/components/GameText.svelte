@@ -21,7 +21,8 @@
   import { rewrite_asset_urls } from '../lib/public_urls';
   import {
     compute_texture_layout,
-    select_texture,
+    select_texture_for_content,
+    texture_layouts_equal,
     texture_min_height,
     type TextureLayout
   } from '../lib/text_texture';
@@ -66,6 +67,8 @@
   let layout: TextureLayout | null = $state(null);
   let currentTexture: UITexture | null = $state(null);
   let button_config = $state<UITextureButton>({});
+  let last_texture: UITexture | null = null;
+  let last_layout: TextureLayout | null = null;
 
   let effective_button = $derived.by(() => {
     const merged: UITextureButton = { ...button_config };
@@ -136,30 +139,44 @@
     const el = containerEl;
     if (!el || !texturesLoaded) return;
 
-    let frameId: number;
+    const active_textures = textures;
+    const padding_vertical = basePaddingVertical;
+    const padding_horizontal = basePaddingHorizontal;
+    const minimum_height = minHeight;
+
+    let frame_id: number;
 
     function apply(): void {
-      const w = el.offsetWidth;
-      const h = el.offsetHeight;
-      const selected: UITexture | null = select_texture(textures, w, h, currentTexture);
-      if (!selected) return;
-      currentTexture = selected;
-
-      const style = getComputedStyle(el);
-      const padT = parseFloat(style.paddingTop) || 0;
-      const padB = parseFloat(style.paddingBottom) || 0;
-      const measured_content: number = contentEl?.offsetHeight ?? 0;
-      const contentH = Math.max(0, measured_content > 0
-        ? measured_content
-        : el.clientHeight - padT - padB);
-      layout = compute_texture_layout(
-        selected,
-        w,
-        contentH,
-        basePaddingVertical,
-        basePaddingHorizontal,
-        minHeight
+      const panel_width = el.offsetWidth;
+      const content_height = Math.max(0, contentEl?.offsetHeight ?? 0);
+      const selected_texture: UITexture | null = select_texture_for_content(
+        active_textures,
+        panel_width,
+        content_height,
+        padding_vertical,
+        padding_horizontal,
+        minimum_height,
+        last_texture
       );
+      if (!selected_texture) return;
+
+      if (!last_texture || last_texture.url !== selected_texture.url) {
+        last_texture = selected_texture;
+        currentTexture = selected_texture;
+      }
+
+      const next_layout: TextureLayout = compute_texture_layout(
+        selected_texture,
+        panel_width,
+        content_height,
+        padding_vertical,
+        padding_horizontal,
+        minimum_height
+      );
+      if (!texture_layouts_equal(last_layout, next_layout)) {
+        last_layout = next_layout;
+        layout = next_layout;
+      }
     }
 
     function measure(): void {
@@ -175,11 +192,11 @@
     observer.observe(el);
     if (contentEl) observer.observe(contentEl);
 
-    frameId = requestAnimationFrame(measure);
+    frame_id = requestAnimationFrame(measure);
 
     return () => {
       observer.disconnect();
-      cancelAnimationFrame(frameId);
+      cancelAnimationFrame(frame_id);
     };
   });
 </script>

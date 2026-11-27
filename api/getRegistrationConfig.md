@@ -6,6 +6,10 @@ creation requires an invitation code.
 **Never returns the shared global code, individual codes, player limits, or
 rate-limit settings.**
 
+Staff with `registration.invites.view` can read the active global code from
+`/api/staffListInvitationCodes`; that staff endpoint also records a sensitive
+read event.
+
 ## Request
 
 ```json

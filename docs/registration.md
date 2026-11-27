@@ -47,14 +47,18 @@ code. If marking the row used fails, the game ledger still blocks reuse.
 
 ## Staff actions
 
-- `registration.invites.view` — list codes (logged as `read.invitation_codes`).
+- `registration.invites.view` — list codes (logged as `read.invitation_codes`)
+  and see the active shared `global_code` while in `global_code` mode.
 - `registration.invites.generate` — generate a code (invite_only only).
 - `registration.invites.revoke` — revoke an unused code.
 
 Generation/revocation are journaled as `registration.invite_generate` and
 `registration.invite_revoke`. **The plaintext code is never stored in the staff
 journal**, because `ravenest_staff` is permanent while `ravenest_invites` is temporary.
-Undo deletes an unused generated code, or clears revocation on an unused code.
+The active shared `global_code` is shown to staff with
+`registration.invites.view` in `global_code` mode, but it is likewise never
+written into the journal. Undo deletes an unused generated code, or clears
+revocation on an unused code.
 
 ## Retiring the feature
 

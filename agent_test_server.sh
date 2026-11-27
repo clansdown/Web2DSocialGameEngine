@@ -4,7 +4,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-AGENT_DB_DIR="$SCRIPT_DIR/test_run/agent"
+AGENT_RUN_DIR="$SCRIPT_DIR/test_run/agent"
 PORT=3290
 KEEP_DB=false
 LOG_FILE=""
@@ -13,14 +13,15 @@ VERBOSE=false
 TEST_NUM_REQUESTS=0
 TEST_TIMEOUT=0
 
-# Scratch PostgreSQL databases for this run. Override the prefix when running
-# multiple test servers against one cluster.
-TEST_DB_PREFIX="${RAVENEST_TEST_DB_PREFIX:-ravenest_test_${PORT}}"
-TEST_DB_USER="${RAVENEST_DB_USER:-ravenest}"
-TEST_DB_PASSWORD="${RAVENEST_DB_PASSWORD:-ravenest_dev}"
-TEST_DB_HOST="${RAVENEST_DB_HOST:-127.0.0.1}"
-TEST_DB_PORT="${RAVENEST_DB_PORT:-5432}"
+# Scratch PostgreSQL databases for this run. The prefix is derived from the
+# final port after option parsing. Override it when running multiple test
+# servers against one cluster.
 ADMIN_URL="${RAVENEST_TEST_ADMIN_URL:-}"
+
+# Use the same isolated test cluster and scratch-DB path as the smoke tests.
+# shellcheck source=tools/postgres_test_env.sh
+source "$SCRIPT_DIR/tools/postgres_test_env.sh"
+set +u
 
 print_usage() {
     echo "Usage: $0 [OPTIONS]"
@@ -94,6 +95,15 @@ if [ "$TEST_NUM_REQUESTS" -eq 0 ] && [ "$TEST_TIMEOUT" -eq 0 ]; then
     exit 1
 fi
 
+TEST_DB_PREFIX="${RAVENEST_TEST_DB_PREFIX:-ravenest_test_${PORT}}"
+export RAVENEST_TEST_DB_PREFIX="$TEST_DB_PREFIX"
+if [ -n "$ADMIN_URL" ]; then
+    export RAVENEST_TEST_ADMIN_URL="$ADMIN_URL"
+fi
+if [ "$KEEP_DB" = true ]; then
+    export RAVENEST_KEEP_TEST_DB=1
+fi
+
 if [ -f .game_name ]; then
     GAME_NAME=$(cat .game_name | tr '[:upper:]' '[:lower:]')
 else
@@ -101,40 +111,10 @@ else
     GAME_NAME="server"
 fi
 
-mkdir -p "$AGENT_DB_DIR"
-rm -rf "$AGENT_DB_DIR"/*
+mkdir -p "$AGENT_RUN_DIR"
+rm -rf "$AGENT_RUN_DIR"/*
 
-psql_admin() {
-    if [ -n "$ADMIN_URL" ]; then
-        psql "$ADMIN_URL" "$@"
-    else
-        psql -d postgres "$@"
-    fi
-}
-
-drop_test_databases() {
-    for suffix in game chat staff invites; do
-        psql_admin -v ON_ERROR_STOP=1 \
-            -c "DROP DATABASE IF EXISTS \"${TEST_DB_PREFIX}_${suffix}\"" >/dev/null 2>&1 || true
-    done
-}
-
-if ! command -v psql >/dev/null 2>&1; then
-    echo "Error: psql is required (install postgresql-client)" >&2
-    exit 2
-fi
-
-drop_test_databases
-for suffix in game chat staff invites; do
-    database="${TEST_DB_PREFIX}_${suffix}"
-    psql_admin -v ON_ERROR_STOP=1 \
-        -c "CREATE DATABASE \"${database}\" OWNER \"${TEST_DB_USER}\"" >/dev/null
-done
-
-export RAVENEST_GAME_DB_URL="postgresql://${TEST_DB_USER}:${TEST_DB_PASSWORD}@${TEST_DB_HOST}:${TEST_DB_PORT}/${TEST_DB_PREFIX}_game"
-export RAVENEST_CHAT_DB_URL="postgresql://${TEST_DB_USER}:${TEST_DB_PASSWORD}@${TEST_DB_HOST}:${TEST_DB_PORT}/${TEST_DB_PREFIX}_chat"
-export RAVENEST_STAFF_DB_URL="postgresql://${TEST_DB_USER}:${TEST_DB_PASSWORD}@${TEST_DB_HOST}:${TEST_DB_PORT}/${TEST_DB_PREFIX}_staff"
-export RAVENEST_INVITES_DB_URL="postgresql://${TEST_DB_USER}:${TEST_DB_PASSWORD}@${TEST_DB_HOST}:${TEST_DB_PORT}/${TEST_DB_PREFIX}_invites"
+postgres_test_env_init "$TEST_DB_PREFIX" || exit 2
 
 if [ "$QUIET" = true ]; then
     VERBOSE_FLAG="--quiet"
@@ -169,7 +149,7 @@ if [ ! -f server ]; then
     exit 1
 fi
 
-cd "$AGENT_DB_DIR"
+cd "$AGENT_RUN_DIR"
 
 if [ "$QUIET" = false ]; then
     echo "Starting $GAME_NAME test server on port $PORT..."
@@ -204,8 +184,10 @@ if [ "$QUIET" = false ]; then
     echo "Waiting for completion..."
 fi
 
+set +e
 wait "$SERVER_PID"
 EXIT_CODE=$?
+set -e
 
 END_TIME=$(date +%s)
 ELAPSED=$((END_TIME - START_TIME))
@@ -224,8 +206,8 @@ if [ "$KEEP_DB" = false ]; then
     if [ "$QUIET" = false ]; then
         echo "Cleaning up scratch PostgreSQL databases..."
     fi
-    drop_test_databases
-    rm -rf "$AGENT_DB_DIR"
+    postgres_test_env_cleanup
+    rm -rf "$AGENT_RUN_DIR"
 fi
 
 exit $EXIT_CODE

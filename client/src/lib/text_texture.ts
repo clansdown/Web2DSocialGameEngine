@@ -42,7 +42,7 @@ export function texture_min_height(textures: UITexture[]): number {
  *
  * @param texture - Candidate texture
  * @param panel_width - Rendered panel width
- * @param panel_height - Rendered panel height
+ * @param panel_height - Candidate's resulting panel height
  * @returns Lower is better
  */
 function texture_score(texture: UITexture, panel_width: number, panel_height: number): number {
@@ -54,44 +54,139 @@ function texture_score(texture: UITexture, panel_width: number, panel_height: nu
 }
 
 /**
- * Selects the texture whose native aspect ratio best fills the rendered panel.
- * A small hysteresis keeps the current texture stable across resize steps.
+ * Returns true when two textures reference the same served image. Comparing by
+ * URL keeps hysteresis stable across Svelte state-proxy object identities.
+ *
+ * @param left - First texture
+ * @param right - Second texture
+ * @returns True when both are present and have the same URL
+ */
+function same_texture(left: UITexture | null, right: UITexture | null): boolean {
+  return !!left && !!right && left.url === right.url;
+}
+
+/**
+ * Computes the outer panel height a candidate texture would produce for the
+ * given content. This is the stable input to texture selection: it depends only
+ * on the content size, panel width, texture constants, and configured padding,
+ * never on the currently applied panel height.
+ *
+ * @param texture - Candidate texture
+ * @param panel_width - Rendered panel width
+ * @param content_height - Height of the text content, excluding padding
+ * @param base_padding_vertical - Component padding_vertical_px
+ * @param base_padding_horizontal - Component padding_horizontal_px
+ * @param min_panel_height - Minimum panel height from the smallest texture
+ * @returns Actual outer panel height for that texture
+ */
+function texture_target_height(
+  texture: UITexture,
+  panel_width: number,
+  content_height: number,
+  base_padding_vertical: number,
+  base_padding_horizontal: number,
+  min_panel_height: number
+): number {
+  const candidate_layout: TextureLayout = compute_texture_layout(
+    texture,
+    panel_width,
+    content_height,
+    base_padding_vertical,
+    base_padding_horizontal,
+    min_panel_height
+  );
+  return Math.max(0, content_height) + 2 * (
+    candidate_layout.border_vertical_px + candidate_layout.padding_vertical_px
+  );
+}
+
+/**
+ * Selects the texture whose own resulting panel aspect best matches its native
+ * aspect. Each candidate is scored against the height its layout would produce,
+ * which avoids the selected-texture -> height -> selected-texture feedback
+ * loop. A small hysteresis keeps the current texture stable across resize steps.
  *
  * @param textures - Textures returned by getUITextures
  * @param panel_width - Rendered panel width
- * @param panel_height - Rendered panel height
- * @param current - Previously selected texture, if any
- * @returns Best texture, or null when the list is empty
+ * @param content_height - Height of the text content, excluding padding
+ * @param base_padding_vertical - Component padding_vertical_px
+ * @param base_padding_horizontal - Component padding_horizontal_px
+ * @param min_panel_height - Minimum panel height from the smallest texture
+ * @param current_texture - Previously selected texture, if any
+ * @returns Best texture, or null when the list is empty or width is unmeasured
  */
-export function select_texture(
+export function select_texture_for_content(
   textures: UITexture[],
   panel_width: number,
-  panel_height: number,
-  current: UITexture | null
+  content_height: number,
+  base_padding_vertical: number,
+  base_padding_horizontal: number,
+  min_panel_height: number,
+  current_texture: UITexture | null
 ): UITexture | null {
-  if (textures.length === 0) return null;
-  if (panel_width <= 0 || panel_height <= 0) {
-    return current && textures.includes(current) ? current : textures[0];
-  }
+  if (textures.length === 0 || panel_width <= 0) return null;
 
-  let best: UITexture = textures[0];
+  let best_texture: UITexture = textures[0];
   let best_score: number = Infinity;
   for (const texture of textures) {
-    const score: number = texture_score(texture, panel_width, panel_height);
+    const target_height: number = texture_target_height(
+      texture,
+      panel_width,
+      content_height,
+      base_padding_vertical,
+      base_padding_horizontal,
+      min_panel_height
+    );
+    const score: number = texture_score(texture, panel_width, target_height);
     if (score < best_score) {
-      best = texture;
+      best_texture = texture;
       best_score = score;
     }
   }
 
-  if (current && textures.includes(current)) {
-    const current_score: number = texture_score(current, panel_width, panel_height);
+  const current_match: UITexture | null = current_texture
+    ? textures.find((texture: UITexture): boolean => same_texture(texture, current_texture)) ?? null
+    : null;
+  if (current_match) {
+    const current_target_height: number = texture_target_height(
+      current_match,
+      panel_width,
+      content_height,
+      base_padding_vertical,
+      base_padding_horizontal,
+      min_panel_height
+    );
+    const current_score: number = texture_score(
+      current_match,
+      panel_width,
+      current_target_height
+    );
     if (current_score <= best_score + TEXTURE_CURRENT_HYSTERESIS) {
-      return current;
+      return current_match;
     }
   }
 
-  return best;
+  return best_texture;
+}
+
+/**
+ * Compares two resolved texture layouts field by field. The measuring effect
+ * uses this to avoid writing a fresh layout object when nothing changed.
+ *
+ * @param left - Previously applied layout, or null
+ * @param right - Newly computed layout
+ * @returns True when every layout field is identical
+ */
+export function texture_layouts_equal(left: TextureLayout | null, right: TextureLayout): boolean {
+  if (!left) return false;
+  return (
+    left.slice_vertical_px === right.slice_vertical_px &&
+    left.slice_horizontal_px === right.slice_horizontal_px &&
+    left.border_vertical_px === right.border_vertical_px &&
+    left.border_horizontal_px === right.border_horizontal_px &&
+    left.padding_vertical_px === right.padding_vertical_px &&
+    left.padding_horizontal_px === right.padding_horizontal_px
+  );
 }
 
 /**

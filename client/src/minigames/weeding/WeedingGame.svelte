@@ -5,7 +5,7 @@
   import type { EndMiniGameResponse } from '../../lib/api';
   import { loadTexts, apply_text_tokens } from '../../lib/text';
   import { fit_canvas_contain, observe_viewport_changes } from '../../lib/canvas_fit';
-  import { install_rotated_input_bridge } from '../../lib/rotated_input';
+  import { install_rotated_input_transform } from '../../lib/rotated_input';
   import {
     MINI_GAME_VIEWPORT_CONTEXT,
     type mini_game_viewport_context
@@ -17,7 +17,8 @@
   import {
     initEngine, setBoardSize, afterDraw, getMousePosition,
     gameObjects, setBackground,
-    setBackgroundMode, setCameraFollowsPlayer, destroyEngine
+    setBackgroundMode, setCameraFollowsPlayer, destroyEngine,
+    setViewportAutoResize
   } from '../../../SimpleGame/ui/src/lib/simplegame';
   import {
     GameObject, GameObjectClass, createText
@@ -407,6 +408,9 @@
   }
 
   function setupWeedingGame(): void {
+    // Weeding renders to a fixed virtual canvas that is scaled with CSS.
+    // Keep the engine from replacing its backing size with the CSS size.
+    setViewportAutoResize(false);
     setBoardSize(BW, BH);
     setCameraFollowsPlayer(false);
 
@@ -1300,7 +1304,7 @@
 
   $effect(() => {
     if (!shell_element || !rotated_view || !canvas) return;
-    return install_rotated_input_bridge(canvas, shell_element);
+    return install_rotated_input_transform(canvas, shell_element);
   });
 
   onMount(() => {

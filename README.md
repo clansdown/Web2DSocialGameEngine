@@ -1,6 +1,9 @@
 # Web2DSocialGameEngine
 A game engine for Social 2D (Sprite-based) Web games. Client + Server.
 
+See [`DIRECTORIES.md`](DIRECTORIES.md) for the source, content, and runtime
+directory layout, including the separate `dev_run/` and `test_run/` databases.
+
 ## Safety and age visibility
 
 Player-authored content is projected per viewer. Minors receive only
@@ -17,6 +20,11 @@ git clone https://github.com/clansdown/SimpleGame.git SimpleGame
 ```
 
 The SimpleGame repository is required for this project to function correctly.
+
+For local development, Docker with the Compose plugin is required. The local
+dev server and smoke tests use separate PostgreSQL containers; see
+[`DIRECTORIES.md`](DIRECTORIES.md). Smoke tests additionally require a host
+`psql` client (`postgresql-client`).
 
 ## Configuration Files & Docker Deployment
 
@@ -292,18 +300,26 @@ Legacy `build_release.sh` still builds and pushes using `.docker_repo` and
 
 ### Interactive Testing (Human)
 
-Use `local_test_server.sh` for development and manual testing:
+Use `run_server.sh` for development and manual testing:
 
 ```bash
-./local_test_server.sh                # Start on default port 2290
-./local_test_server.sh -p 8080       # Use custom port
-./local_test_server.sh -d            # Debug mode with request logs
+./run_server.sh                # Start on default port 2290
+./run_server.sh --port 8080    # Use a custom port
 ```
 
-The server runs in the background with status info shown. It runs from `test_run/` (so its databases live there, not in `game/`) and reads assets from `game/` via `--content`. Kill it with:
+`run_server.sh` starts the isolated dev PostgreSQL cluster in `dev_run/postgres`
+(host port 5433) if needed, runs the server from `dev_run/` so uploads stay out
+of `game/`, and reads assets from `game/` via `--content`. Stop it with Ctrl-C.
+
+Start the client dev server separately:
+
 ```bash
-kill $(cat test_run/.local_test_server.pid)
+cd client
+npm run dev
 ```
+
+The client is served at `http://localhost:8120` and proxies `/api`, `/images`,
+and `/ws` to `http://localhost:2290`.
 
 ### Automated Testing (Agent)
 
@@ -325,7 +341,7 @@ Use `agent_test_server.sh` for CI/CD and automated agent testing:
 | `-l FILE` | Write logs to file |
 | `-q` | Quiet mode |
 | `-v` | Verbose mode |
-| `--keep-db` | Keep `test_run/agent/` directory after exit |
+| `--keep-db` | Keep scratch databases and the `test_run/agent/` run directory after exit |
 
 **Exit Codes:**
 - `0` - Success
@@ -333,7 +349,7 @@ Use `agent_test_server.sh` for CI/CD and automated agent testing:
 - `2` - Server startup failed
 
 **Behavior:**
-- Runs from `test_run/agent/` (databases live there; wiped and recreated each run) and reads assets from `game/` via `--content`
+- Runs from `test_run/agent/` (wiped and recreated each run), uses the isolated test PostgreSQL cluster in `test_run/postgres`, and reads assets from `game/` via `--content`
 - Runs on port 3290 (or custom with `-p`)
 - Exits immediately when limit reached (cuts off in-flight requests)
 - Displays summary: total requests, time elapsed

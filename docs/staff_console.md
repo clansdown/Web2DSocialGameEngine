@@ -13,6 +13,7 @@ are authoritative; the UI only hides tools.
 - `#/activity/staff/audit/<action_id>`
 - `#/activity/staff/unstick`
 - `#/activity/staff/chats`
+- `#/activity/staff/invitations`
 
 ## Sections
 
@@ -32,6 +33,11 @@ are authoritative; the UI only hides tools.
   and reversible with a snapshot.
 - **Chats** — search any chat by name/id and open it. `chat.moderate_any` also
   enables the Chat screen's moderation-mode toggle.
+- **Invitations** — visible with `registration.invites.view`. Lists every
+  individual invitation code; in `global_code` mode it also shows the active
+  shared global code (with a copy button). Generating codes requires
+  `registration.invites.generate` and is available only in `invite_only` mode;
+  revoking unused codes requires `registration.invites.revoke`.
 
 ## Grant / revoke
 

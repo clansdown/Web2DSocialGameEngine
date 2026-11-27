@@ -1,20 +1,69 @@
 # PostgreSQL operations
 
-## Local cluster
+## Local clusters
+
+Development and smoke tests use separate Docker PostgreSQL clusters. They never
+share a project, data directory, host port, or env file. See `DIRECTORIES.md`.
+
+### Development (port 5433)
+
+`./run_server.sh` starts and uses the dev cluster automatically:
 
 ```bash
-export RAVENEST_DB_PASSWORD=ravenest_dev
-docker compose up -d postgres
+./run_server.sh
 ```
 
-The compose `postgres` service creates `ravenest_game` via `POSTGRES_DB`;
-`tools/postgres/init/01-databases.sql` also creates all four databases
-idempotently. In the local compose service the script is mounted under
-`/docker-entrypoint-initdb.d`, so it only runs on the first boot of an empty
-data volume. Production bundled mode runs the same SQL through the `db-init`
-one-shot service on every `up`.
+- Data: `dev_run/postgres`
+- Env: `dev_run/dev_postgres.env`
+- Compose project: `ravenest-dev-postgres`
+- Host port: `127.0.0.1:5433`
 
-For a host-managed or pre-existing cluster instead of the compose service:
+Manage it directly:
+
+```bash
+bash tools/dev_postgres.sh up
+bash tools/dev_postgres.sh status
+bash tools/dev_postgres.sh down
+bash tools/dev_postgres.sh reset --yes
+```
+
+### Smoke tests (port 5432)
+
+Smoke tests start and use the isolated test cluster automatically:
+
+```bash
+./tools/chat_smoke.sh
+```
+
+- Data: `test_run/postgres`
+- Env: `test_run/test_postgres.env`
+- Compose project: `ravenest-test-postgres`
+- Host port: `127.0.0.1:5432`
+
+Manage it directly:
+
+```bash
+bash tools/test_postgres.sh up
+bash tools/test_postgres.sh status
+bash tools/test_postgres.sh down
+bash tools/test_postgres.sh reset --yes
+```
+
+External/CI databases remain supported. Set `RAVENEST_TEST_ADMIN_URL`, a
+non-local `RAVENEST_DB_HOST`, or `RAVENEST_TEST_USE_DOCKER=0`; the smoke-test
+helper will not start Docker in those cases.
+
+The legacy root `docker-compose.yml` `postgres` service also publishes port
+5432. It is not the isolated test cluster; do not run both at the same time.
+
+Smoke tests require a host `psql` client (`postgresql-client`) because several
+test harnesses invoke `psql` directly. The test PostgreSQL container includes
+`psql`, but the host command is what the test scripts call.
+
+### Host-managed or pre-existing cluster
+
+For a host-managed or pre-existing cluster instead of the dedicated Docker
+clusters:
 
 ```bash
 export RAVENEST_DB_PASSWORD=ravenest_dev
@@ -22,6 +71,10 @@ export RAVENEST_DB_PASSWORD=ravenest_dev
 ```
 
 `tools/init_postgres.sh` creates the `ravenest` role and the four databases. It is idempotent.
+
+A host-managed cluster normally uses port 5432 as well. When using it for smoke
+tests, set `RAVENEST_TEST_USE_DOCKER=0`; do not also start the Docker test
+cluster on 5432.
 
 Set the URLs (see `ravenest.env.example`):
 
@@ -32,15 +85,17 @@ export RAVENEST_STAFF_DB_URL=postgresql://ravenest:ravenest_dev@127.0.0.1:5432/r
 export RAVENEST_INVITES_DB_URL=postgresql://ravenest:ravenest_dev@127.0.0.1:5432/ravenest_invites
 ```
 
-Those are correct for `./run_server.sh` on the host. The local compose `app`
-profile uses the service name instead:
+Use `RAVENEST_SKIP_DEV_POSTGRES=1 ./run_server.sh` to make the dev server use
+those externally supplied URLs instead of the local Docker cluster. The local
+compose `app` profile uses the service name instead:
 
 ```bash
 RAVENEST_DB_PASSWORD=ravenest_dev docker compose --profile app up -d --build
 ```
 
 Inside that network the DB URLs are
-`postgresql://ravenest:<password>@postgres:5432/ravenest_*`.
+`postgresql://ravenest:<password>@postgres:5432/ravenest_*`. The `app` profile
+also binds port 2290, so do not run it alongside `run_server.sh`.
 
 ## Production topologies
 

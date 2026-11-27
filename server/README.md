@@ -530,7 +530,7 @@ The full baseline DDL is in `server/db/BaselineSchema.hpp`. Per-table docs:
 - **Databases**: PostgreSQL holds `ravenest_game`, `ravenest_chat`, `ravenest_staff`, and `ravenest_invites`. Connection URLs come from `RAVENEST_{GAME,CHAT,STAFF,INVITES}_DB_URL`. The baseline schema is applied on startup; `invites` is opened lazily only when registration mode is `global_code`/`invite_only` and an invite operation actually runs (see `docs/registration.md`).
 - **Assets**: `config/`, `images/`, and `text/` are read from the `--content` root
   (default: the working directory). Pointing `--content` at `game/` while running
-  from a scratch directory keeps databases and uploads out of the synced assets
+  from a scratch directory keeps uploads out of the synced assets
   (see `run_server.sh`).
 - **Publishing / tunnel setup**: See `docs/publishing.md`
 

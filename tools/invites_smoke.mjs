@@ -196,6 +196,16 @@ async function scenario_invite_only() {
     'staff lacks registration.invites.revoke'
   );
 
+  const invite_list = data(await post('staffListInvitationCodes', {
+    auth: staff.auth,
+    limit: 5
+  }));
+  expect(invite_list.mode === 'invite_only', `expected invite_only list, got ${JSON.stringify(invite_list)}`);
+  expect(
+    invite_list.global_code === '',
+    `invite_only must not expose a global code: ${JSON.stringify(invite_list)}`
+  );
+
   const staff_code = data(await post('staffCreateInvitationCode', {
     auth: staff.auth,
     reason: 'smoke invite'
@@ -323,6 +333,16 @@ async function scenario_global() {
   const config = data(await post('getRegistrationConfig', {}));
   expect(config.mode === 'global_code', `expected global_code, got ${JSON.stringify(config)}`);
   expect(config.invite_required === true, 'global_code must require a code');
+
+  const invite_list = data(await post('staffListInvitationCodes', {
+    auth: staff.auth,
+    limit: 5
+  }));
+  expect(invite_list.mode === 'global_code', `expected global_code list, got ${JSON.stringify(invite_list)}`);
+  expect(
+    invite_list.global_code === global_code,
+    `staff list did not expose the active global code: ${JSON.stringify(invite_list)}`
+  );
 
   const wrong = await attempt_create('wrongglobal', 'NOT-THE-CODE');
   expect(

@@ -7,8 +7,8 @@
   import { get } from 'svelte/store';
   import { tdRound } from '../../lib/game_state';
   import { loadTexts, apply_text_tokens } from '../../lib/text';
-  import { fit_canvas_contain, observe_viewport_changes } from '../../lib/canvas_fit';
-  import { install_rotated_input_bridge } from '../../lib/rotated_input';
+  import { fit_canvas_contain, observe_viewport_changes, type canvas_fit } from '../../lib/canvas_fit';
+  import { install_rotated_input_transform, physical_to_canvas_point } from '../../lib/rotated_input';
   import {
     MINI_GAME_VIEWPORT_CONTEXT,
     type mini_game_viewport_context
@@ -29,8 +29,9 @@
     destroyEngine, gameObjects, enemies, projectiles,
     boardWidth, boardHeight, getMousePosition, debug,
     everyTick, onMouseClick, whenLoaded, afterDraw,
-    onPause, onResume, togglePause, isPaused,
-    setBackground, setBackgroundMode
+    onPause, onResume, togglePause, isPaused, redraw,
+    setBackground, setBackgroundMode,
+    setViewportAutoResize
   } from '../../../SimpleGame/ui/src/lib/simplegame';
 
   import {
@@ -40,7 +41,12 @@
   } from '../../../SimpleGame/ui/src/lib/gameclasses';
 
   import { ButtonClass, Button } from '../../../SimpleGame/ui/src/lib/button';
-  import { Column } from '../../../SimpleGame/ui/src/lib/layout';
+  import {
+    Column,
+    Row,
+    LayoutJustify,
+    LayoutAlign
+  } from '../../../SimpleGame/ui/src/lib/layout';
   // import { Overlay } removed — placement overlay replaced by range indicator
   import type { Position2D } from '../../../SimpleGame/ui/src/lib/util';
   import type { InlineImageMap } from '../../../SimpleGame/ui/src/lib/gameclasses';
@@ -124,6 +130,7 @@
   }
 
   let nextPlacementId = 0;
+  let player_piece_z_index = 0;
   let activeCombatants: PlayerCombatant[] = [];
   let spawnQueue: { enemyId: string; remaining: number; intervalMs: number; initialDelayMs: number; spawnTimer: number; initialDone: boolean; spawnPointId?: string }[] = [];
   let allSpawned = false;
@@ -155,16 +162,32 @@
   let mapMetadata: BoardMapData | null = null;
 
   // UI objects
+  interface applied_canvas_fit {
+    width: number;
+    height: number;
+  }
+
+  let top_hud_row: Row | null = null;
+  let copper_hud_column: Column | null = null;
   let resourceText: Text | null = null;
   let livesText: Text | null = null;
   let rpButton: Button | null = null;
-  let fbtn: any = null;
+  let menu_button: Button | null = null;
+  let fbtn: Button | null = null;
+  let sidebar_separator_text: Text | null = null;
   let ringButtons: Button[] = [];
   let showingTargetingPicker = false;
   /** CSS pixels per board unit, updated whenever the canvas is fitted. */
   let board_css_scale = 1;
+  /** Canvas CSS size last written by fit_canvas_to_viewport. */
+  let last_applied_canvas_fit: applied_canvas_fit | null = null;
   /** Cached copper icon so repeated gold updates never reload the image. */
   let copper_coin_image: HTMLImageElement | null = null;
+  /** Cached measurement context for HUD button labels at the Button draw font. */
+  let hud_button_measure_canvas: HTMLCanvasElement | null = null;
+  let hud_button_measure_context: CanvasRenderingContext2D | null = null;
+  /** Removes the native placement listeners installed during engine setup. */
+  let native_placement_cleanup: (() => void) | null = null;
   /** Configured suffix used by the picker cost badges (e.g. c for copper). */
   let td_cost_suffix = '';
 
@@ -188,7 +211,15 @@
   let unitColumn: Column | null = null;
   let sidebar_visible = true;
 
-  function setSidebarVisible(visible: boolean) {
+  /**
+   * Shows or hides the picker/forfeit controls directly.
+   *
+   * Frequent visibility path: changing visibility never applies legibility
+   * minimums or reflows the HUD.
+   *
+   * @param visible - Whether the sidebar controls are shown
+   */
+  function set_sidebar_visible(visible: boolean): void {
     sidebar_visible = visible;
     if (towerColumn) towerColumn.setVisible(visible);
     if (unitColumn) unitColumn.setVisible(visible);
@@ -211,15 +242,56 @@
   const BH = 780;
   /** Sidebar overlay width in board units. Sidebar overlays the right edge of the board at x ∈ [BW - SIDEBAR_W, BW]. */
   const SIDEBAR_W = 420;
+  /** Top HUD strip: inset from the sidebar edges, then a fixed top margin. */
+  const HUD_SIDE_MARGIN = 20;
+  const HUD_TOP_MARGIN = 16;
+  const HUD_GUTTER = 8;
+  const HUD_LINE_GAP = 8;
+  const HUD_ROW_WIDTH = SIDEBAR_W - HUD_SIDE_MARGIN * 2;
+  const COPPER_COLUMN_GUTTER = 4;
+  /** Picker columns keep their existing first-row position unless the HUD wraps below it. */
+  const PICKER_TOP_BASE = 100;
+  const PICKER_TOP_GAP = 12;
   /** Base board-unit sizes for the copper readout. */
   const BASE_COPPER_TEXT_UNITS = 22;
   const BASE_COIN_UNITS = 20;
+  const BASE_LIVES_TEXT_UNITS = 20;
+  /**
+   * Four-digit reserve for the copper readout. This is a layout minimum, not a
+   * display cap: SimpleGame still measures the actual gold content.
+   */
+  const RESOURCE_TEXT_MIN_WIDTH_SAMPLE = '{img:copper} 0000';
   /** Minimum rendered CSS-pixel sizes so the readout stays legible when the canvas scales down. */
   const MIN_COPPER_TEXT_CSS_PX = 20;
   const MIN_COIN_CSS_PX = 22;
+  const MIN_LIVES_TEXT_CSS_PX = 20;
   const PIECE_COST_FONT_SIZE = 18;
   const PIECE_COST_INSET_X = 12;
   const PIECE_COST_INSET_Y = 10;
+  const HAMBURGER_ICON_CANVAS_SIZE = 36;
+  const HAMBURGER_ICON_DISPLAY_SIZE = 22;
+  const HAMBURGER_BAR_Y = [9, 18, 27];
+  const HAMBURGER_BAR_X_START = 7;
+  const HAMBURGER_BAR_X_END = 29;
+  /** Base menu button size in board units. */
+  const BASE_MENU_BUTTON_WIDTH_UNITS = 40;
+  const BASE_MENU_BUTTON_HEIGHT_UNITS = 38;
+  /** Minimum physical sizes for HUD buttons and the menu icon. */
+  const MIN_HAMBURGER_ICON_CSS_PX = 22;
+  const MIN_HUD_BUTTON_CSS_PX = 40;
+  const MENU_ICON_PADDING_CSS_PX = 8;
+  /** Layout caps keep HUD controls from growing past the sidebar/board. */
+  const MAX_MENU_BUTTON_WIDTH_UNITS = HUD_ROW_WIDTH;
+  const MAX_MENU_BUTTON_HEIGHT_UNITS =
+    PICKER_TOP_BASE - HUD_TOP_MARGIN - PICKER_TOP_GAP;
+  const MAX_HUD_BUTTON_WIDTH_UNITS = HUD_ROW_WIDTH;
+  const MAX_HUD_BUTTON_HEIGHT_UNITS = MAX_MENU_BUTTON_HEIGHT_UNITS;
+  const ROUND_BUTTON_HORIZONTAL_PADDING_UNITS = 24;
+  const ROUND_BUTTON_BASE_HEIGHT_UNITS = 38;
+  /** Minimum total vertical breathing room inside the menu button. */
+  const MENU_ICON_MIN_INNER_PADDING_UNITS = 4;
+  /** Draw offset for interactive board overlays above player pieces and enemies. */
+  const UI_OVERLAY_Z_OFFSET = 100;
 
   const TD_TEXT_IDS: string[] = [
     'ui_td_round_start',
@@ -281,13 +353,54 @@
   }
 
   /**
+   * Builds a transparent three-bar hamburger icon with a dark outer stroke and
+   * a light inner stroke. The two-tone bars stay visible over both light and
+   * dark backgrounds.
+   *
+   * @returns PNG data URL, or an empty string when a 2D context is unavailable
+   */
+  function create_hamburger_menu_icon_data_url(): string {
+    const icon = document.createElement('canvas');
+    icon.width = HAMBURGER_ICON_CANVAS_SIZE;
+    icon.height = HAMBURGER_ICON_CANVAS_SIZE;
+    const ctx = icon.getContext('2d');
+    if (!ctx) return '';
+
+    ctx.lineCap = 'round';
+
+    // Dark halo.
+    ctx.strokeStyle = '#111111';
+    ctx.lineWidth = 7;
+    for (const y of HAMBURGER_BAR_Y) {
+      ctx.beginPath();
+      ctx.moveTo(HAMBURGER_BAR_X_START, y);
+      ctx.lineTo(HAMBURGER_BAR_X_END, y);
+      ctx.stroke();
+    }
+
+    // Light core.
+    ctx.strokeStyle = '#f8f9fa';
+    ctx.lineWidth = 3;
+    for (const y of HAMBURGER_BAR_Y) {
+      ctx.beginPath();
+      ctx.moveTo(HAMBURGER_BAR_X_START, y);
+      ctx.lineTo(HAMBURGER_BAR_X_END, y);
+      ctx.stroke();
+    }
+
+    return icon.toDataURL('image/png');
+  }
+
+  /**
    * Sizes the copper readout so it has a minimum physical (CSS-pixel) size
    * regardless of how much the canvas is scaled down.
    *
-   * The board itself remains in board units; only the readout text and its
-   * inline coin icon are converted back from the desired CSS size.
+   * Rare legibility pass only: call this when the canvas HTML element's
+   * displayed size changes, never from a content update. The four-digit
+   * sample reserves enough width for normal gold values while leaving actual
+   * width to SimpleGame's text measurement.
    */
-  function update_resource_display_metrics(): void {
+  function apply_copper_legibility_minimums(): void {
     if (!resourceText) return;
     const scale = board_css_scale > 0 ? board_css_scale : 1;
     const text_units = Math.max(
@@ -299,21 +412,268 @@
       MIN_COIN_CSS_PX / scale
     );
 
-    resourceText.size = text_units;
+    resourceText.setSize(text_units);
     const coin = resourceText.inlineImages?.copper;
     if (coin) {
       coin.width = coin_units;
       coin.height = coin_units;
+      resourceText.invalidateLayout();
+    }
+    resourceText.setLayoutMinWidthSample(RESOURCE_TEXT_MIN_WIDTH_SAMPLE);
+  }
+
+  /**
+   * Enforces a minimum physical font size for the lives readout.
+   *
+   * Lives text is creation-only; this never creates, removes, or reserves
+   * width for the readout. Rare legibility pass only.
+   */
+  function apply_lives_legibility_minimums(): void {
+    if (!livesText) return;
+    const scale = board_css_scale > 0 ? board_css_scale : 1;
+    livesText.setSize(
+      Math.max(BASE_LIVES_TEXT_UNITS, MIN_LIVES_TEXT_CSS_PX / scale)
+    );
+  }
+
+  /**
+   * Measures a HUD button label at the font used by `Button.draw()`.
+   *
+   * @param label - Button label
+   * @returns Label width in board units
+   */
+  function measure_button_label_units(label: string): number {
+    if (!hud_button_measure_canvas) {
+      hud_button_measure_canvas = document.createElement('canvas');
+    }
+    if (!hud_button_measure_context) {
+      hud_button_measure_context =
+        hud_button_measure_canvas.getContext('2d');
+    }
+    if (!hud_button_measure_context) {
+      return label.length * 8;
+    }
+    hud_button_measure_context.font = '16px Arial';
+    return Math.ceil(
+      hud_button_measure_context.measureText(label).width
+    );
+  }
+
+  /**
+   * Sizes the hamburger menu so its icon and tap target retain a minimum
+   * physical size when the canvas is scaled down, bounded by the sidebar.
+   *
+   * Rare legibility pass only: applies minimums and invalidates the row; it
+   * never changes button content.
+   */
+  function apply_menu_button_legibility_minimums(): void {
+    if (!menu_button) return;
+
+    const scale = board_css_scale > 0 ? board_css_scale : 1;
+    const icon_units = Math.max(
+      HAMBURGER_ICON_DISPLAY_SIZE,
+      MIN_HAMBURGER_ICON_CSS_PX / scale
+    );
+    const padding_units = MENU_ICON_PADDING_CSS_PX / scale;
+    const minimum_button_units = MIN_HUD_BUTTON_CSS_PX / scale;
+    const icon_fit_units = icon_units + padding_units * 2;
+
+    const desired_width = Math.max(
+      BASE_MENU_BUTTON_WIDTH_UNITS,
+      minimum_button_units,
+      icon_fit_units
+    );
+    const width_units = Math.min(
+      desired_width,
+      MAX_MENU_BUTTON_WIDTH_UNITS
+    );
+    const desired_height = Math.max(
+      BASE_MENU_BUTTON_HEIGHT_UNITS,
+      minimum_button_units,
+      icon_fit_units
+    );
+    const height_units = Math.min(
+      desired_height,
+      MAX_MENU_BUTTON_HEIGHT_UNITS
+    );
+
+    // Keep the icon inside the resolved button box. At extreme scales the
+    // CSS minimum loses to the layout cap; the control may become small.
+    const maximum_icon_by_width = Math.max(
+      1,
+      width_units - padding_units * 2
+    );
+    const maximum_icon_by_height = Math.max(
+      1,
+      height_units - MENU_ICON_MIN_INNER_PADDING_UNITS
+    );
+    const final_icon_units = Math.min(
+      icon_units,
+      maximum_icon_by_width,
+      maximum_icon_by_height
+    );
+
+    menu_button.width = width_units;
+    menu_button.height = height_units;
+    menu_button.hitboxWidth = width_units;
+    menu_button.hitboxHeight = height_units;
+    menu_button.iconWidth = final_icon_units;
+    menu_button.iconHeight = final_icon_units;
+    menu_button.iconPadding = padding_units;
+    top_hud_row?.invalidateLayout();
+  }
+
+  /**
+   * Reserves a stable minimum footprint for the round/pause button.
+   *
+   * The sample set covers the current start label, Pause, Resume, and a
+   * two-digit localized round-start label. Label changes are content-only and
+   * reuse the footprint established here.
+   *
+   * Current Button retains fixed dimensions after construction, so this pass
+   * sets them explicitly. That is treated as an engine implementation detail,
+   * not as a content lifecycle.
+   */
+  function apply_round_button_legibility_minimums(): void {
+    if (!rpButton) return;
+
+    const scale = board_css_scale > 0 ? board_css_scale : 1;
+    const label_samples = [
+      rpButton.text,
+      text('ui_pause'),
+      text('ui_resume'),
+      format_text('ui_td_round_start', { current: '99', total: '99' })
+    ];
+    const label_width_units = Math.max(
+      ...label_samples.map(measure_button_label_units)
+    );
+    const desired_width = Math.max(
+      label_width_units + ROUND_BUTTON_HORIZONTAL_PADDING_UNITS,
+      MIN_HUD_BUTTON_CSS_PX / scale
+    );
+    const width_units = Math.min(
+      desired_width,
+      MAX_HUD_BUTTON_WIDTH_UNITS
+    );
+    const desired_height = Math.max(
+      ROUND_BUTTON_BASE_HEIGHT_UNITS,
+      MIN_HUD_BUTTON_CSS_PX / scale
+    );
+    const height_units = Math.min(
+      desired_height,
+      MAX_HUD_BUTTON_HEIGHT_UNITS
+    );
+
+    rpButton.width = width_units;
+    rpButton.height = height_units;
+    rpButton.hitboxWidth = width_units;
+    rpButton.hitboxHeight = height_units;
+    top_hud_row?.invalidateLayout();
+  }
+
+  /**
+   * Creates the top HUD hierarchy once the readout, menu, and pause controls
+   * exist.
+   *
+   * The row is bounded to the sidebar width so the copper readout, menu, and
+   * pause controls wrap inside the sidebar instead of spanning the board.
+   */
+  function build_top_hud_hierarchy(): void {
+    if (top_hud_row) return;
+    if (!resourceText || !menu_button || !rpButton) return;
+
+    copper_hud_column = new Column(0, 0);
+    copper_hud_column.setGutter(COPPER_COLUMN_GUTTER);
+    copper_hud_column.setAlign(LayoutAlign.CENTER);
+    copper_hud_column.addChild(resourceText);
+    if (livesText) copper_hud_column.addChild(livesText);
+
+    top_hud_row = new Row(0, 0);
+    top_hud_row.hud = true;
+    top_hud_row.setWidth(HUD_ROW_WIDTH);
+    top_hud_row.setWrap(true);
+    top_hud_row.setGutter(HUD_GUTTER);
+    top_hud_row.setLineGap(HUD_LINE_GAP);
+    top_hud_row.setJustify(LayoutJustify.END);
+    top_hud_row.setAlign(LayoutAlign.CENTER);
+    top_hud_row.addChild(copper_hud_column);
+    top_hud_row.addChild(menu_button);
+    top_hud_row.addChild(rpButton);
+  }
+
+  /**
+   * Positions the picker columns so their first row starts at the supplied
+   * board-unit y coordinate.
+   *
+   * Below roughly 0.25 board CSS scale, the fixed 130-unit picker buttons plus
+   * the measured HUD can exceed the board height. That extreme small-scale case
+   * is accepted rather than clamped into overlapping the HUD.
+   *
+   * @param picker_top_units - Desired top edge of the picker columns
+   */
+  function position_picker_columns_for_canvas_size(
+    picker_top_units: number
+  ): void {
+    if (towerColumn) {
+      towerColumn.layout();
+      towerColumn.y = picker_top_units + towerColumn.height / 2;
+      towerColumn.layout();
+    }
+    if (unitColumn) {
+      unitColumn.layout();
+      unitColumn.y = picker_top_units + unitColumn.height / 2;
+      unitColumn.layout();
     }
   }
 
   /**
-   * Updates the copper readout text and its physical sizing without replacing
-   * the inline image element.
+   * Reflows the top HUD row, anchors it to the sidebar, and moves the picker
+   * columns below it.
+   *
+   * The row height is measured before its vertical anchor is applied. Moving
+   * the row with setLocation keeps its attached children in sync.
+   *
+   * Rare canvas-size pass only.
    */
-  function set_resource_display(): void {
+  function position_top_hud_for_canvas_size(): void {
+    if (!top_hud_row || !copper_hud_column) return;
+
+    top_hud_row.x = BW - SIDEBAR_W / 2;
+    top_hud_row.layout();
+    const row_y = HUD_TOP_MARGIN + top_hud_row.height / 2;
+    top_hud_row.setLocation(top_hud_row.x, row_y);
+
+    const hud_bottom = HUD_TOP_MARGIN + top_hud_row.height;
+    position_picker_columns_for_canvas_size(
+      Math.max(PICKER_TOP_BASE, hud_bottom + PICKER_TOP_GAP)
+    );
+  }
+
+  /**
+   * Applies canvas-size legibility minimums and reflows the HUD.
+   *
+   * This is the only rare legibility pass. Call it at initial HUD setup and
+   * when the canvas HTML element's displayed size changes (including through
+   * orientation). It assumes the top HUD is displayed and never changes
+   * dynamic content text. Content updates call the `set_*_display()` helpers
+   * instead.
+   */
+  function apply_canvas_size_layout(): void {
+    apply_copper_legibility_minimums();
+    apply_lives_legibility_minimums();
+    apply_menu_button_legibility_minimums();
+    apply_round_button_legibility_minimums();
+    position_top_hud_for_canvas_size();
+  }
+
+  /**
+   * Updates the copper readout content directly.
+   *
+   * Frequent content path: does not apply minimums, size the menu or pause
+   * button, lay out the HUD row, or move the picker columns.
+   */
+  function set_copper_display(): void {
     if (!resourceText) return;
-    resourceText.text = `{img:copper} ${currentGold}`;
     if (!resourceText.inlineImages?.copper) {
       resourceText.setInlineImages({
         copper: {
@@ -323,7 +683,33 @@
         }
       });
     }
-    update_resource_display_metrics();
+    resourceText.setText(`{img:copper} ${currentGold}`);
+  }
+
+  /**
+   * Updates the lives readout content directly.
+   *
+   * Frequent content path: does not create, size, or remove the readout.
+   */
+  function set_lives_display(): void {
+    if (!livesText) return;
+    livesText.setText(format_lives_label());
+  }
+
+  /**
+   * Updates the round/pause button label and background colour directly.
+   *
+   * Frequent content path: the rare legibility pass reserves enough width for
+   * every expected label, so changing the label never resizes the button or
+   * reflows the HUD.
+   *
+   * @param label - New localized label
+   * @param color - New button background colour
+   */
+  function set_round_button_display(label: string, color: string): void {
+    if (!rpButton) return;
+    rpButton.setText(label);
+    rpButton.color = color;
   }
 
   /**
@@ -341,6 +727,32 @@
   }
 
   /**
+   * Computes the common draw layer for player-owned towers and soldiers.
+   *
+   * Enemy objects use their hit points as their z-index, so one above the
+   * highest configured enemy HP keeps every player piece on top.
+   *
+   * @param mobs - Level mob configuration
+   * @returns The player-piece z-index
+   */
+  function compute_player_piece_z_index(mobs: Record<string, MobConfig>): number {
+    const highest_enemy_hp = Object.values(mobs).reduce(
+      (highest, mob) => Math.max(highest, mob.hp || 20),
+      0
+    );
+    return highest_enemy_hp + 1;
+  }
+
+  /**
+   * Puts a player-owned tower or soldier on the player draw layer.
+   *
+   * @param obj - Player piece game object
+   */
+  function mark_player_piece(obj: GameObject): void {
+    obj.zIndex = player_piece_z_index;
+  }
+
+  /**
    * Builds the pre-round button label, e.g. `Start 2/4`.
    *
    * @returns Localized start-round label
@@ -354,11 +766,11 @@
 
   /**
    * Sets the round/pause button back to its pre-round state.
+   *
+   * Content-only: reuses the footprint reserved by the rare legibility pass.
    */
   function set_round_start_label(): void {
-    if (!rpButton) return;
-    rpButton.text = format_round_start_label();
-    rpButton.color = '#2D7A2D';
+    set_round_button_display(format_round_start_label(), '#2D7A2D');
   }
 
   /**
@@ -634,16 +1046,106 @@
   }
 
   /**
+   * Returns whether a computed fit matches the canvas CSS size already applied.
+   *
+   * Exact comparison is safe because fit_canvas_contain() derives both
+   * dimensions from integer clientWidth/clientHeight values. If a fractional
+   * shell-size source is introduced later, add an explicit tolerance here.
+   *
+   * @param fit - Newly computed canvas fit
+   * @returns True when the width and height are both unchanged
+   */
+  function canvas_fit_size_matches_last_applied(fit: canvas_fit): boolean {
+    return (
+      last_applied_canvas_fit !== null &&
+      last_applied_canvas_fit.width === fit.width &&
+      last_applied_canvas_fit.height === fit.height
+    );
+  }
+
+  /**
+   * Applies a changed canvas fit and runs the rare HUD legibility pass.
+   *
+   * The fit is recorded after the canvas style and board scale are updated, so
+   * the cache describes the size actually applied. The explicit setup pass in
+   * setupGame() remains independent because a newly built HUD must be sized
+   * even when a fit was already applied.
+   *
+   * @param fit - New canvas fit to apply
+   */
+  function apply_canvas_fit(fit: canvas_fit): void {
+    if (!canvasEl) return;
+    canvasEl.style.width = `${fit.width}px`;
+    canvasEl.style.height = `${fit.height}px`;
+    board_css_scale = fit.width > 0 ? fit.width / BW : 1;
+    last_applied_canvas_fit = { width: fit.width, height: fit.height };
+    apply_canvas_size_layout();
+    if (isPaused()) redraw();
+  }
+
+  /**
    * Fits the canvas inside the current mini-game shell, preserving aspect.
+   *
+   * Viewport observers can fire on non-size events such as visualViewport
+   * scrolling. Returning before any style write or HUD work when the computed
+   * fit is unchanged keeps the rare legibility pass rare.
    */
   function fit_canvas_to_viewport(): void {
     const shell = get(viewport_context.shell);
     if (!shell || !canvasEl) return;
     const fit = fit_canvas_contain(shell.clientWidth, shell.clientHeight, BW / BH);
-    canvasEl.style.width = `${fit.width}px`;
-    canvasEl.style.height = `${fit.height}px`;
-    board_css_scale = fit.width > 0 ? fit.width / BW : 1;
-    update_resource_display_metrics();
+    if (canvas_fit_size_matches_last_applied(fit)) return;
+    apply_canvas_fit(fit);
+  }
+
+  /**
+   * Maps a raw client pointer position into board units for the native
+   * placement listeners.
+   *
+   * The engine's own input path uses the installed transform, but these native
+   * mousedown/mouseup listeners bypass it. Handling the rotated case here keeps
+   * drag-to-place consistent with the engine's pointer mapping.
+   *
+   * @param client_x - Physical viewport x coordinate
+   * @param client_y - Physical viewport y coordinate
+   * @returns Board point, or null when the pointer is outside the canvas
+   */
+  function client_point_to_board(
+    client_x: number,
+    client_y: number
+  ): { x: number; y: number } | null {
+    if (!canvasEl) return null;
+
+    let local: { x: number; y: number } | null;
+    if (rotated_view && shell_element) {
+      local = physical_to_canvas_point(
+        client_x,
+        client_y,
+        shell_element,
+        canvasEl
+      );
+    } else {
+      const rect = canvasEl.getBoundingClientRect();
+      local = { x: client_x - rect.left, y: client_y - rect.top };
+    }
+    if (!local) return null;
+
+    const css_width = canvasEl.clientWidth;
+    const css_height = canvasEl.clientHeight;
+    if (css_width <= 0 || css_height <= 0) return null;
+    if (
+      local.x < 0 ||
+      local.y < 0 ||
+      local.x > css_width ||
+      local.y > css_height
+    ) {
+      return null;
+    }
+
+    return {
+      x: (local.x / css_width) * BW,
+      y: (local.y / css_height) * BH
+    };
   }
 
   // ============================================================
@@ -948,6 +1450,7 @@
     const obj = new GameObject(cls, p.x, p.y);
     obj.direction_x = 0;
     obj.direction_y = 0;
+    mark_player_piece(obj);
     gameObjects.add(obj);
     cls.gameObjects.add(obj);
     const piece = pieceConfigs.get(p.configId);
@@ -993,6 +1496,9 @@
   // ============================================================
 
   function setupGame() {
+    // Tower Defense renders to a fixed virtual canvas and scales it with CSS.
+    // Keep the engine from replacing the backing store with the CSS size.
+    setViewportAutoResize(false);
     if (!tdData) {
       onError(text('ui_td_error_load_session'));
       return;
@@ -1094,6 +1600,7 @@
 
     // Enemy classes
     const mobs = data.mobs?.mobs || {};
+    player_piece_z_index = compute_player_piece_z_index(mobs);
     for (const id of Object.keys(mobs)) {
       const m = mobs[id];
       const cls = new EnemyClass(`m_${id}`, m.image_url || null, m.hp || 20);
@@ -1156,20 +1663,23 @@
       { x: sX + 100, y: 35 },
       copperImages
     );
-    resourceText.size = BASE_COPPER_TEXT_UNITS;
+    resourceText.setSize(BASE_COPPER_TEXT_UNITS);
     resourceText.foreground = '#FFD700';
     resourceText.setTextAlign('center');
     resourceText.setShadow('#000000', 4, 2, 2);
-    update_resource_display_metrics();
+    resourceText.hud = true;
 
     if (currentLives > 1) {
+      // The lives readout is creation-only. Adding lives to a level that
+      // started with none is unsupported.
       livesText = createText(format_lives_label(), { x: sX + 100, y: 65 });
-      livesText.size = 20;
+      livesText.setSize(BASE_LIVES_TEXT_UNITS);
+      livesText.setTextAlign('center');
       livesText.foreground = '#FF6666';
       livesText.setShadow('#000000', 4, 2, 2);
+      livesText.hud = true;
     }
 
-    let bY = 100;
     const sbBtnH = 130;
     const sbBtnW = 180;
     const cX_tower = sX + 300;
@@ -1177,8 +1687,10 @@
 
     const tcol = new Column(sX + 300, 0);
     tcol.setGutter(10);
+    towerColumn = tcol;
     const ucol = new Column(sX + 100, 0);
     ucol.setGutter(10);
+    unitColumn = ucol;
 
     for (const id of Object.keys(allPieces)) {
       const p = allPieces[id];
@@ -1201,16 +1713,16 @@
       btn.clickColor = '#3A3A5A';
       btn.draggable = true;
       btn.dragFollowsCursor = false;
-      btn.zIndex = 100;
+      btn.zIndex = player_piece_z_index + UI_OVERLAY_Z_OFFSET;
       btn.setOnClick(() => {
         setSelectedTower(null);
         console.log('sidebar click:', id);
-        setSidebarVisible(false);
+        set_sidebar_visible(false);
         setTimeout(() => { placementMode = id; }, 1);
       });
       btn.onDragStart(0, () => {
         console.log('dragStart:', id, 'at', btn.x, btn.y);
-        setSidebarVisible(false);
+        set_sidebar_visible(false);
         dragUnitId = id;
         btnOrigin.set(id, { x: btn.x, y: btn.y });
         btn.color = '#3A3A5A';
@@ -1228,15 +1740,16 @@
           if (currentGold >= pcost) tryPlace(pos.x, pos.y, id);
         }
         dragUnitId = null;
-        if (!placementMode && !roundStarted) setSidebarVisible(true);
+        if (!placementMode && !roundStarted) set_sidebar_visible(true);
       });
     }
     refreshButtonStates();
 
-    // Combined round/pause button — standalone, not in any column
+    // Combined round/pause button — lives in the top HUD row.
     const rpCls = new ButtonClass('sb_round');
     rpButton = rpCls.spawn(sX + 320, 35, format_round_start_label(), null, { width: 160, height: 38, color: '#2D7A2D', backgroundOpacity: 0.8 });
     rpButton.zIndex = 100;
+    rpButton.hud = true;
     rpButton.setOnClick(() => {
       setSelectedTower(null);
       if (roundStarted && gameState !== 'won' && gameState !== 'lost') {
@@ -1249,25 +1762,38 @@
     const fbc = new ButtonClass('sb_forfeit');
     fbtn = fbc.spawn(BW - sbBtnW / 2 - 10, BH - 21 - 10, text('ui_td_try_again_later'), null, { width: sbBtnW, height: 42, color: '#7A2D2D', backgroundOpacity: 0.8 });
     fbtn.zIndex = 100;
+    fbtn.hud = true;
     fbtn.setOnClick(() => forfeitGame());
 
-    // Menu toggle button — standalone, next to rpButton
+    // Menu toggle button — placed by the top HUD row.
+    const hamburger_icon = create_hamburger_menu_icon_data_url();
     const menuBtnCls = new ButtonClass('sb_menutoggle');
-    const menuBtn = menuBtnCls.spawn(sX + 200, 35, '☰', null, { width: 30, height: 38, color: '#4A4A6A', backgroundOpacity: 0.8 });
-    menuBtn.zIndex = 100;
-    menuBtn.setOnClick(() => setSidebarVisible(!towerColumn?.visible));
+    menu_button = menuBtnCls.spawn(
+      sX + 200,
+      35,
+      hamburger_icon ? '' : '☰',
+      hamburger_icon || null,
+      {
+        width: BASE_MENU_BUTTON_WIDTH_UNITS,
+        height: BASE_MENU_BUTTON_HEIGHT_UNITS,
+        color: '#4A4A6A',
+        backgroundOpacity: 0.8,
+        iconWidth: HAMBURGER_ICON_DISPLAY_SIZE,
+        iconHeight: HAMBURGER_ICON_DISPLAY_SIZE,
+        foregroundColor: '#f8f9fa'
+      }
+    );
+    menu_button.zIndex = 100;
+    menu_button.hud = true;
+    menu_button.setOnClick(() => set_sidebar_visible(!towerColumn?.visible));
 
-    // Layout columns and adjust so first child top is at Y=100
-    tcol.layout();
-    ucol.layout();
-    tcol.y = 100 + tcol.height / 2;
-    ucol.y = 100 + ucol.height / 2;
-    tcol.layout();
-    ucol.layout();
-    towerColumn = tcol;
-    unitColumn = ucol;
+    // Build the measured top HUD row and place the picker columns below it.
+    build_top_hud_hierarchy();
+    apply_canvas_size_layout();
 
-    createText('───', { x: cX, y: BH - 15 }).foreground = '#444';
+    sidebar_separator_text = createText('───', { x: cX, y: BH - 15 });
+    sidebar_separator_text.foreground = '#444';
+    sidebar_separator_text.hud = true;
 
     // Spawn queue
     const schedule = data.spawn_schedule || [];
@@ -1280,8 +1806,8 @@
       });
     }
 
-    // Game tick (dt is passed at runtime despite the () => void type)
-    (everyTick as unknown as (fn: (dt: number) => void) => void)((dt: number) => {
+    // Game tick.
+    everyTick((dt: number) => {
       if (gameState !== 'battle') return;
       spawnTick(dt);
       combatTick(dt);
@@ -1304,16 +1830,10 @@
 
     // Pause lifecycle callbacks
     onPause(() => {
-      if (rpButton) {
-        rpButton.text = text('ui_resume');
-        rpButton.color = '#7A7A2D';
-      }
+      set_round_button_display(text('ui_resume'), '#7A7A2D');
     });
     onResume(() => {
-      if (rpButton) {
-        rpButton.text = text('ui_pause');
-        rpButton.color = '#555555';
-      }
+      set_round_button_display(text('ui_pause'), '#555555');
     });
 
     // Click handler — placement (click-to-place) + tower selection + selectable targeting + ring buttons
@@ -1323,7 +1843,7 @@
         console.log('board click with placementMode:', placementMode, 'at', x, y);
         tryPlace(x, y, placementMode);
         placementMode = null;
-        setSidebarVisible(!roundStarted);
+        set_sidebar_visible(!roundStarted);
         return;
       }
       // Selectable targeting — if a tower with selectable mode is selected, set its target
@@ -1508,6 +2028,7 @@
       const s = specs[i];
       const bc = new ButtonClass(`ring_${i}`);
       const btn = bc.spawn(startX + i * (btnW + gap), yOff, s.text, null, { width: btnW, height: btnH, color: s.color, backgroundOpacity: 0.8 });
+      btn.zIndex = player_piece_z_index + UI_OVERLAY_Z_OFFSET;
       btn.setDisabled(s.disabled);
       btn.setOnClick(s.action);
       ringButtons.push(btn);
@@ -1539,6 +2060,7 @@
     const obj = new GameObject(cls, x, y - originY);
     obj.direction_x = 0;
     obj.direction_y = 0;
+    mark_player_piece(obj);
     gameObjects.add(obj);
     cls.gameObjects.add(obj);
     const targeting = cfg.default_targeting || 'first';
@@ -1573,7 +2095,7 @@
       });
     }
     currentGold -= cost;
-    set_resource_display();
+    set_copper_display();
     refreshButtonStates();
     dirty = true;
     savePlacements();
@@ -1600,6 +2122,7 @@
     const newObj = new GameObject(newCls, x, y);
     newObj.direction_x = 0;
     newObj.direction_y = 0;
+    mark_player_piece(newObj);
     gameObjects.add(newObj);
     newCls.gameObjects.add(newObj);
 
@@ -1626,7 +2149,7 @@
     const newProjOrigin: { x: number; y: number } = (pieceCfg as any).projectile_origin || { x: 0, y: 0 };
     activeCombatants[newIdx] = { obj: newObj, configId: piece.becomes, level: tower.level + 1, piece: pieceCfg, targeting: tower.targeting, flaskId: tower.flaskId, originY: newOriginY, projOrigin: newProjOrigin, attackPeriod: 1.0 / (pieceCfg.attack_rate || 1.0), placementId: tower.placementId };
     currentGold -= goldCost;
-    set_resource_display();
+    set_copper_display();
     refreshButtonStates();
     setSelectedTower(null);
     dirty = true;
@@ -1641,7 +2164,7 @@
     const cost = tower.piece.cost?.[0]?.gold || 0;
     const refund = Math.floor(cost * 0.8);
     currentGold += refund;
-    set_resource_display();
+    set_copper_display();
     refreshButtonStates();
     tower.obj.destroy();
     activeCombatants.splice(towerIdx, 1);
@@ -1658,8 +2181,8 @@
     if (roundStarted) return;
     roundStarted = true;
     gameState = 'battle';
-    setSidebarVisible(false);
-    if (rpButton) { rpButton.text = text('ui_pause'); rpButton.color = '#555555'; }
+    set_sidebar_visible(false);
+    set_round_button_display(text('ui_pause'), '#555555');
   }
 
   function spawnTick(dt: number) {
@@ -1859,7 +2382,7 @@
     if (eid) leakedEnemies[eid] = (leakedEnemies[eid] || 0) + 1;
     const wp = pathMap.get(ev.pathId);
     console.log(`[TD] enemyEscaped: ${eid} path=${ev.pathId} wpIdx=${ev.waypointIndex}/${wp?.waypoints?.length} at (${e.x.toFixed(0)}, ${e.y.toFixed(0)}) lives=${currentLives}`);
-    if (livesText) livesText.text = format_lives_label();
+    set_lives_display();
     enemies.delete(e);
     e.destroy();
     if (currentLives <= 0) { gameState = 'lost'; endGame(); }
@@ -2032,7 +2555,7 @@
       const mobId = ev.enemyId;
       const mc = mobConfigs.get(mobId);
       currentGold = Math.min(currentGold + (mc?.reward_gold || 1), roundStartGold + 1000);
-      set_resource_display();
+      set_copper_display();
       refreshButtonStates();
       console.log(`[TD] hitEnemy: ${mobId} killed, reward=${mc?.reward_gold || 1}`);
       spawn_death_children(e, ev, mc);
@@ -2088,7 +2611,7 @@
         }
         allSpawned = false;
         roundStarted = false;
-        setSidebarVisible(true);
+        set_sidebar_visible(true);
         // Update lives and gold from server response
         if (ar.lives != null) currentLives = ar.lives;
         if (ar.gold != null) {
@@ -2098,8 +2621,8 @@
         leakedEnemies = {};
         refreshButtonStates();
         // Update UI
-        set_resource_display();
-        if (livesText) livesText.text = format_lives_label();
+        set_copper_display();
+        set_lives_display();
         set_round_start_label();
       } else {
         // No next_round — server already ended the game
@@ -2140,7 +2663,7 @@
     boardDragActive = false;
     dragUnitId = null;
     selectedTower = null;
-    setSidebarVisible(true);
+    set_sidebar_visible(true);
     const score = currentGold + currentLives * 10;
 
     try {
@@ -2237,8 +2760,8 @@
     // Native listeners for board click-and-drag placement
     const onMouseDown = (e: MouseEvent) => {
       if (placementMode && e.button === 0) {
-        const rect = canvasEl.getBoundingClientRect();
-        const bx = BW * ((e.clientX - rect.left) / canvasEl.clientWidth);
+        const point = client_point_to_board(e.clientX, e.clientY);
+        const bx = point?.x ?? BW;
         console.log('native mousedown: placementMode=', placementMode, 'bx=', bx, 'bw=', BW);
         if (bx < BW) boardDragActive = true;
       }
@@ -2247,20 +2770,28 @@
       if (e.button !== 0) return;
       boardDragActive = false;
       if (placementMode) {
-        const rect = canvasEl.getBoundingClientRect();
-        const bx = BW * ((e.clientX - rect.left) / canvasEl.clientWidth);
-        const by = BH * ((e.clientY - rect.top) / canvasEl.clientHeight);
-        console.log('native mouseup: placing', placementMode, 'at', bx, by);
-        if (bx < BW && by >= 0 && by < BH && !isBlocked(bx, by, placementMode!)) {
-          const cfg = pieceConfigs.get(placementMode!);
+        const point = client_point_to_board(e.clientX, e.clientY);
+        console.log('native mouseup: placing', placementMode, 'at', point);
+        if (
+          point &&
+          point.x < BW &&
+          point.y >= 0 &&
+          point.y < BH &&
+          !isBlocked(point.x, point.y, placementMode)
+        ) {
+          const cfg = pieceConfigs.get(placementMode);
           const pcost = cfg?.cost?.[0]?.gold || 0;
-          if (currentGold >= pcost) tryPlace(bx, by, placementMode);
+          if (currentGold >= pcost) tryPlace(point.x, point.y, placementMode);
         }
         placementMode = null;
       }
     };
     canvasEl.addEventListener('mousedown', onMouseDown);
     canvasEl.addEventListener('mouseup', onMouseUp);
+    native_placement_cleanup = () => {
+      canvasEl.removeEventListener('mousedown', onMouseDown);
+      canvasEl.removeEventListener('mouseup', onMouseUp);
+    };
   }
 
   async function init() {
@@ -2315,7 +2846,7 @@
 
   $effect(() => {
     if (!shell_element || !rotated_view || !canvas_ready) return;
-    return install_rotated_input_bridge(canvasEl, shell_element);
+    return install_rotated_input_transform(canvasEl, shell_element);
   });
 
   onMount(() => { init(); });
@@ -2323,6 +2854,8 @@
   onDestroy(() => {
     if (saveInterval) clearInterval(saveInterval);
     savePlacements();
+    native_placement_cleanup?.();
+    native_placement_cleanup = null;
     try { destroyEngine(); } catch (_e) { /* ignore */ }
   });
 </script>

@@ -140,5 +140,6 @@ are credited to the fiefdom only on first completion; replays return
 
 - This endpoint replaces the need for separate `startMiniGame`/`endMiniGame` calls for tower defense
 - The spawn schedule is generated server-side based on difficulty from mini_games.json
+- The client creates the lives readout only when the level begins with more than one life. Adding lives to a level that started with none is unsupported.
 - On game completion, the server automatically handles phase transitions and unlock milestones
 - Map metadata is loaded from `config/tower_defense/maps/` if the level specifies a map

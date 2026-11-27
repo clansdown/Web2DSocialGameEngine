@@ -155,7 +155,12 @@ export async function staffListInvitationCodesRequest(filter: {
   query?: string;
   limit?: number;
   offset?: number;
-}): Promise<{ mode: string; invitations_enabled: boolean; codes: staff_invitation_code_dto[] }> {
+}): Promise<{
+  mode: string;
+  invitations_enabled: boolean;
+  global_code: string;
+  codes: staff_invitation_code_dto[];
+}> {
   return authenticatedPost('staffListInvitationCodes', filter);
 }
 

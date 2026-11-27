@@ -177,14 +177,39 @@ flows. It provides:
 - a forced-landscape mode that stays active when the device is rotated
 
 The shell can be CSS-rotated 90° while the physical browser viewport is still
-portrait. SimpleGame assumes an unrotated canvas, so the games install
-`src/lib/rotated_input.ts` while the shell is rotated. That bridge maps physical
-pointer positions into canvas-local coordinates and dispatches synthetic mouse
-events; `docs/SimpleGame_changes.md` tracks the native transform-aware input
-mapping that would replace it.
+portrait. SimpleGame maps pointer coordinates with the canvas's rendered rect by
+default, so the games install `src/lib/rotated_input.ts` while the shell is
+rotated. That module maps physical pointer positions into canvas-local
+coordinates and installs them through SimpleGame's native `setInputTransform()`
+hook.
 
 The rotate button shows a full label for 15 seconds, then collapses to a small
 tappable icon. It disappears once the game is forced to landscape.
+
+## Tower Defense HUD lifecycle
+
+`src/minigames/tower_defense/TowerDefense.svelte` builds its HUD once and keeps
+two update categories deliberately separate:
+
+- `apply_canvas_size_layout()` is the rare legibility pass. It runs at initial
+  HUD setup and when the canvas HTML element's displayed size changes
+  (including orientation). It applies minimum sizes for the copper readout,
+  lives, menu, and round/pause controls, then positions the top row and picker
+  columns.
+- `set_copper_display()`, `set_lives_display()`,
+  `set_round_button_display()`, and `set_sidebar_visible()` are direct content
+  and visibility updates. They never apply minimums, size controls, or reflow
+  the HUD/pickers.
+
+The copper readout reserves a four-digit minimum-width sample
+(`{img:copper} 0000`) so routine gold changes do not reflow the row. The sample
+is a floor, not a display cap: SimpleGame still measures the actual content and
+may grow the readout beyond four digits. Actual text measurement, invalidation,
+and wrapping remain SimpleGame's responsibility.
+
+`fit_canvas_to_viewport()` caches the last applied canvas CSS size. Redundant
+viewport events, such as `visualViewport.scroll` without a size change, return
+before writing styles, running the HUD pass, or redrawing a paused frame.
 
 ## Staff and support
 
@@ -200,7 +225,8 @@ tappable icon. It disappears once the game is forced to landscape.
   `getPlayerState().invitations.can_generate` is true. `invitation_api.ts`
   wraps `getInvitationStatus` / `createInvitationCode`.
 - `src/staff/StaffInvitationsPanel.svelte` lists/generates/revokes invitation
-  codes for staff with `registration.invites.view/generate/revoke`.
+  codes for staff with `registration.invites.view/generate/revoke` and, in
+  `global_code` mode, shows the active shared global code with a copy button.
 - `src/support/NotificationInbox.svelte` is the hub bell drawer. Notifications
   persist until read; `text_id` + `text_args` are rendered through the text
   system.
@@ -399,7 +425,7 @@ The client provides three reusable display components for showing text and conte
 - For game descriptions and tooltips: use `GameText`
 - Pass markdown content via the `text` prop, or use `children` for custom HTML/Svelte content
 - The overlay's background, text, and Continue button scroll together as one textured panel. Do not put `max-height`/`overflow` on the texture container.
-- Textures are selected by rendered aspect ratio (with a mild height tiebreak) and drawn with CSS `border-image` 9-slicing, so narrow mobile panels don't squash the ornate border. Per-file insets live in `ui_textures.json` `texture_slice_px`; see `client/src/lib/text_texture.ts`.
+- Textures are selected from the **content size**, not the currently applied frame: each candidate's final panel height is derived from the content height and safe padding, then scored by aspect ratio (with a mild height tiebreak). This keeps selection deterministic and prevents texture/height feedback loops. Textures are drawn with CSS `border-image` 9-slicing, so narrow mobile panels don't squash the ornate border. Per-file insets live in `ui_textures.json` `texture_slice_px`; see `client/src/lib/text_texture.ts`.
 - Optional button images come from `ui_textures.json` `button.image` (bare filename under `images/ui`) or the `button` prop. Set `button.image_slice_px` to use a 9-slice plaque.
 
 ## Text System

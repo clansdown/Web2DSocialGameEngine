@@ -5,7 +5,7 @@
    * Owns the responsive viewport, the optional forced-landscape rotation, and
    * the rotate-to-landscape button. The shell element and rotation state are
    * exposed to the active mini-game through Svelte context so the game can fit
-   * its canvas and install the rotated input bridge.
+   * its canvas and install the native rotated input transform.
    */
   import { setContext } from 'svelte';
   import { writable } from 'svelte/store';

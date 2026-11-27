@@ -74,4 +74,8 @@ member role, or group name) and fails if the target no longer exists.
 Read events use `operation=read` and are never undoable:
 `read.account`, `read.identity_history`, `read.custom_avatar`,
 `read.deleted_messages`, `read.support_ticket`, `read.staff_journal`,
-`read.chat_messages`, `read.barony`.
+`read.chat_messages`, `read.barony`, `read.invitation_codes`.
+
+`read.invitation_codes` covers the staff invitation list; in `global_code`
+mode the response also contains the active shared code, but the event payload
+does not include the code itself.

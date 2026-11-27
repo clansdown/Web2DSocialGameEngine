@@ -57,6 +57,9 @@ Capabilities:
 - `registration.invites.view`, `registration.invites.generate`,
   `registration.invites.revoke`
 
+`registration.invites.view` also reveals the active shared global registration
+code while the server is in `global_code` mode.
+
 Every staff endpoint calls `staff::require_capability`; hiding a button in the
 client is cosmetic only.
 
