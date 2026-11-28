@@ -36,6 +36,22 @@ function cacheKey(lang: string, character: { id: number; sex: string | null; dis
 }
 
 /**
+ * Returns whether any requested text ID resolved to an empty value.
+ *
+ * Empty values are treated as unavailable text, not as cacheable content.
+ *
+ * @param texts - Server text response
+ * @param textIds - IDs that were requested
+ * @returns True when at least one requested ID is missing or whitespace-only
+ */
+function has_empty_text_value(
+  texts: Record<string, string>,
+  textIds: string[]
+): boolean {
+  return textIds.some((textId) => (texts[textId] ?? '').trim() === '');
+}
+
+/**
  * Fetches multiple translated texts, routing to the authenticated character
  * endpoint when a character is selected. Results are cached per language,
  * character, and text-ID set.
@@ -63,7 +79,11 @@ export async function loadTexts(textIds: string[]): Promise<Record<string, strin
     texts = await getTextsRequest(lang, sorted);
   }
 
-  cache.set(key, texts);
+  // Do not pin missing text for the session. A file can be added after the
+  // first request; the next loadTexts() call must be able to see it.
+  if (!has_empty_text_value(texts, sorted)) {
+    cache.set(key, texts);
+  }
   return texts;
 }
 

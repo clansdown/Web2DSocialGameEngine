@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from enum import Enum
@@ -4986,6 +4987,249 @@ class ConfigValidator:
 
         self.validated_files.append(file)
 
+    def _is_css_color(self, value: object) -> bool:
+        """Return whether a value looks like a supported CSS colour string.
+
+        The client passes colours to canvas and SimpleGame; this is a
+        best-effort syntax check, not a full CSS parser.
+        """
+        if not isinstance(value, str) or not value.strip():
+            return False
+        colour = value.strip()
+        if re.fullmatch(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})", colour):
+            return True
+        if re.fullmatch(r"rgba?\([^)]*\)", colour):
+            return True
+        if re.fullmatch(r"[a-zA-Z]+", colour):
+            return True
+        return False
+
+    def validate_tower_defense_ui_theme(self, file: Path) -> None:
+        """Validate tower_defense/ui_theme.json (HUD text ink and cost badge).
+
+        The theme is Tower Defense-scoped. All effect dimensions are canvas
+        units and therefore scale with the fixed virtual canvas; they are not
+        part of browser-resize relayout.
+        """
+        try:
+            content: str = file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._add_issue(file, 1, None, f"Failed to read file: {e}", Severity.ERROR)
+            return
+
+        data: object = self._validate_json(content, file)
+        if data is None:
+            return
+
+        if not isinstance(data, dict):
+            self._add_issue(file, 1, None, "Expected an object", Severity.ERROR)
+            return
+
+        allowed_top: Final[set[str]] = {"ink", "surfaces"}
+        for key in data.keys():
+            if key not in allowed_top:
+                self._add_issue(file, 1, None, f"Unknown top-level key '{key}'", Severity.ERROR)
+
+        ink: object = data.get("ink")
+        if not isinstance(ink, dict):
+            self._add_issue(file, 1, None, "Missing required object 'ink'", Severity.ERROR)
+            return
+
+        required_roles: Final[set[str]] = {"primary", "money", "danger"}
+        for role_name in sorted(required_roles - set(ink.keys())):
+            self._add_issue(file, 1, None, f"Missing required ink role '{role_name}'", Severity.ERROR)
+
+        for role_name, role_data in ink.items():
+            if not isinstance(role_name, str) or not role_name:
+                self._add_issue(file, 1, None, "Ink role names must be non-empty strings", Severity.ERROR)
+                continue
+            if not isinstance(role_data, dict):
+                self._add_issue(file, 1, None, f"ink['{role_name}'] must be an object", Severity.ERROR)
+                continue
+
+            allowed_role_keys: Final[set[str]] = {"color", "outline", "shadow"}
+            for key in role_data.keys():
+                if key not in allowed_role_keys:
+                    self._add_issue(
+                        file, 1, None,
+                        f"ink['{role_name}'] has unknown key '{key}'",
+                        Severity.ERROR,
+                    )
+
+            if not self._is_css_color(role_data.get("color")):
+                self._add_issue(
+                    file, 1, None,
+                    f"ink['{role_name}'].color must be a CSS colour string",
+                    Severity.ERROR,
+                )
+
+            outline: object = role_data.get("outline")
+            if not isinstance(outline, dict):
+                self._add_issue(
+                    file, 1, None,
+                    f"ink['{role_name}'].outline must be an object",
+                    Severity.ERROR,
+                )
+            else:
+                allowed_outline_keys: Final[set[str]] = {
+                    "color", "width", "opacity", "line_join",
+                }
+                for key in outline.keys():
+                    if key not in allowed_outline_keys:
+                        self._add_issue(
+                            file, 1, None,
+                            f"ink['{role_name}'].outline has unknown key '{key}'",
+                            Severity.ERROR,
+                        )
+                if not self._is_css_color(outline.get("color")):
+                    self._add_issue(
+                        file, 1, None,
+                        f"ink['{role_name}'].outline.color must be a CSS colour string",
+                        Severity.ERROR,
+                    )
+                width: object = outline.get("width")
+                if (
+                    isinstance(width, bool)
+                    or not isinstance(width, (int, float))
+                    or width <= 0
+                ):
+                    self._add_issue(
+                        file, 1, None,
+                        f"ink['{role_name}'].outline.width must be a positive number",
+                        Severity.ERROR,
+                    )
+                opacity: object = outline.get("opacity")
+                if opacity is not None and (
+                    isinstance(opacity, bool)
+                    or not isinstance(opacity, (int, float))
+                    or opacity < 0
+                    or opacity > 1
+                ):
+                    self._add_issue(
+                        file, 1, None,
+                        f"ink['{role_name}'].outline.opacity must be between 0 and 1",
+                        Severity.ERROR,
+                    )
+                line_join: object = outline.get("line_join")
+                if line_join is not None and (
+                    not isinstance(line_join, str)
+                    or line_join not in {"round", "bevel", "miter"}
+                ):
+                    self._add_issue(
+                        file, 1, None,
+                        f"ink['{role_name}'].outline.line_join must be round, bevel, or miter",
+                        Severity.ERROR,
+                    )
+
+            shadow: object = role_data.get("shadow")
+            if shadow is not None:
+                if not isinstance(shadow, dict):
+                    self._add_issue(
+                        file, 1, None,
+                        f"ink['{role_name}'].shadow must be an object",
+                        Severity.ERROR,
+                    )
+                else:
+                    allowed_shadow_keys: Final[set[str]] = {
+                        "color", "offset_x", "offset_y", "blur", "opacity",
+                    }
+                    for key in shadow.keys():
+                        if key not in allowed_shadow_keys:
+                            self._add_issue(
+                                file, 1, None,
+                                f"ink['{role_name}'].shadow has unknown key '{key}'",
+                                Severity.ERROR,
+                            )
+                    if not self._is_css_color(shadow.get("color")):
+                        self._add_issue(
+                            file, 1, None,
+                            f"ink['{role_name}'].shadow.color must be a CSS colour string",
+                            Severity.ERROR,
+                        )
+                    for offset_key in ("offset_x", "offset_y"):
+                        offset: object = shadow.get(offset_key)
+                        if (
+                            isinstance(offset, bool)
+                            or not isinstance(offset, (int, float))
+                        ):
+                            self._add_issue(
+                                file, 1, None,
+                                f"ink['{role_name}'].shadow.{offset_key} must be a number",
+                                Severity.ERROR,
+                            )
+                    blur: object = shadow.get("blur")
+                    if (
+                        isinstance(blur, bool)
+                        or not isinstance(blur, (int, float))
+                        or blur < 0
+                    ):
+                        self._add_issue(
+                            file, 1, None,
+                            f"ink['{role_name}'].shadow.blur must be a non-negative number",
+                            Severity.ERROR,
+                        )
+                    opacity: object = shadow.get("opacity")
+                    if opacity is not None and (
+                        isinstance(opacity, bool)
+                        or not isinstance(opacity, (int, float))
+                        or opacity < 0
+                        or opacity > 1
+                    ):
+                        self._add_issue(
+                            file, 1, None,
+                            f"ink['{role_name}'].shadow.opacity must be between 0 and 1",
+                            Severity.ERROR,
+                        )
+
+        surfaces: object = data.get("surfaces")
+        if not isinstance(surfaces, dict):
+            self._add_issue(file, 1, None, "Missing required object 'surfaces'", Severity.ERROR)
+            return
+
+        required_surfaces: Final[set[str]] = {
+            "copper_readout",
+            "cost_badge",
+            "lives_readout",
+            "picker_label",
+            "context_button",
+            "wave_button",
+            "forfeit_button",
+            "help_button",
+            "menu_label",
+        }
+        for surface in sorted(required_surfaces - set(surfaces.keys())):
+            self._add_issue(file, 1, None, f"Missing required surface '{surface}'", Severity.ERROR)
+        for surface, role_name in surfaces.items():
+            if surface not in required_surfaces:
+                self._add_issue(file, 1, None, f"Unknown surface '{surface}'", Severity.ERROR)
+                continue
+            if not isinstance(role_name, str) or not role_name:
+                self._add_issue(
+                    file, 1, None,
+                    f"surfaces['{surface}'] must be a non-empty ink role name",
+                    Severity.ERROR,
+                )
+                continue
+            if role_name not in ink:
+                self._add_issue(
+                    file, 1, None,
+                    f"surfaces['{surface}'] references unknown ink role '{role_name}'",
+                    Severity.ERROR,
+                )
+
+        # The copper readout and cost badge are the same diagetic money
+        # language; keep them on the money role even when its colour is
+        # overridden.
+        for money_surface in ("copper_readout", "cost_badge"):
+            if surfaces.get(money_surface) != "money":
+                self._add_issue(
+                    file, 1, None,
+                    f"surfaces['{money_surface}'] must use the 'money' ink role",
+                    Severity.ERROR,
+                )
+
+        self.validated_files.append(file)
+
     def _validate_money_price_map(self, file: Path, section: str, price_map: object) -> None:
         """Validate a resource→price map (import_prices / export_prices). Each
         value is a positive number (gold) or an object {gold, shillings, pence}
@@ -7026,6 +7270,13 @@ class ConfigValidator:
                 self.validate_ongoing_config(td_ongoing_file)
             else:
                 self._add_issue(td_ongoing_file, 1, None, "Config file not found", Severity.ERROR)
+
+            # Validate tower_defense/ui_theme.json (HUD text ink + cost badge).
+            td_ui_theme_file: Path = game_config_dir / "tower_defense" / "ui_theme.json"
+            if td_ui_theme_file.exists():
+                self.validate_tower_defense_ui_theme(td_ui_theme_file)
+            else:
+                self._add_issue(td_ui_theme_file, 1, None, "Config file not found", Severity.ERROR)
 
             wd_ongoing_file: Path = game_config_dir / "weeding" / "ongoing.json"
             if wd_ongoing_file.exists():

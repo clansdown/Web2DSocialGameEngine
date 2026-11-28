@@ -1038,6 +1038,7 @@ Validates all JSON configuration files against their schema rules. Written in Py
 - `game/config/fiefdom_officials.json` - Fiefdom official templates with stats and roles
 - `game/config/tower_defense/mobs.json` - Mob definitions (sprite local frame: `forward_vector` + `sprite_up_vector`)
 - `game/config/tower_defense/projectiles.json` - Projectile definitions (sprite local frame: `forward_vector` + `sprite_up_vector`)
+- `game/config/tower_defense/ui_theme.json` - Tower Defense-scoped HUD text ink + cost-badge theme: semantic `ink` roles (`primary`/`money`/`danger`) with outline/shadow paint and a `surfaces` map; dimensions are canvas units, and the theme never participates in browser-resize relayout. See `server/docs/tower_defense_ui_theme.md`.
 - `game/config/manor_ui.json` - Manor UI config (`build_order` governs the build-palette button order only — it never overrides the client's display/level/affordability filters)
 - `game/config/ui_textures.json` - Textured text-panel padding + optional per-file `texture_slice_px` border-image insets for `StoryText`/`GameText`
 - `game/config/manor_river.json` - River templates (meandering polylines `points` + band `width`; seeded per-fiefdom with 0/90/180/270° rotation — see `server/tables/fiefdom_river.md`)
@@ -1282,6 +1283,42 @@ Build the full game progression and content system with a working tower defense 
   `RAVENEST_AVATAR_*`/`RAVENEST_R2_*` into `SERVER_ENV_PATH`; `.deploy` holds a
   separate scoped token. No migration (no existing avatars). F7 age-isolation is
   a separate production release gate.
+- **Tower Defense help + wave terminology**: the TD HUD now has a standalone `?`
+  help button anchored left of the copper readout. It is deliberately **not** a
+  child of `top_hud_row`, so its visibility follows `set_sidebar_visible()`
+  (unit/forfeit controls) without reflowing the HUD or picker columns. It opens
+  `GameText` in overlay mode with `td_help` and never pauses the game; focus
+  returns to the canvas on dismissal. New text: `ui_td_help` (`?`),
+  `ui_td_help_close` (`Close`), `td_help`, and `td_help.meta`. Player-facing
+  Tower Defense text now says **wave** instead of round (`ui_td_rounds_label`,
+  intro/custom/ongoing copy, validation error, and translation context);
+  internal `round*` identifiers and API fields remain unchanged. The help copy
+  combines copper and hiring into “The Guild's Purse,” uses **copper** rather
+  than gold, says men are hired from the royal wolf guild, omits upgrades/lives/
+  rounds/help sections, and states that one escaped beast loses the hunt.
+- **Tower Defense HUD ink theme**: `game/config/tower_defense/ui_theme.json` is a
+  TD-scoped, single-theme config served as `ui_theme` on kickoff/resume. Semantic
+  `ink` roles (`primary`, `money`, `danger`) carry a fill, a required dark-umber
+  outline, and an optional subordinate shadow; `surfaces` maps the copper/lives
+  readouts, picker/context/wave/forfeit/help/menu labels, and the manually drawn
+  cost badge to roles. Costs and the coin readout use the copper `money` role,
+  not gold. Effect dimensions are canvas units and **do not participate in
+  `apply_canvas_size_layout()`**; the fixed virtual canvas is CSS-scaled as a
+  whole. `client/src/minigames/tower_defense/ui_theme.ts` normalizes the config,
+  resolves surfaces, applies paint-only SimpleGame effects, and draws the cost
+  badge with the same outline/shadow ordering. Missing/malformed data falls back
+  to a readable built-in theme. Schema/rationale:
+  `server/docs/tower_defense_ui_theme.md`; API field: `api/tdRound.md`.
+- **Text cache misses are not cached**: `TextManager::get_text_resolved()` only
+  caches non-empty results, and the client `loadTexts()` refuses to cache a
+  batch when any requested ID is empty. A newly created `game/text` file is
+  therefore read on the next lookup without SIGHUP/restart; closing and
+  reopening an overlay can pick it up without a page reload. Existing text
+  edits, deletions, and new translations that previously fell back to English
+  still require SIGHUP (`tools/push_text.sh`). See `docs/config_reload.md`.
+  `GameText`/`StoryText` also render `htmlContent` when `id` is set; previously
+  `id`-only text was fetched but the markup guarded on `text`, so the help body
+  rendered blank with only the button.
 
 #### In Progress
 - (none)
@@ -1363,11 +1400,14 @@ Build the full game progression and content system with a working tower defense 
 - `game/config/tower_defense/mobs.json` - Mob config with forward_vector + sprite_up_vector per mob
 - `game/config/tower_defense/units.json` - Soldier/unit config with width/height
 - `game/config/tower_defense/towers.json` - Tower config
+- `game/config/tower_defense/ui_theme.json` - Tower Defense HUD text ink + cost-badge theme
+- `client/src/minigames/tower_defense/ui_theme.ts` - Theme normalization, surface→ink resolution, SimpleGame paint helpers, manual cost-badge text painter
+- `server/docs/tower_defense_ui_theme.md` - HUD theme schema/design (canvas units, copper costs, no resize reapplication)
 - `game/config/tower_defense/maps/map_1.json` - Only map file (level 1)
 - `game/config/mini_games.json` - Level grids, map references, default campaign rewards, Tower Defense starting gold, and the picker cost suffix
 - `server/docs/mini_game_rewards.md` - Campaign reward override precedence, first-completion payout, ongoing-mode separation, and client lockout policy
-- `server/GameConfigCache.hpp/.cpp` - Config loading, includes projectiles
-- `server/main.cpp` - All API handlers, TD kickoff sends projectiles config
+- `server/GameConfigCache.hpp/.cpp` - Config loading, includes projectiles and the Tower Defense HUD theme
+- `server/main.cpp` - All API handlers, TD kickoff/resume sends projectiles and HUD theme config
 - `server/TowerDefenseMapCache.cpp` - Map loading/normalization (fixed self-rename bug)
 - `client/src/minigames/tower_defense/TowerDefense.svelte` - Main TD game: engine collision, homing, mirroring, projTick cleanup
 - `client/SimpleGame/Embedding.md` - SimpleGame API docs (pause, mirroring, collision, movement)

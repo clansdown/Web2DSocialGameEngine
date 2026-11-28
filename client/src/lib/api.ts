@@ -2,6 +2,7 @@ import { api_url, resolve_server_url } from './public_urls';
 import * as auth from './auth';
 import { get } from 'svelte/store';
 import { language } from './stores';
+import type { td_ui_theme } from './tower_defense_types';
 
 export interface ApiResponse<T = unknown> {
   status: 'ok';
@@ -792,6 +793,7 @@ export interface TDRoundKickoffResponse {
   mobs?: unknown;
   towers?: unknown;
   units?: unknown;
+  ui_theme?: td_ui_theme;
   [key: string]: unknown;
 }
 

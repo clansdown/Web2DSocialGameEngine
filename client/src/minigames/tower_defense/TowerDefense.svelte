@@ -18,11 +18,20 @@
   import type {
     EnemyVar, ProjectileVar, PoolObjVar, DragObjVar,
     MobConfig, ProjectileConfig, PieceConfig, AreaEffectConfig,
-    KickoffResponse, AdvanceResponse
+    KickoffResponse, AdvanceResponse, td_ink_style, td_ui_theme
   } from '../../lib/tower_defense_types';
+  import {
+    TD_UI_THEME_FALLBACK,
+    load_td_ui_theme,
+    resolve_td_ink,
+    apply_td_text_ink,
+    apply_td_button_ink,
+    draw_td_text_with_ink
+  } from './ui_theme';
   import { loadMap } from '../../lib/tower_defense_map';
   import type { BoardMapData, BoardMapExclusionZone } from '../../lib/tower_defense_map';
   import { asset_url } from '../../lib/public_urls';
+  import GameText from '../../components/GameText.svelte';
 
   import {
     initEngine, setCameraFollowsPlayer, setBoardSize, setButtonDebugLevel,
@@ -99,6 +108,7 @@
 
   let tdData: TDRoundKickoffResponse | null = null;
   let td_texts = $state<Record<string, string>>({});
+  let td_hud_theme: td_ui_theme = TD_UI_THEME_FALLBACK;
 
   // Game classes
   let mobEnemyClassMap = new Map<string, EnemyClass>();
@@ -174,6 +184,7 @@
   let rpButton: Button | null = null;
   let menu_button: Button | null = null;
   let fbtn: Button | null = null;
+  let help_button: Button | null = null;
   let sidebar_separator_text: Text | null = null;
   let ringButtons: Button[] = [];
   let showingTargetingPicker = false;
@@ -210,12 +221,13 @@
   let towerColumn: Column | null = null;
   let unitColumn: Column | null = null;
   let sidebar_visible = true;
+  let help_open = $state(false);
 
   /**
    * Shows or hides the picker/forfeit controls directly.
    *
    * Frequent visibility path: changing visibility never applies legibility
-   * minimums or reflows the HUD.
+   * minimums or reflows the HUD. The help button follows the sidebar exactly.
    *
    * @param visible - Whether the sidebar controls are shown
    */
@@ -224,6 +236,27 @@
     if (towerColumn) towerColumn.setVisible(visible);
     if (unitColumn) unitColumn.setVisible(visible);
     if (fbtn) fbtn.visible = visible;
+    if (help_button) help_button.visible = visible;
+  }
+
+  /**
+   * Opens the help overlay without changing game, pause, placement, or
+   * sidebar state. The game continues while the player reads.
+   */
+  function open_help(): void {
+    help_open = true;
+  }
+
+  /**
+   * Closes the help overlay and returns keyboard focus to the game canvas
+   * after the overlay has been removed.
+   */
+  function close_help(): void {
+    if (!help_open) return;
+    help_open = false;
+    requestAnimationFrame(() => {
+      if (canvasEl) canvasEl.focus();
+    });
   }
 
   // OPFS persistence for unit placements
@@ -293,8 +326,22 @@
   /** Draw offset for interactive board overlays above player pieces and enemies. */
   const UI_OVERLAY_Z_OFFSET = 100;
 
+  /** Standalone help HUD control, shown only with the build sidebar. */
+  const HELP_BUTTON_BASE_WIDTH_UNITS = 38;
+  const HELP_BUTTON_BASE_HEIGHT_UNITS = 38;
+  const HELP_BUTTON_HORIZONTAL_PADDING_UNITS = 16;
+  const HELP_BUTTON_MIN_WIDTH_UNITS = 24;
+  const HELP_BUTTON_GAP_UNITS = HUD_GUTTER;
+  const HELP_BUTTON_COLOR = '#3A3A3A';
+  const HELP_BUTTON_BACKGROUND_OPACITY = 0.8;
+  const HELP_BUTTON_LABEL_ID = 'ui_td_help';
+  const HELP_BUTTON_CLOSE_LABEL_ID = 'ui_td_help_close';
+  const HELP_OVERLAY_TEXT_ID = 'td_help';
+
   const TD_TEXT_IDS: string[] = [
     'ui_td_round_start',
+    'ui_td_help',
+    'ui_td_help_close',
     'ui_pause',
     'ui_resume',
     'ui_td_lives',
@@ -572,6 +619,41 @@
   }
 
   /**
+   * Sizes the standalone help button for the current canvas scale.
+   *
+   * Rare legibility pass only. The button is not in a layout container, so
+   * this updates its own box and hitbox without reflowing the top HUD row.
+   */
+  function apply_help_button_legibility_minimums(): void {
+    if (!help_button) return;
+
+    const scale = board_css_scale > 0 ? board_css_scale : 1;
+    const label_width_units = measure_button_label_units(help_button.text);
+    const desired_width = Math.max(
+      HELP_BUTTON_BASE_WIDTH_UNITS,
+      label_width_units + HELP_BUTTON_HORIZONTAL_PADDING_UNITS,
+      MIN_HUD_BUTTON_CSS_PX / scale
+    );
+    const width_units = Math.min(
+      desired_width,
+      MAX_HUD_BUTTON_WIDTH_UNITS
+    );
+    const desired_height = Math.max(
+      HELP_BUTTON_BASE_HEIGHT_UNITS,
+      MIN_HUD_BUTTON_CSS_PX / scale
+    );
+    const height_units = Math.min(
+      desired_height,
+      MAX_HUD_BUTTON_HEIGHT_UNITS
+    );
+
+    help_button.width = width_units;
+    help_button.height = height_units;
+    help_button.hitboxWidth = width_units;
+    help_button.hitboxHeight = height_units;
+  }
+
+  /**
    * Creates the top HUD hierarchy once the readout, menu, and pause controls
    * exist.
    *
@@ -650,6 +732,43 @@
   }
 
   /**
+   * Anchors the help button immediately left of the copper readout.
+   *
+   * Rare canvas-size pass only; must run after the top HUD row and copper
+   * column have final geometry. At extreme scales the button is clamped to
+   * the sidebar's left edge, matching the HUD's existing extreme-scale
+   * compromises.
+   */
+  function position_help_button_for_canvas_size(): void {
+    if (!help_button || !copper_hud_column) return;
+
+    const copper_left =
+      copper_hud_column.x - copper_hud_column.getLayoutVisualWidth() / 2;
+    const sidebar_left = BW - SIDEBAR_W;
+    const available_width = Math.max(
+      0,
+      copper_left - HELP_BUTTON_GAP_UNITS - sidebar_left
+    );
+    if (available_width < help_button.width) {
+      help_button.width = Math.max(
+        HELP_BUTTON_MIN_WIDTH_UNITS,
+        available_width
+      );
+      help_button.hitboxWidth = help_button.width;
+    }
+
+    const desired_x =
+      copper_left - HELP_BUTTON_GAP_UNITS - help_button.width / 2;
+    help_button.x = Math.max(
+      desired_x,
+      sidebar_left + help_button.width / 2
+    );
+    help_button.y = resourceText
+      ? resourceText.y
+      : (top_hud_row?.y ?? (HUD_TOP_MARGIN + help_button.height / 2));
+  }
+
+  /**
    * Applies canvas-size legibility minimums and reflows the HUD.
    *
    * This is the only rare legibility pass. Call it at initial HUD setup and
@@ -663,7 +782,9 @@
     apply_lives_legibility_minimums();
     apply_menu_button_legibility_minimums();
     apply_round_button_legibility_minimums();
+    apply_help_button_legibility_minimums();
     position_top_hud_for_canvas_size();
+    position_help_button_for_canvas_size();
   }
 
   /**
@@ -979,12 +1100,14 @@
    * @param ctx - Canvas context
    * @param btn - Picker button
    * @param cost_text - Formatted cost text
+   * @param ink - Resolved cost-badge ink style
    * @returns Measured center and width of the drawn text
    */
   function draw_piece_cost_label(
     ctx: CanvasRenderingContext2D,
     btn: Button,
-    cost_text: string
+    cost_text: string,
+    ink: td_ink_style
   ): piece_cost_label_metrics {
     ctx.save();
     ctx.font = `bold ${PIECE_COST_FONT_SIZE}px Arial, Helvetica, sans-serif`;
@@ -995,12 +1118,7 @@
     const top = btn.y - btn.height / 2 + PIECE_COST_INSET_Y;
     const width = ctx.measureText(cost_text).width;
 
-    ctx.fillStyle = '#f2d98b';
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
-    ctx.shadowBlur = 3;
-    ctx.shadowOffsetX = 1;
-    ctx.shadowOffsetY = 1;
-    ctx.fillText(cost_text, right, top);
+    draw_td_text_with_ink(ctx, cost_text, right, top, ink);
     ctx.restore();
 
     return {
@@ -1025,6 +1143,8 @@
   ): void {
     if (!sidebar_visible) return;
 
+    const cost_ink = resolve_td_ink(td_hud_theme, 'cost_badge');
+
     ctx.save();
     ctx.translate(-offset_x, -offset_y);
 
@@ -1036,7 +1156,12 @@
       const unaffordable = currentGold < cost;
 
       if (unaffordable) draw_unaffordable_button_tint(ctx, btn);
-      const metrics = draw_piece_cost_label(ctx, btn, format_piece_cost(cost));
+      const metrics = draw_piece_cost_label(
+        ctx,
+        btn,
+        format_piece_cost(cost),
+        cost_ink
+      );
       if (unaffordable) {
         draw_unaffordable_coin_marker(ctx, metrics.center_x, metrics.center_y);
       }
@@ -1664,9 +1789,11 @@
       copperImages
     );
     resourceText.setSize(BASE_COPPER_TEXT_UNITS);
-    resourceText.foreground = '#FFD700';
     resourceText.setTextAlign('center');
-    resourceText.setShadow('#000000', 4, 2, 2);
+    apply_td_text_ink(
+      resourceText,
+      resolve_td_ink(td_hud_theme, 'copper_readout')
+    );
     resourceText.hud = true;
 
     if (currentLives > 1) {
@@ -1675,8 +1802,10 @@
       livesText = createText(format_lives_label(), { x: sX + 100, y: 65 });
       livesText.setSize(BASE_LIVES_TEXT_UNITS);
       livesText.setTextAlign('center');
-      livesText.foreground = '#FF6666';
-      livesText.setShadow('#000000', 4, 2, 2);
+      apply_td_text_ink(
+        livesText,
+        resolve_td_ink(td_hud_theme, 'lives_readout')
+      );
       livesText.hud = true;
     }
 
@@ -1706,6 +1835,10 @@
         iconPadding: 10, iconLayout: "above",
         backgroundOpacity: 0.8
       });
+      apply_td_button_ink(
+        btn,
+        resolve_td_ink(td_hud_theme, 'picker_label')
+      );
       const col = isUnit ? ucol : tcol;
       col.addChild(btn);
       unitButtons.set(id, btn);
@@ -1748,6 +1881,10 @@
     // Combined round/pause button — lives in the top HUD row.
     const rpCls = new ButtonClass('sb_round');
     rpButton = rpCls.spawn(sX + 320, 35, format_round_start_label(), null, { width: 160, height: 38, color: '#2D7A2D', backgroundOpacity: 0.8 });
+    apply_td_button_ink(
+      rpButton,
+      resolve_td_ink(td_hud_theme, 'wave_button')
+    );
     rpButton.zIndex = 100;
     rpButton.hud = true;
     rpButton.setOnClick(() => {
@@ -1761,6 +1898,10 @@
 
     const fbc = new ButtonClass('sb_forfeit');
     fbtn = fbc.spawn(BW - sbBtnW / 2 - 10, BH - 21 - 10, text('ui_td_try_again_later'), null, { width: sbBtnW, height: 42, color: '#7A2D2D', backgroundOpacity: 0.8 });
+    apply_td_button_ink(
+      fbtn,
+      resolve_td_ink(td_hud_theme, 'forfeit_button')
+    );
     fbtn.zIndex = 100;
     fbtn.hud = true;
     fbtn.setOnClick(() => forfeitGame());
@@ -1779,13 +1920,42 @@
         color: '#4A4A6A',
         backgroundOpacity: 0.8,
         iconWidth: HAMBURGER_ICON_DISPLAY_SIZE,
-        iconHeight: HAMBURGER_ICON_DISPLAY_SIZE,
-        foregroundColor: '#f8f9fa'
+        iconHeight: HAMBURGER_ICON_DISPLAY_SIZE
       }
+    );
+    apply_td_button_ink(
+      menu_button,
+      resolve_td_ink(td_hud_theme, 'menu_label')
     );
     menu_button.zIndex = 100;
     menu_button.hud = true;
     menu_button.setOnClick(() => set_sidebar_visible(!towerColumn?.visible));
+
+    // Standalone help control, positioned left of the copper readout. It is
+    // deliberately not a child of top_hud_row so hiding it with the sidebar
+    // never reflows the row or pickers.
+    const helpBtnCls = new ButtonClass('sb_help');
+    help_button = helpBtnCls.spawn(
+      sX + 60,
+      35,
+      text(HELP_BUTTON_LABEL_ID),
+      null,
+      {
+        width: HELP_BUTTON_BASE_WIDTH_UNITS,
+        height: HELP_BUTTON_BASE_HEIGHT_UNITS,
+        color: HELP_BUTTON_COLOR,
+        backgroundOpacity: HELP_BUTTON_BACKGROUND_OPACITY,
+        cornerRadius: 6
+      }
+    );
+    apply_td_button_ink(
+      help_button,
+      resolve_td_ink(td_hud_theme, 'help_button')
+    );
+    help_button.zIndex = 100;
+    help_button.hud = true;
+    help_button.setOnClick(() => open_help());
+    help_button.visible = sidebar_visible;
 
     // Build the measured top HUD row and place the picker columns below it.
     build_top_hud_hierarchy();
@@ -2028,6 +2198,10 @@
       const s = specs[i];
       const bc = new ButtonClass(`ring_${i}`);
       const btn = bc.spawn(startX + i * (btnW + gap), yOff, s.text, null, { width: btnW, height: btnH, color: s.color, backgroundOpacity: 0.8 });
+      apply_td_button_ink(
+        btn,
+        resolve_td_ink(td_hud_theme, 'context_button')
+      );
       btn.zIndex = player_piece_z_index + UI_OVERLAY_Z_OFFSET;
       btn.setDisabled(s.disabled);
       btn.setOnClick(s.action);
@@ -2748,6 +2922,11 @@
     }
 
     await load_td_texts(tdData as TDRoundKickoffResponse);
+    // Canvas-unit HUD ink snapshot for this session. Effects are paint-only and
+    // are never reapplied by apply_canvas_size_layout().
+    td_hud_theme = load_td_ui_theme(
+      (tdData as TDRoundKickoffResponse).ui_theme
+    );
 
     // Canvas sized to board dimensions (sidebar is an overlay)
     canvasEl.width = BW;
@@ -2883,4 +3062,12 @@
     style="display: block; touch-action: none;"
   ></canvas>
   <div bind:this={debugEl} style="display: none;"></div>
+  {#if help_open}
+    <GameText
+      overlay
+      id={HELP_OVERLAY_TEXT_ID}
+      on_dismiss={close_help}
+      continue_label={text(HELP_BUTTON_CLOSE_LABEL_ID)}
+    />
+  {/if}
 </div>

@@ -137,6 +137,7 @@ config_handle config_snapshot::getTowerDefenseUnitUnlocks() const { return get("
 config_handle config_snapshot::getTowerDefenseProjectiles() const { return get("tower_defense/projectiles.json"); }
 config_handle config_snapshot::getTowerDefenseWaveTemplates() const { return get("tower_defense/wave_templates.json"); }
 config_handle config_snapshot::getTowerDefenseOngoing() const { return get("tower_defense/ongoing.json"); }
+config_handle config_snapshot::getTowerDefenseUiTheme() const { return get("tower_defense/ui_theme.json"); }
 std::string config_snapshot::getTowerDefenseCostSuffix() const {
     const auto mini_games = getMiniGames();
     if (!mini_games.is_object() || !mini_games.contains("tower_defense")) {
@@ -337,6 +338,7 @@ bool GameConfigCache::initialize(const std::string& config_dir) {
         "tower_defense/projectiles.json",
         "tower_defense/wave_templates.json",
         "tower_defense/ongoing.json",
+        "tower_defense/ui_theme.json",
         "weeding/plants.json",
         "weeding/tools.json",
         "weeding/specials.json",

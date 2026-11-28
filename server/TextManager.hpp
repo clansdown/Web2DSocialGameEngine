@@ -28,14 +28,16 @@ public:
     /**
      * Get text content for the given language and text ID.
      * Falls back to English if the requested language doesn't have the text.
-     * Returns empty string if neither exists.
+     * Returns empty string if neither exists. Empty lookups are not cached, so
+     * a text file added later is visible on the next lookup.
      */
     std::string get_text(const std::string& language, const std::string& text_id) const;
 
     /**
      * Get text content plus the language that actually supplied it. This is
      * used by data-like text (retinue name pools) where the caller must know
-     * whether it got a localized pool or the English fallback.
+     * whether it got a localized pool or the English fallback. Empty lookups
+     * are not cached.
      */
     text_lookup_result get_text_resolved(const std::string& language,
                                          const std::string& text_id) const;

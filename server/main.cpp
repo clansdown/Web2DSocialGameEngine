@@ -3325,6 +3325,7 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
                     response.data["units"] = config_cache.getTowerDefenseUnits();
                     response.data["projectiles"] = config_cache.getTowerDefenseProjectiles();
                     response.data["cost_suffix"] = config_cache.getTowerDefenseCostSuffix();
+                    response.data["ui_theme"] = config_cache.getTowerDefenseUiTheme();
 
                     // Filter towers/units by player unlocks
                     {
@@ -3583,6 +3584,7 @@ ApiResponse handleTDRound(GameConfigCache& config_cache, const json& body,
         response.data["units"] = config_cache.getTowerDefenseUnits();
         response.data["projectiles"] = config_cache.getTowerDefenseProjectiles();
         response.data["cost_suffix"] = config_cache.getTowerDefenseCostSuffix();
+        response.data["ui_theme"] = config_cache.getTowerDefenseUiTheme();
 
         // Filter towers/units by player unlocks
         {

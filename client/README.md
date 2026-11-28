@@ -194,12 +194,32 @@ two update categories deliberately separate:
 - `apply_canvas_size_layout()` is the rare legibility pass. It runs at initial
   HUD setup and when the canvas HTML element's displayed size changes
   (including orientation). It applies minimum sizes for the copper readout,
-  lives, menu, and round/pause controls, then positions the top row and picker
+  lives, menu, and wave/pause controls, then positions the top row and picker
   columns.
 - `set_copper_display()`, `set_lives_display()`,
   `set_round_button_display()`, and `set_sidebar_visible()` are direct content
   and visibility updates. They never apply minimums, size controls, or reflow
   the HUD/pickers.
+
+The Tower Defense help control is a standalone HUD button anchored immediately
+left of the copper readout. It is **not** a child of the top HUD row, so hiding
+it with `set_sidebar_visible()` cannot reflow the row or picker columns. It
+opens `GameText` in `overlay` mode with the translated `td_help` document and
+does **not** pause the game. The button label is `ui_td_help` (`?` in English)
+and the dismiss label is `ui_td_help_close` (`Close`). Player-facing Tower
+Defense copy says **wave**, while internal round names/API fields remain
+unchanged.
+
+HUD text ink comes from the Tower Defense-scoped
+`game/config/tower_defense/ui_theme.json`, delivered as `ui_theme` with the
+kickoff/resume payload. `src/minigames/tower_defense/ui_theme.ts` normalizes the
+theme, resolves semantic surfaces (`copper_readout`, `cost_badge`,
+`picker_label`, etc.) to ink roles, and applies paint-only SimpleGame text
+effects. The copper readout and cost badge share the copper `money` role. Theme
+dimensions are canvas units: the fixed virtual canvas is CSS-scaled as a whole,
+so effects scale naturally and are **not** part of `apply_canvas_size_layout()`
+or any browser-resize relayout. The cost badge is manually drawn in `afterDraw`
+and uses the same outline/shadow ordering as SimpleGame.
 
 The copper readout reserves a four-digit minimum-width sample
 (`{img:copper} 0000`) so routine gold changes do not reflow the row. The sample

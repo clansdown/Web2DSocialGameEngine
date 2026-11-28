@@ -30,6 +30,10 @@ Manages tower defense round lifecycle — creates a new game session or complete
         "lives": 20,
         "gold": 100,
         "cost_suffix": "c",
+        "ui_theme": {
+            "ink": { "...": "..." },
+            "surfaces": { "...": "..." }
+        },
         "spawn_schedule": [
             {
                 "enemy_id": "dire_rat",
@@ -72,6 +76,21 @@ ongoing games, and the baron challenge start with `120`.
 (currently `c`). The client renders each picker's level-1 cost as
 `<cost><suffix>` in the button's top-right corner; the value is unchanged and
 the suffix is display-only.
+
+### UI theme
+
+`ui_theme` is the Tower Defense-scoped HUD text theme from
+`tower_defense/ui_theme.json`. It is included on both kickoff and resume
+responses. The client resolves semantic ink roles for the copper readout, lives
+readout, picker/context/start/forfeit/help labels, and the manually drawn cost
+badge.
+
+Effect dimensions are **canvas units**, not CSS pixels. Tower Defense renders
+to a fixed virtual canvas and scales the whole canvas with CSS, so text effects
+scale naturally and are not part of browser-resize relayout. The cost badge uses
+the same `money` ink as the copper readout; the player-facing currency is copper,
+not gold. Missing or malformed theme data falls back to a readable built-in
+theme.
 
 ## Request — Complete Round
 

@@ -54,7 +54,9 @@ text_lookup_result TextManager::get_text_resolved(const std::string& language,
         }
     }
 
-    {
+    // A miss is deliberately not cached: a text file may be added later
+    // without a SIGHUP/restart, and the next lookup should be able to see it.
+    if (!result.text.empty()) {
         std::lock_guard<std::mutex> lock(m_cache_mutex);
         m_cache[cache_key] = result;
     }

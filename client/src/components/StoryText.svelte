@@ -233,7 +233,7 @@
           text-align: justify;
         "
       >
-        {#if text}
+        {#if text || id}
           {@html htmlContent}
         {:else if children}
           {@render children()}

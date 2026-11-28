@@ -154,6 +154,52 @@ export interface MapMetadata {
   [key: string]: unknown;
 }
 
+// ================================================================
+// HUD theme (server-authored, Tower Defense-scoped)
+// ================================================================
+
+/** Semantic HUD text surfaces referenced by the Tower Defense theme. */
+export type td_ui_surface =
+  | 'copper_readout'
+  | 'cost_badge'
+  | 'lives_readout'
+  | 'picker_label'
+  | 'context_button'
+  | 'wave_button'
+  | 'forfeit_button'
+  | 'help_button'
+  | 'menu_label';
+
+/** Outline paint for one HUD ink role. All dimensions are canvas units. */
+export interface td_outline_style {
+  color: string;
+  width: number;
+  opacity?: number;
+  line_join?: CanvasLineJoin;
+}
+
+/** Drop-shadow paint for one HUD ink role. All dimensions are canvas units. */
+export interface td_shadow_style {
+  color: string;
+  offset_x: number;
+  offset_y: number;
+  blur: number;
+  opacity?: number;
+}
+
+/** One semantic text-ink treatment. */
+export interface td_ink_style {
+  color: string;
+  outline: td_outline_style;
+  shadow?: td_shadow_style;
+}
+
+/** Tower Defense HUD theme. Scoped per mini-game; there is no global theme. */
+export interface td_ui_theme {
+  ink: Record<string, td_ink_style>;
+  surfaces: Record<td_ui_surface, string>;
+}
+
 /** Fully-typed view of the server kickoff response, discarding the `[key: string]: unknown` indexer. */
 export interface KickoffResponse {
   session_id: number;
@@ -178,6 +224,7 @@ export interface KickoffResponse {
   projectiles?: KickoffProjectiles;
   towers?: KickoffTowers;
   units?: KickoffUnits;
+  ui_theme?: td_ui_theme;
   resumed?: boolean;
 }
 

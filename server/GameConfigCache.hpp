@@ -145,6 +145,7 @@ public:
     config_handle getTowerDefenseProjectiles() const;
     config_handle getTowerDefenseWaveTemplates() const;
     config_handle getTowerDefenseOngoing() const;
+    config_handle getTowerDefenseUiTheme() const;
     std::string getTowerDefenseCostSuffix() const;
     config_handle getWeedingPlants() const;
     config_handle getWeedingTools() const;
@@ -255,6 +256,7 @@ public:
     config_handle getTowerDefenseProjectiles() const { return snapshot().getTowerDefenseProjectiles(); }
     config_handle getTowerDefenseWaveTemplates() const { return snapshot().getTowerDefenseWaveTemplates(); }
     config_handle getTowerDefenseOngoing() const { return snapshot().getTowerDefenseOngoing(); }
+    config_handle getTowerDefenseUiTheme() const { return snapshot().getTowerDefenseUiTheme(); }
     std::string getTowerDefenseCostSuffix() const { return snapshot().getTowerDefenseCostSuffix(); }
     config_handle getWeedingPlants() const { return snapshot().getWeedingPlants(); }
     config_handle getWeedingTools() const { return snapshot().getWeedingTools(); }

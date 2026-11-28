@@ -57,7 +57,7 @@ all-or-nothing prepare/commit path.
 
 ## Triggering a reload
 
-For config or text changes, use the wrappers:
+For config changes, or edits/deletions to existing text, use the wrappers:
 
 ```bash
 tools/push_config_files.sh   # game/config/ + reload
@@ -79,6 +79,20 @@ The helper sends SIGHUP through compose (tini forwards it), waits for
 
 The reload callback reapplies the Web Push VAPID keyring and clears the
 `TextManager` cache, so `tools/push_text.sh` applies without a restart.
+
+## Text lookups
+
+`TextManager` caches only non-empty results. A newly created text file is read
+on the next lookup without SIGHUP or a restart. Existing text edits, deletions,
+and a new translation for a language that previously fell back to English still
+require SIGHUP (or `tools/push_text.sh`) because their non-empty cached entries
+remain valid until the cache is cleared.
+
+The client text cache likewise refuses to store a response when any requested
+ID is empty, so closing and reopening an overlay can pick up newly available
+text without a full page reload. Text that was already cached before an edit
+still requires a page reload unless the server cache is cleared and the client
+fetches again.
 
 `tools/install.sh` mirrors content with `--chmod=D755,F644`, so a mode-600
 source checkout can no longer make map/config JSONs unreadable to the container
